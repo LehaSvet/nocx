@@ -136,107 +136,6 @@ what it cost rather than reviving the slot.
 **TodoWrite, TaskCreate and markdown TODO lists are forbidden.** `br` is the tracker for
 all work, including your own checklists.
 
-## Recall: `deja`, not the tracker
-
-`br` has no memory store, and neither does this repository any more. What every agent here
-already produces is a session transcript on disk, and `deja` indexes those — claude, omp,
-codex and pi in one machine-wide index at `~/.cache/deja`. Reading it is pull-based:
-
-```bash
-deja "<what you are about to do>"          # across every agent, every worktree
-deja --harness omp --since 30d "<query>"   # narrow it
-deja fix "<error text>"                    # what was run after this error before
-deja how "<what>"                          # commands this machine actually ran
-```
-
-**The recall path writes nothing, so nothing conflicts.** Six workers in six worktrees
-produce six transcripts and one reader sees all of them. This is the whole reason it
-replaced a git-tracked playbook: a rule committed on a branch reaches only that branch, and
-by measurement it reached 3 worktrees out of 45.
-
-**The mechanism is shared, the database is not.** That is the owner's decision, and it
-settles what everything below is for. Everyone working in this repository — maintainers and
-contributors alike — sets deja up the same way, because the setup is part of the contract
-and lives in git: the install line, the hooks, the trust policy. What each of them then
-accumulates is theirs. Nobody's index or notes reach anybody else, there is no team store
-and no shared memory to keep in step, and a clone arrives with the instructions and an
-empty index that fills from that machine's own history.
-
-The consequence is worth stating plainly, because it is the whole reason this file still
-exists: **nothing you write into deja can be relied on by a colleague.** Recall is how you
-stop re-deriving what you personally already worked out. A rule the next person must follow
-is not that; it goes in this file, where a pull request makes somebody read it.
-
-**Writing to it.** `remember` is the sixth MCP tool, alongside recall, context, blame, fix
-and how. It appends one line to `~/.local/share/deja/notes.jsonl` — timestamp, project,
-text, tags — searchable at the next index pass, and then surfacing like any other session,
-scoped to its project. Use it as you see fit: it is your database. Two properties to know
-rather than obey. A note reaches another machine only if you run `deja sync` yourself,
-which is your machines and not the team's. And with the hooks on, a note is injected at the
-start of every session in that project, so a wrong one keeps arriving until you delete it —
-by hand or with `deja forget`.
-
-`deja promote <id> --state accepted|rejected|superseded|stale` marks a record deja already
-holds rather than writing a new one, and it too changes only your own copy. Upstream #2976
-is open — recall can hand back a session's older fact after the same session reversed it —
-and `superseded` is the lever against that.
-
-**Installed with `--auto`, so recall does not wait to be asked.** Five hooks per agent:
-
-| event              | what it does                                                               |
-| ------------------ | -------------------------------------------------------------------------- |
-| `SessionStart`     | `hook-context` — a new window opens knowing the project's recent decisions |
-| `UserPromptSubmit` | `hook-prompt` — a prompt that matches earlier work pulls it in             |
-| `PreToolUse`       | `hook-tool` — one line on what this command or file already has            |
-| `PostToolUse`      | `hook-tool-after` — after a command fails, what was run after it last time |
-| `PreCompact`       | `hook-precompact` — memory goes in before the context is squeezed          |
-
-```bash
-deja install --auto --no-index    # MCP and hooks everywhere; --no-index keeps the index
-deja uninstall --auto             # and it is reversible
-```
-
-`--no-index` matters: without it the install rebuilds, which is minutes on this corpus.
-
-**Its registration lives in two places, like repowise's.** `deja install --all` writes
-per-agent config under `$HOME` — this machine only. The tracked `.mcp.json` at the repo
-root is what a fresh clone gets, and what every non-Claude-Code agent reads. Both name the
-server `deja`, and Claude keys MCP servers by name, so the two collapse rather than
-double-register. Both are path-less on purpose: the index is machine-wide.
-
-**A worktree needs no setup.** The index is at `~/.cache/deja`, outside git, so a worktree
-answers the moment it is cut — no per-worktree init, unlike repowise below. Verified from a
-worktree that had never seen deja.
-
-**Settle the trust policy BEFORE the first `deja sync`, because the default is open.** Sync
-is peer-to-peer over your own ssh — `deja sync ssh <host>` records the peer, bare `deja
-sync` then exchanges with all of them, incrementally by watermark. What arrives is another
-machine's indexed sessions, and recall injects into agents, so an imported session is text
-your agent may act on. The guide says imported memory "stays searchable but never injects
-itself". **That is not what the binary does**: with no `~/.config/deja/policy.json` it
-reports "every origin activates everywhere", and `internal/policy` says so outright —
-"Defaults allow everything, matching prior behavior". Believe the binary, as with the paths
-elsewhere in this file.
-
-So this machine carries the policy the guide describes, and a new machine needs it written
-before it pairs with anything:
-
-```json
-{
-  "activations": {
-    "mcp": { "local": true, "imported": false },
-    "auto": { "local": true, "imported": false }
-  }
-}
-```
-
-`deja doctor` must then print `search local+imported`, `mcp local-only`, `auto local-only`.
-Check it, because **a malformed policy file fails open**: any parse error falls back to
-allow-everything and only doctor complains. Egress is derived rather than declared —
-content leaves the machine only if all three activations pass it — which is what stops a
-box refusing a session to its own agent while shipping the same text to an embedding
-endpoint.
-
 **A transcript is evidence of what somebody did, not of what is true now.** It carries the
 wrong turn as faithfully as the fix, and the fix may be three sessions later. Read the date,
 and confirm against the tree before acting on it.
@@ -453,8 +352,8 @@ steps for you.
 
 5. **Write down anything that was bought.** If something in this session cost a
    measurement or a wrong turn and is not derivable from the repository, it goes in this
-   file, which has the three tests. Nothing does this for you: the transcript `deja`
-   indexes is a record of what you did, not a rule anybody will review.
+   file, which has the three tests. Nothing does this for you: a session transcript
+   is a record of what you did, not a rule anybody will review.
 6. **Hand off through `handoff`** — evidence, tracker status, branch and actionable blockers.
 
 ## Testing: five rules, each bought by a green suite over a broken product
@@ -622,7 +521,6 @@ how two agents ship two answers to one question.
    ```bash
    br list --label <area> --status all
    br search <phrase> --all              # then words, for the bead filed in other words
-   deja "<keyword>"                      # what a past session already hit
    ```
 
    **`br search` HIDES closed matches unless you pass `--all`**, and it says so in one
@@ -710,8 +608,8 @@ rule.
 
 ## Before you investigate: two checks that beat reasoning
 
-**Search the transcripts before fighting the environment.** `deja "<what you are doing>"`
-costs seconds and reads what every agent on this machine already tried.
+**Read what was already tried before fighting the environment.** The session transcripts
+of every agent on this machine are on disk; reading the relevant one costs seconds.
 
 > A session spent installing Xvfb and rebuilding the OS twice to run Playwright ended when a
 > lookup turned up the headless backend — a path needing no display, in the repo the whole
@@ -1112,9 +1010,8 @@ The `beads-superpowers` plugin is installed for its process skills — brainstor
 writing-plans, test-driven-development, systematic-debugging — and they are worth having.
 Its tracker half is not: those skills were written for an older tracker under a different
 binary name, and by the plugin's own rule repository instructions win over skills.
-**Translate every tracker command in a skill to `br`.** Two do not survive a rename:
-recall is `deja` and not the tracker at all, and export is `br sync --flush-only` to
-`.beads/issues.jsonl`.
+**Translate every tracker command in a skill to `br`.** One does not survive a rename:
+export is `br sync --flush-only` to `.beads/issues.jsonl`.
 
 The official `br` skill is installed too and carries the same kind of leftovers — config
 keys that do not exist in `br config schema`, and an id prefix that was never ours. Believe

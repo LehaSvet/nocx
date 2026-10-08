@@ -155,18 +155,13 @@ rm -f ~/.local/bin/.nocx-update-journal.json
 | gofumpt         | latest            | `go install mvdan.cc/gofumpt@latest`                                                                               |
 | golangci-lint   | **v1.64.8**       | `go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8`                                           |
 | br (beads_rust) | latest            | `curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh \| bash -s -- --verify` |
-| deja (deja-vu)  | **v0.19.3**       | release tarball into `~/.local/bin`, or `GOPROXY=direct go install github.com/vshulcz/deja-vu/cmd/deja@latest`     |
 
 > ⚠️ golangci-lint **must** be v1.64.8 — the config (`.golangci.yml`) uses the v1
 > schema, and golangci-lint v2 rejects it. Pinning is enforced in CI.
 
 > The tracker was `bd` (Go beads, embedded Dolt) until 2026-09-05 and is `br`
 > now. `br` is a single static binary with no daemon and no Dolt; it never runs
-> git. `br` has no memory store at all, and neither does the repo: `deja` indexes
-> the session transcripts every agent already writes. Everyone here installs it
-> the same way and **each keeps their own database** — no index or note travels
-> between contributors, and a clone arrives with these instructions and an empty
-> index that fills from your own history. See AGENTS.md.
+> git. `br` has no memory store at all. See AGENTS.md.
 
 **On NixOS / without Homebrew.** `brew` and `npm i -g` don't work here — the
 latter writes into the read-only Nix store. Install `go`, `nodejs_24`, `gofumpt`,
@@ -177,18 +172,14 @@ the rest through the language toolchains:
 go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.9
 go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8   # exactly this — nixpkgs ships v2, which rejects .golangci.yml
 
-# The tracker and the recall index: release binaries into ~/.local/bin.
+# The tracker: release binary into ~/.local/bin.
 curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh?$(date +%s)" \
   | bash -s -- --dest ~/.local/bin --skip-skills --verify
-curl -fsSL -o /tmp/deja.tar.gz \
-  https://github.com/vshulcz/deja-vu/releases/download/v0.19.3/deja-vu_0.19.3_linux_amd64.tar.gz
-tar -xzf /tmp/deja.tar.gz -C ~/.local/bin deja
 ```
 
-Neither is in nixpkgs, and both are static: `br`'s Linux musl artifact and `deja`'s
-Go binary run as-is, so `nix-ld` is no longer needed for either. Then wire it with
-`deja install --auto --no-index` — MCP plus the five recall hooks. Add **`minisign`**
-and **`sqlite3`** from nixpkgs while you are there:
+`br` is not in nixpkgs and is static: its Linux musl artifact runs as-is, so
+`nix-ld` is no longer needed. Add **`minisign`** and **`sqlite3`** from nixpkgs
+while you are there:
 the first verifies `br`'s release signatures, the second is how you look at the
 database when `br doctor` disagrees with you. The `beads-superpowers` plugin
 installs via `claude` — see
