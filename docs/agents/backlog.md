@@ -1,10 +1,10 @@
 # Backlog integration
 
 Maintained by `setup-shady2k-skills`. The installed checks carry setup protocol
-0.42.0 after this update lands. Its task, "The project setup matches the current
-skills and every real entry point is proved" (nocx-q8yjf.22), keeps the proof
-evidence and any unperformed checks; the step from 0.40.0 to 0.42.0 is "The setup
-pull request installs shady2k-skills 0.42.0 before it merges" (nocx-hld9x). A branch alone is not an installed update.
+0.43.0 after this update lands. Its task, "The setup pull request installs
+shady2k-skills 0.43.0 before it merges" (nocx-q8yjf.23), owns the proof
+evidence and any unperformed checks. Protocol 0.42.0 was installed by PR #276
+(nocx-q8yjf.22, nocx-hld9x). A branch alone is not an installed update.
 The protocol ships with the skills and is not restated here. This file holds
 project facts and commands; changing choices live only in the config. Each
 person's plugin, runtime and connected hooks are checked directly, never
@@ -169,11 +169,13 @@ keeps every later change.
 - **Rules:** `check.mjs`, `check-commits.mjs`, `check-docs.mjs`,
   `check-present.mjs` and `check-product.mjs`, with `time-format.mjs` and
   `document-format.mjs`, in [`.githooks/backlog-gate/`](../../.githooks/backlog-gate/).
-  These are byte-for-byte copies from the shady2k-skills plugin's
-  `skills/backlog/setup-shady2k-skills/`, setup protocol 0.42.0, never edited
-  here. Compare each copy with that source. Run all five `--selftest` commands
-  from the plugin directory, where their fixtures live; `check.mjs` additionally
-  takes `--config <repo>/.githooks/backlog-gate/config.json` for portability.
+  These are byte-for-byte copies of the plugin files under
+  `skills/backlog/setup-shady2k-skills/` at source commit
+  `da0d4890ec4fda05526deb6d1a3d38cee4792938` (setup protocol 0.43.0), never
+  edited here. Compare each copy with that source. Run all five `--selftest`
+  commands from the plugin directory, where their fixtures live; `check.mjs`
+  additionally takes `--config <repo>/.githooks/backlog-gate/config.json` for
+  portability.
 - **Present documents:** the config's `presentDocuments` lists what describes the present
   here — AGENTS.md, README.md, `docs/architecture.md`, `docs/agents/`, the frontend state
   ownership and lifecycle protocol documents, `contracts/README.md` and the UI kit's README.
@@ -195,11 +197,13 @@ keeps every later change.
   (`runs.mjs` in the plugin's `take-task`, `close-out` and `ask-shady2k`). The adapter exports
   every comment whose text starts with `[shady2k-time`, raw and whole, damaged or not, as
   `comments: [{ id, at, author, body }]` from beads' comment `id`, `created_at`, `author`
-  and `text`; other comments are left out. The run script reads that export as `--backlog`:
-  `node .githooks/backlog-gate/adapter.mjs --export "$(br where --json | jq -r .jsonl_path)"`
-  — the main checkout's export, which `br` keeps current — and a record is posted unchanged
-  with `br comments add <id> -f <file holding the printed body> --actor <agent>`; `-m` with a
-  shell-quoted multi-line string is where a record gets reflowed. Proved 2026-09-26 on the
+  and `text`; other comments are left out. `runs.mjs --backlog` reads the adapter's JSON,
+  not the raw JSONL. The adapter emits that JSON on stdout with:
+  `node .githooks/backlog-gate/adapter.mjs --export "$(br where --json | jq -r .jsonl_path)"`.
+  Capture stdout to a temporary file and pass that file to `--backlog`; `br` keeps the
+  main export current. Post a printed record unchanged with
+  `br comments add <id> -f <file holding the printed body> --actor <agent>`; `-m` with a
+  shell-quoted multi-line string can reflow a record. Proved 2026-09-26 on the
   setup task: posted, exported, byte-identical.
 - **Time records adopted 2026-09-26** (nocx-q8yjf.12). The 61 leaves in flight then —
   active, submitted or implemented with no claim record, almost all of them the stages "The
