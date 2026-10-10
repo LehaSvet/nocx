@@ -142,5 +142,6 @@
     "route": "openrouter",
     "idPattern": "nocx-[a-z0-9]+(?:\\.\\d+)*",
     "maskPatterns": []
-  }
+  },
+  "notifyPushes": false
 }
