@@ -10,7 +10,7 @@ import (
 func TestEffectFrameRoundTripsIdentityTitleAndBody(t *testing.T) {
 	want := EffectFrame{
 		Session: [16]byte{1, 2}, Subscriber: [16]byte{3, 4},
-		Generation: 7, EffectID: 19, StreamOffset: 12345,
+		Generation: 7, EffectID: 19,
 		Kind: EffectNotification, Title: []byte("Tests failed"), Body: []byte("2 failed"),
 	}
 	got, err := DecodeEffectFrame(EncodeEffectFrame(want))
@@ -44,6 +44,30 @@ func TestRecoveryEffectFrameRoundTripsEpisodeID(t *testing.T) {
 	}
 	if got.Session != want.Session || got.Subscriber != want.Subscriber || got.Generation != want.Generation || got.EffectID != want.EffectID || got.Kind != want.Kind || got.StreamOffset != 0 || got.EpisodeID != want.EpisodeID || len(got.Title) != 0 || len(got.Body) != 0 {
 		t.Fatalf("recovery frame = %+v, want %+v", got, want)
+	}
+}
+
+func TestEffectFrameRejectsStreamOffsetOnNonPromptBoundaryEncode(t *testing.T) {
+	frame := EffectFrame{
+		Kind: EffectRecovery, StreamOffset: 17,
+		EpisodeID: "rec-0123456789abcdef0123456789abcdef",
+	}
+	defer func() {
+		if got := recover(); got != ErrInvalidStreamOffset {
+			t.Fatalf("EncodeEffectFrame panic = %v, want %v", got, ErrInvalidStreamOffset)
+		}
+	}()
+	EncodeEffectFrame(frame)
+	t.Fatal("EncodeEffectFrame accepted a recovery episode with a prompt stream offset")
+}
+
+func TestEffectFrameRejectsStreamOffsetOnNonPromptBoundaryDecode(t *testing.T) {
+	wire := EncodeEffectFrame(EffectFrame{
+		Kind: EffectRecovery, EpisodeID: "rec-0123456789abcdef0123456789abcdef",
+	})
+	binary.BigEndian.PutUint64(wire[48:56], 17)
+	if _, err := DecodeEffectFrame(wire); err != ErrInvalidStreamOffset {
+		t.Fatalf("invalid stream-offset error = %v, want %v", err, ErrInvalidStreamOffset)
 	}
 }
 
