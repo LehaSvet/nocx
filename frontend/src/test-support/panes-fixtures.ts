@@ -11,6 +11,7 @@ import { vi, type Mock } from 'vitest'
 import type { SessionFrame } from '../generated/session.frame'
 import type { SessionEffect } from '../generated/session.effect'
 import type { SessionOutputGap } from '../generated/session.outputGap'
+import type { SessionIntegrationChanged } from '../generated/session.integrationChanged'
 import type {
   CommandMarkerCallback,
   CwdCallback,
@@ -442,6 +443,10 @@ export interface SessionFake {
   detach: ReturnType<typeof vi.fn>
   close: ReturnType<typeof vi.fn>
   onData: ReturnType<typeof vi.fn>
+  /** Subscribe to the latest integration fact, matching SessionHandle. */
+  onIntegrationChanged: (handler: (fact: SessionIntegrationChanged) => void) => () => void
+  /** Fire the integration fact seen by a mounted pane. */
+  fireIntegrationChanged(fact: SessionIntegrationChanged): void
   onExit: ReturnType<typeof vi.fn>
   onReset: ReturnType<typeof vi.fn>
   onOutputGap: ReturnType<typeof vi.fn>
@@ -509,6 +514,8 @@ export function makeSession(overrides?: Partial<SessionFake>): SessionFake {
   let effectCb: ((effect: SessionEffect) => void) | null = null
   let protocolErrorCb: ((message: string) => void) | null = null
   let outputGapCb: ((gap: SessionOutputGap) => void) | null = null
+  let integrationCb: ((fact: SessionIntegrationChanged) => void) | null = null
+  let integrationFact: SessionIntegrationChanged | null = null
   let livenessCb: ((l: SessionLiveness) => void) | null = null
   let observationCb: ((o: SessionObservationChanged) => void) | null = null
   const sessionId = `mock-sid-${++sessionCounter}`
@@ -535,6 +542,17 @@ export function makeSession(overrides?: Partial<SessionFake>): SessionFake {
       const queued = overrides?.pendingData
       if (queued) cb(queued)
     }),
+    onIntegrationChanged: vi.fn((cb: (fact: SessionIntegrationChanged) => void) => {
+      integrationCb = cb
+      if (integrationFact) cb(integrationFact)
+      return () => {
+        if (integrationCb === cb) integrationCb = null
+      }
+    }),
+    fireIntegrationChanged: (fact: SessionIntegrationChanged) => {
+      integrationFact = fact
+      integrationCb?.(fact)
+    },
     onExit: vi.fn(),
     onReset: vi.fn(),
     onOutputGap: vi.fn((cb: (gap: SessionOutputGap) => void) => {
@@ -728,9 +746,23 @@ function notificationHandler(client: ClientFake, method: string): (params: unkno
   return call[1]
 }
 
-/** The session.integrationChanged handler (nocx-dvql). */
-export function integrationHandler(client: ClientFake): (params: unknown) => void {
-  return notificationHandler(client, 'session.integrationChanged')
+/** Deliver the latest integration fact through the session handle's subscription seam. */
+export function integrationHandler(
+  client: ClientFake,
+  sessionOverride?: SessionFake,
+): (params: unknown) => void {
+  return (params) => {
+    if (!params || typeof params !== 'object') {
+      throw new Error('invalid session.integrationChanged fact')
+    }
+    const sessionId = (params as Record<string, unknown>).sessionId
+    const session =
+      client._sessions.find((candidate) => candidate.sessionId === sessionId) ??
+      (sessionOverride?.sessionId === sessionId ? sessionOverride : undefined)
+    if (!session)
+      throw new Error(`no fake session for session.integrationChanged: ${String(sessionId)}`)
+    session.fireIntegrationChanged(params as SessionIntegrationChanged)
+  }
 }
 
 /** The session.signalUndelivered handler: the fact that a Stop the pane was

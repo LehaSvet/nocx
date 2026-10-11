@@ -63,18 +63,24 @@ export interface OutputRecordingSource {
 /** One integration fact, delivered with its session id intact. */
 export type IntegrationFactHandler = (fact: SessionIntegrationChanged) => void
 
-/** Subscribe to the server-initiated session.integrationChanged notification.
- *  The wire shape is guarded at the boundary like files.changed and
- *  lifecycle.changed (the same unsolicited-notification defect class): a
- *  payload without a string sessionId and a string shell is not a fact and is
- *  not delivered. */
+/** A session-owned source for the server's current integration status. The
+ *  handle buffers a status that arrives between the open ack and this
+ *  subscription, so the waiting surface cannot miss its own answer. */
+export interface IntegrationChangedSource {
+  onIntegrationChanged(handler: IntegrationFactHandler): () => void
+}
+
+/** Subscribe to the session's integration status through its owning handle.
+ *  The payload still gets a narrow boundary check: a fact without a session id
+ *  and shell is not delivered. */
 export function subscribeIntegrationChanged(
-  dispatcher: Dispatcher,
+  source: IntegrationChangedSource,
   handler: IntegrationFactHandler,
 ): () => void {
-  return dispatcher.subscribe('session.integrationChanged', (params: unknown) => {
-    const p = params as SessionIntegrationChanged
-    if (p && typeof p.sessionId === 'string' && typeof p.shell === 'string') handler(p)
+  return source.onIntegrationChanged((fact) => {
+    if (fact && typeof fact.sessionId === 'string' && typeof fact.shell === 'string') {
+      handler(fact)
+    }
   })
 }
 

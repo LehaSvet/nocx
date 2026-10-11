@@ -357,7 +357,18 @@ test('scrollback: a markerless session scrolls the rows that left the screen bac
     // still reach by its visible first row.
     await page.keyboard.press('Control+C')
     await pane.locator('.xterm-live-container').click()
-    await type_(`printf '\\033[?1049l'`)
+    // A post-exit line the shell did not echo proves Ctrl+C returned to the
+    // live shell and the alternate-buffer exit sequence reached its parser.
+    // The command echo is longer than this row, so it cannot satisfy the check.
+    const returnedMarker = `AFTER-ALT-${nonce}`
+    await type_(`printf '\\033[?1049l'; printf '\\n%s\\n' '${returnedMarker}'`)
+    await expect
+      .poll(
+        async () => (await liveRows()).split('\n').some((row) => row.trim() === returnedMarker),
+        { timeout: 20_000 },
+      )
+      .toBe(true)
+    expect(await pane.getAttribute('data-session-id')).toBe(sessionId)
     await expect
       .poll(
         async () => {

@@ -19,6 +19,7 @@ var (
 	ErrEffectFrameEpisodeTooLong = errors.New("proto: effect frame episode id exceeds wire length")
 	ErrUnknownEffectKind         = errors.New("proto: unknown effect kind")
 	ErrInvalidRecoveryEffect     = errors.New("proto: invalid recovery effect")
+	ErrInvalidStreamOffset       = errors.New("proto: stream offset is invalid for effect kind")
 )
 
 // EffectKind is the closed non-visual effect vocabulary shared with
@@ -42,9 +43,9 @@ type EffectFrame struct {
 	Subscriber [16]byte
 	Generation uint64
 	EffectID   uint64
-	// StreamOffset is the exclusive raw PTY byte position for the effect. It
-	// is non-zero for prompt boundaries and shares SessionFrame's cumulative
-	// output-window coordinate; other effect kinds leave it zero.
+	// StreamOffset is the exclusive raw PTY byte position for a prompt
+	// boundary and shares SessionFrame's cumulative output-window coordinate;
+	// other effect kinds leave it zero.
 	StreamOffset uint64
 	Kind         EffectKind
 	Title        []byte
@@ -53,18 +54,21 @@ type EffectFrame struct {
 	EpisodeID string
 }
 
-func EncodeEffectFrame(f EffectFrame) []byte {
+func EncodeEffectFrame(f EffectFrame) ([]byte, error) {
 	if len(f.Title) > 1<<31-1 {
-		panic(ErrEffectFrameTitleTooLong)
+		return nil, ErrEffectFrameTitleTooLong
 	}
 	if len(f.EpisodeID) > 1<<16-1 {
-		panic(ErrEffectFrameEpisodeTooLong)
+		return nil, ErrEffectFrameEpisodeTooLong
 	}
 	if !f.Kind.valid() {
-		panic(ErrUnknownEffectKind)
+		return nil, ErrUnknownEffectKind
+	}
+	if f.Kind != EffectPromptBoundary && f.StreamOffset != 0 {
+		return nil, ErrInvalidStreamOffset
 	}
 	if (f.Kind == EffectRecovery && (!validEpisodeID(f.EpisodeID) || len(f.Title) != 0 || len(f.Body) != 0)) || (f.Kind != EffectRecovery && f.EpisodeID != "") {
-		panic(ErrInvalidRecoveryEffect)
+		return nil, ErrInvalidRecoveryEffect
 	}
 	b := make([]byte, EffectFrameHeaderLen+len(f.Title)+len(f.EpisodeID)+len(f.Body))
 	copy(b[:16], f.Session[:])
@@ -84,7 +88,7 @@ func EncodeEffectFrame(f EffectFrame) []byte {
 	copy(b[EffectFrameHeaderLen:], f.Title)
 	copy(b[EffectFrameHeaderLen+len(f.Title):], f.EpisodeID)
 	copy(b[EffectFrameHeaderLen+len(f.Title)+len(f.EpisodeID):], f.Body)
-	return b
+	return b, nil
 }
 
 func DecodeEffectFrame(b []byte) (EffectFrame, error) {
@@ -102,6 +106,9 @@ func DecodeEffectFrame(b []byte) (EffectFrame, error) {
 	f.EffectID = binary.BigEndian.Uint64(b[40:48])
 	f.StreamOffset = binary.BigEndian.Uint64(b[48:56])
 	f.Kind = k
+	if f.Kind != EffectPromptBoundary && f.StreamOffset != 0 {
+		return EffectFrame{}, ErrInvalidStreamOffset
+	}
 	titleLen := binary.BigEndian.Uint32(b[57:61])
 	// int is at least 32 bits in Go. This guard makes the conversion safe on
 	// 32-bit hosts too, and the payload bound rejects truncated titles.

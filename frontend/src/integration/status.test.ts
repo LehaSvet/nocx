@@ -10,10 +10,10 @@ import {
   recordingSentence,
   shellFamily,
   subscribeIntegrationChanged,
+  type IntegrationChangedSource,
   type IntegrationReason,
   type OutputRecording,
 } from './status'
-import type { Dispatcher } from '../dispatcher'
 import type { SessionIntegrationChanged } from '../generated/session.integrationChanged'
 
 /** Every reason the contract declares, taken from the CONTRACT and not from a
@@ -421,33 +421,31 @@ describe('the explanation the product carries', () => {
 })
 
 describe('the subscription seam', () => {
-  const dispatcherWith = (capture: { handler?: (params: unknown) => void }): Dispatcher =>
-    ({
-      subscribe: (_method: string, h: (params: unknown) => void) => {
-        capture.handler = h
-        return () => undefined
-      },
-    }) as unknown as Dispatcher
+  const sourceWith = (capture: {
+    handler?: (fact: SessionIntegrationChanged) => void
+  }): IntegrationChangedSource => ({
+    onIntegrationChanged: (handler: (fact: SessionIntegrationChanged) => void) => {
+      capture.handler = handler
+      return () => undefined
+    },
+  })
 
   it('delivers a well-formed fact', () => {
-    const capture: { handler?: (params: unknown) => void } = {}
+    const capture: { handler?: (fact: SessionIntegrationChanged) => void } = {}
     const seen: SessionIntegrationChanged[] = []
-    subscribeIntegrationChanged(dispatcherWith(capture), (f) => seen.push(f))
+    subscribeIntegrationChanged(sourceWith(capture), (f) => seen.push(f))
     capture.handler!(fact())
     expect(seen).toHaveLength(1)
     expect(seen[0].reason).toBe('handshake-timeout')
   })
 
-  // The unsolicited-notification defect class: nothing correlates this
-  // frame and nothing checks its shape at the call site, so the boundary
-  // does — exactly like files.changed and lifecycle.changed.
   it('drops a payload that is not a fact', () => {
-    const capture: { handler?: (params: unknown) => void } = {}
+    const capture: { handler?: (fact: SessionIntegrationChanged) => void } = {}
     const seen: SessionIntegrationChanged[] = []
-    subscribeIntegrationChanged(dispatcherWith(capture), (f) => seen.push(f))
-    capture.handler!(null)
-    capture.handler!({ sessionId: 's1' })
-    capture.handler!({ shell: '/bin/bash' })
+    subscribeIntegrationChanged(sourceWith(capture), (f) => seen.push(f))
+    capture.handler!(null as unknown as SessionIntegrationChanged)
+    capture.handler!({ sessionId: 's1' } as unknown as SessionIntegrationChanged)
+    capture.handler!({ shell: '/bin/bash' } as unknown as SessionIntegrationChanged)
     expect(seen).toHaveLength(0)
   })
 })

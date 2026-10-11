@@ -306,6 +306,21 @@ func TestTheRuntimeAnswersTheProgramsOwnQuestion(t *testing.T) {
 	}
 }
 
+func TestNonPromptEffectDoesNotCarryStreamOffset(t *testing.T) {
+	s, _, _ := realRuntime(t)
+	c := s.Consumers().Attach()
+	if err := s.Ingest([]byte("\x1b]9;build finished\x07")); err != nil {
+		t.Fatalf("ingest notification: %v", err)
+	}
+	effects := c.Effects()
+	if len(effects) != 1 || effects[0].Kind != EffectNotification {
+		t.Fatalf("notification effects = %#v, want one notification", effects)
+	}
+	if effects[0].StreamOffset != 0 {
+		t.Fatalf("notification stream offset = %d, want 0", effects[0].StreamOffset)
+	}
+}
+
 func TestPromptBoundaryIsDeliveredAsAnEmptyAtMostOnceObservation(t *testing.T) {
 	s, _, _ := realRuntime(t)
 	c := s.Consumers().Attach()

@@ -4771,7 +4771,7 @@ export class TerminalContent extends BasePaneContent {
       if (fact.sessionId !== session.sessionId) return
       this._applySignalUndelivered(fact)
     })
-    this._integrationUnsub = subscribeIntegrationChanged(this.client.dispatcher, (fact) => {
+    this._integrationUnsub = subscribeIntegrationChanged(session, (fact) => {
       if (fact.sessionId !== session.sessionId) return
       this._applyIntegration(fact)
     })

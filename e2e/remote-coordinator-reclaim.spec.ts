@@ -571,6 +571,14 @@ test('a remote helper build survives a fresh coordinator, names what it lost, an
     await first.locator(`.nocx-tab[aria-controls="${paneDomId}"]`).click()
     await promptReady(first)
 
+    // `promptReady` checks editor focus, not shell-integration readiness.
+    // While the accessible status is present, the product hides scrollback,
+    // so a running command block exists but cannot be seen. Settle that state
+    // before starting the fixture command.
+    await expect(commandPane.getByRole('status', { name: 'Checking this shell…' })).toHaveCount(0, {
+      timeout: 30_000,
+    })
+
     // ── the build starts ──────────────────────────────────────────────────
     //
     // The filler is sized from the HOST's own window, read out of its
@@ -845,11 +853,14 @@ test('a remote helper build survives a fresh coordinator, names what it lost, an
     ).toBe(true)
     expect(hostWindowGaps.some((gap) => gap.end - gap.start > 0)).toBe(true)
     expect(finalOutput.produced).toBeGreaterThan(producedAtDetach)
-    await expect(
-      returnedPane.locator('.xterm-live-container .term-grid-row', {
-        hasText: `${MARKER_PREFIX}-001`,
-      }),
-    ).toHaveCount(1)
+    // The earliest marker after the gap can leave this live viewport while
+    // the remaining recovery checks run. Assert a visible post-start row in
+    // the accessible grid instead of pinning the check to marker 001.
+    const liveMarkers = returnedPane
+      .getByRole('grid', { name: 'Terminal output' })
+      .getByRole('row')
+      .filter({ hasText: new RegExp(`${MARKER_PREFIX}-(?!000)\\d{3}`) })
+    await expect(liveMarkers.first()).toBeVisible()
 
     // The markers the recording DOES hold are one process's output in stream
     // order — not two runs spliced together at the reclaim.

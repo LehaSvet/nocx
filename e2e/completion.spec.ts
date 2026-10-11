@@ -553,12 +553,20 @@ test.describe('tab completion', () => {
     fs.mkdirSync(path.join(fixture, 'repos', 'meshynet'), { recursive: true })
     fs.mkdirSync(path.join(fixture, 'repos', 'meshynet', 'bin'))
     fs.mkdirSync(path.join(fixture, 'repos', 'meshynet', 'graphify-output'))
+    const longSuggestion = 'grz-sibling0' + 'x'.repeat(120)
+    fs.mkdirSync(path.join(fixture, 'repos', 'meshynet', longSuggestion))
     // A sibling under the same `gr` prefix. Without it `gr` is a UNIQUE
     // completion, applied straight to the line with no dropdown to read
     // (controller.applyUniqueCompletion). Named to sort AFTER
     // graphify-output so the row assertions below still name row 0.
     fs.mkdirSync(path.join(fixture, 'repos', 'meshynet', 'grz-sibling'))
     try {
+      // The kit's 640px ceiling is the product contract. At the suite's
+      // default viewport, this pane is 744px wide, so a valid capped panel
+      // fails the separate 75%-of-pane shape before the overflow assertions
+      // run. Use a wide pane to exercise the real ceiling without weakening
+      // either bound or shortening the overflowing suggestion.
+      await page.setViewportSize({ width: 1600, height: 900 })
       await page.goto('/')
       await expect(page.locator('.nocx-tab')).toHaveCount(1)
       await promptReady(page)
@@ -617,13 +625,45 @@ test.describe('tab completion', () => {
       expect(markBg).toBe('rgba(0, 0, 0, 0)')
       console.log(`E2E match: colour ${markColor} vs row ${rowColor}, bg ${markBg} (report 2)`)
 
-      // ── report 4: a row longer than the ceiling ellipsises inside the
-      //    panel — the panel never grows past the ceiling to fit it. ──
-      const infoOverflow = await rows
-        .nth(0)
-        .locator('.ui-collection-row__info')
-        .evaluate((el) => getComputedStyle(el as HTMLElement).textOverflow)
-      expect(infoOverflow).toBe('ellipsis')
+      // ── report 4: force a real overflow, then check the rendered box and
+      //    match chip. The shorter graphify-output row used to pass the CSS
+      //    property check without ever needing an ellipsis. ──
+      const longRow = rows.filter({ hasText: longSuggestion }).first()
+      await expect(longRow).toBeVisible({ timeout: 5000 })
+      const longInfo = longRow.locator('.ui-collection-row__info')
+      const longMatch = longInfo.locator('mark.ui-floating-panel__match')
+      await expect(longMatch).toBeVisible({ timeout: 5000 })
+      await expect(longMatch).toHaveText('gr')
+      const renderedLongRow = await longInfo.evaluate((el) => {
+        const info = el as HTMLElement
+        const match = info.querySelector<HTMLElement>('mark.ui-floating-panel__match')!
+        const row = info.closest('.ui-floating-panel__row') as HTMLElement
+        const infoRect = info.getBoundingClientRect()
+        const matchRect = match.getBoundingClientRect()
+        return {
+          clientWidth: info.clientWidth,
+          scrollWidth: info.scrollWidth,
+          overflow: getComputedStyle(info).overflow,
+          textOverflow: getComputedStyle(info).textOverflow,
+          whiteSpace: getComputedStyle(row).whiteSpace,
+          matchColor: getComputedStyle(match).color,
+          rowColor: getComputedStyle(row).color,
+          matchBackground: getComputedStyle(match).backgroundColor,
+          matchLeft: matchRect.left,
+          matchRight: matchRect.right,
+          infoLeft: infoRect.left,
+          infoRight: infoRect.right,
+        }
+      })
+      expect(renderedLongRow.clientWidth).toBeGreaterThan(0)
+      expect(renderedLongRow.scrollWidth).toBeGreaterThan(renderedLongRow.clientWidth)
+      expect(renderedLongRow.overflow).toBe('hidden')
+      expect(renderedLongRow.textOverflow).toBe('ellipsis')
+      expect(renderedLongRow.whiteSpace).toBe('nowrap')
+      expect(renderedLongRow.matchColor).not.toBe(renderedLongRow.rowColor)
+      expect(renderedLongRow.matchBackground).toBe('rgba(0, 0, 0, 0)')
+      expect(renderedLongRow.matchLeft).toBeGreaterThanOrEqual(renderedLongRow.infoLeft)
+      expect(renderedLongRow.matchRight).toBeLessThanOrEqual(renderedLongRow.infoRight)
       await page.screenshot({ path: '/tmp/nocx-reports-234.png' })
     } finally {
       fs.rmSync(fixture, { recursive: true, force: true })
