@@ -33,13 +33,13 @@ func TestEffectFrameRoundTripsIdentityTitleAndBody(t *testing.T) {
 }
 
 func TestPromptBoundaryEffectFrameRoundTripsEmptyPayload(t *testing.T) {
-	want := EffectFrame{Session: [16]byte{1}, Subscriber: [16]byte{2}, Generation: 4, EffectID: 8, StreamOffset: 8192, Kind: EffectPromptBoundary}
+	want := EffectFrame{Session: [16]byte{1}, Subscriber: [16]byte{2}, Generation: 4, EffectID: 8, StreamOffset: 8192, ScreenRevision: 7, Kind: EffectPromptBoundary}
 	wire := encodeEffectFrameForTest(t, want)
 	got, err := DecodeEffectFrame(wire)
 	if err != nil {
 		t.Fatalf("DecodeEffectFrame: %v", err)
 	}
-	if got.Session != want.Session || got.Subscriber != want.Subscriber || got.Generation != want.Generation || got.EffectID != want.EffectID || got.StreamOffset != want.StreamOffset || got.Kind != EffectPromptBoundary || len(got.Title) != 0 || len(got.Body) != 0 || got.EpisodeID != "" {
+	if got.Session != want.Session || got.Subscriber != want.Subscriber || got.Generation != want.Generation || got.EffectID != want.EffectID || got.StreamOffset != want.StreamOffset || got.ScreenRevision != want.ScreenRevision || got.Kind != EffectPromptBoundary || len(got.Title) != 0 || len(got.Body) != 0 || got.EpisodeID != "" {
 		t.Fatalf("prompt-boundary frame = %+v", got)
 	}
 }
@@ -59,7 +59,43 @@ func TestRecoveryEffectFrameRoundTripsEpisodeID(t *testing.T) {
 	}
 }
 
+func TestEffectFrameRoundTripsStreamOffsetAndEpisodeIDWithoutMixingKinds(t *testing.T) {
+	episodeID := "rec-0123456789abcdef0123456789abcdef"
+	cases := []struct {
+		name string
+		want EffectFrame
+	}{
+		{
+			name: "prompt boundary carries stream offset",
+			want: EffectFrame{Generation: 4, EffectID: 8, StreamOffset: 0x131415161718191a, ScreenRevision: 9, Kind: EffectPromptBoundary},
+		},
+		{
+			name: "recovery carries episode id",
+			want: EffectFrame{Generation: 4, EffectID: 9, Kind: EffectRecovery, EpisodeID: episodeID},
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			wire := encodeEffectFrameForTest(t, tt.want)
+			got, err := DecodeEffectFrame(wire)
+			if err != nil {
+				t.Fatalf("DecodeEffectFrame: %v", err)
+			}
+			if got.StreamOffset != tt.want.StreamOffset || got.ScreenRevision != tt.want.ScreenRevision || got.EpisodeID != tt.want.EpisodeID || got.Kind != tt.want.Kind {
+				t.Fatalf("decoded frame = %+v, want offset %d, revision %d, episode %q, kind %d", got, tt.want.StreamOffset, tt.want.ScreenRevision, tt.want.EpisodeID, tt.want.Kind)
+			}
+		})
+	}
+}
+
 func TestEffectFrameRejectsStreamOffsetOnNonPromptBoundaryEncode(t *testing.T) {
+	frame := EffectFrame{Kind: EffectNotification, StreamOffset: 17}
+	if _, err := EncodeEffectFrame(frame); err != ErrInvalidStreamOffset {
+		t.Fatalf("EncodeEffectFrame error = %v, want %v", err, ErrInvalidStreamOffset)
+	}
+}
+
+func TestEffectFrameRejectsStreamOffsetCombinedWithRecoveryEpisode(t *testing.T) {
 	frame := EffectFrame{
 		Kind: EffectRecovery, StreamOffset: 17,
 		EpisodeID: "rec-0123456789abcdef0123456789abcdef",
@@ -83,9 +119,9 @@ func TestEffectFrameABIIncludesExactStreamOffset(t *testing.T) {
 	got := encodeEffectFrameForTest(t, EffectFrame{
 		Session: [16]byte{1}, Subscriber: [16]byte{2},
 		Generation: 0x030405060708090a, EffectID: 0x0b0c0d0e0f101112,
-		StreamOffset: 0x131415161718191a, Kind: EffectPromptBoundary,
+		StreamOffset: 0x131415161718191a, ScreenRevision: 0x1b1c1d1e1f202122, Kind: EffectPromptBoundary,
 	})
-	want, err := hex.DecodeString("0100000000000000000000000000000002000000000000000000000000000000030405060708090a0b0c0d0e0f101112131415161718191a06000000000000")
+	want, err := hex.DecodeString("0100000000000000000000000000000002000000000000000000000000000000030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212206000000000000")
 	if err != nil {
 		t.Fatalf("decode golden vector: %v", err)
 	}
@@ -100,7 +136,7 @@ func TestEffectFrameABIIncludesEpisodeIDLength(t *testing.T) {
 	if len(wire) != EffectFrameHeaderLen+len(episodeID) {
 		t.Fatalf("frame length = %d, want %d", len(wire), EffectFrameHeaderLen+len(episodeID))
 	}
-	if got := int(binary.BigEndian.Uint16(wire[61:63])); got != len(episodeID) {
+	if got := int(binary.BigEndian.Uint16(wire[69:71])); got != len(episodeID) {
 		t.Fatalf("episode length = %d, want %d", got, len(episodeID))
 	}
 	if string(wire[EffectFrameHeaderLen:]) != episodeID {
@@ -109,8 +145,8 @@ func TestEffectFrameABIIncludesEpisodeIDLength(t *testing.T) {
 }
 
 func TestHelperProtocolVersionBumpedForRecoveryEpisode(t *testing.T) {
-	if Version != "19" {
-		t.Fatalf("helper protocol version = %q, want 19", Version)
+	if Version != "20" {
+		t.Fatalf("helper protocol version = %q, want 20", Version)
 	}
 }
 
@@ -141,7 +177,7 @@ func TestEncodeEffectFrameRejectsUnknownKind(t *testing.T) {
 
 func TestEffectFrameRefusesUnknownKind(t *testing.T) {
 	wire := make([]byte, EffectFrameHeaderLen)
-	wire[56] = 255
+	wire[64] = 255
 	if _, err := DecodeEffectFrame(wire); err == nil {
 		t.Fatal("unknown effect kind was accepted")
 	}
@@ -149,8 +185,8 @@ func TestEffectFrameRefusesUnknownKind(t *testing.T) {
 
 func TestEffectFrameRejectsTitleLengthPastPayload(t *testing.T) {
 	wire := make([]byte, EffectFrameHeaderLen)
-	wire[56] = byte(EffectNotification)
-	binary.BigEndian.PutUint32(wire[57:61], 1)
+	wire[64] = byte(EffectNotification)
+	binary.BigEndian.PutUint32(wire[65:69], 1)
 	if _, err := DecodeEffectFrame(wire); err != ErrEffectFrameTitleLength {
 		t.Fatalf("invalid title length error = %v, want %v", err, ErrEffectFrameTitleLength)
 	}
@@ -158,8 +194,8 @@ func TestEffectFrameRejectsTitleLengthPastPayload(t *testing.T) {
 
 func TestEffectFrameRejectsEpisodeLengthPastPayload(t *testing.T) {
 	wire := make([]byte, EffectFrameHeaderLen)
-	wire[56] = byte(EffectRecovery)
-	binary.BigEndian.PutUint16(wire[61:63], 36)
+	wire[64] = byte(EffectRecovery)
+	binary.BigEndian.PutUint16(wire[69:71], 36)
 	if _, err := DecodeEffectFrame(wire); err != ErrEffectFrameTitleLength {
 		t.Fatalf("invalid episode length error = %v, want %v", err, ErrEffectFrameTitleLength)
 	}
@@ -167,11 +203,38 @@ func TestEffectFrameRejectsEpisodeLengthPastPayload(t *testing.T) {
 
 func TestEffectFrameRejectsInvalidRecoveryID(t *testing.T) {
 	wire := make([]byte, EffectFrameHeaderLen+4)
-	wire[56] = byte(EffectRecovery)
-	binary.BigEndian.PutUint16(wire[61:63], 4)
+	wire[64] = byte(EffectRecovery)
+	binary.BigEndian.PutUint16(wire[69:71], 4)
 	copy(wire[EffectFrameHeaderLen:], "bad!")
 	if _, err := DecodeEffectFrame(wire); err != ErrInvalidRecoveryEffect {
 		t.Fatalf("invalid recovery error = %v, want %v", err, ErrInvalidRecoveryEffect)
+	}
+}
+
+func TestEffectFrameRejectsPromptBoundaryWithoutScreenRevision(t *testing.T) {
+	wire := make([]byte, EffectFrameHeaderLen)
+	wire[64] = byte(EffectPromptBoundary)
+	if _, err := DecodeEffectFrame(wire); err != ErrInvalidScreenRevision {
+		t.Fatalf("missing revision error = %v, want %v", err, ErrInvalidScreenRevision)
+	}
+}
+
+func TestEffectFrameRejectsScreenRevisionOnOtherKinds(t *testing.T) {
+	wire := make([]byte, EffectFrameHeaderLen)
+	binary.BigEndian.PutUint64(wire[56:64], 1)
+	wire[64] = byte(EffectBell)
+	if _, err := DecodeEffectFrame(wire); err != ErrInvalidScreenRevision {
+		t.Fatalf("unexpected revision error = %v, want %v", err, ErrInvalidScreenRevision)
+	}
+}
+
+func TestEffectFrameDecodeRejectsStreamOffsetCombinedWithRecoveryEpisode(t *testing.T) {
+	wire := encodeEffectFrameForTest(t, EffectFrame{
+		Kind: EffectRecovery, EpisodeID: "rec-0123456789abcdef0123456789abcdef",
+	})
+	binary.BigEndian.PutUint64(wire[48:56], 17)
+	if _, err := DecodeEffectFrame(wire); err != ErrInvalidStreamOffset {
+		t.Fatalf("DecodeEffectFrame error = %v, want %v", err, ErrInvalidStreamOffset)
 	}
 }
 
