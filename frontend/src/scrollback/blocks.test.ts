@@ -1339,7 +1339,7 @@ describe('frozen block header highlighting', () => {
   })
 })
 
-// ── Frozen headers carry command-existence verdicts (OSC 636) ──────────────
+// ── Frozen headers carry backend command-existence verdicts ───────────────
 // The verdict is read at freeze time from the session snapshot: a header
 // frozen before the snapshot arrives keeps no verdict (the one-shot snapshot
 // never changes, so a frozen verdict can never go stale).
@@ -1350,21 +1350,13 @@ describe('frozen headers and the command snapshot', () => {
   })
 
   const c = (): HTMLElement => document.createElement('div')
-  const SEED_NONCE = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
   /** A fresh tab store seeded with the given names (or left empty). */
   const makeStore = (names?: string[]): CommandSnapshotStore => {
     const store = freshStore()
     if (names) {
-      store.ingest(`H;${SEED_NONCE}`)
-      store.ingest(`S;${SEED_NONCE};${names.join(';')}`)
-      // Existence needs BOTH halves of command discovery: the shell's own
-      // tables (OSC 636, above) and the target's PATH set, which the backend
-      // computes once per host and hands over shell.commandNames. A store
-      // holding only one of them answers `unavailable` on purpose — with the
-      // PATH half missing, calling a name nonexistent would strike through
-      // every real command on the machine. These fixtures supply an EMPTY
-      // shared set: present, so the store can judge, and empty, so a name that
-      // is not in the seeded tables is genuinely absent.
+      store.applyBackendSnapshot(names)
+      // The shared PATH half is present and empty, so the store can judge
+      // names absent from the backend's session-local snapshot.
       store.applySharedNames({ state: 'ready', names: [], ageMs: 0, reason: '', truncated: false })
     }
     return store

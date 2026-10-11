@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -318,6 +319,37 @@ func TestNonPromptEffectDoesNotCarryStreamOffset(t *testing.T) {
 	}
 	if effects[0].StreamOffset != 0 {
 		t.Fatalf("notification stream offset = %d, want 0", effects[0].StreamOffset)
+	}
+}
+
+func TestCommandSnapshotIsTypedAndResentAsCurrentStateOnAttach(t *testing.T) {
+	s, _, _ := realRuntime(t)
+	first := s.Consumers().Attach()
+	const nonce = "0123456789abcdef0123456789abcdef"
+	stream := "\x1b]636;H;" + nonce + "\a" + "\x1b]636;S;" + nonce + ";alias;function\a"
+	if err := s.Ingest([]byte(stream)); err != nil {
+		t.Fatalf("ingest shell snapshot: %v", err)
+	}
+	want := []string{"alias", "function"}
+	initial := first.Effects()
+	if len(initial) != 1 || initial[0].Kind != EffectCommandSnapshot || !reflect.DeepEqual(initial[0].CommandNames, want) {
+		t.Fatalf("initial command snapshot = %#v, want names %v", initial, want)
+	}
+
+	// A new consumer receives the current names under a fresh event identity,
+	// not the historical OSC effect identity from the old attachment.
+	second := s.Consumers().Attach()
+	reattach := second.Effects()
+	if len(reattach) != 1 || reattach[0].Kind != EffectCommandSnapshot || !reflect.DeepEqual(reattach[0].CommandNames, want) || reattach[0].ID == initial[0].ID {
+		t.Fatalf("reattached command snapshot = %#v, first identity %d", reattach, initial[0].ID)
+	}
+
+	// The consumer cannot mutate the retained state that a later attachment
+	// receives.
+	reattach[0].CommandNames[0] = "forged"
+	third := s.Consumers().Attach()
+	if got := third.Effects(); len(got) != 1 || !reflect.DeepEqual(got[0].CommandNames, want) {
+		t.Fatalf("later attach observed mutated names: %#v", got)
 	}
 }
 

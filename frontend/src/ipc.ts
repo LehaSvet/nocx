@@ -23,6 +23,7 @@ import type { SessionDisplaced } from './generated/session.displaced'
 import type { SessionLiveness } from './generated/session.liveness'
 import type { SessionFrame } from './generated/session.frame'
 import type { SessionEffect } from './generated/session.effect'
+import { isValidCommandSnapshotNames } from './command-snapshot'
 import type { SessionHistoryPage } from './generated/session.historyPage'
 import type { SessionHistoryPageRows } from './generated/session.historyPageRows'
 import type { SessionIntentResult } from './generated/session.intent'
@@ -1027,6 +1028,7 @@ export class WSClient {
       const kind = raw.kind
       const title = raw.title
       const body = raw.body
+      let commandNames: [string, ...string[]] | undefined
       if (typeof generation !== 'string' || !/^[1-9][0-9]*$/.test(generation)) return
       if (typeof effectId !== 'string' || !/^[1-9][0-9]*$/.test(effectId)) return
       if (
@@ -1036,12 +1038,17 @@ export class WSClient {
         kind !== 'title' &&
         kind !== 'cwd' &&
         kind !== 'promptBoundary' &&
-        kind !== 'recovery'
+        kind !== 'recovery' &&
+        kind !== 'commandSnapshot'
       ) {
         log.debug('nocx: session effect refused: unknown kind', { sessionId: sid, kind })
         return
       }
       if (typeof title !== 'string' || typeof body !== 'string') return
+      if (kind === 'commandSnapshot') {
+        if (title !== '' || body !== '' || !isValidCommandSnapshotNames(raw.commandNames)) return
+        commandNames = raw.commandNames
+      } else if (raw.commandNames !== undefined) return
       const episodeId = raw.episodeId
       const screenRevision = raw.screenRevision
       if (kind === 'promptBoundary') {
@@ -1075,6 +1082,7 @@ export class WSClient {
         body,
         ...(typeof episodeId === 'string' ? { episodeId } : {}),
         ...(typeof screenRevision === 'number' ? { screenRevision } : {}),
+        ...(commandNames ? { commandNames } : {}),
       }
       if (state.effectCallback) state.effectCallback(effect)
       else state.pendingEffects.push(effect)

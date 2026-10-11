@@ -170,10 +170,16 @@ type terminal struct {
 	// never holds a byte back from the library, and nothing is fed twice; see
 	// fence.go for the shape it matches and why the match lives in this
 	// adapter at all.
-	fenceIdx      int
-	fenceNonce    [64]byte
-	recoveryIdx   int
-	recoveryNonce [64]byte
+	fenceIdx                  int
+	fenceNonce                [64]byte
+	recoveryIdx               int
+	recoveryNonce             [64]byte
+	commandSnapshotIdx        int
+	commandSnapshotCollecting bool
+	commandSnapshotOverflow   bool
+	commandSnapshotPayload    []byte
+	commandSnapshotNonce      string
+	commandSnapshotPending    []string
 	// outputMarkIdx is the output-start mark scanner's own position
 	// (output_mark.go), tracked alongside fenceIdx in the same pass over
 	// the bytes (scanMarkers): the two sequences share a five-byte prefix
@@ -657,7 +663,10 @@ func (t *terminal) ingestLocked(b []byte) {
 			t.sightEraseSavedLines()
 		case markKindEraseDisplay:
 			t.sightEraseDisplay()
+		case markKindCommandSnapshot:
+			// The bounded payload was validated by scanCommandSnapshotByte.
 		}
+		t.publishPendingCommandSnapshot()
 		start += n
 	}
 	t.streamOffset += uint64(len(b))
@@ -684,6 +693,7 @@ const (
 	// since the chunk it ends is measured on its own (altscreen.go).
 	markKindAltExit
 	markKindEraseDisplay
+	markKindCommandSnapshot
 )
 
 // scanMarkers advances the fence scanner (fence.go), the output-mark scanner
@@ -703,6 +713,7 @@ const (
 // each one's position exactly as far as this scan actually returns.
 func (t *terminal) scanMarkers(b []byte) (n int, kind markKind) {
 	for i, c := range b {
+		commandSnapshotComplete := t.scanCommandSnapshotByte(c)
 		if recoveryMatches(t.recoveryIdx, c) {
 			if t.recoveryIdx == recoveryLen-1 {
 				t.recoveryIdx = 0
@@ -785,6 +796,9 @@ func (t *terminal) scanMarkers(b []byte) (n int, kind markKind) {
 		// Last, so every other scanner has already taken this byte.
 		if t.altExit.step(c) {
 			return i + 1, markKindAltExit
+		}
+		if commandSnapshotComplete {
+			return i + 1, markKindCommandSnapshot
 		}
 	}
 	return len(b), markKindNone

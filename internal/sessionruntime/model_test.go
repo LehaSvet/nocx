@@ -1343,7 +1343,7 @@ func effectPayload(e Effect) payload {
 // DeliveryUnclassified and is REFUSED rather than delivered under a guess.
 func classOfEffect(k EffectKind) DeliveryClass {
 	switch k {
-	case EffectBell, EffectNotification, EffectClipboard, EffectTitle, EffectCwdReport, EffectPromptBoundary, EffectRecovery:
+	case EffectBell, EffectNotification, EffectClipboard, EffectTitle, EffectCwdReport, EffectPromptBoundary, EffectRecovery, EffectCommandSnapshot:
 		return DeliveryAtMostOnce
 	default:
 		return DeliveryUnclassified
@@ -1385,6 +1385,9 @@ func (c *consumer) HeldBytes() int {
 	held := 0
 	for _, p := range c.queue {
 		held += len(p.bytes) + len(p.effect.Title) + len(p.effect.Body)
+		for _, name := range p.effect.CommandNames {
+			held += len(name)
+		}
 	}
 	return held
 }
@@ -1403,6 +1406,7 @@ func (c *consumer) Effects() []Effect {
 			effect := p.effect
 			effect.Title = bytes.Clone(effect.Title)
 			effect.Body = bytes.Clone(effect.Body)
+			effect.CommandNames = append([]string(nil), effect.CommandNames...)
 			held = append(held, effect)
 		}
 	}

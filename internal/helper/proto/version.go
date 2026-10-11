@@ -312,4 +312,7 @@ package proto
 // This is 20 rather than 19 because TypeSessionEffect now carries a full-frame
 // revision lower bound for promptBoundary, used to order the effect after an
 // offered same-session screen snapshot. A 19-helper cannot decode this header.
-const Version = "20"
+// This is 21 rather than 20 because TypeSessionEffect gained the
+// commandSnapshot kind. A 20-helper rejects its kind value, so both peers must
+// fence the new typed session-local command state at hello.
+const Version = "21"

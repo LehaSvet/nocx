@@ -10,7 +10,7 @@
  */
 
 /**
- * One identity-bearing non-visual effect emitted by the session runtime. A full session.frame never carries or replays effects; the client deduplicates this event across replay and reconnect by generation and effectId.
+ * One identity-bearing non-visual update emitted by the session runtime. A full session.frame never carries or replays effects; the client deduplicates events by generation and effectId. commandSnapshot is current-state data and is re-issued with a fresh identity for each attachment.
  */
 export type SessionEffect = {
   [k: string]: unknown
@@ -18,7 +18,15 @@ export type SessionEffect = {
   sessionId: string
   generation: string
   effectId: string
-  kind: 'bell' | 'notification' | 'clipboard' | 'title' | 'cwd' | 'promptBoundary' | 'recovery'
+  kind:
+    | 'bell'
+    | 'notification'
+    | 'clipboard'
+    | 'title'
+    | 'cwd'
+    | 'promptBoundary'
+    | 'recovery'
+    | 'commandSnapshot'
   title: string
   body: string
   episodeId?: string
@@ -26,4 +34,11 @@ export type SessionEffect = {
    * For promptBoundary only, the lower-bound full-frame revision that must be offered first. It is correlation, not acknowledgement or authority.
    */
   screenRevision?: number
+  /**
+   * The validated shell-local command names, present only for kind commandSnapshot.
+   *
+   * @minItems 1
+   * @maxItems 4096
+   */
+  commandNames?: [string, ...string[]]
 }

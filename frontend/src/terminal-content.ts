@@ -24,7 +24,7 @@ import { createShellProviders } from './suggest/providers'
 import { CompletionDropdown } from './ui/completion-dropdown'
 import type { FsComplete } from './generated/fs.complete'
 import type { ShellComplete } from './generated/shell.complete'
-import type { CommandSnapshotStore } from './command-snapshot'
+import { CommandSnapshotStore } from './command-snapshot'
 import type { ShellCommandNames } from './generated/shell.commandNames'
 import { ShellInputTarget, createRegistry, type InputTargetRegistry } from './input-target'
 import { IntentInput, type SessionIntent } from './intent-input'
@@ -196,7 +196,7 @@ import {
   type InputPresentation,
   type DesiredMode,
 } from './capability'
-import { createCellModel, type CellModel, type ScreenSnapshot } from './cell-model'
+import { createCellModel, snapshotRowText, type CellModel, type ScreenSnapshot } from './cell-model'
 import type { SessionFrame } from './generated/session.frame'
 import { createCellPainter, metricOf, type CellPainter } from './painter/painter'
 import { installLiveSelectionGesture, type LiveSelectionGesture } from './painter/selection-gesture'
@@ -1413,6 +1413,8 @@ export class TerminalContent extends BasePaneContent {
   private _unreconciledNoticeDispose: (() => void) | null = null
   /** The pane the card mounts over. */
   private _paneTarget: HTMLElement | null = null
+  /** Per-pane command names, populated only from backend session effects. */
+  readonly snapshotStore = new CommandSnapshotStore()
   /** The pane's cell model (nocx-zg3k3.2.8): the client's picture of the
    *  screen, fed by the session's screen frames — one per pane, created
    *  when the pane binds a session, fed by nothing else. */
@@ -1912,49 +1914,32 @@ export class TerminalContent extends BasePaneContent {
    * at this size and a card that spends two of its three lines on emptiness
    * looks broken.
    *
-   * Read on demand and never cached: the buffer is the renderer's and moves
-   * constantly (AD-6).
+   * Read from the currently accepted backend frame, which is the only source
+   * of active-grid rows and cursor position.
    */
   excerpt(limit = 3): string[] {
-    const renderer = this.renderer
-    if (!renderer || limit <= 0) return []
-    const read = (line: number): string =>
-      renderer.getBufferLine(line)?.translateToString(true).trim() ?? ''
+    const snapshot = this._cellModel?.current()
+    if (!snapshot || limit <= 0) return []
     const lines: string[] = []
-    if (this._bufferType === 'alternate') {
-      const top = renderer.viewportTopLine
-      for (let line = top; line < top + this.rows && lines.length < limit; line++) {
-        const text = read(line)
-        if (text) lines.push(text)
-      }
-      return lines
-    }
-    for (let line = renderer.cursorLine(); line >= 0 && lines.length < limit; line--) {
-      const text = read(line)
+    const fromTop = this._bufferType === 'alternate'
+    const start = fromTop ? 0 : Math.min(snapshot.cursor.y, snapshot.rows.length - 1)
+    const end = fromTop ? snapshot.rows.length : -1
+    const step = fromTop ? 1 : -1
+    for (let row = start; row !== end && lines.length < limit; row += step) {
+      const text = snapshotRowText(snapshot, row)
       if (text) lines.push(text)
     }
-    return lines.reverse()
+    return fromTop ? lines : lines.reverse()
   }
 
-  /**
-   * The last line this pane actually DREW, or null when there is nothing to
-   * quote (nocx-edhcu).
-   *
-   * It walks UP from the cursor rather than reading the cursor's own line: a
-   * program that has just printed and ended its output with a newline leaves
-   * the cursor on a blank line, and quoting that would report emptiness as
-   * the pane's last word. The first non-blank line above it is what a person
-   * would say the terminal currently says.
-   *
-   * Read on demand and never cached — the buffer is the renderer's and moves
-   * constantly (AD-6), so a stored copy would be stale by the time anything
-   * drew it.
-   */
+  /** The last non-blank row at or above the cursor in the accepted backend
+   * frame. A trailing newline leaves the cursor on a blank row; skip it and
+   * return the last row containing declared text. */
   lastOutputLine(): string | null {
-    const renderer = this.renderer
-    if (!renderer) return null
-    for (let line = renderer.cursorLine(); line >= 0; line--) {
-      const text = renderer.getBufferLine(line)?.translateToString(true).trim()
+    const snapshot = this._cellModel?.current()
+    if (!snapshot) return null
+    for (let row = Math.min(snapshot.cursor.y, snapshot.rows.length - 1); row >= 0; row--) {
+      const text = snapshotRowText(snapshot, row)
       if (text) return text
     }
     return null
@@ -2488,9 +2473,9 @@ export class TerminalContent extends BasePaneContent {
         pane: target,
         renderer,
         now: () => performance.now(),
-        snapshotStore: renderer.snapshotStore,
-        // The renderer owns this tab's OSC 636 store; the scrollback's frozen
-        // headers and the editor below must judge against the same instance.
+        snapshotStore: this.snapshotStore,
+        // This per-tab store receives backend-authenticated command snapshots;
+        // frozen headers and the editor must read the same instance.
         onClear: () => {
           this._lastFrozenBlock = null
           this._automaticFrameOwner = null
@@ -2672,14 +2657,14 @@ export class TerminalContent extends BasePaneContent {
       // ── Wire input ownership BEFORE opening the session ─────────────────
       // Completion (design §8.7–§8.9): the dropdown + ghost text surface,
       // composed here so the editor stays passive. Providers: command names
-      // from the OSC 636 snapshot (this renderer's own — correct on a remote
-      // host, it is the running shell's answer), history over the control
+      // from the backend snapshot for this session (correct on a remote host,
+      // it is the running shell's answer), history over the control
       // plane (environment-scoped, the directory rung), and local filesystem
       // paths — active only when this tab's session is a local shell, so a
       // local path can never masquerade as a remote one (§8.5).
       this.completion = new CompletionController({
         providers: createShellProviders({
-          store: renderer.snapshotStore,
+          store: this.snapshotStore,
           queryHistory: (cwd, host, signal) =>
             queryHistory(this.client, 'directory', cwd, host, undefined, undefined, signal),
           completeFs: (text, cwd, signal) =>
@@ -2729,11 +2714,7 @@ export class TerminalContent extends BasePaneContent {
         // The target carries the shell's editor extensions through the §8.8
         // seam: the shell highlighter and the completion surface — the two
         // that ARE about commands — on top of the shared document layer.
-        [
-          ...shellExtensions(renderer.snapshotStore),
-          ...this.completion.extensions(),
-          ...documentLayer,
-        ],
+        [...shellExtensions(this.snapshotStore), ...this.completion.extensions(), ...documentLayer],
       )
       const vault = new VaultClient(this.client)
       this.vault = vault
@@ -4572,6 +4553,7 @@ export class TerminalContent extends BasePaneContent {
     this._dropLiveOutputGapNotices()
     this._recoveryNoticeDismissedForSession = false
     this._liveOutputGaps = []
+    this.snapshotStore.reset()
     this.session = session
     this._resetFrameMetadataSession(session.sessionId)
     // THE LIVE TIER'S PAGE SEAM (nocx-zg3k3.10.4): the session's
@@ -4702,9 +4684,9 @@ export class TerminalContent extends BasePaneContent {
     this.env.attach()
 
     // The SHARED half of command discovery (carrier design §8). The
-    // session's own shell answers the session-local half over OSC 636 —
-    // aliases, builtins, keywords and functions, which belong to this
-    // shell and to no other. The target's PATH set is the opposite: the
+    // backend validates and delivers the session-local shell names in a
+    // typed commandSnapshot effect; aliases, builtins, keywords and
+    // functions belong to this shell and to no other. The target's PATH set is the opposite: the
     // same for every tab open on this target, and thousands of directory
     // reads to enumerate. So it is asked ONCE here, and the backend serves
     // ten tabs to one host from a single scan invalidated on the mtime of
@@ -4713,7 +4695,7 @@ export class TerminalContent extends BasePaneContent {
     // Fired and not awaited: a session must come up whether or not a
     // remote host answers, and the store starts in `running`, which is
     // exactly what the dropdown says while this is outstanding.
-    void this.fetchCommandNames(session.sessionId, renderer.snapshotStore)
+    void this.fetchCommandNames(session.sessionId, this.snapshotStore)
     // The origin answer changed from null to a live session: an
     // already-active tab whose session (re)opens must push the change
     // without a tab switch, the same as a cwd or an environment change.
@@ -4791,6 +4773,9 @@ export class TerminalContent extends BasePaneContent {
           // no writes outstanding, the current generation is the boundary.
           closeHandback()
         }
+      }
+      if (effect.kind === 'commandSnapshot') {
+        this.snapshotStore.applyBackendSnapshot(effect.commandNames)
       }
       renderer.applySessionEffect?.(effect)
     })

@@ -20,6 +20,7 @@ var (
 	ErrEffectFrameEpisodeTooLong = errors.New("proto: effect frame episode id exceeds wire length")
 	ErrUnknownEffectKind         = errors.New("proto: unknown effect kind")
 	ErrInvalidRecoveryEffect     = errors.New("proto: invalid recovery effect")
+	ErrInvalidCommandSnapshot    = errors.New("proto: invalid command snapshot effect")
 	ErrInvalidScreenRevision     = errors.New("proto: invalid prompt-boundary screen revision")
 	ErrInvalidStreamOffset       = errors.New("proto: stream offset is invalid for effect kind")
 )
@@ -36,9 +37,10 @@ const (
 	EffectCwdReport
 	EffectPromptBoundary
 	EffectRecovery
+	EffectCommandSnapshot
 )
 
-func (k EffectKind) valid() bool { return k >= EffectBell && k <= EffectRecovery }
+func (k EffectKind) valid() bool { return k >= EffectBell && k <= EffectCommandSnapshot }
 
 type EffectFrame struct {
 	Session    [16]byte
@@ -78,6 +80,9 @@ func EncodeEffectFrame(f EffectFrame) ([]byte, error) {
 	}
 	if (f.Kind == EffectRecovery && (!validEpisodeID(f.EpisodeID) || len(f.Title) != 0 || len(f.Body) != 0)) || (f.Kind != EffectRecovery && f.EpisodeID != "") {
 		return nil, ErrInvalidRecoveryEffect
+	}
+	if f.Kind == EffectCommandSnapshot && (len(f.Title) != 0 || len(f.Body) == 0) {
+		return nil, ErrInvalidCommandSnapshot
 	}
 	b := make([]byte, EffectFrameHeaderLen+len(f.Title)+len(f.EpisodeID)+len(f.Body))
 	copy(b[:16], f.Session[:])
@@ -142,6 +147,9 @@ func DecodeEffectFrame(b []byte) (EffectFrame, error) {
 	f.Body = append([]byte(nil), b[episodeEnd:]...)
 	if (f.Kind == EffectRecovery && (!validEpisodeID(f.EpisodeID) || len(f.Title) != 0 || len(f.Body) != 0)) || (f.Kind != EffectRecovery && f.EpisodeID != "") {
 		return EffectFrame{}, ErrInvalidRecoveryEffect
+	}
+	if f.Kind == EffectCommandSnapshot && (len(f.Title) != 0 || len(f.Body) == 0) {
+		return EffectFrame{}, ErrInvalidCommandSnapshot
 	}
 	if (f.Kind == EffectPromptBoundary && f.ScreenRevision == 0) || (f.Kind != EffectPromptBoundary && f.ScreenRevision != 0) {
 		return EffectFrame{}, ErrInvalidScreenRevision

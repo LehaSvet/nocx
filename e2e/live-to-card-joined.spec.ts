@@ -2,7 +2,8 @@
  * Joined live-to-card selection and accessible reading acceptance
  * (nocx-zg3k3.4.3). This drives the real browser surface: a historical block,
  * the live grid, a frame arriving during pointer selection, clipboard output,
- * and keyboard navigation on both structures.
+ * and keyboard navigation on both structures. It also exercises key, paste,
+ * and IME input on the live terminal surface (nocx-zg3k3.8).
  */
 import { test, expect, promptReady } from './harness'
 
@@ -16,6 +17,26 @@ async function disableWailsRuntime(page: import('@playwright/test').Page): Promi
       configurable: true,
     })
   })
+}
+
+async function composeTerminalInput(
+  page: import('@playwright/test').Page,
+  committed: string,
+): Promise<void> {
+  await page.locator('.pane.active .ui-terminal-input').evaluate((node, value) => {
+    const input = node as HTMLTextAreaElement
+    input.dispatchEvent(new CompositionEvent('compositionstart', { data: '', bubbles: true }))
+    input.dispatchEvent(new CompositionEvent('compositionupdate', { data: value, bubbles: true }))
+    input.dispatchEvent(
+      new InputEvent('input', {
+        inputType: 'insertCompositionText',
+        data: value,
+        isComposing: true,
+        bubbles: true,
+      }),
+    )
+    input.dispatchEvent(new CompositionEvent('compositionend', { data: value, bubbles: true }))
+  }, committed)
 }
 
 test('a drag from a historical card to live output copies the pinned text and keeps the accessible screen current', async ({
@@ -48,10 +69,29 @@ test('a drag from a historical card to live output copies the pinned text and ke
   await promptReady(page)
   await page.keyboard.type(`printf '%s\\n' '${live}'; cat`)
   await page.keyboard.press('Enter')
-  const liveRow = page
-    .locator('.pane.active .xterm-live-container .term-grid-row', { hasText: live })
-    .last()
+  const grid = page.locator('.pane.active [role="grid"][aria-label="Terminal output"]')
+  const liveRow = grid.locator('[role="row"]', { hasText: live }).last()
   await expect(liveRow).toBeVisible()
+  const terminalInput = page.locator('.pane.active .ui-terminal-input')
+  await grid.click()
+  await expect(terminalInput).toBeFocused()
+
+  const typed = marker('TYPE')
+  await page.keyboard.type(typed)
+  await page.keyboard.press('Enter')
+  await expect(grid).toContainText(typed)
+
+  const pasted = marker('PASTE')
+  await page.evaluate((text) => navigator.clipboard.writeText(text), pasted)
+  await page.keyboard.press('Control+V')
+  await page.keyboard.press('Enter')
+  await expect(grid).toContainText(pasted)
+
+  const composed = marker('IME')
+  await composeTerminalInput(page, composed)
+  await page.keyboard.press('Enter')
+  await expect(grid).toContainText(composed)
+
   const sourceBox = await cardRow.boundingBox()
   const targetBox = await liveRow.boundingBox()
   expect(sourceBox).not.toBeNull()
@@ -91,7 +131,6 @@ test('a drag from a historical card to live output copies the pinned text and ke
 
   // Both structures are navigable on the same surface. No aria-live channel
   // means routine frame revisions cannot repeatedly speak dirty cells.
-  const grid = page.locator('.pane.active .xterm-live-container [role="grid"]')
   await expect(grid).toHaveAttribute('aria-label', 'Terminal output')
   await expect(grid.locator('[role="row"]').first()).toHaveAttribute('aria-rowindex', '1')
   await expect(grid.locator('[aria-live]')).toHaveCount(0)
@@ -110,7 +149,7 @@ test('a drag from a historical card to live output copies the pinned text and ke
 
   // Once released, the newest screen remains visible. Stop the deliberately
   // interactive test process after observing its latest output.
-  await expect(page.locator('.pane.active .xterm-live-container')).toContainText(later)
+  await expect(grid).toContainText(later)
   await page.keyboard.press('Control+C')
   await promptReady(page)
 })

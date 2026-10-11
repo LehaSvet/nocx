@@ -32,6 +32,7 @@ import {
   captureLiveSelection,
   columnSpan,
   createCellModel,
+  snapshotRowText,
   type ApplyResult,
   type CellModel,
   type FrameRefusal,
@@ -905,5 +906,29 @@ describe('live selection snapshots', () => {
     expect(
       captureLiveSelection('pane', hard, { row: 0, offset: 1 }, { row: 1, offset: 2 }).copy(),
     ).toBe('BC\nDE')
+  })
+})
+
+describe('snapshot row text', () => {
+  it('uses backend-declared graphemes and omits non-text spacer cells', () => {
+    const snapshot = applied(
+      createCellModel(),
+      frame(
+        1,
+        [
+          [
+            [' ', 1, true],
+            ['A', 1, true],
+            ['界', 2, true],
+            ['', 3, false],
+            ['B', 1, true],
+          ],
+        ],
+        5,
+      ),
+    )
+
+    expect(snapshotRowText(snapshot, 0)).toBe('A界B')
+    expect(snapshotRowText(snapshot, 1)).toBeNull()
   })
 })

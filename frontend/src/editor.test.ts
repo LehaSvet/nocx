@@ -994,7 +994,7 @@ describe('shell syntax highlighting', () => {
   })
 })
 
-// ── Command-existence verdicts (OSC 636 snapshot) ──────────────────────────
+// ── Command-existence verdicts from backend snapshots ────────────────────
 
 describe('command existence verdicts', () => {
   // The tokenizer must be ready so the verdict classes are deterministic.
@@ -1002,22 +1002,13 @@ describe('command existence verdicts', () => {
     await shellHighlightReady
   })
 
-  const SEED_NONCE = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
-  const snap = (names: string[]) => `S;${SEED_NONCE};${names.join(';')}`
   /** A fresh tab store, seeded with the given names (or left empty). */
   const makeStore = (names?: string[]): CommandSnapshotStore => {
     const store = freshStore()
     if (names) {
-      store.ingest(`H;${SEED_NONCE}`)
-      store.ingest(snap(names))
-      // Existence needs BOTH halves of command discovery: the shell's own
-      // tables (OSC 636, above) and the target's PATH set, which the backend
-      // computes once per host and hands over shell.commandNames. A store
-      // holding only one of them answers `unavailable` on purpose — with the
-      // PATH half missing, calling a name nonexistent would strike through
-      // every real command on the machine. These fixtures supply an EMPTY
-      // shared set: present, so the store can judge, and empty, so a name that
-      // is not in the seeded tables is genuinely absent.
+      store.applyBackendSnapshot(names)
+      // An empty shared PATH set is present, so the store can judge names
+      // absent from the session-local snapshot.
       store.applySharedNames({ state: 'ready', names: [], ageMs: 0, reason: '', truncated: false })
     }
     return store
@@ -1072,8 +1063,7 @@ describe('command existence verdicts', () => {
     ed.show()
     ed.insertText('sdfsdf')
     expect(view.contentDOM.querySelectorAll('.tok-unresolved').length).toBe(0)
-    store.ingest(`H;${SEED_NONCE}`)
-    store.ingest(snap(['pwd']))
+    store.applyBackendSnapshot(['pwd'])
     store.applySharedNames({ state: 'ready', names: [], ageMs: 0, reason: '', truncated: false })
     expect(view.contentDOM.querySelectorAll('.tok-unresolved').length).toBe(1)
   })

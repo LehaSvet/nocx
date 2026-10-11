@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -365,6 +366,54 @@ func TestSessionEffect_OverTheWireConformsToContract(t *testing.T) {
 	}
 	if params.SessionID != sid || params.Generation != "4" || params.EffectID != "7" || params.Kind != "notification" || params.Title != "Deploy" || params.Body != "staging ready" {
 		t.Fatalf("wire params = %+v", params)
+	}
+}
+
+func TestCommandSnapshotSessionEffect_OverTheWireConformsToContract(t *testing.T) {
+	ws, _ := newScreenBaselineServer(t)
+	conn := connectWS(t, ws)
+	defer func() { _ = conn.Close() }()
+	sid := openSessionOnConn(t, ws, conn, 1)
+	effect := proto.EffectFrame{Generation: 4, EffectID: 8, Kind: proto.EffectCommandSnapshot, Body: []byte(`["alias","git"]`)}
+	if !ws.PublishSessionEffect(session.ID(sid), effect) {
+		t.Fatal("command snapshot was not accepted")
+	}
+	raw, err := awaitFrame(conn, time.Now().Add(wantWithin), func(raw []byte) bool {
+		var msg struct {
+			Method string `json:"method"`
+		}
+		return json.Unmarshal(raw, &msg) == nil && msg.Method == "session.effect"
+	})
+	if err != nil {
+		t.Fatalf("session.effect not received: %v", err)
+	}
+	var msg struct {
+		Params json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		t.Fatal(err)
+	}
+	validateJSON(t, loadSchema(t, "session.effect.schema.json"), msg.Params, "commandSnapshot over-the-wire params")
+	var params sessionEffectParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		t.Fatal(err)
+	}
+	if params.Kind != "commandSnapshot" || params.Title != "" || params.Body != "" || params.SessionID != sid || params.Generation != "4" || params.EffectID != "8" || !reflect.DeepEqual(params.CommandNames, []string{"alias", "git"}) {
+		t.Fatalf("wire params = %+v", params)
+	}
+}
+
+func TestPublishSessionEffect_RejectsMalformedCommandSnapshot(t *testing.T) {
+	ws, sid, _, _, sock := newScreenPublishFixture(t)
+	for _, body := range [][]byte{nil, []byte(`null`), []byte(`[]`), []byte(`[""]`), []byte(`{"name":"git"}`)} {
+		if ws.PublishSessionEffect(sid, proto.EffectFrame{Generation: 1, EffectID: 1, Kind: proto.EffectCommandSnapshot, Body: body}) {
+			t.Fatalf("malformed command snapshot %q was accepted", body)
+		}
+	}
+	sock.mu.Lock()
+	defer sock.mu.Unlock()
+	if len(sock.frames) != 0 {
+		t.Fatalf("malformed command snapshot reached socket in %d frames", len(sock.frames))
 	}
 }
 

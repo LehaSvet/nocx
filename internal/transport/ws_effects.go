@@ -1,7 +1,9 @@
 package transport
 
 import (
+	"encoding/json"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/shady2k/nocx/internal/helper/proto"
 	"github.com/shady2k/nocx/internal/lifecycle"
@@ -9,14 +11,15 @@ import (
 )
 
 type sessionEffectParams struct {
-	SessionID      string `json:"sessionId"`
-	Generation     string `json:"generation"`
-	EffectID       string `json:"effectId"`
-	Kind           string `json:"kind"`
-	Title          string `json:"title"`
-	Body           string `json:"body"`
-	EpisodeID      string `json:"episodeId,omitempty"`
-	ScreenRevision uint64 `json:"screenRevision,omitempty"`
+	SessionID      string   `json:"sessionId"`
+	Generation     string   `json:"generation"`
+	EffectID       string   `json:"effectId"`
+	Kind           string   `json:"kind"`
+	Title          string   `json:"title"`
+	Body           string   `json:"body"`
+	CommandNames   []string `json:"commandNames,omitempty"`
+	EpisodeID      string   `json:"episodeId,omitempty"`
+	ScreenRevision uint64   `json:"screenRevision,omitempty"`
 }
 
 func effectKindName(kind proto.EffectKind) (string, bool) {
@@ -35,9 +38,38 @@ func effectKindName(kind proto.EffectKind) (string, bool) {
 		return "promptBoundary", true
 	case proto.EffectRecovery:
 		return "recovery", true
+	case proto.EffectCommandSnapshot:
+		return "commandSnapshot", true
 	default:
 		return "", false
 	}
+}
+
+const (
+	maxCommandSnapshotNames     = 4096
+	maxCommandSnapshotNameBytes = 65536
+	maxCommandSnapshotBodyBytes = 1 << 20
+)
+
+func decodeCommandSnapshotBody(body []byte) ([]string, bool) {
+	if len(body) == 0 || len(body) > maxCommandSnapshotBodyBytes || !utf8.Valid(body) {
+		return nil, false
+	}
+	var names []string
+	if err := json.Unmarshal(body, &names); err != nil || len(names) == 0 || len(names) > maxCommandSnapshotNames {
+		return nil, false
+	}
+	total := 0
+	for _, name := range names {
+		if name == "" || !utf8.ValidString(name) {
+			return nil, false
+		}
+		total += len(name)
+		if total > maxCommandSnapshotNameBytes {
+			return nil, false
+		}
+	}
+	return names, true
 }
 
 // recordRecoverySighting records only the exact current lost episode. The
@@ -85,12 +117,23 @@ func (s *WSServer) PublishSessionEffect(sid session.ID, effect proto.EffectFrame
 	} else if effect.ScreenRevision != 0 {
 		return false
 	}
+	var commandNames []string
 	if effect.Kind == proto.EffectRecovery {
 		if len(effect.Title) != 0 || len(effect.Body) != 0 || effect.EpisodeID == "" || !s.recordRecoverySighting(sid, effect.EpisodeID) {
 			return false
 		}
 	} else if effect.EpisodeID != "" {
 		return false
+	}
+	if effect.Kind == proto.EffectCommandSnapshot {
+		if len(effect.Title) != 0 || effect.ScreenRevision != 0 || effect.EpisodeID != "" {
+			return false
+		}
+		var ok bool
+		commandNames, ok = decodeCommandSnapshotBody(effect.Body)
+		if !ok {
+			return false
+		}
 	}
 	rx := s.getRx(sid)
 	if rx == nil {
@@ -100,10 +143,14 @@ func (s *WSServer) PublishSessionEffect(sid session.ID, effect proto.EffectFrame
 	if wconn == nil {
 		return false
 	}
+	body := string(effect.Body)
+	if effect.Kind == proto.EffectCommandSnapshot {
+		body = ""
+	}
 	params := sessionEffectParams{
 		SessionID: string(sid), Generation: strconv.FormatUint(effect.Generation, 10),
 		EffectID: strconv.FormatUint(effect.EffectID, 10), Kind: kind,
-		Title: string(effect.Title), Body: string(effect.Body), EpisodeID: effect.EpisodeID,
+		Title: string(effect.Title), Body: body, CommandNames: commandNames, EpisodeID: effect.EpisodeID,
 		ScreenRevision: effect.ScreenRevision,
 	}
 	waitForBytes := effect.Kind == proto.EffectPromptBoundary && effect.StreamOffset > 0

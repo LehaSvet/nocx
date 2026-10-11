@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -967,6 +968,15 @@ func (s *hostSession) serveScreen(ctx context.Context, sub *subscriber, cons ses
 				log.Warn("session effect refused: unknown runtime effect kind", "session", s.id.Session, "kind", effect.Kind)
 				continue
 			}
+			body := effect.Body
+			if effect.Kind == sessionruntime.EffectCommandSnapshot {
+				var err error
+				body, err = json.Marshal(effect.CommandNames)
+				if err != nil {
+					log.Warn("command snapshot could not be encoded", "session", s.id.Session, "effect_id", uint64(effect.ID), "err", err)
+					continue
+				}
+			}
 			frame := proto.EffectFrame{
 				Session: s.raw, Subscriber: sub.raw,
 				Generation: uint64(effect.At.Generation), EffectID: uint64(effect.ID),
@@ -974,7 +984,7 @@ func (s *hostSession) serveScreen(ctx context.Context, sub *subscriber, cons ses
 				ScreenRevision: effect.ScreenRevision,
 				Kind:           kind,
 				Title:          effect.Title,
-				Body:           effect.Body,
+				Body:           body,
 				EpisodeID:      effect.EpisodeID,
 			}
 			if err := sub.sink.SendEffectFrame(frame); err != nil {
@@ -1004,6 +1014,8 @@ func protoEffectKind(kind sessionruntime.EffectKind) (proto.EffectKind, bool) {
 		return proto.EffectPromptBoundary, true
 	case sessionruntime.EffectRecovery:
 		return proto.EffectRecovery, true
+	case sessionruntime.EffectCommandSnapshot:
+		return proto.EffectCommandSnapshot, true
 
 	default:
 		return 0, false

@@ -438,6 +438,19 @@ interface LiveSelectionEndpoint {
   readonly offset: number
 }
 
+/** Plain text for one active-grid row, or null when the requested row is not
+ * in the installed frame. Text and column widths come from the backend's
+ * accepted frame; non-text spacer/blank cells do not invent characters. */
+export function snapshotRowText(snapshot: ScreenSnapshot, index: number): string | null {
+  const row = snapshot.rowAt(index)
+  if (row === null) return null
+  return row.cells
+    .filter((cell) => cell.hasText)
+    .map((cell) => cell.grapheme)
+    .join('')
+    .trim()
+}
+
 /** A selection owns the immutable screen snapshot it began on. New frames may
  * replace the model's current revision without changing copy()'s result. */
 export interface LiveSelection {

@@ -470,6 +470,9 @@ const (
 	EffectCwdReport
 	EffectPromptBoundary
 	EffectRecovery
+	// EffectCommandSnapshot carries the shell's validated session-local command names.
+	// A fresh snapshot is emitted for each attached consumer; it is current state, not replay.
+	EffectCommandSnapshot
 )
 
 // EffectID identifies one effect for as long as its incarnation lives. The
@@ -494,6 +497,9 @@ type Effect struct {
 	// payload, the terminal title, or the reported directory. It is untrusted
 	// bytes from whatever the user ran, and nothing here interprets them.
 	Body []byte
+	// CommandNames is present only for EffectCommandSnapshot and contains the
+	// current shell-local command table without its authentication nonce.
+	CommandNames []string
 	// StreamOffset is the exact exclusive PTY byte offset for a prompt boundary.
 	// It orders the effect after those bytes are offered; it is not a client ack.
 	StreamOffset uint64

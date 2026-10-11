@@ -144,9 +144,22 @@ func TestEffectFrameABIIncludesEpisodeIDLength(t *testing.T) {
 	}
 }
 
-func TestHelperProtocolVersionBumpedForRecoveryEpisode(t *testing.T) {
-	if Version != "20" {
-		t.Fatalf("helper protocol version = %q, want 20", Version)
+func TestCommandSnapshotEffectFrameRoundTripsItsTypedPayload(t *testing.T) {
+	payload := []byte(`["alias","git"]`)
+	want := EffectFrame{Kind: EffectCommandSnapshot, Body: payload}
+	wire := encodeEffectFrameForTest(t, want)
+	got, err := DecodeEffectFrame(wire)
+	if err != nil {
+		t.Fatalf("DecodeEffectFrame: %v", err)
+	}
+	if got.Kind != EffectCommandSnapshot || !bytes.Equal(got.Body, payload) || len(got.Title) != 0 || got.EpisodeID != "" {
+		t.Fatalf("decoded command snapshot = %+v, want kind and payload %q", got, payload)
+	}
+}
+
+func TestHelperProtocolVersionBumpedForCommandSnapshot(t *testing.T) {
+	if Version != "21" {
+		t.Fatalf("helper protocol version = %q, want 21", Version)
 	}
 }
 

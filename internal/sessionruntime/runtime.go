@@ -180,6 +180,9 @@ type Session struct {
 	// are state for a full frame, not replayable effect deliveries.
 	title *string
 	cwd   *CwdReport
+	// commandNames is the latest session-local shell snapshot. It is copied to
+	// a newly attached consumer as current state, never replayed from output.
+	commandNames []string
 
 	// The rendezvous is a SET of meetings keyed by nonce, not one slot. The
 	// authenticated channel and the PTY are ordered independently (ADR-0024
@@ -1317,6 +1320,8 @@ func (s *Session) Ingest(b []byte) error {
 				if cwd, ok := decodeCwdReport(e.Body); ok {
 					s.cwd = &cwd
 				}
+			case emulator.EffectCommandSnapshot:
+				s.commandNames = append([]string(nil), e.CommandNames...)
 			}
 			s.nextEffect++
 			effect := Effect{
@@ -1325,6 +1330,7 @@ func (s *Session) Ingest(b []byte) error {
 				Kind:         effectKindOf(e.Kind),
 				Title:        e.Title,
 				Body:         e.Body,
+				CommandNames: e.CommandNames,
 				StreamOffset: e.StreamOffset,
 			}
 			if effect.Kind == EffectPromptBoundary {
@@ -1371,6 +1377,8 @@ func effectKindOf(k emulator.EffectKind) EffectKind {
 		return EffectCwdReport
 	case emulator.EffectPromptBoundary:
 		return EffectPromptBoundary
+	case emulator.EffectCommandSnapshot:
+		return EffectCommandSnapshot
 	default:
 		return EffectNone
 	}
@@ -1950,7 +1958,16 @@ type queued struct {
 func effectDelivery(e Effect) queued {
 	e.Title = bytes.Clone(e.Title)
 	e.Body = bytes.Clone(e.Body)
+	e.CommandNames = append([]string(nil), e.CommandNames...)
 	return queued{class: deliveryClassOf(e.Kind), effect: e}
+}
+
+func commandNamesBytes(names []string) int {
+	total := 0
+	for _, name := range names {
+		total += len(name)
+	}
+	return total
 }
 
 // deliveryClassOf is the ONE place an effect's class is decided, exhaustively:
@@ -1958,7 +1975,7 @@ func effectDelivery(e Effect) queued {
 // [DeliveryUnclassified] and is REFUSED rather than delivered under a guess.
 func deliveryClassOf(k EffectKind) DeliveryClass {
 	switch k {
-	case EffectBell, EffectNotification, EffectClipboard, EffectTitle, EffectCwdReport, EffectPromptBoundary, EffectRecovery:
+	case EffectBell, EffectNotification, EffectClipboard, EffectTitle, EffectCwdReport, EffectPromptBoundary, EffectRecovery, EffectCommandSnapshot:
 		return DeliveryAtMostOnce
 	default:
 		return DeliveryUnclassified
@@ -2022,7 +2039,7 @@ func (c *subscriber) HeldBytes() int {
 func (c *subscriber) heldBytesLocked() int {
 	held := 0
 	for _, p := range c.queue {
-		held += len(p.bytes) + len(p.effect.Title) + len(p.effect.Body)
+		held += len(p.bytes) + len(p.effect.Title) + len(p.effect.Body) + commandNamesBytes(p.effect.CommandNames)
 	}
 	return held
 }
@@ -2057,6 +2074,7 @@ func (c *subscriber) Effects() []Effect {
 			e := p.effect
 			e.Title = bytes.Clone(e.Title)
 			e.Body = bytes.Clone(e.Body)
+			e.CommandNames = append([]string(nil), e.CommandNames...)
 			held = append(held, e)
 		}
 	}
@@ -2160,6 +2178,14 @@ func (s *Session) attachLocked() *subscriber {
 		// nothing is handed nothing — its first frame is the first
 		// revision.
 		s.enqueueLocked(c, queued{class: DeliveryCoalescable, rev: s.latest.rev, bytes: s.latest.bytes})
+	}
+	if len(s.commandNames) > 0 {
+		// This is a fresh current-state event for this attachment, not the old
+		// shell effect replayed from a ring. A new effect identity lets the
+		// renderer recover its local snapshot after reconnect.
+		s.nextEffect++
+		effect := Effect{ID: s.nextEffect, At: s.inc, Kind: EffectCommandSnapshot, CommandNames: s.commandNames}
+		s.enqueueLocked(c, effectDelivery(effect))
 	}
 	return c
 }

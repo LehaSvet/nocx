@@ -115,6 +115,9 @@ const (
 	EffectEraseDisplay
 	// EffectRecoverySighting is the authenticated-shell recovery marker. Its nonce is private input to sessionruntime only; it is never a renderer effect.
 	EffectRecoverySighting
+	// EffectCommandSnapshot is the session-local command table reported by the shell through OSC 636.
+	// CommandNames is a typed, validated snapshot; the nonce used to authenticate it stays in the emulator.
+	EffectCommandSnapshot
 )
 
 // Effect is one non-visual effect the program asked for: a thing that
@@ -139,6 +142,9 @@ type Effect struct {
 	Kind  EffectKind
 	Title []byte
 	Body  []byte
+	// CommandNames is present only for EffectCommandSnapshot. The emulator validates and copies
+	// the shell's session-local names; command snapshot nonces never leave this port.
+	CommandNames []string
 	// StreamOffset is the exclusive PTY byte offset of a scanned marker.
 	// It is populated for EffectPromptBoundary so downstream transports can
 	// order that fact after the exact bytes through OSC 133 B.

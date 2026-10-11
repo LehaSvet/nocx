@@ -66,10 +66,10 @@ async function getRendererMocks(): Promise<RendererMock[]> {
 function fireFrameMetadata(
   session: SessionFake,
   revision: number,
-  metadata: Partial<Pick<SessionFrame['state'], 'title' | 'cwd'>>,
+  metadata: Partial<Pick<SessionFrame['state'], 'title' | 'cwd' | 'bufferKind'>>,
 ): void {
   const state: SessionFrame['state'] = {
-    bufferKind: 'normal',
+    bufferKind: metadata.bufferKind ?? 'normal',
     bufferInstance: '1',
     bracketedPaste: false,
     mouseTracking: false,
@@ -1383,13 +1383,13 @@ describe('PaneManager', () => {
     const confirm = showConfirmMock
     confirm.mockReset()
 
-    const { bar } = await mountPaneManager(undefined, cb)
+    const { bar, client } = await mountPaneManager(undefined, cb)
 
     await Promise.resolve()
     const renderers = await getRendererMocks()
 
-    // Switch to alternate screen (TUI mode).
-    renderers[0]._fireBufferChange('alternate')
+    // The accepted backend frame owns buffer identity (ADR-0083).
+    fireFrameMetadata(client._sessions[0], 1, { bufferKind: 'alternate' })
 
     const pane = bar.parentElement!.querySelector('.pane.active')!
     pane.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))

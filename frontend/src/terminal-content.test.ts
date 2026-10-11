@@ -17535,6 +17535,34 @@ describe('the prompt prediction measures at the real block width, once per frame
   })
 })
 
+describe('runtime command snapshots update the per-pane store', () => {
+  it('applies only a valid backend snapshot', async () => {
+    const client = makeClient()
+    const mounted = await mountTerminal(makeClipboard(), {}, client)
+    try {
+      const session = client._sessions[0]
+      if (!session) throw new Error('session not opened')
+      const store = mounted.content.snapshotStore
+      const effect: SessionEffect = {
+        sessionId: session.sessionId,
+        generation: '1',
+        effectId: '1',
+        kind: 'commandSnapshot',
+        title: '',
+        body: '',
+        commandNames: ['alias', 'git'],
+      }
+      session.fireEffect(effect)
+      expect(store.has('alias')).toBe(true)
+      expect(store.has('git')).toBe(true)
+      store.applyBackendSnapshot([])
+      expect(store.has('alias')).toBe(true)
+    } finally {
+      mounted.teardown()
+    }
+  })
+})
+
 describe('runtime clipboard effects keep the existing permission gate', () => {
   it('denies a clipboard write until permission is granted, then writes once', async () => {
     const clipboard = makeClipboard()

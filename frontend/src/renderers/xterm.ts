@@ -24,7 +24,6 @@ import { parseOsc133 } from '../command-marker'
 import { getCurrentTheme, subscribeThemeChanges } from './theme-adapter'
 
 import { WORD_SEPARATORS } from '../word-selection'
-import { CommandSnapshotStore } from '../command-snapshot'
 import {
   CaptureAbortedError,
   CaptureIdentityTracker,
@@ -222,7 +221,6 @@ export class XtermRenderer implements TerminalRenderer {
   private clipboardSubs: ClipboardWriteCallback[] = []
   private scrollSubs: Array<(viewportY: number) => void> = []
   private renderSubs: Array<(range: { start: number; end: number }) => void> = []
-  private snapshotOscDisposable?: { dispose(): void }
   /** The parser handlers that refuse the program's own queries, so the one
    *  terminal that answers it is the session runtime. Registered at mount and
    *  dropped with the terminal — see _refuseProgramQueries. */
@@ -244,10 +242,6 @@ export class XtermRenderer implements TerminalRenderer {
    *  DPR/cell-metric change can recompute the grid INSIDE it (B.5). The
    *  viewport is placement's rectangle; a metric change never redefines it. */
   private _lastViewport: { width: number; height: number } | null = null
-  /** This tab's command-existence store (OSC 636). Created per renderer so
-   *  two tabs never share a snapshot; the editor and frozen headers of this
-   *  tab read the same instance this OSC handler feeds. */
-  readonly snapshotStore = new CommandSnapshotStore()
   /** Unsubscribe from the module-level theme watcher. */
   private _themeUnsub: (() => void) | null = null
   /** The snippet-palette chord handler (⌥⌘P), registered by the
@@ -449,16 +443,6 @@ export class XtermRenderer implements TerminalRenderer {
     // published between the resolve above and this registration would otherwise
     // be missed). ADR-0013 §8, design spec §5.4.
     this._themeUnsub = subscribeThemeChanges((t: ITheme) => this.applyTheme(t))
-
-    // OSC 636 — command-existence snapshot (command-snapshot.ts). The store
-    // owns parse + policy; the renderer is just the wire, exactly like OSC
-    // 7/52/133. Each renderer owns its own store, so tab 2 is never judged
-    // against tab 1's command set — the editor and frozen headers receive
-    // this same instance at the composition point (terminal-content.ts).
-    this.snapshotOscDisposable = term.parser.registerOscHandler(636, (data: string) => {
-      this.snapshotStore.ingest(data)
-      return false
-    })
 
     this.applyTheme(getCurrentTheme())
 
@@ -1141,8 +1125,6 @@ export class XtermRenderer implements TerminalRenderer {
       clearInterval(this.refreshTimer)
       this.refreshTimer = null
     }
-    this.snapshotOscDisposable?.dispose()
-    this.snapshotOscDisposable = undefined
     this.osc133Disposable?.dispose()
     this.osc133Disposable = undefined
     this.commandMarkerSubs = []

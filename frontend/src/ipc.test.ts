@@ -2615,6 +2615,31 @@ describe('session.effect notification', () => {
     ])
   })
 
+  it('dispatches a typed command snapshot and refuses malformed names', async () => {
+    const { session, ws } = await connectedSession()
+    const received: SessionEffect[] = []
+    session.onEffect((value) => received.push(value))
+    ws.deliverText(
+      effect({ kind: 'commandSnapshot', title: '', body: '', commandNames: ['alias', 'git'] }),
+    )
+    ws.deliverText(effect({ kind: 'commandSnapshot', title: '', body: '', commandNames: [] }))
+    ws.deliverText(
+      effect({ kind: 'commandSnapshot', title: '', body: 'not empty', commandNames: ['forged'] }),
+    )
+    ws.deliverText(effect({ kind: 'clipboard', commandNames: ['unexpected'] }))
+    expect(received).toEqual([
+      {
+        sessionId: SID,
+        generation: '4',
+        effectId: '7',
+        kind: 'commandSnapshot',
+        title: '',
+        body: '',
+        commandNames: ['alias', 'git'],
+      },
+    ])
+  })
+
   it('dispatches and deduplicates an empty promptBoundary observation', async () => {
     const { session, ws } = await connectedSession()
     const received: SessionEffect[] = []
