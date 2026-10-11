@@ -2421,6 +2421,7 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
     const session = makeSession({ awaitsIntegration: true })
     const client = makeClient()
     client.openSession.mockResolvedValue(session)
+    const fireIntegration = integrationHandler(client, session)
     const { content, tab, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
       // No integrationHandler call yet — this is the ack's own promise
@@ -2444,7 +2445,7 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
 
       // The fact the ack promised, now arriving: nothing about the pane's
       // state changes, because it was already waiting on it.
-      integrationHandler(client)({
+      fireIntegration({
         sessionId: session.sessionId,
         status: 'starting',
         shell: '/bin/zsh',
@@ -2452,7 +2453,7 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       expect(tab.pane.querySelector(WAITING)).not.toBeNull()
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('none')
 
-      integrationHandler(client)({
+      fireIntegration({
         sessionId: session.sessionId,
         status: 'integrated',
         shell: '/bin/zsh',
@@ -2497,6 +2498,7 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
   it('a reclaimed pane whose attach ack says starting never shows a live grid, even before the first fact', async () => {
     const client = makeClient()
     const session = makeSession({ awaitsIntegration: true })
+    const fireIntegration = integrationHandler(client, session)
     const hooks = { adoptSession: () => Promise.resolve(asSessionHandleForTest(session)) }
     const { content, tab, teardown } = await mountTerminal(makeClipboard(), { hooks }, client)
     try {
@@ -2508,7 +2510,7 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       rendererOf(content)._fireData('x')
       expect(session.send).not.toHaveBeenCalled()
 
-      integrationHandler(client)({
+      fireIntegration({
         sessionId: session.sessionId,
         status: 'integrated',
         shell: '/bin/zsh',
@@ -3668,6 +3670,7 @@ describe('an interrupted session is marked, never destroyed (nocx-ictcq)', () =>
     const session = makeSession()
     const client = makeClient()
     client.openSession.mockResolvedValue(session)
+    const fireIntegration = integrationHandler(client, session)
     const { teardown } = await mountTerminal(
       makeClipboard(),
       { hooks: { onWarningChange: (w, l) => warnings.push([w, l]) } },
@@ -3679,7 +3682,7 @@ describe('an interrupted session is marked, never destroyed (nocx-ictcq)', () =>
 
       // A recovered-looking fact ("integrated", no reason) arriving late:
       // before the guard this cleared the mark and the tab read healthy.
-      integrationHandler(client)({
+      fireIntegration({
         sessionId: session.sessionId,
         status: 'integrated',
         shell: '/bin/bash',
