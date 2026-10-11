@@ -27,6 +27,7 @@ import type { SessionHistoryPage } from './generated/session.historyPage'
 import type { SessionHistoryPageRows } from './generated/session.historyPageRows'
 import type { SessionIntentResult } from './generated/session.intent'
 import type { SessionObservationChanged } from './generated/session.observationChanged'
+import type { SessionIntegrationChanged } from './generated/session.integrationChanged'
 import { log } from './log'
 import { isDriverState, isPaneProgress, readPaneChildren } from './pane-observation'
 import type { SessionSignal } from './generated/session.signal'
@@ -433,6 +434,10 @@ interface SessionState {
   // are being dropped. Once per stall, not once per key.
   inputStalledCallback: (() => void) | null
 
+  // The integration axis is a state, not an event. Keep its latest fact so
+  // a pane that mounts or remounts after the notification still sees it.
+  integrationChangedCallback: ((fact: SessionIntegrationChanged) => void) | null
+  integrationFact: SessionIntegrationChanged | null
   // Fires when the backend revises what it believes about REACHING this
   // session: alive, or unknown when the host has stopped answering and
   // nothing has ended (contracts/session.liveness.schema.json). The
@@ -588,6 +593,13 @@ export class SessionHandle {
   /** Registers the visible live-stream notice for an output gap. */
   onOutputGap(cb: (gap: SessionOutputGapNotification) => void): void {
     this.client.onSessionOutputGap(this.sessionId, cb)
+  }
+
+  /** Registers the session's current integration status. If the status
+   *  arrived after the open ack but before the pane subscribed, that latest
+   *  fact is delivered immediately. */
+  onIntegrationChanged(cb: (fact: SessionIntegrationChanged) => void): () => void {
+    return this.client.onSessionIntegrationChanged(this.sessionId, cb)
   }
 
   /** Registers the visible signal for a gap that violates the stream cursor. */
@@ -1058,6 +1070,27 @@ export class WSClient {
       else state.pendingEffects.push(effect)
     })
 
+    this.dispatcher.subscribe('session.integrationChanged', (params: unknown) => {
+      if (!params || typeof params !== 'object') return
+      const raw = params as Record<string, unknown>
+      const sid = raw.sessionId
+      if (typeof sid !== 'string' || typeof raw.shell !== 'string') return
+      const state = this.sessions.get(sid)
+      if (!state) return
+      if (raw.instanceId !== state.instanceId || raw.sessionEpoch !== state.sessionEpoch) return
+      if (
+        raw.status !== 'starting' &&
+        raw.status !== 'integrated' &&
+        raw.status !== 'conventional' &&
+        raw.status !== 'lost'
+      ) {
+        return
+      }
+      const fact = raw as unknown as SessionIntegrationChanged
+      state.integrationFact = fact
+      state.integrationChangedCallback?.(fact)
+    })
+
     this.dispatcher.subscribe('session.liveness', (params: unknown) => {
       if (!params || typeof params !== 'object') return
       const raw = params as Record<string, unknown>
@@ -1425,6 +1458,8 @@ export class WSClient {
       protocolBlocked: false,
       seenOutputGaps: new Set(),
       inputStalledCallback: null,
+      integrationChangedCallback: null,
+      integrationFact: null,
       livenessCallback: null,
       observationCallback: null,
       livenessEpoch: 0,
@@ -1940,6 +1975,19 @@ export class WSClient {
     state.effectCallback = cb
     const pending = state.pendingEffects.splice(0)
     for (const effect of pending) cb(effect)
+  }
+
+  onSessionIntegrationChanged(
+    sessionId: string,
+    cb: (fact: SessionIntegrationChanged) => void,
+  ): () => void {
+    const state = this.sessions.get(sessionId)
+    if (!state) return () => undefined
+    state.integrationChangedCallback = cb
+    if (state.integrationFact) cb(state.integrationFact)
+    return () => {
+      if (state.integrationChangedCallback === cb) state.integrationChangedCallback = null
+    }
   }
 
   onSessionObservation(

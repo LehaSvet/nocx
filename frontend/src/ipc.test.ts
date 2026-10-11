@@ -12,6 +12,7 @@ import {
 import { MockWebSocket } from './test-support/panes-fixtures'
 import type { SessionLiveness } from './generated/session.liveness'
 import type { SessionEffect } from './generated/session.effect'
+import type { SessionIntegrationChanged } from './generated/session.integrationChanged'
 
 // Must match the un-exported constants in ipc.ts.
 const ACK_INTERVAL_MS = 100
@@ -621,6 +622,42 @@ describe('openSession', () => {
     const id = socket().requests()[0].id
     socket().deliverText({ jsonrpc: '2.0', id, result: { sessionId: SID, ...OPEN_IDENTITY } })
     await opening
+  })
+})
+
+describe('session.integrationChanged', () => {
+  it('delivers the current status when it arrived before the pane subscribed', async () => {
+    const client = new WSClient(mockDispatcher())
+    client.start()
+    await Promise.resolve()
+    const ws = socket()
+    ws.serverAccepts()
+
+    const opening = client.openSession({ cols: 80, rows: 24, xpixel: 0, ypixel: 0 })
+    const openID = ws.requests()[0].id
+    ws.deliverText({
+      jsonrpc: '2.0',
+      id: openID,
+      result: { sessionId: SID, ...OPEN_IDENTITY, awaitsIntegration: true },
+    })
+    const session = await opening
+    const fact: SessionIntegrationChanged = {
+      sessionId: SID,
+      ...OPEN_IDENTITY,
+      status: 'integrated',
+      shell: '/bin/bash',
+    }
+    ws.deliverText({ jsonrpc: '2.0', method: 'session.integrationChanged', params: fact })
+
+    const seen: SessionIntegrationChanged[] = []
+    const unsubscribe = session.onIntegrationChanged((received) => seen.push(received))
+
+    expect(seen).toEqual([fact])
+    unsubscribe()
+
+    const remounted: SessionIntegrationChanged[] = []
+    session.onIntegrationChanged((received) => remounted.push(received))
+    expect(remounted).toEqual([fact])
   })
 })
 
