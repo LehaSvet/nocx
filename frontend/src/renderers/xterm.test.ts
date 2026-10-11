@@ -4,7 +4,6 @@ import { parseOsc133 } from '../command-marker'
 import { XtermRenderer } from './xterm'
 import { WORD_SEPARATORS } from '../word-selection'
 import type { CommandMarkerEvent } from './types'
-import type { SessionEffect } from '../generated/session.effect'
 
 import {
   CaptureAbortedError,
@@ -1319,51 +1318,6 @@ describe('bracketed paste, read from the real parser', () => {
   })
 })
 
-describe('bell effect delivery (nocx-zg3k3.14.1)', () => {
-  /** The same jsdom mount the OSC fan-out suite uses: xterm.js needs
-   *  matchMedia and ResizeObserver during init, and neither exists here. */
-  async function mountRenderer(): Promise<XtermRenderer> {
-    stubBrowser()
-    const r = new XtermRenderer()
-    const container = document.createElement('div')
-    Object.defineProperty(container, 'clientWidth', { value: 800 })
-    Object.defineProperty(container, 'clientHeight', { value: 600 })
-    await r.mount(container)
-    return r
-  }
-
-  /** xterm parses writes asynchronously; wait for its parsed signal before
-   *  asserting that the compatibility byte mirror did not dispatch an effect. */
-  const parsed = (r: XtermRenderer, data: string) =>
-    new Promise<void>((resolve) => {
-      r.onWriteParsed(resolve)
-      r.write(data)
-    })
-
-  it('dispatches one backend bell effect and ignores the mirrored BEL byte', async () => {
-    const r = await mountRenderer()
-    let rings = 0
-    r.onBell(() => rings++)
-
-    await parsed(r, 'ready\x07')
-    expect(rings).toBe(0)
-
-    r.applySessionEffect({
-      sessionId: 'session',
-      generation: '1',
-      effectId: '1',
-      kind: 'bell',
-      title: '',
-      body: '',
-    })
-    expect(rings).toBe(1)
-
-    await parsed(r, '\x07')
-    expect(rings).toBe(1)
-    r.dispose()
-  })
-})
-
 // ── The atlas invalidation seam (nocx-4z5hv) ────────────────────────────
 //
 // xterm's WebGL renderer keeps a per-cell vertex model holding texture
@@ -1757,38 +1711,5 @@ describe("xterm's own stylesheets are rewritten only when their text changes (no
     expect(styles.some((el) => el.textContent?.includes('#123456'))).toBe(true)
     r.dispose()
     container.remove()
-  })
-})
-
-describe('runtime effect dispatch', () => {
-  it('routes bell, notification and clipboard to their existing callbacks', () => {
-    const renderer = new XtermRenderer()
-    const bell = vi.fn()
-    const notification = vi.fn()
-    const clipboard = vi.fn()
-    renderer.onBell(bell)
-    renderer.onNotification?.(notification)
-    renderer.onClipboardWrite(clipboard)
-    const send = (kind: SessionEffect['kind'], body = '', effectTitle = '') =>
-      renderer.applySessionEffect({
-        sessionId: 'session',
-        generation: '1',
-        effectId: '1',
-        kind,
-        title: effectTitle,
-        body,
-      })
-    send('bell')
-    send('notification', 'build finished')
-    send('notification', '2 failed', 'Tests failed')
-    send('clipboard', 'clipboard text from the runtime')
-    send('clipboard', '')
-    expect(bell).toHaveBeenCalledTimes(1)
-    expect(notification).toHaveBeenNthCalledWith(1, { title: '', body: 'build finished' })
-    expect(notification).toHaveBeenNthCalledWith(2, { title: 'Tests failed', body: '2 failed' })
-    expect(notification).toHaveBeenCalledTimes(2)
-    expect(clipboard).toHaveBeenCalledOnce()
-    expect(clipboard).toHaveBeenCalledWith('clipboard text from the runtime')
-    renderer.dispose()
   })
 })

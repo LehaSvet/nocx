@@ -3,8 +3,6 @@
 // write PTY output in, emit user input out, and report its grid size.
 import type { TerminalBufferLine, TerminalTheme } from '../terminal-types'
 import type { CapturedFrame } from '../frame/types'
-import type { OscNotification } from '../osc-notification'
-import type { SessionEffect } from '../generated/session.effect'
 
 export type DataCallback = (data: string) => void
 export type ResizeCallback = (cols: number, rows: number) => void
@@ -33,12 +31,6 @@ export interface CommandMarkerEvent extends CommandMarker {
 // The VT frontend parses OSC 133 via parser.registerOscHandler and surfaces
 // each enriched marker as an event — the backend never sniffs the byte stream.
 export type CommandMarkerCallback = (event: CommandMarkerEvent) => void
-
-// NotificationRequestCallback fires when a program asks nocx to present a
-// message (ADR-0047) — OSC 9 or OSC 777. Like every other OSC on this
-// contract the renderer parses and reports; it carries only what the program
-// supplied, and never where the message should go.
-export type NotificationRequestCallback = (request: OscNotification) => void
 
 // ── Links (nocx-8yg.8) ────────────────────────────────────────────────────
 
@@ -141,23 +133,6 @@ export interface TerminalRenderer {
   // nocx_env tag when the marker is tagged.
   onCommandMarker(cb: CommandMarkerCallback): void
 
-  // onNotification registers a callback that fires when a program asks nocx
-  // to present a message (ADR-0047) — OSC 9 or OSC 777, two spellings of one
-  // request, fanned out identically so nothing downstream depends on which
-  // one a program chose. Parse-and-report only: the renderer says a program
-  // asked and never says where the message goes; the backend's router is the
-  // only holder of that. Optional, so a renderer that
-  // does not parse these degrades to raising nothing rather than failing to
-  // mount.
-  onNotification?(cb: NotificationRequestCallback): void
-  // onBell registers a callback that fires when the terminal receives BEL
-  // (\x07). Bell always deserves attention regardless of buffer, so the
-  // tab bar always lights the activity indicator on bell.
-  onBell(cb: () => void): void
-
-  /** Deliver a non-visual event produced by the authoritative session runtime. */
-  applySessionEffect?(effect: SessionEffect): void
-
   // onSelectionChange fires when the user completes a selection gesture in
   // the terminal, not per cell or per boundary movement. The callback
   // receives the current selection text (via getSelection()). An empty
@@ -166,15 +141,6 @@ export interface TerminalRenderer {
   // The renderer reports facts and never touches the clipboard (AD-6).
   // Copy-on-select policy lives above the renderer boundary.
   onSelectionChange(cb: (text: string) => void): void
-
-  // onClipboardWrite fires when a program emits OSC 52 to place text on the
-  // clipboard. The renderer decodes the OSC 52 payload and fires the
-  // callback with the decoded text.
-  //
-  // The renderer reports the decoded text and never touches the clipboard
-  // (AD-6). OSC 52 policy (notification, clipboard write) lives above the
-  // renderer boundary.
-  onClipboardWrite(cb: (text: string) => void): void
 
   // paste inserts text at the cursor, preserving bracketed-paste semantics
   // when the running program has enabled mode 2004. Implemented via

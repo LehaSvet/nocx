@@ -36,6 +36,7 @@ import type { Pane as LayoutPane, Tab as LayoutTab } from './generated/layout.re
 import type { DriverState } from './pane-observation'
 import { frameOf } from './painter/fixtures'
 import type { SessionFrame } from './generated/session.frame'
+import type { SessionEffect } from './generated/session.effect'
 import {
   BasePaneContent,
   SURFACE_TERMINAL,
@@ -78,6 +79,23 @@ function fireFrameMetadata(
   }
   const rows = Array.from({ length: 24 }, () => [])
   session.fireScreenFrame(frameOf(revision, rows, undefined, { cols: 80, rows: 24 }, state))
+}
+
+function fireSessionEffect(
+  session: SessionFake,
+  kind: SessionEffect['kind'],
+  effectId: string,
+  body = '',
+  title = '',
+): void {
+  session.fireEffect({
+    sessionId: session.sessionId,
+    generation: '1',
+    effectId,
+    kind,
+    title,
+    body,
+  })
 }
 
 // ── Second PaneContent implementation for mount-once proof ─────────────
@@ -880,23 +898,22 @@ describe('PaneManager', () => {
     // of that start, like everything else it emits then.
     settlePane(1, client)
 
-    // Put the background tab into the alternate buffer via onBufferChange.
-    const renderers = await getRendererMocks()
-    renderers[1]._fireBufferChange('alternate')
-
-    // Fire bell on the background tab's renderer.
-    renderers[1]._fireBell()
+    const background = client._sessions[1]
+    if (!background) throw new Error('background session not opened')
+    fireFrameMetadata(background, 1, { bufferKind: 'alternate' })
+    fireSessionEffect(background, 'bell', '2')
 
     const indicators = bar.querySelectorAll('.nocx-tab-indicator')
     expect(indicators[1].getAttribute('data-activity') === 'true').toBe(true)
   })
 
   it('does not mark activity on bell for the active tab', async () => {
-    const { bar } = await mountPaneManager()
+    const { bar, client } = await mountPaneManager()
 
-    // Only one tab, and it is active. Fire bell on it.
-    const renderers = await getRendererMocks()
-    renderers[0]._fireBell()
+    // Only one tab, and it is active. Fire a backend bell effect.
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
+    fireSessionEffect(session, 'bell', '2')
 
     const indicators = bar.querySelectorAll('.nocx-tab-indicator')
     expect(indicators[0].getAttribute('data-activity') === 'true').toBe(false)
@@ -1299,12 +1316,12 @@ describe('PaneManager', () => {
     const gate = new ClipboardGate()
     gate.allow()
 
-    await mountPaneManager(undefined, cb, gate)
+    const { client } = await mountPaneManager(undefined, cb, gate)
 
     await Promise.resolve()
-    const renderers = await getRendererMocks()
-
-    renderers[0]._fireClipboardWrite('osc52 payload')
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
+    fireSessionEffect(session, 'clipboard', '2', 'osc52 payload')
 
     expect(cb.writeText).toHaveBeenCalledWith('osc52 payload')
   })
@@ -1409,12 +1426,13 @@ describe('PaneManager', () => {
     const gate = new ClipboardGate()
     const banner = makeBanner()
 
-    await mountPaneManager(undefined, cb, gate, banner)
+    const { client } = await mountPaneManager(undefined, cb, gate, banner)
     await Promise.resolve()
-    const renderers = await getRendererMocks()
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
 
-    // Fire an OSC 52 write. Gate starts denied, banner not yet shown.
-    renderers[0]._fireClipboardWrite('osc52 text')
+    // Fire a backend clipboard effect. Gate starts denied, banner not yet shown.
+    fireSessionEffect(session, 'clipboard', '2', 'osc52 text')
 
     // The banner must have been shown exactly once.
     expect(banner.show).toHaveBeenCalledTimes(1)
@@ -1429,12 +1447,13 @@ describe('PaneManager', () => {
     // Banner already shown — simulate the first write having raised it.
     const banner = makeBanner({ shown: true })
 
-    await mountPaneManager(undefined, cb, gate, banner)
+    const { client } = await mountPaneManager(undefined, cb, gate, banner)
     await Promise.resolve()
-    const renderers = await getRendererMocks()
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
 
-    // Fire a second OSC 52 write while the banner is already shown.
-    renderers[0]._fireClipboardWrite('second osc52 text')
+    // Fire a second backend clipboard effect while the banner is already shown.
+    fireSessionEffect(session, 'clipboard', '2', 'second osc52 text')
 
     // The banner must NOT be shown again — a program looping OSC 52
     // must produce one banner, not a stack.
@@ -1453,12 +1472,13 @@ describe('PaneManager', () => {
       }),
     })
 
-    await mountPaneManager(undefined, cb, gate, banner)
+    const { client } = await mountPaneManager(undefined, cb, gate, banner)
     await Promise.resolve()
-    const renderers = await getRendererMocks()
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
 
-    // Fire the first OSC 52 write — blocked, banner shown.
-    renderers[0]._fireClipboardWrite('first write')
+    // Fire the first backend clipboard effect — blocked, banner shown.
+    fireSessionEffect(session, 'clipboard', '2', 'first write')
 
     expect(banner.show).toHaveBeenCalledTimes(1)
 
@@ -1469,7 +1489,7 @@ describe('PaneManager', () => {
     })
 
     // Fire a second write — must go through immediately, no banner.
-    renderers[0]._fireClipboardWrite('second write')
+    fireSessionEffect(session, 'clipboard', '3', 'second write')
     expect(cb.writeText).toHaveBeenCalledWith('second write')
     // Banner still only called once.
     expect(banner.show).toHaveBeenCalledTimes(1)
@@ -1486,12 +1506,13 @@ describe('PaneManager', () => {
       }),
     })
 
-    await mountPaneManager(undefined, cb, gate, banner)
+    const { client } = await mountPaneManager(undefined, cb, gate, banner)
     await Promise.resolve()
-    const renderers = await getRendererMocks()
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
 
-    // Fire the first OSC 52 write.
-    renderers[0]._fireClipboardWrite('blocked text')
+    // Fire the first backend clipboard effect.
+    fireSessionEffect(session, 'clipboard', '2', 'blocked text')
 
     expect(banner.show).toHaveBeenCalledTimes(1)
 
@@ -1499,7 +1520,7 @@ describe('PaneManager', () => {
     expect(gate.granted).toBe(false)
 
     // Fire a second write — suppressed, no banner, no write.
-    renderers[0]._fireClipboardWrite('another blocked text')
+    fireSessionEffect(session, 'clipboard', '3', 'another blocked text')
 
     // Still no write, and banner was not shown again.
     expect(cb.writeText).not.toHaveBeenCalled()
@@ -1519,12 +1540,11 @@ describe('PaneManager', () => {
     })
     await Promise.resolve()
 
-    // Get both renderers.
-    const renderers = await getRendererMocks()
-    expect(renderers.length).toBeGreaterThanOrEqual(2)
+    const secondSession = client._sessions[1]
+    if (!secondSession) throw new Error('second session not opened')
 
     // Fire on the second tab — still suppressed, gate is app-wide.
-    renderers[1]._fireClipboardWrite('tab 2 write')
+    fireSessionEffect(secondSession, 'clipboard', '2', 'tab 2 write')
 
     expect(cb.writeText).not.toHaveBeenCalled()
     expect(banner.show).not.toHaveBeenCalled()

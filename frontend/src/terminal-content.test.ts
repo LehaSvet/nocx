@@ -13599,10 +13599,8 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
 // other's question. Replacing one with the other is the defect these tests
 // exist to catch, so every one of them asserts both halves.
 //
-// The BEL BYTE reaching onBell is proven against the real VT parser in
-// renderers/xterm.test.ts ("onBell through the real parser"), including that
-// the BEL terminating an OSC sequence does NOT ring. This file owns the
-// other half of the chain: what the callback does when it fires.
+// The session runtime parses BEL and delivers an identity-bearing effect.
+// This suite checks the product behavior at the session-effect boundary.
 describe('a program printing BEL (nocx-n3nfg)', () => {
   /** The bell only lights the dot on a pane that has SETTLED and is not the
    *  one being looked at (panes.ts markActivity): a shell's banner and first
@@ -13620,9 +13618,42 @@ describe('a program printing BEL (nocx-n3nfg)', () => {
     })
   }
 
+  const fireRuntimeEffect = (
+    session: SessionFake,
+    kind: SessionEffect['kind'],
+    effectId: string,
+    body = '',
+    title = '',
+  ): void => {
+    session.fireEffect({
+      sessionId: session.sessionId,
+      generation: '1',
+      effectId,
+      kind,
+      title,
+      body,
+    })
+  }
+
   /** The notify.bell requests this pane sent, in order. */
   const bellCalls = (client: ClientFake): unknown[][] =>
     client.dispatcher.call.mock.calls.filter((c: unknown[]) => c[0] === 'notify.bell')
+
+  it('routes backend notification effects through notify.raise', async () => {
+    const client = makeClient()
+    const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    try {
+      const session = sessionOf(content)
+      fireRuntimeEffect(session, 'notification', '2', 'Build finished', 'Build')
+      expect(client.dispatcher.call).toHaveBeenCalledWith('notify.raise', {
+        sessionId: session.sessionId,
+        title: 'Build',
+        body: 'Build finished',
+      })
+    } finally {
+      teardown()
+    }
+  })
 
   it('settles integrated startup on authenticated prompt_ready before a background bell', async () => {
     const session = makeSession({ awaitsIntegration: true })
@@ -13632,7 +13663,7 @@ describe('a program printing BEL (nocx-n3nfg)', () => {
     try {
       // The backend's promptBoundary is an observation, not lifecycle authority.
       settle(content)
-      rendererOf(content)._fireBell()
+      fireRuntimeEffect(session, 'bell', '2')
       expect(tab.hasActivity).toBe(false)
 
       lifecycleHandler(
@@ -13644,7 +13675,7 @@ describe('a program printing BEL (nocx-n3nfg)', () => {
         domain: 'd1',
         epoch: 1,
       })
-      rendererOf(content)._fireBell()
+      fireRuntimeEffect(session, 'bell', '3')
 
       expect(tab.hasActivity).toBe(true)
       expect(bellCalls(client)).toHaveLength(2)
@@ -13660,7 +13691,7 @@ describe('a program printing BEL (nocx-n3nfg)', () => {
       settle(content)
       expect(tab.hasActivity).toBe(false)
 
-      rendererOf(content)._fireBell()
+      fireRuntimeEffect(sessionOf(content), 'bell', '2')
 
       // The notification: its own method, carrying addressing and nothing
       // else. The kind is not here because it cannot be — it is stamped from
@@ -13689,7 +13720,7 @@ describe('a program printing BEL (nocx-n3nfg)', () => {
       // Set after the mount so this rejection belongs to the bell alone.
       client.dispatcher.call.mockRejectedValue(new Error('notify.bell not available'))
 
-      rendererOf(content)._fireBell()
+      fireRuntimeEffect(sessionOf(content), 'bell', '2')
       // Let the rejection settle: an unhandled one surfaces here, not later.
       await Promise.resolve()
       await Promise.resolve()
@@ -13702,21 +13733,18 @@ describe('a program printing BEL (nocx-n3nfg)', () => {
     }
   })
 
-  // The id is read at FIRE time, not at subscribe time: it is
-  // server-authoritative (AD-7) and a reattach replaces it, so a captured one
-  // would address the session the pane used to hold. With no session there is
-  // nothing to address — and the half that never needed one still happens.
-  it('marks the tab and reports nothing when the pane holds no session', async () => {
+  it('ignores an effect from a session no longer bound to the pane', async () => {
     const client = makeClient()
     const { content, tab, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
       settle(content)
+      const session = sessionOf(content)
       ;(content as unknown as { session: SessionFake | null }).session = null
 
-      rendererOf(content)._fireBell()
+      fireRuntimeEffect(session, 'bell', '2')
 
       expect(bellCalls(client)).toEqual([])
-      expect(tab.hasActivity).toBe(true)
+      expect(tab.hasActivity).toBe(false)
     } finally {
       teardown()
     }
@@ -16526,8 +16554,6 @@ describe('the pane receives the screen plane into its cell model (nocx-zg3k3.2.8
       tab.pane.classList.add('active')
       await vi.waitFor(() => expect(paneScreen()).not.toBeNull())
       const session = sessionOf(content)
-      const renderer = rendererOf(content)
-      const applySessionEffect = vi.spyOn(renderer, 'applySessionEffect')
       const host = (content as unknown as { host: { contentSettled: () => void } }).host
       const settled = vi.spyOn(host, 'contentSettled')
       session.fireScreenFrame(screenFrame(3, ['accepted']))
@@ -16538,7 +16564,6 @@ describe('the pane receives the screen plane into its cell model (nocx-zg3k3.2.8
       session.fireScreenFrame(refused)
       expect(paneScreen()?.revision).toBe(3)
 
-      applySessionEffect.mockClear()
       session.fireEffect({
         sessionId: session.sessionId,
         generation: '1',
@@ -16548,7 +16573,6 @@ describe('the pane receives the screen plane into its cell model (nocx-zg3k3.2.8
         body: '',
         screenRevision: 7,
       })
-      expect(applySessionEffect).not.toHaveBeenCalled()
       expect(settled).not.toHaveBeenCalled()
     } finally {
       teardown()
@@ -16566,14 +16590,11 @@ describe('the pane receives the screen plane into its cell model (nocx-zg3k3.2.8
       tab.pane.classList.add('active')
       await vi.waitFor(() => expect(paneScreen()).not.toBeNull())
       const session = sessionOf(content)
-      const renderer = rendererOf(content)
-      const applySessionEffect = vi.spyOn(renderer, 'applySessionEffect')
       const host = (content as unknown as { host: { contentSettled: () => void } }).host
       const settled = vi.spyOn(host, 'contentSettled')
       session.fireScreenFrame(screenFrame(7, ['accepted']))
       await vi.waitFor(() => expect(paneScreen()?.revision).toBe(7))
 
-      applySessionEffect.mockClear()
       settled.mockClear()
       session.fireEffect({
         sessionId: session.sessionId,
@@ -16585,16 +16606,13 @@ describe('the pane receives the screen plane into its cell model (nocx-zg3k3.2.8
         screenRevision: 7,
       })
 
-      expect(applySessionEffect).toHaveBeenCalledWith(
-        expect.objectContaining({ kind: 'promptBoundary', screenRevision: 7 }),
-      )
       expect(settled).toHaveBeenCalledOnce()
     } finally {
       teardown()
     }
   })
 
-  it('handles a prompt boundary buffered before its listener is registered', async () => {
+  it('drops an early prompt boundary until its screen revision is accepted', async () => {
     const client = makeClient()
     const pendingSession = makeSession()
     const pendingEffect: SessionEffect = {
@@ -16613,15 +16631,9 @@ describe('the pane receives the screen plane into its cell model (nocx-zg3k3.2.8
     })
     client.openSession.mockImplementation(() => Promise.resolve(pendingSession))
 
-    const { content, teardown } = await mountTerminal(
-      makeClipboard(),
-      { attachToDocument: true },
-      client,
-    )
-    const applySessionEffect = vi.spyOn(rendererOf(content), 'applySessionEffect')
+    const { teardown } = await mountTerminal(makeClipboard(), { attachToDocument: true }, client)
     try {
       expect(delivered).toHaveBeenCalledOnce()
-      expect(applySessionEffect).not.toHaveBeenCalled()
     } finally {
       teardown()
     }

@@ -16,7 +16,6 @@ import type {
   CommandMarkerEvent,
   DataCallback,
   MarkerAdapter,
-  NotificationRequestCallback,
   ResizeCallback,
   TerminalRenderer,
 } from './types'
@@ -33,11 +32,8 @@ import { mintLiveFrame } from '../frame/mint'
 import type { CapturedFrame } from '../frame/types'
 import { fromITheme } from '../scrollback/serializer'
 import { isSnippetChord } from '../snippets/chord'
-import type { SessionEffect } from '../generated/session.effect'
 import { logDecision, isDecisionTracing } from '../log'
-type BellCallback = () => void
 type SelectionCallback = (text: string) => void
-type ClipboardWriteCallback = (text: string) => void
 
 // xterm.js (VS Code's engine, stable 5.x) with the WebGL (GPU) renderer,
 // hardened the way Tabby runs it: recover from a lost GPU context and clear the
@@ -216,9 +212,6 @@ export class XtermRenderer implements TerminalRenderer {
   private refreshTimer: ReturnType<typeof setInterval> | null = null
   private commandMarkerSubs: CommandMarkerCallback[] = []
   private osc133Disposable?: { dispose(): void }
-  private notificationSubs: NotificationRequestCallback[] = []
-  private bellSubs: BellCallback[] = []
-  private clipboardSubs: ClipboardWriteCallback[] = []
   private scrollSubs: Array<(viewportY: number) => void> = []
   private renderSubs: Array<(range: { start: number; end: number }) => void> = []
   /** The parser handlers that refuse the program's own queries, so the one
@@ -853,55 +846,10 @@ export class XtermRenderer implements TerminalRenderer {
     })
   }
 
-  /** Subscribe to notification effects from the session runtime.
-   *
-   * The runtime owns VT parsing now. Its identity-bearing session.effect is
-   * the sole source for this callback; parsing the compatibility renderer's
-   * byte mirror here would report the same OSC once without an effect id and
-   * again through the replay-safe route (nocx-zg3k3.3.3). */
-  onNotification(cb: NotificationRequestCallback): void {
-    this.notificationSubs.push(cb)
-  }
-
-  /** Subscribe to recovery-fence sightings: the shell wrote the one-shot
-   *  recovery state after restoring a visible native prompt (ADR-0024
-   *  decision 8). The consumer matches the hex against the nonce the lost
-   *  fact published and acknowledges the restoration. */
-
-  onBell(cb: BellCallback): void {
-    this.bellSubs.push(cb)
-  }
-
-  applySessionEffect(effect: SessionEffect): void {
-    switch (effect.kind) {
-      case 'bell':
-        for (const sub of this.bellSubs) sub()
-        break
-      case 'notification':
-        for (const sub of this.notificationSubs) sub({ title: effect.title, body: effect.body })
-        break
-      case 'clipboard':
-        // The runtime effect already carries decoded clipboard text, not the
-        // OSC 52 wire payload. Empty writes remain refused by policy.
-        if (effect.body !== '') {
-          for (const sub of this.clipboardSubs) sub(effect.body)
-        }
-        break
-      case 'recovery':
-        // Recovery completion is decided by lifecycle.changed's durable
-        // episode state, never by rendering or by a terminal-byte parser.
-        break
-    }
-  }
-
   onSelectionChange(cb: SelectionCallback): void {
     this.term?.onSelectionChange(() => {
       cb(this.term?.getSelection() ?? '')
     })
-  }
-
-  onClipboardWrite(cb: ClipboardWriteCallback): void {
-    this.clipboardSubs.push(cb)
   }
 
   paste(text: string): boolean {
@@ -1128,9 +1076,6 @@ export class XtermRenderer implements TerminalRenderer {
     this.osc133Disposable?.dispose()
     this.osc133Disposable = undefined
     this.commandMarkerSubs = []
-    this.notificationSubs = []
-    this.bellSubs = []
-    this.clipboardSubs = []
     if (this._dprMedia !== null && this._dprChangeHandler !== null) {
       this._dprMedia.removeEventListener('change', this._dprChangeHandler)
       this._dprMedia = null

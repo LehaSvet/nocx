@@ -18,7 +18,6 @@ import type {
   ResizeCallback,
   TerminalRenderer,
 } from '../renderers/types'
-import { CommandSnapshotStore } from '../command-snapshot'
 import { LayoutStore } from '../layout/layout-store'
 import { UIStateClient } from '../uistate-client'
 import type { UIState } from '../generated/uistate'
@@ -158,7 +157,6 @@ export class MockWebSocket {
 export type LiveContentHeightSpy = Mock<() => number | null>
 export interface RendererMock extends TerminalRenderer {
   /** This tab's OSC 636 store — XtermRenderer owns one, so the mock must too. */
-  snapshotStore: CommandSnapshotStore
   /** The mock's paste is a spy: tests program it to refuse the write. */
   paste: Mock<(text: string) => boolean>
   /** The mock's bracketed-paste-mode answer is a spy: tests flip mode 2004
@@ -177,12 +175,10 @@ export interface RendererMock extends TerminalRenderer {
     onData?: DataCallback
     onResize?: ResizeCallback
     onCommandMarker?: CommandMarkerCallback
-    onBell?: () => void
     // The real renderer fans out to a list; the mock mirrors it so a
     // subscriber is never hidden by a later one.
     onBufferChange?: Array<(type: 'normal' | 'alternate') => void>
     onSelectionChange?: (text: string) => void
-    onClipboardWrite?: (text: string) => void
     onWriteParsed?: () => void
   }
   _fireBufferChange(type: 'normal' | 'alternate'): void
@@ -196,12 +192,8 @@ export interface RendererMock extends TerminalRenderer {
   _fireResize(cols: number, rows: number): void
   /** Fire an OSC 1337 in-band READY (nocx-ynsx). */
   _fireInBandReady(): void
-  _fireBell(): void
   /** Fire a selection event — used by clipboard policy tests. */
   _fireSelectionChange(text: string): void
-  /** Fire an OSC 52 write event — used by clipboard policy tests. */
-  _fireClipboardWrite(text: string): void
-  applySessionEffect(effect: SessionEffect): void
   /** Fire a keystroke reaching the grid in raw mode (nocx-yb5y). */
   _fireData(data: string): void
 }
@@ -229,9 +221,6 @@ export function createRendererMock(): RendererMock {
     onCommandMarker: vi.fn((cb: CommandMarkerCallback) => {
       cbs.onCommandMarker = cb
     }),
-    onBell: vi.fn((cb: () => void) => {
-      cbs.onBell = cb
-    }),
     // The real renderer fans out to a subscriber list; the mock must too
     // (the lane interactivity report subscribes beside the presentation
     // layer — a single-slot mock hides one of them).
@@ -243,21 +232,6 @@ export function createRendererMock(): RendererMock {
     activeBufferKind: vi.fn(() => activeBuffer),
     onSelectionChange: vi.fn((cb: (text: string) => void) => {
       cbs.onSelectionChange = cb
-    }),
-    onClipboardWrite: vi.fn((cb: (text: string) => void) => {
-      cbs.onClipboardWrite = cb
-    }),
-    applySessionEffect: vi.fn((effect: SessionEffect) => {
-      switch (effect.kind) {
-        case 'bell':
-          cbs.onBell?.()
-          break
-        case 'clipboard':
-          if (effect.body !== '') cbs.onClipboardWrite?.(effect.body)
-          break
-        case 'notification':
-          break
-      }
     }),
     // A paste IS input: xterm's term.paste() writes the payload (bracketed
     // when the program asked for it) through the same onData every keystroke
@@ -331,12 +305,6 @@ export function createRendererMock(): RendererMock {
     diagnostics: vi.fn().mockReturnValue({ bufferRows: 0, accelerated: false }),
     cols: 80,
     rows: 24,
-    // A REAL store, not a stub: the composition point hands
-    // renderer.snapshotStore to the editor and to the scrollback's frozen
-    // headers, so a mock without one crashes the CM6 plugin at mount. It is
-    // per mock, exactly like the per-renderer instance it stands in for —
-    // tests that want a snapshot ingest into this one.
-    snapshotStore: new CommandSnapshotStore(),
     _fireBufferChange(type: 'normal' | 'alternate') {
       activeBuffer = type
       for (const sub of cbs.onBufferChange ?? []) sub(type)
@@ -347,14 +315,8 @@ export function createRendererMock(): RendererMock {
     _fireCommandMarker(marker: Parameters<CommandMarkerCallback>[0]) {
       cbs.onCommandMarker?.(marker)
     },
-    _fireBell() {
-      cbs.onBell?.()
-    },
     _fireSelectionChange(text: string) {
       cbs.onSelectionChange?.(text)
-    },
-    _fireClipboardWrite(text: string) {
-      cbs.onClipboardWrite?.(text)
     },
     /** Fire a recovery-fence sighting (ADR-0024 decision 8). */
     /** A keystroke reaching the grid in raw mode — what xterm's onData

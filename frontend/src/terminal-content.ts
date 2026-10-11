@@ -73,6 +73,7 @@ import {
 import { mountIntegrationNotice } from './integration/notice'
 import { mountIntegrationWaiting } from './integration/waiting'
 import { mountToolSurfaceNotice } from './tool-surface-notice'
+import type { SessionEffect } from './generated/session.effect'
 import type { SessionOutputGap } from './generated/session.outputGap'
 import {
   mountRecoveryNotice,
@@ -3374,39 +3375,6 @@ export class TerminalContent extends BasePaneContent {
         logDecision('marker observed', { kind: marker.kind, exitCode: marker.exitCode })
       })
 
-      // Optional on the renderer contract (types.ts): a renderer that does
-      // not parse these degrades to raising nothing rather than failing to
-      // mount, which is what the fakes in the test suite rely on.
-      renderer.onNotification?.((request) => {
-        // A program asked nocx to present a message (ADR-0047). The renderer
-        // reports the request and never grants it: what crosses is the text
-        // the program supplied plus this session's id, and the backend stamps
-        // kind, trust, level and attribution from the method invoked and its
-        // own registry. There is no argument here by which a program could
-        // name a destination, and that absence is the design, not an omission.
-        //
-        // Fire-and-forget on purpose. A notification is not worth blocking
-        // terminal output on, and every refusal is final rather than
-        // retryable: the method missing (a backend without the pipeline), the
-        // session not live on this connection, or the pipeline refusing the
-        // delivery. Each is logged and dropped.
-        // Read at fire time rather than at subscribe time: the id is
-        // server-authoritative (AD-7) and a reattach replaces it, so a
-        // captured one would address the session the pane used to hold. No
-        // session means nothing to address — the pane is between sessions and
-        // the request has nowhere to belong.
-        const sid = this.session?.sessionId
-        if (!sid) return
-        void new NotifyClient(this.client.dispatcher)
-          .raise({ sessionId: sid, title: request.title, body: request.body })
-          .catch((err: unknown) => {
-            log.warn('nocx: notification not raised', {
-              sid,
-              error: err instanceof Error ? err.message : String(err),
-            })
-          })
-      })
-
       this._lifecycleChangeUnsub = this.lifecycle.onChange(() => {
         if (this.lifecycle.state.kind === 'running') {
           this._screenHandbackAwaitingBoundary = true
@@ -3943,37 +3911,6 @@ export class TerminalContent extends BasePaneContent {
       // again: a reconnect rebuilds exactly this and nothing above it.
       if (!(await this._bindSession(signal, renderer, false))) return
 
-      renderer.onBell(() => {
-        // TWO facts, not one, and neither replaces the other. The tab dot is
-        // "something happened in a pane you are not looking at" — local,
-        // instant, and free. The notification is "a program asked for you",
-        // which is a routable event with a trust class, an attribution and a
-        // feed row. A bell is both, so it does both.
-        host.requestAttention()
-        // A program printed BEL (ADR-0047). Reported through its OWN method:
-        // kind is stamped from the method invoked, so notify.bell is what
-        // makes this a bell, and there is no argument here — or anywhere on
-        // this client — by which it could become a different kind or reach a
-        // destination the renderer named.
-        //
-        // Fire-and-forget, and the id is read at fire time rather than at
-        // subscribe time, for the same reasons the OSC 9 / 777 wiring above
-        // gives: the session id is server-authoritative (AD-7) and a reattach
-        // replaces it, and a bell is not worth blocking terminal output on.
-        // Every refusal is final rather than retryable. No session means the
-        // pane is between sessions and the bell has nothing to address — the
-        // tab dot above still lit, which is the half that never needed one.
-        const sid = this.session?.sessionId
-        if (!sid) return
-        void new NotifyClient(this.client.dispatcher)
-          .bell({ sessionId: sid })
-          .catch((err: unknown) => {
-            log.warn('nocx: bell not reported', {
-              sid,
-              error: err instanceof Error ? err.message : String(err),
-            })
-          })
-      })
       // ── Clipboard ────────────────────────────────────────────────────
       renderer.onSelectionChange((text) => {
         if (shouldCopy(text)) {
@@ -3981,27 +3918,6 @@ export class TerminalContent extends BasePaneContent {
             console.warn('nocx: clipboard write failed (selection)', e)
           })
         }
-      })
-
-      renderer.onClipboardWrite((text) => {
-        if (this.gate.granted) {
-          this.clipboard.writeText(text).catch((e) => {
-            console.warn('nocx: clipboard write failed (OSC 52)', e)
-          })
-          return
-        }
-        if (this.gate.suppressed) return
-        if (this.banner.shown) return
-        void this.banner.show().then((choice) => {
-          if (choice === 'allow') {
-            this.gate.allow()
-            this.clipboard.writeText(text).catch((e) => {
-              console.warn('nocx: clipboard write failed (OSC 52)', e)
-            })
-          } else if (choice === 'suppress') {
-            this.gate.suppress()
-          }
-        })
       })
 
       // Paste on right-click AND middle-click.
@@ -4777,7 +4693,7 @@ export class TerminalContent extends BasePaneContent {
       if (effect.kind === 'commandSnapshot') {
         this.snapshotStore.applyBackendSnapshot(effect.commandNames)
       }
-      renderer.applySessionEffect?.(effect)
+      this._handleRuntimeEffect(effect)
     })
     session.onData((data: string) => {
       log.debug('nocx: session data received', { length: data.length })
@@ -6414,12 +6330,62 @@ export class TerminalContent extends BasePaneContent {
   pinnedFrame(): CapturedFrame | null {
     return this._pinnedFrame
   }
-  /** Report the lane's buffer kind to the backend (agent.laneInteractivity,
-   *  ADR-0020 decision 3): the renderer observed the buffer change, the
-   *  backend decides the awaiting-takeover transition from it. Fire-and-
-   *  forget — the backend treats a refused report (a stale session, a
-   *  closed lane) as nothing to transition; a lost report costs only a
-   *  delayed transition, and the next change re-reports. */
+  /** Runtime effects are already authenticated and identity-bearing. Keep
+   * their policy here, at the session boundary, rather than routing them
+   * through the renderer or reparsing the byte mirror. */
+  private _handleRuntimeEffect(effect: SessionEffect): void {
+    if (effect.kind === 'bell') {
+      this.host?.requestAttention()
+      const sid = this.session?.sessionId
+      if (!sid) return
+      void new NotifyClient(this.client.dispatcher)
+        .bell({ sessionId: sid })
+        .catch((err: unknown) => {
+          log.warn('nocx: bell not reported', {
+            sid,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        })
+      return
+    }
+    if (effect.kind === 'notification') {
+      const sid = this.session?.sessionId
+      if (!sid) return
+      void new NotifyClient(this.client.dispatcher)
+        .raise({ sessionId: sid, title: effect.title, body: effect.body })
+        .catch((err: unknown) => {
+          log.warn('nocx: notification not raised', {
+            sid,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        })
+      return
+    }
+    if (effect.kind === 'clipboard' && effect.body !== '') {
+      this._handleClipboardWrite(effect.body)
+    }
+  }
+
+  private _handleClipboardWrite(text: string): void {
+    if (this.gate.granted) {
+      this.clipboard.writeText(text).catch((err) => {
+        console.warn('nocx: clipboard write failed (session effect)', err)
+      })
+      return
+    }
+    if (this.gate.suppressed || this.banner.shown) return
+    void this.banner.show().then((choice) => {
+      if (choice === 'allow') {
+        this.gate.allow()
+        this.clipboard.writeText(text).catch((err) => {
+          console.warn('nocx: clipboard write failed (session effect)', err)
+        })
+      } else if (choice === 'suppress') {
+        this.gate.suppress()
+      }
+    })
+  }
+
   private _resetFrameMetadataSession(sessionId: string): void {
     if (this._metadataSessionId === sessionId) return
     this._metadataSessionId = sessionId
@@ -6481,6 +6447,12 @@ export class TerminalContent extends BasePaneContent {
     this._syncPaneContext()
   }
 
+  /** Report the lane's buffer kind to the backend (agent.laneInteractivity,
+   *  ADR-0020 decision 3): the renderer observed the buffer change, the
+   *  backend decides the awaiting-takeover transition from it. Fire-and-
+   *  forget — the backend treats a refused report (a stale session, a
+   *  closed lane) as nothing to transition; a lost report costs only a
+   *  delayed transition, and the next change re-reports. */
   private reportLaneBufferKind(bufferKind: 'normal' | 'alternate'): void {
     const sid = this.session?.sessionId
     if (!sid) return
