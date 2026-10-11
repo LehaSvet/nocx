@@ -37,7 +37,7 @@ const COMPOSER_STYLE = resolve(srcDir, 'styles/surfaces/composer.css')
 import type { PaneIdentity, PaneScreenReading } from './terminal-content'
 import type { SessionEffect } from './generated/session.effect'
 import type { Row, SessionFrame } from './generated/session.frame'
-import { styleOf, wireRowOf, type CellSpec } from './painter/fixtures'
+import { frameOf, styleOf, wireRowOf, type CellSpec } from './painter/fixtures'
 import { grantBlockFromElement, type GrantBlock } from './ask-entry'
 import type { AgentStatusResult } from './generated/agent.status'
 import { EditorView } from '@codemirror/view'
@@ -1552,7 +1552,7 @@ describe('inserting a saved secret into the pane in front (nocx-fk32)', () => {
     return client
   }
 
-  it('writes the VALUE to the pty when the terminal owns input, and sends it', async () => {
+  it('sends the VALUE and Return as intents when the terminal owns input', async () => {
     const client = resolvingClient('hunter2')
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
@@ -1562,10 +1562,14 @@ describe('inserting a saved secret into the pane in front (nocx-fk32)', () => {
       // the value goes across, WITH its newline: choosing a secret at a
       // password prompt is the answer to that prompt (owner, 2026-08-10).
       editorOf(content).hide()
-      const sentBefore = session.send.mock.calls.length
+      const intentCountBefore = session.intent.mock.calls.length
       await expect(content.insertSecret('pi@far')).resolves.toBe('value')
-      const sent = session.send.mock.calls.slice(sentBefore).map((c: unknown[]) => c[0])
-      expect(sent).toEqual(['hunter2\n'])
+      await vi.waitFor(() => expect(session.intent.mock.calls.length).toBe(intentCountBefore + 2))
+      expect(session.intent.mock.calls.slice(intentCountBefore)).toEqual([
+        ['text', 'hunter2'],
+        ['key', 'enter'],
+      ])
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -1585,8 +1589,10 @@ describe('inserting a saved secret into the pane in front (nocx-fk32)', () => {
       const session = sessionOf(content)
       editorOf(content).hide()
       const sentBefore = session.send.mock.calls.length
+      const intentCountBefore = session.intent.mock.calls.length
       await expect(content.insertSecret('gone')).resolves.toBe('unavailable')
       expect(session.send.mock.calls.length).toBe(sentBefore)
+      expect(session.intent.mock.calls.length).toBe(intentCountBefore)
     } finally {
       teardown()
     }
@@ -1615,7 +1621,7 @@ describe('inserting a saved secret into the pane in front (nocx-fk32)', () => {
     }
   })
 })
-describe('characterising insertSecret before the input-owner extraction (nocx-xqu5)', () => {
+describe('saved-secret input preserves the single intent route', () => {
   // Written BEFORE the extraction and required to pass unchanged after it:
   // the extraction may change only WHERE the question 'who owns input in
   // this pane' is answered (into a private inputOwner()), never the
@@ -1653,20 +1659,25 @@ describe('characterising insertSecret before the input-owner extraction (nocx-xq
     }
   })
 
-  it('with the terminal owning input, the value is resolved and sent WITH its newline', async () => {
+  it('with the terminal owning input, the VALUE and Return are structured intents', async () => {
     const client = resolvingClient('hunter2')
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
       const session = sessionOf(content)
       editorOf(content).hide()
-      const sentBefore = session.send.mock.calls.length
+      const intentCountBefore = session.intent.mock.calls.length
       await expect(content.insertSecret('pi@far')).resolves.toBe('value')
       // The vault is asked for exactly the reference line — nothing more.
       expect(client.call).toHaveBeenCalledWith('vault.resolveLine', { line: REFERENCE })
-      const sent = session.send.mock.calls.slice(sentBefore).map((c: unknown[]) => c[0])
-      // The resolved value crosses, with the newline: choosing a secret at
-      // a password prompt IS the answer to that prompt (owner, 2026-08-10).
-      expect(sent).toEqual(['hunter2\n'])
+      await vi.waitFor(() => expect(session.intent.mock.calls.length).toBe(intentCountBefore + 2))
+      // The resolved value and Return travel as two typed intents. The runtime
+      // supplies the mode-aware key encoding; the frontend never appends a
+      // newline byte to a raw write.
+      expect(session.intent.mock.calls.slice(intentCountBefore)).toEqual([
+        ['text', 'hunter2'],
+        ['key', 'enter'],
+      ])
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -1684,8 +1695,10 @@ describe('characterising insertSecret before the input-owner extraction (nocx-xq
     withSession.session = null
     try {
       const sentBefore = session.send.mock.calls.length
+      const intentCountBefore = session.intent.mock.calls.length
       await expect(content.insertSecret('pi@far')).resolves.toBe('unavailable')
       expect(session.send.mock.calls.length).toBe(sentBefore)
+      expect(session.intent.mock.calls.length).toBe(intentCountBefore)
     } finally {
       withSession.session = original
       teardown()
@@ -2358,8 +2371,10 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
         status: 'starting',
         shell: '/bin/zsh',
       })
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('x')
+      typeIntoPane(content, 'x')
+      expect(session.intent).not.toHaveBeenCalled()
       expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
@@ -2378,9 +2393,11 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('')
 
       const session = sessionOf(content)
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('y')
-      expect(session.send).toHaveBeenCalledWith('y')
+      typeIntoPane(content, 'y')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'y'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -2407,9 +2424,11 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       expect(tab.pane.querySelector('.nocx-integration-notice')).not.toBeNull()
 
       const session = sessionOf(content)
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('z')
-      expect(session.send).toHaveBeenCalledWith('z')
+      typeIntoPane(content, 'z')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'z'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -2421,9 +2440,11 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
     try {
       expect(tab.pane.querySelector(WAITING)).toBeNull()
       const session = sessionOf(content)
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('a')
-      expect(session.send).toHaveBeenCalledWith('a')
+      typeIntoPane(content, 'a')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'a'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -2466,9 +2487,11 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('')
 
       const session = sessionOf(content)
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('b')
-      expect(session.send).toHaveBeenCalledWith('b')
+      typeIntoPane(content, 'b')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'b'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -2503,8 +2526,10 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       })
       expect(tab.pane.querySelector(WAITING)).not.toBeNull()
       expect(content.shellState).not.toBe('integrated')
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('x')
+      typeIntoPane(content, 'x')
+      expect(session.intent).not.toHaveBeenCalled()
       expect(session.send).not.toHaveBeenCalled()
 
       // The fact the ack promised, now arriving: nothing about the pane's
@@ -2524,9 +2549,11 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       })
       expect(tab.pane.querySelector(WAITING)).toBeNull()
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('')
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('y')
-      expect(session.send).toHaveBeenCalledWith('y')
+      typeIntoPane(content, 'y')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'y'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -2543,9 +2570,11 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
     try {
       expect(tab.pane.querySelector(WAITING)).toBeNull()
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('')
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('z')
-      expect(session.send).toHaveBeenCalledWith('z')
+      typeIntoPane(content, 'z')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'z'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -2570,8 +2599,10 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       // on alone, before any session.integrationChanged exists.
       expect(tab.pane.querySelector(WAITING)).not.toBeNull()
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('none')
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('x')
+      typeIntoPane(content, 'x')
+      expect(session.intent).not.toHaveBeenCalled()
       expect(session.send).not.toHaveBeenCalled()
 
       fireIntegration({
@@ -2581,9 +2612,11 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       })
       expect(tab.pane.querySelector(WAITING)).toBeNull()
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('')
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('y')
-      expect(session.send).toHaveBeenCalledWith('y')
+      typeIntoPane(content, 'y')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'y'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -2602,38 +2635,64 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
     try {
       expect(tab.pane.querySelector(WAITING)).toBeNull()
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('')
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('z')
-      expect(session.send).toHaveBeenCalledWith('z')
+      typeIntoPane(content, 'z')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'z'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
   })
 })
 
-// The other half of the one-answerer change (ADR-0066, nocx-ygxjv.12). The
-// renderer stopped producing xterm's automatic replies to the program's own
-// queries — proved against the REAL engine in renderers/xterm.test.ts — and
-// this is the half that lives at the surface: the replies travelled
-// renderer.onData → session.send, which is ALSO the path a keystroke takes, so
-// removing the path with the replies would have left a terminal nobody can
-// type into. What this pins is the path, not the engine: a key reaching the
-// terminal still reaches the session, byte for byte and in order.
-describe('typing still reaches the session (nocx-ygxjv.12)', () => {
-  it('forwards every key the terminal produces, in order', async () => {
+// One input authority remains after the xterm cutover (ADR-0066): renderer
+// output cannot become PTY input, while a person's key and committed text
+// arrive as structured session intents.
+describe('terminal input uses session intents, never renderer bytes', () => {
+  it('ignores renderer onData and forwards the person’s actions as intents', async () => {
     const client = makeClient()
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
       const session = sessionOf(content)
       session.send.mockClear()
+      session.intent.mockClear()
 
-      // A word and the Enter that submits it: three separate onData events at
-      // xterm, and three writes at the pty.
-      rendererOf(content)._fireData('l')
-      rendererOf(content)._fireData('s')
-      rendererOf(content)._fireData('\r')
+      // This is the old xterm protocol-reply/input seam. It has no route to the
+      // session; only the input element below can submit a user's action.
+      rendererOf(content)._fireData('renderer bytes must not reach the pty')
+      expect(session.send).not.toHaveBeenCalled()
+      expect(session.intent).not.toHaveBeenCalled()
 
-      expect(session.send.mock.calls).toEqual([['l'], ['s'], ['\r']])
+      typeIntoPane(content, 'ls', '\r')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledTimes(3))
+
+      expect(session.intent.mock.calls).toEqual([
+        ['text', 'l'],
+        ['text', 's'],
+        ['key', 'enter'],
+      ])
+      expect(session.send).not.toHaveBeenCalled()
+    } finally {
+      teardown()
+    }
+  })
+
+  it('restores the native shell with text and Enter intents', async () => {
+    const { content, teardown } = await mountTerminal(makeClipboard())
+    try {
+      const session = sessionOf(content)
+      session.intent.mockClear()
+      session.send.mockClear()
+
+      content.switchToTerminalInput()
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledTimes(2))
+
+      expect(session.intent.mock.calls).toEqual([
+        ['text', '__nocx_native_mode'],
+        ['key', 'enter'],
+      ])
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -3914,7 +3973,7 @@ describe('the projections consume the kernel through the composition root (ADR-0
       const handler = factHandler(client)
       handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
       expect(ed.isVisible).toBe(true)
-      // The user's own escape: the editor hides, keys route raw.
+      // The user's own escape: the editor hides and keys use structured intents.
       content.switchToTerminalInput()
       expect(ed.isVisible).toBe(false)
       // A native fact and ANOTHER authenticated prompt must not undo the
@@ -11236,9 +11295,8 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
   /** ⌘/Ctrl+Enter, dispatched where a person's keystroke lands while the
    *  grid owns input: on the live grid, so it travels the same path. */
   async function summonChord(content: TerminalContent): Promise<void> {
-    const renderer = rendererOf(content)
-    if (typeof renderer.captureLiveFrame !== 'function') {
-      renderer.captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
+    if (!Object.prototype.hasOwnProperty.call(content, 'captureLiveFrame')) {
+      content.captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
     }
     gridOf(content).dispatchEvent(
       new KeyboardEvent('keydown', {
@@ -11298,6 +11356,64 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
     // does not match the domain it already holds (resolveDomain).
     handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
   }
+
+  it('uses the accepted backend cursor row for command block coordinates', async () => {
+    const client = makeClient()
+    const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    try {
+      const rows = Array.from({ length: 24 }, () => [] as CellSpec[])
+      const screen = (revision: number, baseRow: number, cursorY: number): SessionFrame =>
+        frameOf(
+          revision,
+          rows,
+          { x: 0, y: cursorY, visible: true },
+          { cols: 80, rows: 24 },
+          {
+            bufferKind: 'normal',
+            bufferInstance: '9',
+            baseRow,
+            bracketedPaste: false,
+            mouseTracking: false,
+            title: null,
+            cwd: null,
+          },
+        )
+      const session = sessionOf(content)
+      session.fireScreenFrame(screen(1, 100, 3))
+      vi.spyOn(rendererOf(content), 'cursorLine').mockReturnValue(999)
+
+      const lifecycle = startCommand(client)
+      const manager = (content as unknown as { scrollback: ScrollbackController }).scrollback
+        .blockManager
+      expect(manager.runningBlock?.startLine).toBe(103)
+
+      session.fireScreenFrame(screen(2, 200, 5))
+      finishCommand(lifecycle)
+      // Completion and the backend's block.closed may cross on the control
+      // plane. The accepted screen at block.closed owns the final row.
+      session.fireScreenFrame(screen(3, 300, 7))
+      const closeSubscriber = client.dispatcher.subscribe.mock.calls.find(
+        (call: unknown[]) => call[0] === 'block.closed',
+      ) as [string, (params: unknown) => void] | undefined
+      if (!closeSubscriber) throw new Error('block.closed subscription was not installed')
+      closeSubscriber[1]({
+        entryId: 'att-run',
+        kept: false,
+        screenAnchor: {
+          row: 307,
+          screenRevision: 3,
+          bufferKind: 'normal',
+          bufferInstance: '9',
+          cols: 80,
+          rows: 24,
+        },
+      })
+
+      expect(manager.blocks[0]?.endLine).toBe(307)
+    } finally {
+      teardown()
+    }
+  })
 
   it('Ctrl+Enter while a command is running summons the editor as an overlay without resizing the grid', async () => {
     const client = makeClient()
@@ -11598,8 +11714,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
     try {
       content.setVisible(true)
       startCommand(client)
-      const renderer = rendererOf(content)
-      renderer.captureLiveFrame = vi.fn(
+      content.captureLiveFrame = vi.fn(
         () =>
           new Promise<CapturedFrame>((resolve) => {
             release = resolve
@@ -11631,7 +11746,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
     try {
       content.setVisible(true)
       startCommand(client)
-      rendererOf(content).captureLiveFrame = vi.fn().mockRejectedValue(new Error('capture refused'))
+      content.captureLiveFrame = vi.fn().mockRejectedValue(new Error('capture refused'))
 
       await summonChord(content)
       expect(ed.isVisible).toBe(false)
@@ -11691,9 +11806,11 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       // consumes arriving at the session. `q` is what quits `top`, and if
       // the editor still owned input it would be a letter in a draft.
       const session = sessionOf(content)
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('q')
-      expect(session.send).toHaveBeenCalledWith('q')
+      typeIntoPane(content, 'q')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'q'))
+      expect(session.send).not.toHaveBeenCalled()
       // And the summon is UNWOUND, not merely hidden: the target it
       // displaced is back, so the prompt that returns when the command ends
       // is the shell's again. Leaving it on Ask would put the person's next
@@ -12000,7 +12117,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         // finished-command case below has no such write and is refused.
         renderer._fireWriteParsed()
         const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
-        renderer.captureLiveFrame = captureLiveFrame
+        content.captureLiveFrame = captureLiveFrame
 
         chordOn(viewOf(ed).contentDOM)
 
@@ -12029,7 +12146,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         // background TUI output.
         renderer._fireWriteParsed()
         const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
-        renderer.captureLiveFrame = captureLiveFrame
+        content.captureLiveFrame = captureLiveFrame
 
         chordOn(viewOf(ed).contentDOM)
         expect(targetNamed(ed)).toBe('agent')
@@ -12074,7 +12191,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         const captureLiveFrame = vi.fn(
           () => new Promise<CapturedFrame>((resolve) => (finishCapture = resolve)),
         )
-        renderer.captureLiveFrame = captureLiveFrame
+        content.captureLiveFrame = captureLiveFrame
 
         chordOn(viewOf(ed).contentDOM)
         expect(targetNamed(ed)).toBe('agent')
@@ -12109,9 +12226,8 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         ed.show()
         ed.focus()
         frozenBlock(content, 'old command')
-        const renderer = rendererOf(content)
         const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
-        renderer.captureLiveFrame = captureLiveFrame
+        content.captureLiveFrame = captureLiveFrame
 
         chordOn(viewOf(ed).contentDOM)
         await settleAttachment()
@@ -12157,7 +12273,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
           body: '',
         })
         const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
-        renderer.captureLiveFrame = captureLiveFrame
+        content.captureLiveFrame = captureLiveFrame
 
         // Switch while the two prompt chunks are still behind xterm's fence.
         chordOn(viewOf(ed).contentDOM)
@@ -12194,7 +12310,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         // screen.
         await promptPainted(content, renderer)
         const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
-        renderer.captureLiveFrame = captureLiveFrame
+        content.captureLiveFrame = captureLiveFrame
 
         chordOn(viewOf(ed).contentDOM)
         await settleAttachment()
@@ -12232,7 +12348,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
           body: '',
         })
         const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
-        renderer.captureLiveFrame = captureLiveFrame
+        content.captureLiveFrame = captureLiveFrame
 
         // The very next parsed write is a background TUI repaint, not prompt
         // tail. It must remain eligible after the boundary is closed.
@@ -12356,9 +12472,8 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         // is neither the composer nor the grid. The gesture is the same
         // gesture and must still summon — when the chord was claimed by
         // whichever element happened to hold the focus, this pressed nothing.
-        const renderer = rendererOf(content)
-        if (typeof renderer.captureLiveFrame !== 'function') {
-          renderer.captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
+        if (!Object.prototype.hasOwnProperty.call(content, 'captureLiveFrame')) {
+          content.captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
         }
         gridOf(content).blur()
         expect(document.activeElement).toBe(document.body)
@@ -12432,9 +12547,11 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       expect(ed.isVisible).toBe(false)
       expect(readOnlyOf(content)).toHaveBeenLastCalledWith(false)
       const session = sessionOf(content)
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('q')
-      expect(session.send).toHaveBeenCalledWith('q')
+      typeIntoPane(content, 'q')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'q'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       restore()
       teardown()
@@ -12894,7 +13011,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         },
       })
       expect(ed.isVisible).toBe(false)
-      rendererOf(content).captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
+      content.captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
 
       const runItems = runningBlockMenu(content)
       expect(itemNamed(runItems, 'grant')).toBeUndefined()
@@ -13947,6 +14064,46 @@ describe('the summoned frame stays a local display pin', () => {
     return event
   }
 
+  it('captures the accepted backend screen at its absolute active-buffer rows', async () => {
+    const { content, teardown } = await mountTerminal(makeClipboard(), { attachToDocument: true })
+    try {
+      const rows: CellSpec[][] = [
+        [['A', 1, true]],
+        ...Array.from({ length: 23 }, () => [] as CellSpec[]),
+      ]
+      sessionOf(content).fireScreenFrame(
+        frameOf(
+          9,
+          rows,
+          { x: 2, y: 0, visible: true },
+          { cols: 80, rows: 24 },
+          {
+            bufferKind: 'normal',
+            bufferInstance: '9007199254740993',
+            baseRow: 41,
+            bracketedPaste: false,
+            mouseTracking: false,
+            title: null,
+            cwd: null,
+          },
+        ),
+      )
+
+      const captured = await content.captureLiveFrame()
+      if (captured.provenance.source !== 'live') throw new Error('expected live capture')
+      expect(captured.provenance.range).toEqual({ start: 41, end: 65 })
+      expect(captured.provenance.identity.buffer).toEqual({
+        kind: 'normal',
+        instance: '9007199254740993',
+      })
+      expect(captured.provenance.identity.generation).toBe(9)
+      expect(captured.cursor).toEqual({ line: 41, col: 2 })
+      expect(captured.rows[0].kind).toBe('cells')
+    } finally {
+      teardown()
+    }
+  })
+
   it('freezes an alternate-screen paint from row zero', async () => {
     const client = makeClient()
     const { content, teardown } = await mountTerminal(
@@ -13957,14 +14114,13 @@ describe('the summoned frame stays a local display pin', () => {
     try {
       content.setVisible(true)
       startRunning(client)
-      const renderer = rendererOf(content)
       fireBufferState(sessionOf(content), 'alternate', 20)
       const capture = vi.fn().mockResolvedValue(frame('top: load 1.00\nTasks: 254 total'))
-      renderer.captureLiveFrame = capture
+      content.captureLiveFrame = capture
 
       await summon(content)
 
-      expect(capture).toHaveBeenCalledWith({ start: 0, end: renderer.rows })
+      expect(capture).toHaveBeenCalledTimes(1)
       expect(gridOf(content).querySelector('.nocx-freeze-frame')?.textContent).toMatch(
         /^top: load 1\.00/,
       )
@@ -13984,9 +14140,8 @@ describe('the summoned frame stays a local display pin', () => {
       content.setVisible(true)
       startRunning(client)
       const pinned = frame('pinned top frame')
-      const renderer = rendererOf(content)
       const capture = vi.fn().mockResolvedValue(pinned)
-      renderer.captureLiveFrame = capture
+      content.captureLiveFrame = capture
       await summon(content)
 
       const editorWithView = editorOf(content) as unknown as { view: EditorView }
@@ -14138,7 +14293,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
 
   async function summon(content: TerminalContent): Promise<void> {
     const renderer = rendererOf(content)
-    renderer.captureLiveFrame = vi.fn().mockResolvedValue({
+    content.captureLiveFrame = vi.fn().mockResolvedValue({
       rows: [],
       cursor: { line: 0, col: 0 },
       provenance: {
@@ -14376,9 +14531,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
       const repeatedSummon = dispatchSummon(content)
       await Promise.resolve()
       expect(repeatedSummon.defaultPrevented).toBe(true)
-      expect(
-        (rendererOf(content).captureLiveFrame as ReturnType<typeof vi.fn>).mock.calls,
-      ).toHaveLength(1)
+      expect((content.captureLiveFrame as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
       expect(pane.querySelectorAll('.nocx-freeze-frame')).toHaveLength(1)
       state!({
         runId: 1,
@@ -15353,7 +15506,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
       content.setVisible(true)
       startCommand(client)
       const renderer = rendererOf(content)
-      renderer.captureLiveFrame = vi.fn().mockResolvedValue({
+      content.captureLiveFrame = vi.fn().mockResolvedValue({
         rows: ['load 1.00', 'PID USER', 'nocx 0.1', 'idle'].map((text) => ({
           kind: 'text' as const,
           text,
@@ -17039,24 +17192,68 @@ describe('the live region is the painter picture (nocx-zg3k3.2.5)', () => {
       }
       surface.dispatchEvent(pointer('pointerdown', 1))
       window.dispatchEvent(pointer('pointermove', 1))
-      // A program's accepted backend mode suppresses local selection even
-      // when the legacy xterm parser mirror says mouse tracking is off.
+      // The accepted backend mode suppresses local selection even when the
+      // legacy renderer mirror says mouse tracking is off.
       expect(surface.querySelector('.term-grid-selection')).toBeNull()
       surface.dispatchEvent(pointer('pointerup', 0))
-      const wheel = new WheelEvent('wheel', {
-        bubbles: true,
-        clientX: 26,
-        clientY: 44,
-        deltaY: -1,
-      })
-      surface.dispatchEvent(wheel)
+      surface.dispatchEvent(
+        new WheelEvent('wheel', { bubbles: true, clientX: 26, clientY: 44, deltaY: -1 }),
+      )
 
       await vi.waitFor(() => expect(session.intent).toHaveBeenCalledTimes(3))
       expect(session.intent.mock.calls).toEqual([
-        ['mouse', 'press left 3 2'],
-        ['mouse', 'release left 3 2'],
-        ['mouse', 'press wheel-up 3 2'],
+        ['mouse', 'press left 2 1'],
+        ['mouse', 'release left 2 1'],
+        ['mouse', 'press wheel-up 2 1'],
       ])
+    } finally {
+      teardown()
+    }
+  })
+
+  it('keeps local selection and scrolling when the accepted backend mode is off', async () => {
+    const client = makeClient()
+    const { tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    try {
+      tab.pane.classList.add('active')
+      const session = client._sessions[0]
+      const frame = screenFrame(1, ['selectable text'])
+      frame.state.mouseTracking = false
+      session.fireScreenFrame(frame)
+      const live = liveRegionOf(tab.pane)
+      await vi.waitFor(() => expect(live.querySelector('.term-grid')).not.toBeNull())
+      const surface = live.querySelector<HTMLElement>('.term-grid')!
+      await vi.waitFor(() => expect(surface.textContent).toContain('selectable text'))
+      surface.getBoundingClientRect = () =>
+        ({ left: 10, top: 20, right: 330, bottom: 84, width: 320, height: 64 }) as DOMRect
+
+      const pointer = (
+        type: 'pointerdown' | 'pointermove' | 'pointerup',
+        buttons: number,
+      ): Event => {
+        const event = new Event(type, { bubbles: true, cancelable: true })
+        Object.defineProperties(event, {
+          button: { value: 0 },
+          buttons: { value: buttons },
+          clientX: { value: 26 },
+          clientY: { value: 44 },
+        })
+        return event
+      }
+      session.intent.mockClear()
+      surface.dispatchEvent(pointer('pointerdown', 1))
+      window.dispatchEvent(pointer('pointermove', 1))
+      expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+      surface.dispatchEvent(pointer('pointerup', 0))
+      surface.dispatchEvent(
+        new WheelEvent('wheel', { bubbles: true, clientX: 26, clientY: 44, deltaY: -1 }),
+      )
+
+      expect(session.intent).not.toHaveBeenCalled()
     } finally {
       teardown()
     }

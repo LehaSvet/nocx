@@ -295,10 +295,11 @@ type ClearBoundaryDoc struct {
 // output, and the coordinator stores it that way. Always present: false is
 // an answer.
 type IntervalEndDoc struct {
-	Nonce   string          `json:"nonce"`
-	EndRow  uint64          `json:"endRow"`
-	Closing json.RawMessage `json:"closing"`
-	NoFence bool            `json:"noFence"`
+	Nonce        string                   `json:"nonce"`
+	EndRow       uint64                   `json:"endRow"`
+	Closing      json.RawMessage          `json:"closing"`
+	ScreenAnchor *OutputStartScreenAnchor `json:"screenAnchor"`
+	NoFence      bool                     `json:"noFence"`
 }
 
 // OutputStartRowFrame places the command-output boundary in the same absolute

@@ -34,7 +34,7 @@ import type { WorkersTabClosed } from './generated/workers.tabClosed'
 import type { Exit } from './generated/exit'
 import type { Pane as LayoutPane, Tab as LayoutTab } from './generated/layout.read'
 import type { DriverState } from './pane-observation'
-import { frameOf } from './painter/fixtures'
+import { frameOf, type CellSpec } from './painter/fixtures'
 import type { SessionFrame } from './generated/session.frame'
 import type { SessionEffect } from './generated/session.effect'
 import {
@@ -80,6 +80,28 @@ function fireFrameMetadata(
   }
   const rows = Array.from({ length: 24 }, () => [])
   session.fireScreenFrame(frameOf(revision, rows, undefined, { cols: 80, rows: 24 }, state))
+}
+
+function screenFrameWithText(revision: number, text: string): SessionFrame {
+  const cells: CellSpec[] = Array.from(text, (char) => [char, 1, true])
+  const rows = [cells, ...Array.from({ length: 23 }, () => [] as CellSpec[])]
+  return frameOf(revision, rows, { x: 0, y: 0, visible: false }, { cols: 80, rows: 24 })
+}
+
+function dispatchGridDrag(surface: HTMLElement, startX: number, endX: number): void {
+  const event = (type: string, clientX: number): Event => {
+    const pointer = new Event(type, { bubbles: true, cancelable: true })
+    Object.defineProperties(pointer, {
+      button: { value: 0 },
+      buttons: { value: type === 'pointerup' ? 0 : 1 },
+      clientX: { value: clientX },
+      clientY: { value: 1 },
+    })
+    return pointer
+  }
+  surface.dispatchEvent(event('pointerdown', startX))
+  window.dispatchEvent(event('pointermove', endX))
+  window.dispatchEvent(event('pointerup', endX))
 }
 
 function fireSessionEffect(
@@ -1276,38 +1298,49 @@ describe('PaneManager', () => {
 
   // ── clipboard policy ───────────────────────────────────────────────
 
-  it('writes selection to the clipboard when non-empty', async () => {
+  it('writes a live cell selection to the clipboard when non-empty', async () => {
     const cb = makeClipboard()
-    await mountPaneManager(undefined, cb)
+    const { client } = await mountPaneManager(undefined, cb)
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
+    session.fireScreenFrame(screenFrameWithText(1, 'selected text'))
+    const surface = document.querySelector<HTMLElement>('.pane.active .term-grid')
+    if (!surface) throw new Error('live cell surface not mounted')
+    await vi.waitFor(() => expect(surface.textContent).toContain('selected text'))
+    surface.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480 }) as DOMRect
 
-    await Promise.resolve()
-    const renderers = await getRendererMocks()
+    dispatchGridDrag(surface, 1, 'selected text'.length * 8)
 
-    renderers[0]._fireSelectionChange('selected text')
-
-    expect(cb.writeText).toHaveBeenCalledWith('selected text')
+    await vi.waitFor(() => expect(cb.writeText).toHaveBeenCalledWith('selected text'))
   })
 
-  it('does not write whitespace-only selection to the clipboard', async () => {
+  it('does not write whitespace-only live selection to the clipboard', async () => {
     const cb = makeClipboard()
-    await mountPaneManager(undefined, cb)
+    const { client } = await mountPaneManager(undefined, cb)
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
+    session.fireScreenFrame(screenFrameWithText(1, '   '))
+    const surface = document.querySelector<HTMLElement>('.pane.active .term-grid')
+    if (!surface) throw new Error('live cell surface not mounted')
+    await vi.waitFor(() => expect(surface.querySelector('.term-grid-row')).not.toBeNull())
+    surface.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480 }) as DOMRect
 
-    await Promise.resolve()
-    const renderers = await getRendererMocks()
-
-    renderers[0]._fireSelectionChange('   ')
+    dispatchGridDrag(surface, 1, 3 * 8)
 
     expect(cb.writeText).not.toHaveBeenCalled()
   })
 
-  it('does not write empty selection to the clipboard', async () => {
+  it('does not write when the live grid has no selection', async () => {
     const cb = makeClipboard()
-    await mountPaneManager(undefined, cb)
-
-    await Promise.resolve()
-    const renderers = await getRendererMocks()
-
-    renderers[0]._fireSelectionChange('')
+    const { client } = await mountPaneManager(undefined, cb)
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
+    session.fireScreenFrame(screenFrameWithText(1, 'text'))
+    await vi.waitFor(() =>
+      expect(document.querySelector('.pane.active .term-grid-row')).not.toBeNull(),
+    )
 
     expect(cb.writeText).not.toHaveBeenCalled()
   })

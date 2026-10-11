@@ -37,6 +37,9 @@ type ObservationScreen struct {
 	AltScreen bool
 	Cursor    emulator.Cursor
 	Lines     []emulator.Row
+	// Anchor names the cursor and active-buffer identity from this exact
+	// screen read. Nil means no exact absolute screen anchor was available.
+	Anchor *ScreenRowAnchor
 	// Reported is how many of Lines, from the top, the row stream had
 	// already carried when the screen was read: rows a growing pane pulled
 	// back out of the history (emulator.Terminal.ReportedRowsOnScreen,
@@ -178,6 +181,9 @@ func (s *Session) takeObservationScreenLocked() (ObservationScreen, bool) {
 		grid[y] = row
 	}
 	screen.Lines = grid
+	if anchor, err := s.screenRowAnchorLocked(); err == nil {
+		screen.Anchor = &anchor
+	}
 	return screen, true
 }
 
@@ -551,7 +557,7 @@ func (s *Session) sealObservationLocked(nonce FenceNonce) {
 	skip := s.outputStartSkipLocked(o.OutputStartTrack, o.OutputPrefix, o.OutputStartRow, o.OutputMarkDeparted, closing)
 	releaseTrack(o.OutputStartTrack)
 	s.expectBoundaryScreenLocked(closing)
-	s.emitIntervalEndLocked(nonce, s.departedRows, closingRowsForStream(closing, skip), false)
+	s.emitIntervalEndLocked(nonce, s.departedRows, closingRowsForStream(closing, skip), false, closing.Anchor)
 	// The interval that follows opens at the boundary revision.
 	s.observation = &observationOpen{}
 }
@@ -1301,8 +1307,16 @@ func outputMarkSkipLocked(startRow int, markDeparted, departed uint64) int {
 // nonce, the absolute row index one past the interval's last departed row,
 // and the closing screen's rows. It is called with the session lock held,
 // after the rows — the emission order is the stream's order (rowstream.go).
-func (s *Session) emitIntervalEndLocked(nonce FenceNonce, endRow uint64, closing []emulator.Row, settledWithoutFence bool) {
+func (s *Session) emitIntervalEndLocked(nonce FenceNonce, endRow uint64, closing []emulator.Row, settledWithoutFence bool, anchors ...*ScreenRowAnchor) {
 	if rs := s.rowStream; rs != nil {
+		if anchored, ok := rs.(IntervalEndAnchorMarker); ok {
+			var anchor *ScreenRowAnchor
+			if len(anchors) > 0 {
+				anchor = anchors[0]
+			}
+			anchored.IntervalEndWithAnchor(nonce, endRow, closing, anchor, settledWithoutFence)
+			return
+		}
 		rs.IntervalEnd(nonce, endRow, closing, settledWithoutFence)
 	}
 }
@@ -1436,7 +1450,7 @@ func (s *Session) sealObservationFromCaptureLocked(nonce FenceNonce, cap *observ
 	// rows that may already have left, and pin whatever row now sits where
 	// they were. Authenticated, it simply stops being provisional.
 	s.confirmCaptureWindowLocked(cap)
-	s.emitIntervalEndLocked(nonce, cap.EndRow, closingRowsForStream(cap.Closing, skip), false)
+	s.emitIntervalEndLocked(nonce, cap.EndRow, closingRowsForStream(cap.Closing, skip), false, cap.Closing.Anchor)
 }
 
 // confirmCaptureWindowLocked settles a capture's window as the boundary's:

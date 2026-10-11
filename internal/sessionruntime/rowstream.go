@@ -55,6 +55,12 @@ type OutputStartAnchorMarker interface {
 	OutputStartRowWithAnchor(from uint64, anchor ScreenRowAnchor)
 }
 
+// IntervalEndAnchorMarker is the richer end-marker form. The anchor names the
+// cursor from the exact closing screen snapshot; nil means no readable screen.
+type IntervalEndAnchorMarker interface {
+	IntervalEndWithAnchor(nonce FenceNonce, endRow uint64, closing []emulator.Row, anchor *ScreenRowAnchor, settledWithoutFence bool)
+}
+
 type RowStream interface {
 	// OutputRows carries one feed's departed rows, oldest first, with the
 	// absolute index of the first and the struck-feed count immediately

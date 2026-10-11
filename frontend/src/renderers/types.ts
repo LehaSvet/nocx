@@ -133,15 +133,6 @@ export interface TerminalRenderer {
   // nocx_env tag when the marker is tagged.
   onCommandMarker(cb: CommandMarkerCallback): void
 
-  // onSelectionChange fires when the user completes a selection gesture in
-  // the terminal, not per cell or per boundary movement. The callback
-  // receives the current selection text (via getSelection()). An empty
-  // string means the selection was cleared.
-  //
-  // The renderer reports facts and never touches the clipboard (AD-6).
-  // Copy-on-select policy lives above the renderer boundary.
-  onSelectionChange(cb: (text: string) => void): void
-
   // paste inserts text at the cursor, preserving bracketed-paste semantics
   // when the running program has enabled mode 2004. Implemented via
   // xterm.js's term.paste() so the engine owns the wrapping — hand-rolling

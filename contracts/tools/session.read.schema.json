@@ -25,13 +25,14 @@
     "start": {
       "type": "integer",
       "minimum": 0,
-      "description": "First output line, counting from 0. When the question came with a marked row span, this is the mark's own start — pass it with the count."
+      "maximum": 9007199254740991,
+      "description": "First output line, counting from 0 for ledger output. For a screen result, this is an absolute active-buffer row; the retained range is [floor,total), so a start below the retained floor is unavailable. When the question came with a marked row span, this is the mark's own start — pass it with the count."
     },
     "count": {
       "type": "integer",
       "minimum": 1,
       "maximum": 2000,
-      "description": "How many output lines to return. When the question came with a marked row span, pass the mark's count: a read that names the item and omits the window is answered inside the mark, not past it."
+      "description": "How many output lines or screen rows to return. For a screen result, count is applied from the absolute active-buffer start row. When the question came with a marked row span, pass the mark's count: a read that names the item and omits the window is answered inside the mark, not past it."
     }
   },
   "$defs": {
@@ -66,7 +67,8 @@
         },
         "total": {
           "type": "integer",
-          "description": "Total lines the item holds. Absent when there is no total to state."
+          "maximum": 9007199254740991,
+          "description": "For ledger output, the item's line count. For a screen result, the exclusive absolute active-buffer row end (not a count); its retained range is [floor,total). Absent when there is no total to state."
         },
         "window": {
           "type": "object",
@@ -75,14 +77,16 @@
           "properties": {
             "start": {
               "type": "integer",
-              "description": "First line of the window asked for, counting from 0."
+              "maximum": 9007199254740991,
+              "description": "First line or row of the window asked for. Screen rows are absolute active-buffer row coordinates; ledger item lines count from 0."
             },
             "end": {
               "type": "integer",
-              "description": "One past the last line of the window asked for."
+              "maximum": 9007199254740991,
+              "description": "One past the last line or row of the window asked for, in the same coordinate system as start."
             }
           },
-          "description": "The span asked for."
+          "description": "The half-open span asked for. For a screen result with no explicit range, this defaults to the retained absolute range [floor,total)."
         },
         "returned": {
           "type": "object",
@@ -91,11 +95,13 @@
           "properties": {
             "start": {
               "type": "integer",
-              "description": "First line of the window actually returned, counting from 0."
+              "maximum": 9007199254740991,
+              "description": "First line or row actually returned, in the same coordinate system as window.start. Screen rows are absolute active-buffer row coordinates; ledger item lines count from 0."
             },
             "end": {
               "type": "integer",
-              "description": "One past the last line of the window actually returned."
+              "maximum": 9007199254740991,
+              "description": "One past the last line or row actually returned, in the same coordinate system as returned.start."
             }
           },
           "description": "The span actually returned."
@@ -122,13 +128,16 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["line", "col"],
-          "description": "Where the cursor is, for a screen read. Absent otherwise.",
+          "description": "Where the cursor is, for a screen read. line is an absolute active-buffer row, matching the screen rows; col is a zero-based column. Absent otherwise.",
           "properties": {
             "line": {
-              "type": "integer"
+              "type": "integer",
+              "maximum": 9007199254740991,
+              "description": "Absolute active-buffer row of the cursor."
             },
             "col": {
-              "type": "integer"
+              "type": "integer",
+              "description": "Zero-based column of the cursor."
             }
           }
         },
@@ -205,10 +214,10 @@
               "type": "object",
               "additionalProperties": false,
               "required": ["first", "last"],
-              "description": "The rows this target covers, both ends inclusive.",
+              "description": "The screen rows this target covers, both ends inclusive, in absolute active-buffer row coordinates.",
               "properties": {
-                "first": { "type": "integer" },
-                "last": { "type": "integer" }
+                "first": { "type": "integer", "maximum": 9007199254740991 },
+                "last": { "type": "integer", "maximum": 9007199254740991 }
               }
             },
             "region": {
@@ -235,8 +244,8 @@
                   "additionalProperties": false,
                   "required": ["first", "last"],
                   "properties": {
-                    "first": { "type": "integer" },
-                    "last": { "type": "integer" }
+                    "first": { "type": "integer", "maximum": 9007199254740991 },
+                    "last": { "type": "integer", "maximum": 9007199254740991 }
                   }
                 },
                 "body": {
@@ -245,8 +254,8 @@
                   "required": ["first", "last"],
                   "description": "Rows between the question and the first option. Absent when they are adjacent.",
                   "properties": {
-                    "first": { "type": "integer" },
-                    "last": { "type": "integer" }
+                    "first": { "type": "integer", "maximum": 9007199254740991 },
+                    "last": { "type": "integer", "maximum": 9007199254740991 }
                   }
                 }
               }

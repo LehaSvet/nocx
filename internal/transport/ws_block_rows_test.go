@@ -1278,7 +1278,9 @@ func TestBlockIntervalEnded_SealsWhenTheCompletionArrivedFirst(t *testing.T) {
 
 	// The end marker arrives AFTER its completion and must still be
 	// authenticated by it.
-	e.ws.BlockIntervalEnded(session.ID(sid), fence, 1, []emulator.Row{aStreamRow("final screen")}, false)
+	e.ws.BlockIntervalEndedWithAnchor(session.ID(sid), fence, 1, []emulator.Row{aStreamRow("final screen")}, &proto.OutputStartScreenAnchor{
+		Row: 91, ScreenRevision: 17, BufferKind: "normal", BufferInstance: "42", Cols: 80, Rows: 24,
+	}, false)
 
 	kept := streamRows(t, db, attempt)
 	if len(kept) != 2 || kept[1].From != 1 || kept[1].Text != "final screen" {
@@ -1377,7 +1379,7 @@ func TestBlockGrewAndClosed_OverTheWireConformsToContract(t *testing.T) {
 
 	fence := lifecycleFence(0x47)
 	mustLifecycleIngest(t, pub, "T", lifecycleEnv(lane, h, 3, lifecycleCompleteEvt(lifecycle.AttemptID(attempt), 0, fence)))
-	e.ws.BlockIntervalEnded(session.ID(sid), fence, 1, []emulator.Row{aStreamRow("final screen")}, false)
+	e.ws.BlockIntervalEndedWithAnchor(session.ID(sid), fence, 1, []emulator.Row{aStreamRow("final screen")}, &proto.OutputStartScreenAnchor{Row: 91, ScreenRevision: 17, BufferKind: "normal", BufferInstance: "42", Cols: 80, Rows: 24}, false)
 
 	deadline := time.Now().Add(wantWithin)
 	grewMsg, err := awaitFrame(e.conn, deadline, isNotification("block.grew"))
@@ -1399,6 +1401,16 @@ func TestBlockGrewAndClosed_OverTheWireConformsToContract(t *testing.T) {
 		t.Fatalf("block.closed frame did not decode: %s", closedMsg)
 	}
 	validateJSON(t, loadSchema(t, "block.closed.schema.json"), closedFrame.Params, "block.closed params (real socket)")
+	var closed blockClosedParams
+	if err := json.Unmarshal(closedFrame.Params, &closed); err != nil {
+		t.Fatalf("decode block.closed params: %v", err)
+	}
+	wantAnchor := &proto.OutputStartScreenAnchor{
+		Row: 91, ScreenRevision: 17, BufferKind: "normal", BufferInstance: "42", Cols: 80, Rows: 24,
+	}
+	if closed.ScreenAnchor == nil || *closed.ScreenAnchor != *wantAnchor {
+		t.Fatalf("block.closed anchor = %+v, want %+v", closed.ScreenAnchor, wantAnchor)
+	}
 }
 
 // createSessionRow writes the durable `sessions` row a real hosted open
@@ -2010,14 +2022,39 @@ func TestHelperSessionEnded_SaysEveryUnendedBlockClosed(t *testing.T) {
 	if got.EntryID != attempt || !got.Kept {
 		t.Fatalf("block.closed = %+v, want entry %q kept", got, attempt)
 	}
+	if got.ScreenAnchor != nil {
+		t.Fatalf("detach close anchor = %+v, want null because no ending screen was captured", got.ScreenAnchor)
+	}
 }
 
 // The struct half of the contract: both answers of `kept` marshal to what
 // the schema accepts, and `kept` is sent even when false — a false that the
 // encoder dropped would read as a missing required field.
+func TestHeldBytesCountsAnchorOnlyPendingEnd(t *testing.T) {
+	sid := session.ID("s-anchor-only")
+	anchor := &proto.OutputStartScreenAnchor{
+		Row: 7, ScreenRevision: 3, BufferKind: "normal", BufferInstance: "1", Cols: 80, Rows: 24,
+	}
+	bs := &blockStream{
+		pendingCloses: map[session.ID][]pendingEnd{
+			sid: {{screenAnchor: anchor}},
+		},
+	}
+
+	if got, want := bs.heldBytesLocked(sid), screenAnchorBytes(anchor); got != want {
+		t.Fatalf("held bytes for anchor-only end = %d, want %d", got, want)
+	}
+}
+
 func TestBlockClosed_DTOConformsToContract(t *testing.T) {
 	schema := loadSchema(t, "block.closed.schema.json")
-	for _, p := range []blockClosedParams{{EntryID: "e1", Kept: true}, {EntryID: "e2", Kept: false}} {
+	anchor := &proto.OutputStartScreenAnchor{
+		Row: 73, ScreenRevision: 12, BufferKind: "alternate", BufferInstance: "18446744073709551615", Cols: 80, Rows: 24,
+	}
+	for _, p := range []blockClosedParams{
+		{EntryID: "e1", Kept: true, ScreenAnchor: anchor},
+		{EntryID: "e2", Kept: false, ScreenAnchor: nil},
+	} {
 		raw, err := json.Marshal(p)
 		if err != nil {
 			t.Fatalf("marshal %+v: %v", p, err)

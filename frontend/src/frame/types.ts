@@ -1,41 +1,35 @@
 // The frame model (spec §2.2–2.4, bead nocx-3j9b).
 //
-// A frame is cells + attributes + cursor of ONE capture identity, minted in
-// the renderer at the instant of pointing. Text, never a picture. The capture
-// identity is what a frame belongs to and can be compared against: buffer
-// instance (normal, or WHICH alt-screen session), geometry (cols × rows) and
-// a content generation.
+// A frame is cells + attributes + cursor of ONE capture identity, frozen as a
+// local display view. Text, never a picture. The capture identity records the
+// active buffer instance, geometry, and screen revision.
 //
 // The two capture sources are NOT the same path, and the frame records which
 // one it came from — they are never silently substituted for one another:
 //
-//   live   — alt screen / running block: cells of the active xterm buffer.
-//            Provenance records the buffer instance, geometry, generation and
-//            that rows may be evicted by the 10000-line scrollback cap while
-//            the block still runs.
-//   frozen — a block after its freeze: NO xterm cells are left (they are
-//            cleared after the visual freeze), and the serializer has already
-//            joined wrapped lines and dropped leading/trailing blanks.
-//            Provenance records source=frozen and the SERIALIZER VERSION.
+//   live   — the accepted backend screen frame. Its absolute row range and
+//            buffer identity use the same coordinates as session.read,
+//            session.historyPage, and block output anchors.
+//   frozen — a block after its freeze: no live cells remain, and the serializer
+//            has joined wrapped lines and dropped leading/trailing blanks.
+//            Provenance records source=frozen and the serializer version.
 //
-// AD-8: this module defines the SEAMS. The serializer (scrollback/serializer.ts)
-// remains the single owner of text derivation; this module never re-derives
-// VT output. The renderer remains the single owner of the buffer; this module
-// reads it through the LiveFrameSeam.
+// AD-8: the backend frame is the owner of live screen cells. The serializer
+// (scrollback/serializer.ts) remains the single owner of frozen text derivation;
+// this module never parses VT output or reconstructs a screen from PTY bytes.
 
 import type { CellAttrs } from '../scrollback/serializer'
 
 /** Which buffer instance a frame belongs to. The normal buffer is one
  *  instance; EACH entry into the alternate screen is a new one (entering
  *  mints a new identity, leaving terminates it — spec §2.3). */
-type BufferInstance = { kind: 'normal' } | { kind: 'alternate'; altSession: number }
+type BufferInstance =
+  { kind: 'normal'; instance?: string } | { kind: 'alternate'; altSession: number | string }
 
 /** Capture identity: what a frame belongs to and can be compared against.
- *  `generation` advances on onWriteParsed plus the explicit state-changing
- *  operations (buffer switch, resize, clear, reset) — NEVER on onRender
- *  (ADR-0005 forces periodic repaints on Linux/WebKitGTK, so a paint-driven
- *  generation would stale a motionless screen continuously, on one platform
- *  only). */
+ *  Backend captures use the accepted screen revision and exact buffer instance.
+ *  The legacy renderer adapter advances its generation on parsed writes and
+ *  state-changing operations, never on paint. */
 export interface CaptureIdentity {
   buffer: BufferInstance
   cols: number
@@ -55,16 +49,16 @@ export interface CaptureIdentity {
 export type CaptureComparability =
   { status: 'same' } | { status: 'moved' } | { status: 'notComparable' }
 
-/** One cell of a live frame: the character plus its attributes as xterm
- *  reports them, resolved against the theme snapshot taken at mint time. */
+/** One cell of a live frame: accepted character and attributes, resolved
+ *  against the theme snapshot used when the local view was minted. */
 interface FrameCell {
   char: string
   attrs: CellAttrs
 }
 
 /** One row of a frame. Live rows are cells+attributes; frozen rows are TEXT —
- *  a frozen block has no xterm cells left, and its text has already been
- *  transformed by the serializer. The row kind records which. */
+ *  a frozen block has no live cells, and its text has already been transformed
+ *  by the serializer. The row kind records which. */
 export type FrameRow = { kind: 'cells'; cells: FrameCell[] } | { kind: 'text'; text: string }
 
 /** Provenance of a live frame. Records the buffer instance, geometry,
@@ -103,7 +97,7 @@ interface FrozenProvenance {
 
 type CaptureProvenance = LiveProvenance | FrozenProvenance
 
-/** A frame minted in the renderer: rows + cursor of one capture identity,
+/** A local pinned view: rows + cursor of one accepted capture identity,
  *  with provenance naming the source. Text, never a picture. */
 export interface CapturedFrame {
   rows: FrameRow[]

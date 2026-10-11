@@ -10,7 +10,12 @@
 
 import type { CommandAuthor } from '../command-ledger'
 import type { TerminalRenderer } from '../renderers/types'
-import { BlockManager, type BlockRecord, type RunningBlockActions } from './blocks'
+import {
+  BlockManager,
+  type BlockRecord,
+  type BlockScreenAnchor,
+  type RunningBlockActions,
+} from './blocks'
 import type { CommandSnapshotStore } from '../command-snapshot'
 import type { StoredBlockRows } from './block-rows'
 import { publishCellMetric, publishRowPitch } from './cell-metric'
@@ -666,9 +671,14 @@ export class ScrollbackController {
   /**
    * Called on OSC 133 C: create a running block, expand the live region.
    */
-  onCommandStart(command: string, cwd: string, startLine: number): void {
+  onCommandStart(
+    command: string,
+    cwd: string,
+    startLine: number,
+    startAnchor?: BlockScreenAnchor,
+  ): void {
     const cmd = command || '(empty)'
-    this._blockManager.startBlock(cmd, cwd, startLine)
+    this._blockManager.startBlock(cmd, cwd, startLine, 'shell', startAnchor)
     this.setRunning()
   }
 
@@ -692,10 +702,11 @@ export class ScrollbackController {
      *  shell's own start event, no app-owned submit — is the human's
      *  shell and defaults to 'shell'. */
     author: CommandAuthor = 'shell',
+    startAnchor?: BlockScreenAnchor,
   ): void {
     const cmd = command || '(empty)'
     this._glide(() => {
-      this._blockManager.startBlock(cmd, cwd, startLine, author)
+      this._blockManager.startBlock(cmd, cwd, startLine, author, startAnchor)
       // The pet learned only about endings before this, so during the minute a
       // build takes — the minute somebody is actually watching the terminal —
       // it wandered about as though nothing were happening.

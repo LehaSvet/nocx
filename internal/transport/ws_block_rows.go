@@ -287,6 +287,13 @@ func heldRowsBytes(rows []emulator.Row) int64 {
 	return n
 }
 
+func screenAnchorBytes(anchor *proto.OutputStartScreenAnchor) int64 {
+	if anchor == nil {
+		return 0
+	}
+	return int64(unsafe.Sizeof(*anchor)) + int64(len(anchor.BufferInstance))
+}
+
 // pendingRowsBytes is what a whole batch of deliveries costs the buffer —
 // heldRowsBytes summed over each one — the measure beginFlushLocked counts
 // a batch's in-flight cost by (nocx-2v80t.3.49): every queue this stream
@@ -361,7 +368,7 @@ func (bs *blockStream) heldBytesLocked(sid session.ID) int64 {
 	}
 	for _, set := range [][]pendingEnd{bs.pendingCloses[sid], bs.ends[sid], bs.queuedEnds[sid]} {
 		for _, e := range set {
-			n += heldRowsBytes(e.closing)
+			n += heldRowsBytes(e.closing) + screenAnchorBytes(e.screenAnchor)
 		}
 	}
 	return n
@@ -374,17 +381,25 @@ func (bs *blockStream) heldBytesLocked(sid session.ID) int64 {
 // whose screen would take the buffer past its bound is kept without it and
 // closes its block incomplete — the owner's rule, for the block in flight.
 func (s *WSServer) holdEndLocked(sid session.ID, e *pendingEnd) {
-	if len(e.closing) == 0 {
+	if len(e.closing) == 0 && e.screenAnchor == nil {
 		return
 	}
 	bs := s.blockStream
-	if bs.heldBytesLocked(sid)+heldRowsBytes(e.closing) <= bs.budgets[sid] {
+	endBytes := heldRowsBytes(e.closing) + screenAnchorBytes(e.screenAnchor)
+	if bs.heldBytesLocked(sid)+endBytes <= bs.budgets[sid] {
 		return
 	}
-	s.log.Warn("block rows buffer overflowed: an end's closing screen is not kept, its block ends incomplete",
-		"session", sid, "endRow", e.endRow, "closingRows", len(e.closing), "bufferBytes", bs.budgets[sid])
-	e.closing = nil
-	e.incomplete = true
+	if len(e.closing) > 0 {
+		s.log.Warn("block rows buffer overflowed: an end's closing screen is not kept, its block ends incomplete",
+			"session", sid, "endRow", e.endRow, "closingRows", len(e.closing), "bufferBytes", bs.budgets[sid])
+		e.closing = nil
+		e.incomplete = true
+	}
+	if e.screenAnchor != nil && bs.heldBytesLocked(sid)+screenAnchorBytes(e.screenAnchor) > bs.budgets[sid] {
+		s.log.Warn("block rows buffer overflowed: an end's screen anchor is not kept",
+			"session", sid, "endRow", e.endRow, "bufferBytes", bs.budgets[sid])
+		e.screenAnchor = nil
+	}
 }
 
 // holdLocked answers whether rows may be held for the session: false when
@@ -536,10 +551,11 @@ type pendingRows struct {
 }
 
 type pendingEnd struct {
-	attempt string
-	nonce   string // hex, the completion's own spelling
-	endRow  uint64
-	closing []emulator.Row
+	attempt      string
+	nonce        string // hex, the completion's own spelling
+	endRow       uint64
+	closing      []emulator.Row
+	screenAnchor *proto.OutputStartScreenAnchor
 	// incomplete seals the block as a gap: its boundary was settled without
 	// its fence, or its delivery was lost (nocx-2v80t.3.29).
 	incomplete bool
@@ -660,7 +676,8 @@ type blockClosedParams struct {
 	// Kept says whether the store holds rows for this block. False is a
 	// block the keep decision refused, or one no store could open: nothing
 	// will ever be readable, and a renderer has nothing to fetch.
-	Kept bool `json:"kept"`
+	Kept         bool                           `json:"kept"`
+	ScreenAnchor *proto.OutputStartScreenAnchor `json:"screenAnchor"`
 }
 
 // AttachBlockRows registers a session's helper rows callbacks as this
@@ -1921,6 +1938,10 @@ var noFenceNonce [32]byte
 // nothing to seal, and the end is dropped rather than parked — parking it
 // would wait forever for a fence noFenceNonce can never resolve.
 func (s *WSServer) BlockIntervalEnded(sid session.ID, nonce [32]byte, endRow uint64, closing []emulator.Row, noFence bool) {
+	s.BlockIntervalEndedWithAnchor(sid, nonce, endRow, closing, nil, noFence)
+}
+
+func (s *WSServer) BlockIntervalEndedWithAnchor(sid session.ID, nonce [32]byte, endRow uint64, closing []emulator.Row, screenAnchor *proto.OutputStartScreenAnchor, noFence bool) {
 	// Owner: this stream, inside one delivery of the helper's rows plane.
 	// Closing event: the delivery's return — its appends, and any close it
 	// drains, are the last writes it causes.
@@ -1972,7 +1993,7 @@ func (s *WSServer) BlockIntervalEnded(sid session.ID, nonce [32]byte, endRow uin
 			return
 		}
 		bs.mu.Lock()
-		parked := pendingEnd{nonce: hexNonce, endRow: endRow, closing: closing, incomplete: noFence}
+		parked := pendingEnd{nonce: hexNonce, endRow: endRow, closing: closing, screenAnchor: screenAnchor, incomplete: noFence}
 		s.holdEndLocked(sid, &parked)
 		ends := append(bs.ends[sid], parked)
 		if len(ends) > maxPendingEnds {
@@ -1983,7 +2004,7 @@ func (s *WSServer) BlockIntervalEnded(sid session.ID, nonce [32]byte, endRow uin
 		bs.mu.Unlock()
 		return
 	}
-	s.closeBlockRows(ctx, sid, attempt, endRow, closing, hexNonce, noFence)
+	s.closeBlockRows(ctx, sid, attempt, endRow, closing, hexNonce, noFence, screenAnchor)
 }
 
 // BlockBoundaryLost settles the block a boundary would have closed, when the
@@ -2396,12 +2417,17 @@ func (s *WSServer) BlockClearBoundary(sid session.ID) {
 // closeBlockRows appends the closing rows and seals the block an interval
 // leaves behind, then says so. A deferred append owns the interval until it
 // finishes; the close is parked rather than racing the append.
-func (s *WSServer) closeBlockRows(ctx context.Context, sid session.ID, attempt string, endRow uint64, closing []emulator.Row, hexNonce string, incomplete bool) {
+func (s *WSServer) closeBlockRows(ctx context.Context, sid session.ID, attempt string, endRow uint64, closing []emulator.Row, hexNonce string, incomplete bool, anchors ...*proto.OutputStartScreenAnchor) {
 	bs := s.blockStream
 	bs.mu.Lock()
+	var screenAnchor *proto.OutputStartScreenAnchor
+	if len(anchors) > 0 && anchors[0] != nil {
+		copy := *anchors[0]
+		screenAnchor = &copy
+	}
 	end := pendingEnd{
 		attempt: attempt, nonce: hexNonce, endRow: endRow,
-		closing: append([]emulator.Row(nil), closing...), incomplete: incomplete,
+		closing: append([]emulator.Row(nil), closing...), screenAnchor: screenAnchor, incomplete: incomplete,
 	}
 	current := bs.current[sid]
 	if len(bs.pending[sid]) > 0 && !bs.flushing[sid] && !bs.closing[sid] &&
@@ -2418,7 +2444,7 @@ func (s *WSServer) closeBlockRows(ctx context.Context, sid session.ID, attempt s
 		}
 		bs.closing[sid] = true
 		bs.mu.Unlock()
-		s.closeBlockRowsNow(ctx, sid, attempt, endRow, closing, hexNonce, incomplete, false)
+		s.closeBlockRowsNow(ctx, sid, attempt, endRow, closing, hexNonce, incomplete, false, screenAnchor)
 		return
 	}
 	if bs.flushing[sid] || bs.closing[sid] || len(bs.pending[sid]) > 0 {
@@ -2435,10 +2461,10 @@ func (s *WSServer) closeBlockRows(ctx context.Context, sid session.ID, attempt s
 	}
 	bs.closing[sid] = true
 	bs.mu.Unlock()
-	s.closeBlockRowsNow(ctx, sid, attempt, endRow, closing, hexNonce, incomplete, false)
+	s.closeBlockRowsNow(ctx, sid, attempt, endRow, closing, hexNonce, incomplete, false, screenAnchor)
 }
 
-func (s *WSServer) closeBlockRowsNow(ctx context.Context, sid session.ID, attempt string, endRow uint64, closing []emulator.Row, hexNonce string, incomplete bool, fromWaiting bool) bool {
+func (s *WSServer) closeBlockRowsNow(ctx context.Context, sid session.ID, attempt string, endRow uint64, closing []emulator.Row, hexNonce string, incomplete bool, fromWaiting bool, screenAnchor *proto.OutputStartScreenAnchor) bool {
 	bs := s.blockStream
 	bs.mu.Lock()
 	block := bs.open[sid][attempt]
@@ -2561,7 +2587,7 @@ func (s *WSServer) closeBlockRowsNow(ctx context.Context, sid session.ID, attemp
 	detachedSettle := func(sealed, said bool) {
 		finish()
 		if said && claim() {
-			s.notifyBlockSubscriber(ctx, sid, "block.closed", blockClosedParams{EntryID: block.entry, Kept: sealed})
+			s.notifyBlockSubscriber(ctx, sid, "block.closed", blockClosedParams{EntryID: block.entry, Kept: sealed, ScreenAnchor: screenAnchor})
 		}
 	}
 	// fail records one failed close attempt and answers whether the end is
@@ -2601,7 +2627,7 @@ func (s *WSServer) closeBlockRowsNow(ctx context.Context, sid session.ID, attemp
 		if spent < maxCloseAttempts {
 			retry := pendingEnd{
 				attempt: attempt, nonce: hexNonce, endRow: endRow,
-				closing: append([]emulator.Row(nil), closing...), incomplete: incomplete,
+				closing: append([]emulator.Row(nil), closing...), screenAnchor: screenAnchor, incomplete: incomplete,
 			}
 			s.holdEndLocked(sid, &retry)
 			bs.pendingCloses[sid] = append(bs.pendingCloses[sid], retry)
@@ -2663,7 +2689,7 @@ func (s *WSServer) closeBlockRowsNow(ctx context.Context, sid session.ID, attemp
 		bs.mu.Unlock()
 		finish()
 		if claim() {
-			s.notifyBlockSubscriber(ctx, sid, "block.closed", blockClosedParams{EntryID: block.entry, Kept: sealed})
+			s.notifyBlockSubscriber(ctx, sid, "block.closed", blockClosedParams{EntryID: block.entry, Kept: sealed, ScreenAnchor: screenAnchor})
 		}
 		promote()
 	}
@@ -2676,14 +2702,14 @@ func (s *WSServer) closeBlockRowsNow(ctx context.Context, sid session.ID, attemp
 	if block == nil {
 		finish()
 		if attempt != "" {
-			s.notifyBlockSubscriber(ctx, sid, "block.closed", blockClosedParams{EntryID: attempt, Kept: false})
+			s.notifyBlockSubscriber(ctx, sid, "block.closed", blockClosedParams{EntryID: attempt, Kept: false, ScreenAnchor: screenAnchor})
 		}
 		return true
 	}
 	if !block.kept {
 		finish()
 		if claim() {
-			s.notifyBlockSubscriber(ctx, sid, "block.closed", blockClosedParams{EntryID: block.entry, Kept: false})
+			s.notifyBlockSubscriber(ctx, sid, "block.closed", blockClosedParams{EntryID: block.entry, Kept: false, ScreenAnchor: screenAnchor})
 		}
 		promote()
 		return true
@@ -2715,7 +2741,7 @@ func (s *WSServer) closeBlockRowsNow(ctx context.Context, sid session.ID, attemp
 	if fromWaiting && live < endRow && attached {
 		end := pendingEnd{
 			attempt: attempt, nonce: hexNonce, endRow: endRow,
-			closing: append([]emulator.Row(nil), closing...), incomplete: incomplete,
+			closing: append([]emulator.Row(nil), closing...), screenAnchor: screenAnchor, incomplete: incomplete,
 			waiting: true,
 		}
 		bs.mu.Lock()
@@ -2834,7 +2860,7 @@ func (s *WSServer) closeBlockRowsNow(ctx context.Context, sid session.ID, attemp
 	bs.mu.Unlock()
 	finish()
 	if claim() {
-		s.notifyBlockSubscriber(ctx, sid, "block.closed", blockClosedParams{EntryID: block.entry, Kept: true})
+		s.notifyBlockSubscriber(ctx, sid, "block.closed", blockClosedParams{EntryID: block.entry, Kept: true, ScreenAnchor: screenAnchor})
 	}
 	promote()
 	return true
@@ -3424,7 +3450,7 @@ func (bs *blockStream) drainPendingCloses(ctx context.Context, s *WSServer, sid 
 				continue
 			}
 			bs.mu.Unlock()
-			if !s.closeBlockRowsNow(ctx, sid, end.attempt, end.endRow, end.closing, end.nonce, end.incomplete, end.waiting) {
+			if !s.closeBlockRowsNow(ctx, sid, end.attempt, end.endRow, end.closing, end.nonce, end.incomplete, end.waiting, end.screenAnchor) {
 				return
 			}
 		}
@@ -3520,7 +3546,7 @@ func (bs *blockStream) publishFence(ctx context.Context, s *WSServer, sid sessio
 	}
 	bs.mu.Unlock()
 	for _, e := range parked {
-		s.closeBlockRows(ctx, sid, attempt, e.endRow, e.closing, e.nonce, e.incomplete)
+		s.closeBlockRows(ctx, sid, attempt, e.endRow, e.closing, e.nonce, e.incomplete, e.screenAnchor)
 	}
 	if resolved != nil {
 		// THE EITHER-ORDER END MARKER (nocx-zg3k3.5.11 Round 9): this end's
@@ -3534,7 +3560,7 @@ func (bs *blockStream) publishFence(ctx context.Context, s *WSServer, sid sessio
 		// seals at full height. A WAITING park spends no attempt.
 		end := pendingEnd{
 			attempt: attempt, nonce: resolved.nonce, endRow: resolved.endRow,
-			closing: append([]emulator.Row(nil), resolved.closing...), incomplete: resolved.incomplete,
+			closing: append([]emulator.Row(nil), resolved.closing...), screenAnchor: resolved.screenAnchor, incomplete: resolved.incomplete,
 			waiting: true,
 		}
 		bs.mu.Lock()

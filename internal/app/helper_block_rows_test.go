@@ -62,6 +62,16 @@ func (f *fakeSink) BlockIntervalEnded(_ session.ID, nonce [32]byte, endRow uint6
 	f.ends = append(f.ends, client.IntervalEnd{Nonce: sessionruntime.FenceNonce(nonce), EndRow: endRow, Closing: closing, NoFence: noFence})
 }
 
+func (f *fakeSink) BlockIntervalEndedWithAnchor(sid session.ID, nonce [32]byte, endRow uint64, closing []emulator.Row, anchor *client.ScreenAnchor, noFence bool) {
+	f.BlockIntervalEnded(sid, nonce, endRow, closing, noFence)
+	if anchor == nil {
+		return
+	}
+	f.mu.Lock()
+	f.ends[len(f.ends)-1].ScreenAnchor = anchor
+	f.mu.Unlock()
+}
+
 func (f *fakeSink) BlockBoundaryLost(_ context.Context, sid session.ID, nonce [32]byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -251,7 +261,7 @@ func TestEndsReachTheTransportAndStopDetaches(t *testing.T) {
 
 	var nonce sessionruntime.FenceNonce
 	nonce[0] = 0xab
-	src.deliverEnd(client.IntervalEnd{Nonce: nonce, EndRow: 42, Closing: rowsN(3)})
+	src.deliverEnd(client.IntervalEnd{Nonce: nonce, EndRow: 42, Closing: rowsN(3), ScreenAnchor: &client.ScreenAnchor{Row: 91, ScreenRevision: 4, BufferKind: "normal", BufferInstance: "7", Cols: 80, Rows: 24}})
 	src.deliverClear()
 	stop()
 	stop() // idempotent
@@ -263,7 +273,7 @@ func TestEndsReachTheTransportAndStopDetaches(t *testing.T) {
 	if len(sink.attached) != 1 || len(sink.detached) != 1 {
 		t.Fatalf("attached %v, detached %v: want one of each", sink.attached, sink.detached)
 	}
-	if len(sink.ends) != 1 || sink.ends[0].EndRow != 42 || sink.ends[0].Nonce[0] != 0xab || len(sink.ends[0].Closing) != 3 {
+	if len(sink.ends) != 1 || sink.ends[0].EndRow != 42 || sink.ends[0].Nonce[0] != 0xab || len(sink.ends[0].Closing) != 3 || sink.ends[0].ScreenAnchor == nil || sink.ends[0].ScreenAnchor.Row != 91 {
 		t.Fatalf("the end reached the transport as %+v", sink.ends)
 	}
 	if len(sink.clears) != 1 || sink.clears[0] != "s1" {

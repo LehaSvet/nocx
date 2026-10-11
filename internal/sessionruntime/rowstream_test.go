@@ -88,6 +88,63 @@ func streamSession(t *testing.T, g Geometry) (*Session, *recordingRowStream) {
 	return s, rs
 }
 
+type anchoredRecordingRowStream struct{ *recordingRowStream }
+
+func (r *anchoredRecordingRowStream) IntervalEndWithAnchor(
+	nonce FenceNonce,
+	endRow uint64,
+	closing []emulator.Row,
+	anchor *ScreenRowAnchor,
+	settledWithoutFence bool,
+) {
+	r.recordingRowStream.IntervalEnd(nonce, endRow, closing, settledWithoutFence)
+	if anchor == nil {
+		return
+	}
+	copy := *anchor
+	r.recordingRowStream.mu.Lock()
+	r.recordingRowStream.events[len(r.recordingRowStream.events)-1].anchor = &copy
+	r.recordingRowStream.mu.Unlock()
+}
+
+func TestIntervalEndCarriesItsExactClosingScreenAnchor(t *testing.T) {
+	for _, alternate := range []bool{false, true} {
+		t.Run(map[bool]string{false: "normal", true: "alternate"}[alternate], func(t *testing.T) {
+			s := obsSession(t, harnessGeometry(80, 24))
+			rs := &anchoredRecordingRowStream{recordingRowStream: &recordingRowStream{}}
+			s.SetRowStream(rs)
+			if alternate {
+				if err := s.Ingest([]byte("\x1b[?1049hALT")); err != nil {
+					t.Fatalf("enter alternate screen: %v", err)
+				}
+			}
+			s.mu.Lock()
+			want, err := s.screenRowAnchorLocked()
+			if err != nil {
+				s.mu.Unlock()
+				t.Fatalf("capture expected screen anchor: %v", err)
+			}
+			s.sealObservationLocked(FenceNonce{1})
+			s.mu.Unlock()
+
+			events := rs.snapshot()
+			if len(events) != 1 || events[0].kind != "end" || events[0].anchor == nil {
+				t.Fatalf("interval end did not carry a screen anchor: %+v", events)
+			}
+			if *events[0].anchor != want {
+				t.Fatalf("closing anchor = %+v, want exact snapshot %+v", *events[0].anchor, want)
+			}
+			wantKind := "normal"
+			if alternate {
+				wantKind = "alternate"
+			}
+			if got := events[0].anchor.Identity.AltScreen; got != alternate {
+				t.Fatalf("closing buffer kind = alternate:%v, want %s", got, wantKind)
+			}
+		})
+	}
+}
+
 // streamRowText reads one streamed row's text: the graphemes that carry
 // text, trailing blanks dropped.
 func streamRowText(r emulator.Row) string {
@@ -102,6 +159,21 @@ func streamRowText(r emulator.Row) string {
 
 // The output mark names the absolute stream position where command output
 // starts. It is ordered before rows emitted after OSC 133 C.
+func TestIntervalEndWithoutClosingScreenCarriesNullScreenAnchor(t *testing.T) {
+	s := obsSession(t, harnessGeometry(80, 24))
+	rs := &anchoredRecordingRowStream{recordingRowStream: &recordingRowStream{}}
+	s.SetRowStream(rs)
+
+	s.mu.Lock()
+	s.sealPendingWithoutScreenLocked(FenceNonce{2}, &observationOpen{EndRow: 3})
+	s.mu.Unlock()
+
+	events := rs.snapshot()
+	if len(events) != 1 || events[0].kind != "end" || events[0].anchor != nil || !events[0].noFence {
+		t.Fatalf("no-screen interval end = %+v, want null anchor and no-fence", events)
+	}
+}
+
 func TestOutputMarkEmitsItsAbsoluteRowPositionOnTheRowStream(t *testing.T) {
 	s, rs := streamSession(t, harnessGeometry(80, 24))
 	obsFeed(t, s, 0, 80)

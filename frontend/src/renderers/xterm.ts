@@ -33,7 +33,6 @@ import type { CapturedFrame } from '../frame/types'
 import { fromITheme } from '../scrollback/serializer'
 import { isSnippetChord } from '../snippets/chord'
 import { logDecision, isDecisionTracing } from '../log'
-type SelectionCallback = (text: string) => void
 
 // xterm.js (VS Code's engine, stable 5.x) with the WebGL (GPU) renderer,
 // hardened the way Tabby runs it: recover from a lost GPU context and clear the
@@ -70,32 +69,9 @@ const OSC_COLOR_IDENTS = [10, 11, 12] as const
  *  that sets a colour (`0;#ff0000`) is xterm's to apply and is not matched. */
 const OSC4_REPORT_RE = /^\d+;\?(?:;\d+;\?)*$/
 
-// ── Shift+Enter must reach the program as its own chord (nocx-nt70) ──────
-// A program that owns the keyboard cannot tell Shift+Enter from Enter: xterm
-// encodes both as a bare CR (\r) and drops the modifier. There are two
-// conventions for fixing that:
-//
-//  1. Legacy ESC CR — Shift+Enter sends ESC followed by CR (\x1b\r). One
-//     mapping, no negotiation, understood by the editors that historically
-//     adopted it. It fixes exactly this one chord and nothing else.
-//  2. A negotiated modifier encoding — xterm's modifyOtherKeys or the kitty
-//     keyboard protocol — where the program asks for the mode and every
-//     modified chord then arrives as an explicit CSI-u sequence. xterm.js
-//     5.5.0 ships neither (verified: no modifyOtherKeys option, no kitty
-//     protocol in the bundle), so the mode-set handshake and the key table
-//     would be hand-rolled beside the library — the shape this repo avoids —
-//     and the default state would need a byte-identity test of its own.
-//
-// Chosen: legacy ESC CR. xterm's own hook for "a key xterm must not process"
-// (attachCustomKeyEventHandler) is the existing answer for exactly this, and
-// the alternative buys nothing for the one reported chord while shipping a
-// hand-written key table. The cost is named: Alt+Enter already encodes as
-// ESC CR in xterm, so a program still cannot distinguish Shift+Enter from
-// Alt+Enter; Ctrl+Enter still sends a bare CR; Shift+Tab already arrives as
-// ESC [ Z and is untouched. If chords beyond Shift+Enter are ever needed,
-// the negotiated protocol is the upgrade path, and its first test must be
-// the default-state byte identity this hook preserves.
-const SHIFT_ENTER_SEQUENCE = '\x1b\r'
+// Keyboard input is read by IntentInput and sent as physical-key intents.
+// xterm must not encode even special chords: the session runtime owns the
+// terminal modes and decides what each key means.
 
 const heldStyles = new WeakSet<HTMLStyleElement>()
 
@@ -368,11 +344,9 @@ export class XtermRenderer implements TerminalRenderer {
     this._ensureResize()
     this._ensureBufferChange()
 
-    // Shift+Enter as its own chord (nocx-nt70) — see SHIFT_ENTER_SEQUENCE.
-    // xterm's blessed hook runs before any key processing; returning false
-    // for the one chord we encode hands the bytes to the program via the
-    // same data path a keystroke takes (onData → transport → pty), and
-    // every other key returns true so xterm encodes it exactly as before.
+    // xterm handles no user key encoding. The focused IntentInput reads the
+    // physical key and sends its intent to the session runtime; this hook is
+    // retained only for the pane-owned snippet-palette chord.
     term.attachCustomKeyEventHandler((event) => {
       // The snippet palette chord (⌥⌘P, design §10.1) is consumed HERE, at
       // the xterm boundary: returning false keeps xterm from encoding the
@@ -385,22 +359,6 @@ export class XtermRenderer implements TerminalRenderer {
       if (isSnippetChord(event)) {
         event.preventDefault()
         this._snippetChordHandler?.()
-        return false
-      }
-      // The plain chord only: Enter + Shift alone. A Ctrl/Alt/Meta-modified
-      // Enter must not be collapsed into the Shift bytes — that would lie
-      // about the chord. Keyup passes through so xterm's own cursor-style
-      // bookkeeping still runs after the key is released.
-      if (
-        event.type === 'keydown' &&
-        event.key === 'Enter' &&
-        event.shiftKey &&
-        !event.ctrlKey &&
-        !event.altKey &&
-        !event.metaKey
-      ) {
-        event.preventDefault()
-        term.input(SHIFT_ENTER_SEQUENCE, false)
         return false
       }
       return true
@@ -843,12 +801,6 @@ export class XtermRenderer implements TerminalRenderer {
         for (const sub of this.commandMarkerSubs) sub(event)
       }
       return false
-    })
-  }
-
-  onSelectionChange(cb: SelectionCallback): void {
-    this.term?.onSelectionChange(() => {
-      cb(this.term?.getSelection() ?? '')
     })
   }
 

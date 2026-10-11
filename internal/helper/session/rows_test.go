@@ -333,6 +333,7 @@ func TestTheBridgeCarriesRowsInOrderAndTheEndAfterThem(t *testing.T) {
 		Closing []struct {
 			Text string `json:"text"`
 		} `json:"closing"`
+		ScreenAnchor *proto.OutputStartScreenAnchor `json:"screenAnchor"`
 	}
 	if err := json.Unmarshal(ends[0].Payload, &closing); err != nil {
 		t.Fatalf("decode the end marker's own payload: %v", err)
@@ -343,6 +344,12 @@ func TestTheBridgeCarriesRowsInOrderAndTheEndAfterThem(t *testing.T) {
 	if last := closing.Closing[len(closing.Closing)-1].Text; last != "prompt" {
 		t.Fatalf(`the closing screen's last row reads %q, want "prompt": `+
 			`"tail", written after the fence in the same feed, leaked into this interval's own closing screen`, last)
+	}
+	if closing.ScreenAnchor == nil {
+		t.Fatal("interval end omitted its exact closing screen anchor")
+	}
+	if closing.ScreenAnchor.BufferKind != "normal" || closing.ScreenAnchor.BufferInstance == "" || closing.ScreenAnchor.ScreenRevision == 0 {
+		t.Fatalf("interval end anchor lacks frame identity/revision: %+v", closing.ScreenAnchor)
 	}
 
 	// The real payloads, against their contracts.

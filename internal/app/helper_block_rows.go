@@ -89,6 +89,10 @@ func bindHeldBlockRowsAfter(ctx context.Context, sink blockRowsSink, sid session
 
 // rowsSource is the registration half of an attachment, split out so a test
 // can drive the bridge without a helper.
+type blockRowsAnchorSink interface {
+	BlockIntervalEndedWithAnchor(sid session.ID, nonce [32]byte, endRow uint64, closing []emulator.Row, screenAnchor *client.ScreenAnchor, noFence bool)
+}
+
 type rowsSource interface {
 	OnOutputRows(func(client.OutputRows))
 	OnIntervalEnd(func(client.IntervalEnd))
@@ -131,6 +135,10 @@ func bindBlockRowsTo(ctx context.Context, sink blockRowsSink, sid session.ID, sr
 		}
 	})
 	src.OnIntervalEnd(func(e client.IntervalEnd) {
+		if anchored, ok := sink.(blockRowsAnchorSink); ok {
+			anchored.BlockIntervalEndedWithAnchor(sid, [32]byte(e.Nonce), e.EndRow, e.Closing, e.ScreenAnchor, e.NoFence)
+			return
+		}
 		sink.BlockIntervalEnded(sid, [32]byte(e.Nonce), e.EndRow, e.Closing, e.NoFence)
 	})
 	src.OnClearBoundary(func() {

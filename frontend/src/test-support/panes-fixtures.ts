@@ -179,7 +179,6 @@ export interface RendererMock extends TerminalRenderer {
     // The real renderer fans out to a list; the mock mirrors it so a
     // subscriber is never hidden by a later one.
     onBufferChange?: Array<(type: 'normal' | 'alternate') => void>
-    onSelectionChange?: (text: string) => void
     onWriteParsed?: () => void
   }
   _fireBufferChange(type: 'normal' | 'alternate'): void
@@ -193,8 +192,6 @@ export interface RendererMock extends TerminalRenderer {
   _fireResize(cols: number, rows: number): void
   /** Fire an OSC 1337 in-band READY (nocx-ynsx). */
   _fireInBandReady(): void
-  /** Fire a selection event — used by clipboard policy tests. */
-  _fireSelectionChange(text: string): void
   /** Fire a keystroke reaching the grid in raw mode (nocx-yb5y). */
   _fireData(data: string): void
 }
@@ -231,9 +228,6 @@ export function createRendererMock(): RendererMock {
     // The current buffer kind, like the real renderer's (the report the
     // lane interactivity path reads at session open — ADR-0020 decision 3).
     activeBufferKind: vi.fn(() => activeBuffer),
-    onSelectionChange: vi.fn((cb: (text: string) => void) => {
-      cbs.onSelectionChange = cb
-    }),
     // A paste IS input: xterm's term.paste() writes the payload (bracketed
     // when the program asked for it) through the same onData every keystroke
     // takes — which is how a submitted command reaches the pty at all. A mock
@@ -315,9 +309,6 @@ export function createRendererMock(): RendererMock {
     },
     _fireCommandMarker(marker: Parameters<CommandMarkerCallback>[0]) {
       cbs.onCommandMarker?.(marker)
-    },
-    _fireSelectionChange(text: string) {
-      cbs.onSelectionChange?.(text)
     },
     /** Fire a recovery-fence sighting (ADR-0024 decision 8). */
     /** A keystroke reaching the grid in raw mode — what xterm's onData

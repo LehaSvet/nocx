@@ -10,15 +10,13 @@
 // The CSS half paints what the program asked for and nothing else: a
 // default-coloured cell inherits the surface (the nocx-6w4z lesson, carried
 // over the wire vocabulary), and `inverse` swaps the two RESOLVED colours
-// before the default check, the same semantics the frozen path's
-// attrsToStyle applies to xterm's cells. There is no second derivation
-// here: xterm's CellAttrs and the wire's Style are different vocabularies,
-// and the frozen path keeps its own converter because it reads cells, not
-// frames.
+// before the default check, matching attrsToStyle's frozen-cell semantics.
+// The live painter and accepted-frame capture share this wire-style owner;
+// the stored-row serializer retains its adapter for its separate cell input.
 
 import type { ModelColor as Color, ModelStyle as Style } from '../cell-model'
 import type { FitFace } from '../scrollback/cell-fit'
-import { paletteToRGB, type TerminalSnapshot } from '../scrollback/serializer'
+import { paletteToRGB, type CellAttrs, type TerminalSnapshot } from '../scrollback/serializer'
 
 // emulator.Attributes: bit 0 bold, 1 italic, 2 faint, 3 blink, 4 inverse,
 // 5 invisible, 6 strikethrough, 7 overline. The set is closed — a terminal
@@ -112,4 +110,23 @@ export function resolveInk(style: Style, palette: TerminalSnapshot): ResolvedInk
   const underlineColor = colorCSS(style.underlineColor, palette)
   if (underlineColor !== null) parts.push(`text-decoration-color:${underlineColor}`)
   return { css: parts.join(';'), hasBackground: bg !== palette.defaultBg }
+}
+
+/** Convert one accepted backend style to the frozen-cell attribute shape.
+ *  The live painter and pinned-screen capture share this owner, so color and
+ *  attribute mapping cannot drift between them. */
+export function cellAttrsOf(style: Style, palette: TerminalSnapshot): CellAttrs {
+  const attributes = style.attributes
+  return {
+    fg: colorCSS(style.foreground, palette),
+    bg: colorCSS(style.background, palette),
+    bold: (attributes & BOLD) !== 0,
+    italic: (attributes & ITALIC) !== 0,
+    dim: (attributes & FAINT) !== 0,
+    underline: style.underline !== 0,
+    inverse: (attributes & INVERSE) !== 0,
+    blink: (attributes & (1 << 3)) !== 0,
+    strikethrough: (attributes & STRIKETHROUGH) !== 0,
+    overline: (attributes & OVERLINE) !== 0,
+  }
 }

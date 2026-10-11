@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest'
 import { IntentInput, type SessionIntent } from './intent-input'
+import { NATIVE_RESTORE_COMMAND } from './native-mode'
 
 // The pane's input element is where a person's actions become SESSION INTENT
 // (nocx-zg3k3.3.1): a physical key, committed text, a paste, a pointer event, a
@@ -298,6 +299,91 @@ describe('the layout owns the character, and the client does not', () => {
   })
 })
 
+describe('mouse intent follows the accepted backend tracking mode', () => {
+  it('leaves ordinary clicks and wheel events to selection and scrolling', () => {
+    const intents: SessionIntent[] = []
+    const surface = document.createElement('div')
+    document.body.append(surface)
+    let tracking = false
+    let selectionSawPress = false
+    surface.addEventListener('pointerdown', () => {
+      selectionSawPress = true
+    })
+    const input = new IntentInput({
+      emit: (intent) => intents.push(intent),
+      surface,
+      cellAt: () => ({ x: 2, y: 3 }),
+      mouseTracking: () => tracking,
+    })
+    document.body.append(input.element)
+    live.push(input)
+
+    surface.dispatchEvent(
+      new MouseEvent('pointerdown', { button: 0, buttons: 1, clientX: 10, clientY: 20 }),
+    )
+    const wheel = new WheelEvent('wheel', { deltaY: 1, clientX: 10, clientY: 20, cancelable: true })
+    surface.dispatchEvent(wheel)
+
+    expect(intents).toEqual([])
+    expect(selectionSawPress).toBe(true)
+    expect(wheel.defaultPrevented).toBe(false)
+
+    tracking = true
+    surface.dispatchEvent(
+      new MouseEvent('pointerdown', { button: 0, buttons: 1, clientX: 10, clientY: 20 }),
+    )
+    surface.dispatchEvent(
+      new MouseEvent('pointerup', { button: 0, buttons: 0, clientX: 10, clientY: 20 }),
+    )
+    const trackedWheel = new WheelEvent('wheel', {
+      deltaY: -1,
+      clientX: 10,
+      clientY: 20,
+      cancelable: true,
+    })
+    surface.dispatchEvent(trackedWheel)
+
+    expect(intents).toEqual([
+      { kind: 'mouse', payload: 'press left 2 3' },
+      { kind: 'mouse', payload: 'release left 2 3' },
+      { kind: 'mouse', payload: 'press wheel-up 2 3' },
+    ])
+    expect(trackedWheel.defaultPrevented).toBe(true)
+  })
+
+  it('clears a held drag when tracking turns off before release', () => {
+    const intents: SessionIntent[] = []
+    const surface = document.createElement('div')
+    document.body.append(surface)
+    let tracking = true
+    const input = new IntentInput({
+      emit: (intent) => intents.push(intent),
+      surface,
+      cellAt: () => ({ x: 2, y: 3 }),
+      mouseTracking: () => tracking,
+    })
+    document.body.append(input.element)
+    live.push(input)
+
+    surface.dispatchEvent(
+      new MouseEvent('pointerdown', { button: 0, buttons: 1, clientX: 10, clientY: 20 }),
+    )
+    tracking = false
+    surface.dispatchEvent(
+      new MouseEvent('pointerup', { button: 0, buttons: 0, clientX: 10, clientY: 20 }),
+    )
+    tracking = true
+    surface.dispatchEvent(
+      new MouseEvent('pointermove', { button: 0, buttons: 0, clientX: 10, clientY: 20 }),
+    )
+
+    expect(intents).toEqual([
+      { kind: 'mouse', payload: 'press left 2 3' },
+      { kind: 'mouse', payload: 'motion none 2 3' },
+    ])
+  })
+})
+
 describe('composition commits the text exactly once', () => {
   // What the IME draws while it is composing is PROVISIONAL: the candidate
   // window's text is not what the person committed, and sending it would type
@@ -327,6 +413,13 @@ describe('composition commits the text exactly once', () => {
     input.element.dispatchEvent(composition('compositionend', ''))
 
     expect(intents).toEqual([])
+  })
+})
+
+describe('native-mode restore remains structured input', () => {
+  it('keeps the restore command free of encoded Enter bytes', () => {
+    expect(NATIVE_RESTORE_COMMAND).toBe('__nocx_native_mode')
+    expect(NATIVE_RESTORE_COMMAND).not.toMatch(/[\r\n]$/)
   })
 })
 

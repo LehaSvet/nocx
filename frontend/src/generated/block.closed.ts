@@ -21,4 +21,15 @@ export interface BlockClosed {
    * Whether the store holds rows for this block. true means the store holds the block SEALED. false means there is nothing final to read for it — the keep decision refused it (output retention off, a sensitive entry, a critical environment), no store could open it, or the store refused its seal (nocx-2v80t.3.32: whatever rows reached it are not sealed, and are not claimed as the block's final output) — so a renderer has no rows to fetch and must not read the absence as a failure.
    */
   kept: boolean
+  /**
+   * The cursor row from the exact interval-ending session snapshot, with that snapshot's revision and active-buffer identity. Null when the interval ended without a readable closing snapshot; never infer this from a later screen or from the output-stream endRow.
+   */
+  screenAnchor: null | {
+    row: number
+    screenRevision: number
+    bufferKind: 'normal' | 'alternate'
+    bufferInstance: string
+    cols: number
+    rows: number
+  }
 }

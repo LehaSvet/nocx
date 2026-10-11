@@ -6,6 +6,7 @@
 import type { CommandSnapshotStore } from '../command-snapshot'
 import type { BlockOutputStart } from '../generated/block.outputStart'
 import type { ScreenSnapshot } from '../cell-model'
+import type { BlockClosed } from '../generated/block.closed'
 import { paintUnreadableRows, type StoredBlockRows } from './block-rows'
 import { wordRangeIn } from '../word-selection'
 import { createSecretChipUnresolved } from '../ui/secret-chip'
@@ -597,6 +598,50 @@ interface AnswerBlockRecord {
   el: HTMLElement
 }
 
+export type BlockScreenAnchor = NonNullable<BlockClosed['screenAnchor']>
+
+/** Build a revision- and buffer-qualified absolute cursor anchor from one
+ * accepted backend frame. Never reconstruct its identity from a later frame. */
+export function blockScreenAnchor(snapshot: ScreenSnapshot): BlockScreenAnchor | null {
+  const row = snapshot.state.baseRow + snapshot.cursor.y
+  if (
+    !Number.isSafeInteger(row) ||
+    row < 0 ||
+    !Number.isSafeInteger(snapshot.revision) ||
+    snapshot.revision < 0 ||
+    !Number.isSafeInteger(snapshot.geometry.cols) ||
+    snapshot.geometry.cols < 1 ||
+    !Number.isSafeInteger(snapshot.geometry.rows) ||
+    snapshot.geometry.rows < 1
+  )
+    return null
+  return {
+    row,
+    screenRevision: snapshot.revision,
+    bufferKind: snapshot.state.bufferKind,
+    bufferInstance: snapshot.state.bufferInstance,
+    cols: snapshot.geometry.cols,
+    rows: snapshot.geometry.rows,
+  }
+}
+
+function comparableCloseRow(
+  start: BlockScreenAnchor | undefined,
+  end: BlockScreenAnchor | null | undefined,
+): number | null {
+  if (
+    !start ||
+    !end ||
+    end.screenRevision < start.screenRevision ||
+    end.bufferKind !== start.bufferKind ||
+    end.bufferInstance !== start.bufferInstance ||
+    end.cols !== start.cols ||
+    end.rows !== start.rows
+  )
+    return null
+  return end.row
+}
+
 export interface BlockRecord {
   id: number
   command: string
@@ -671,12 +716,14 @@ export interface BlockRecord {
    *  attempt, kept when the block freezes. Absent only for a block that
    *  never bound (cleared scrollback, never seen running). */
   attemptId?: string
-  /** IMarker line for C boundary — the absolute buffer line where the
-   *  block was CREATED: the prompt line at app-owned submit, or the cursor
-   *  line when a shell-originated attempt's running fact landed. The
-   *  published running fact binds to the block by this line's lifetime,
-   *  never by its value (ADR-0024 §5 attachment semantics). */
+  /** Absolute active-buffer row from the accepted backend frame when the
+   *  block was created: the prompt line at app-owned submit, or the cursor
+   *  row when a shell-originated attempt's running fact landed. The running
+   *  fact binds to the block by its lifetime, never by this row value
+   *  (ADR-0024 §5 attachment semantics). */
   startLine: number
+  /** Identity and revision of the accepted screen frame that supplied startLine. */
+  startAnchor?: BlockScreenAnchor
   /** The absolute buffer line where the block's OUTPUT begins — the first
    *  row serialized at freeze. Differs from `startLine` exactly when the
    *  creation line carries the shell's echo of the command: the app-owned
@@ -692,7 +739,8 @@ export interface BlockRecord {
   outputAnchorOffset?: number
   /** Text of the anchor row from the accepted backend frame. */
   outputAnchorText?: string
-  /** IMarker line for D boundary (approx). */
+  /** Absolute active-buffer cursor row from the accepted backend frame when
+   *  the block closes. */
   endLine: number
   /** Whether OSC 133 C was received for this command. False when the
    *  block was started from the app-owned submit (nocx-atyf.4). */
@@ -2039,7 +2087,7 @@ export class BlockManager {
   /** block.closed notifications that arrived BEFORE their completion — the
    *  two cross the socket in either order. Consumed by the completion that
    *  names the entry; bounded by MAX_CLOSED_EARLY. */
-  private _closedEarly = new Set<string>()
+  private _closedEarly = new Map<string, BlockScreenAnchor | null | undefined>()
   /** WHERE THE NEXT BLOCK THIS MANAGER OPENS BELONGS (ADR-0040).
    *
    *  A turn's `run` call is announced BEFORE the command is submitted, and
@@ -2583,6 +2631,7 @@ export class BlockManager {
      *  submit passes the minted author; a shell-originated block is the
      *  human's shell and defaults to 'shell'. */
     author: CommandAuthor = 'shell',
+    startAnchor?: BlockScreenAnchor,
   ): BlockRecord {
     if (this._runningBlock) {
       this._finalizeRunningUnsafe()
@@ -2627,6 +2676,7 @@ export class BlockManager {
       exitCode: null,
       status: 'running',
       startLine,
+      startAnchor,
       // Output start is unknown until the backend publishes its screen anchor.
       endLine: startLine,
       cReceived: false,
@@ -2764,8 +2814,15 @@ export class BlockManager {
    *  at once — reached only through abandonUnbound's own case. */
   private _closeOnBackend(rec: BlockRecord, endLine: number, status: FrozenStatus): boolean {
     const id = rec.attemptId
-    if (id === undefined || this._closedEarly.delete(id)) {
+    if (id === undefined) {
       this._freezeCard(rec, endLine, status)
+      return true
+    }
+    if (this._closedEarly.has(id)) {
+      const closeAnchor = this._closedEarly.get(id)
+      this._closedEarly.delete(id)
+      const anchoredRow = comparableCloseRow(rec.startAnchor, closeAnchor)
+      this._freezeCard(rec, anchoredRow ?? endLine, status)
       return true
     }
     this._awaitingClose.set(id, { rec, status, endLine, location: this._location })
@@ -2919,13 +2976,19 @@ export class BlockManager {
    *  now; one whose completion has not arrived yet is remembered, and closes
    *  the moment it does. A notification for a block already closed, or for
    *  one this pane does not hold, changes nothing on screen. */
-  blockClosed(entryId: string): void {
+  blockClosed(entryId: string, screenAnchor?: BlockScreenAnchor | null): void {
     const waiting = this._awaitingClose.get(entryId)
     if (waiting !== undefined) {
       this._awaitingClose.delete(entryId)
       // A block cleared since its completion has nothing left to close.
       if (!this._blocks.includes(waiting.rec)) return
-      this._freezeCard(waiting.rec, waiting.endLine, waiting.status, waiting.location)
+      const anchoredRow = comparableCloseRow(waiting.rec.startAnchor, screenAnchor)
+      this._freezeCard(
+        waiting.rec,
+        anchoredRow ?? waiting.endLine,
+        waiting.status,
+        waiting.location,
+      )
       // Settle around it only if no newer command owns the running slot.
       if (this._runningBlock === null) this._onDeferredFreeze?.(waiting.rec)
       return
@@ -2933,10 +2996,10 @@ export class BlockManager {
     const rec = this.blockForAttempt(entryId)
     if (rec !== null && rec.status !== 'running') return
     if (!this._closedEarly.has(entryId) && this._closedEarly.size >= MAX_CLOSED_EARLY) {
-      const oldest = this._closedEarly.values().next().value
+      const oldest = this._closedEarly.keys().next().value
       if (oldest !== undefined) this._closedEarly.delete(oldest)
     }
-    this._closedEarly.add(entryId)
+    this._closedEarly.set(entryId, screenAnchor)
   }
 
   /** Freeze the running block bound to the attempt as abandoned: the

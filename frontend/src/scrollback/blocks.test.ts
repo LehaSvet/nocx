@@ -1658,8 +1658,18 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
     ...over,
   })
 
+  const screenAnchor = (
+    row: number,
+    screenRevision: number,
+    bufferKind: 'normal' | 'alternate' = 'normal',
+    bufferInstance = '1',
+    cols = 80,
+    rows = 24,
+  ) => ({ row, screenRevision, bufferKind, bufferInstance, cols, rows })
+
   it('bindAttempt ties the running block to the attempt; freezeFromAttempt freezes it with the authenticated status', () => {
-    const rec = manager.startBlock('make', '~', 0)
+    const start = screenAnchor(3, 1)
+    const rec = manager.startBlock('make', '~', 3, 'shell', start)
     manager.bindAttempt('att-1')
     expect(rec.attemptId).toBe('att-1')
     expect(rec.el.dataset.entryId).toBe('att-1')
@@ -1669,16 +1679,70 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
 
     // The backend's block.closed landed before the completion: the block
     // closes the moment the completion arrives.
-    manager.blockClosed('att-1')
+    manager.blockClosed('att-1', screenAnchor(11, 2))
     const frozen = manager.freezeFromAttempt(attempt({ exitCode: 0 }), 8)
     expect(frozen).not.toBeNull()
     expect(frozen!.status).toBe('success')
+    expect(frozen!.endLine).toBe(11)
     expect(frozen!.exitCode).toBe(0)
     expect(frozen!.attemptId).toBe('att-1')
     expect(manager.runningBlock).toBeNull()
     expect(manager.blockForAttempt('att-1')).toBe(frozen)
     expect(frozen!.el.dataset.entryId).toBe('att-1')
     expect(frozen!.el.dataset.blockId).toBeUndefined()
+  })
+
+  it('uses the accepted close-frame row when block.closed follows completion', () => {
+    const rec = manager.startBlock('make', '~', 3, 'shell', screenAnchor(3, 1))
+    manager.bindAttempt('att-1')
+    expect(manager.freezeFromAttempt(attempt(), 8)).toBeNull()
+
+    // The output can advance between the authenticated completion and the
+    // backend's accepted block.closed notification. The close event's frame
+    // row, not the earlier lifecycle cursor, owns the final boundary.
+    manager.blockClosed('att-1', screenAnchor(23, 2))
+    expect(rec.endLine).toBe(23)
+    expect(rec.status).toBe('success')
+  })
+
+  it('uses the completion fallback when block.closed has no screen anchor', () => {
+    const rec = manager.startBlock('make', '~', 3, 'shell', screenAnchor(3, 1))
+    manager.bindAttempt('att-1')
+    expect(manager.freezeFromAttempt(attempt(), 8)).toBeNull()
+
+    manager.blockClosed('att-1', null)
+
+    expect(rec.endLine).toBe(8)
+  })
+
+  it('uses the completion fallback when close-anchor geometry differs', () => {
+    const rec = manager.startBlock('make', '~', 3, 'shell', screenAnchor(3, 1))
+    manager.bindAttempt('att-1')
+    expect(manager.freezeFromAttempt(attempt(), 8)).toBeNull()
+
+    manager.blockClosed('att-1', screenAnchor(20, 2, 'normal', '1', 100, 30))
+
+    expect(rec.endLine).toBe(8)
+  })
+
+  it('rejects a close anchor older than the block start revision', () => {
+    const rec = manager.startBlock('make', '~', 3, 'shell', screenAnchor(3, 5))
+    manager.bindAttempt('att-1')
+    expect(manager.freezeFromAttempt(attempt(), 8)).toBeNull()
+
+    manager.blockClosed('att-1', screenAnchor(20, 4))
+
+    expect(rec.endLine).toBe(8)
+  })
+
+  it('never compares row numbers across normal and alternate buffer identities', () => {
+    const rec = manager.startBlock('make', '~', 3, 'shell', screenAnchor(3, 1, 'normal', '40'))
+    manager.bindAttempt('att-1')
+    expect(manager.freezeFromAttempt(attempt(), 8)).toBeNull()
+
+    manager.blockClosed('att-1', screenAnchor(4, 2, 'alternate', '41'))
+
+    expect(rec.endLine).toBe(8)
   })
 
   it('a block whose outcome nothing recorded says so, and says it once (nocx-2vb9y)', () => {
