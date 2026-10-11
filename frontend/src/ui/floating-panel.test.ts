@@ -371,14 +371,16 @@ describe('FloatingPanel', () => {
 
   // ── report 4: a row longer than the ceiling ellipsises, never clips ───
 
-  it('a row too long for the ceiling ellipsises — never a clipped glyph', () => {
+  it('a long matching row keeps its match chip inside the ellipsized info column', () => {
     const { panel } = mount()
+    const displayText = 'grz-sibling0' + 'x'.repeat(120) + '/'
     withGeometry(5000, 5000, () =>
       panel.show({
         rows: [
           row({
             id: 'long',
-            displayText: 'repos/meshynet/' + 'x'.repeat(120),
+            displayText,
+            matchRanges: [{ from: 0, to: 2 }],
           }),
         ],
         selectedIndex: 0,
@@ -386,12 +388,25 @@ describe('FloatingPanel', () => {
     )
     const info = panel.root.querySelector<HTMLElement>('.ui-collection-row__info')!
     const rowEl = panel.root.querySelector<HTMLElement>('.ui-floating-panel__row')!
+    const match = info.querySelector<HTMLElement>('.ui-floating-panel__match')!
     const infoStyle = getComputedStyle(info)
     expect(infoStyle.overflow).toBe('hidden')
     expect(infoStyle.textOverflow).toBe('ellipsis')
     expect(getComputedStyle(rowEl).whiteSpace).toBe('nowrap')
+    expect(info.textContent).toBe(displayText)
+    expect(match.textContent).toBe('gr')
+    expect(match.parentElement).toBe(info)
     // The row is capped: the panel never exceeds the ceiling to fit it.
     expect(panel.root.style.width).toBe(`${MAX_PANEL_WIDTH_PX}px`)
+
+    // jsdom cannot paint the ellipsis, so also bind these rules to the
+    // production stylesheet rather than only to the CSS fixture injected
+    // above. The browser-level geometry assertion in completion.spec.ts
+    // proves that this long row actually has hidden overflow on screen.
+    const css = readFileSync('src/styles/components/floating-panel.css', 'utf8')
+    const infoRule = css.match(/\.ui-floating-panel__row \.ui-collection-row__info\s*\{([^}]*)\}/)
+    expect(infoRule?.[1]).toMatch(/overflow:\s*hidden/)
+    expect(infoRule?.[1]).toMatch(/text-overflow:\s*ellipsis/)
   })
 })
 
