@@ -7,13 +7,23 @@ import (
 	"testing"
 )
 
+func encodeEffectFrameForTest(t *testing.T, frame EffectFrame) []byte {
+	t.Helper()
+	wire, err := EncodeEffectFrame(frame)
+	if err != nil {
+		t.Fatalf("EncodeEffectFrame: %v", err)
+	}
+	return wire
+}
+
 func TestEffectFrameRoundTripsIdentityTitleAndBody(t *testing.T) {
 	want := EffectFrame{
 		Session: [16]byte{1, 2}, Subscriber: [16]byte{3, 4},
 		Generation: 7, EffectID: 19,
 		Kind: EffectNotification, Title: []byte("Tests failed"), Body: []byte("2 failed"),
 	}
-	got, err := DecodeEffectFrame(EncodeEffectFrame(want))
+	wire := encodeEffectFrameForTest(t, want)
+	got, err := DecodeEffectFrame(wire)
 	if err != nil {
 		t.Fatalf("DecodeEffectFrame: %v", err)
 	}
@@ -24,7 +34,8 @@ func TestEffectFrameRoundTripsIdentityTitleAndBody(t *testing.T) {
 
 func TestPromptBoundaryEffectFrameRoundTripsEmptyPayload(t *testing.T) {
 	want := EffectFrame{Session: [16]byte{1}, Subscriber: [16]byte{2}, Generation: 4, EffectID: 8, StreamOffset: 8192, Kind: EffectPromptBoundary}
-	got, err := DecodeEffectFrame(EncodeEffectFrame(want))
+	wire := encodeEffectFrameForTest(t, want)
+	got, err := DecodeEffectFrame(wire)
 	if err != nil {
 		t.Fatalf("DecodeEffectFrame: %v", err)
 	}
@@ -38,7 +49,8 @@ func TestRecoveryEffectFrameRoundTripsEpisodeID(t *testing.T) {
 		Session: [16]byte{1}, Subscriber: [16]byte{2}, Generation: 4, EffectID: 9,
 		Kind: EffectRecovery, EpisodeID: "rec-0123456789abcdef0123456789abcdef",
 	}
-	got, err := DecodeEffectFrame(EncodeEffectFrame(want))
+	wire := encodeEffectFrameForTest(t, want)
+	got, err := DecodeEffectFrame(wire)
 	if err != nil {
 		t.Fatalf("DecodeEffectFrame: %v", err)
 	}
@@ -52,17 +64,13 @@ func TestEffectFrameRejectsStreamOffsetOnNonPromptBoundaryEncode(t *testing.T) {
 		Kind: EffectRecovery, StreamOffset: 17,
 		EpisodeID: "rec-0123456789abcdef0123456789abcdef",
 	}
-	defer func() {
-		if got := recover(); got != ErrInvalidStreamOffset {
-			t.Fatalf("EncodeEffectFrame panic = %v, want %v", got, ErrInvalidStreamOffset)
-		}
-	}()
-	EncodeEffectFrame(frame)
-	t.Fatal("EncodeEffectFrame accepted a recovery episode with a prompt stream offset")
+	if _, err := EncodeEffectFrame(frame); err != ErrInvalidStreamOffset {
+		t.Fatalf("EncodeEffectFrame error = %v, want %v", err, ErrInvalidStreamOffset)
+	}
 }
 
 func TestEffectFrameRejectsStreamOffsetOnNonPromptBoundaryDecode(t *testing.T) {
-	wire := EncodeEffectFrame(EffectFrame{
+	wire := encodeEffectFrameForTest(t, EffectFrame{
 		Kind: EffectRecovery, EpisodeID: "rec-0123456789abcdef0123456789abcdef",
 	})
 	binary.BigEndian.PutUint64(wire[48:56], 17)
@@ -72,7 +80,7 @@ func TestEffectFrameRejectsStreamOffsetOnNonPromptBoundaryDecode(t *testing.T) {
 }
 
 func TestEffectFrameABIIncludesExactStreamOffset(t *testing.T) {
-	got := EncodeEffectFrame(EffectFrame{
+	got := encodeEffectFrameForTest(t, EffectFrame{
 		Session: [16]byte{1}, Subscriber: [16]byte{2},
 		Generation: 0x030405060708090a, EffectID: 0x0b0c0d0e0f101112,
 		StreamOffset: 0x131415161718191a, Kind: EffectPromptBoundary,
@@ -88,7 +96,7 @@ func TestEffectFrameABIIncludesExactStreamOffset(t *testing.T) {
 
 func TestEffectFrameABIIncludesEpisodeIDLength(t *testing.T) {
 	episodeID := "rec-0123456789abcdef0123456789abcdef"
-	wire := EncodeEffectFrame(EffectFrame{Kind: EffectRecovery, EpisodeID: episodeID})
+	wire := encodeEffectFrameForTest(t, EffectFrame{Kind: EffectRecovery, EpisodeID: episodeID})
 	if len(wire) != EffectFrameHeaderLen+len(episodeID) {
 		t.Fatalf("frame length = %d, want %d", len(wire), EffectFrameHeaderLen+len(episodeID))
 	}
@@ -118,14 +126,16 @@ func TestEncodeEffectFrameRejectsInvalidRecoveryShape(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			defer func() {
-				if got := recover(); got != ErrInvalidRecoveryEffect {
-					t.Fatalf("EncodeEffectFrame panic = %v, want %v", got, ErrInvalidRecoveryEffect)
-				}
-			}()
-			EncodeEffectFrame(tt.frame)
-			t.Fatal("EncodeEffectFrame accepted an invalid recovery shape")
+			if _, err := EncodeEffectFrame(tt.frame); err != ErrInvalidRecoveryEffect {
+				t.Fatalf("EncodeEffectFrame error = %v, want %v", err, ErrInvalidRecoveryEffect)
+			}
 		})
+	}
+}
+
+func TestEncodeEffectFrameRejectsUnknownKind(t *testing.T) {
+	if _, err := EncodeEffectFrame(EffectFrame{Kind: EffectKind(255)}); err != ErrUnknownEffectKind {
+		t.Fatalf("EncodeEffectFrame error = %v, want %v", err, ErrUnknownEffectKind)
 	}
 }
 

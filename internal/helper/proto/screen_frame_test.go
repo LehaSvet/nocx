@@ -324,7 +324,11 @@ func TestTheEffectFrameTypeIsInTheClosedSet(t *testing.T) {
 	}
 	var got FrameType
 	d := NewDecoder(func(ft FrameType, _, _ uint32, _ []byte) { got = ft }, func(int) { t.Fatal("decoder scanned a live effect frame as garbage") })
-	if err := d.Feed(EncodeFrame(TypeSessionEffect, 1, 0, EncodeEffectFrame(EffectFrame{Kind: EffectBell}))); err != nil {
+	effectPayload, err := EncodeEffectFrame(EffectFrame{Kind: EffectBell})
+	if err != nil {
+		t.Fatalf("EncodeEffectFrame: %v", err)
+	}
+	if err := d.Feed(EncodeFrame(TypeSessionEffect, 1, 0, effectPayload)); err != nil {
 		t.Fatalf("Feed: %v", err)
 	}
 	if got != TypeSessionEffect {

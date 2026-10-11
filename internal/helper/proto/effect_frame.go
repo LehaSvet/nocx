@@ -54,21 +54,21 @@ type EffectFrame struct {
 	EpisodeID string
 }
 
-func EncodeEffectFrame(f EffectFrame) []byte {
+func EncodeEffectFrame(f EffectFrame) ([]byte, error) {
 	if len(f.Title) > 1<<31-1 {
-		panic(ErrEffectFrameTitleTooLong)
+		return nil, ErrEffectFrameTitleTooLong
 	}
 	if len(f.EpisodeID) > 1<<16-1 {
-		panic(ErrEffectFrameEpisodeTooLong)
+		return nil, ErrEffectFrameEpisodeTooLong
 	}
 	if !f.Kind.valid() {
-		panic(ErrUnknownEffectKind)
+		return nil, ErrUnknownEffectKind
 	}
 	if f.Kind != EffectPromptBoundary && f.StreamOffset != 0 {
-		panic(ErrInvalidStreamOffset)
+		return nil, ErrInvalidStreamOffset
 	}
 	if (f.Kind == EffectRecovery && (!validEpisodeID(f.EpisodeID) || len(f.Title) != 0 || len(f.Body) != 0)) || (f.Kind != EffectRecovery && f.EpisodeID != "") {
-		panic(ErrInvalidRecoveryEffect)
+		return nil, ErrInvalidRecoveryEffect
 	}
 	b := make([]byte, EffectFrameHeaderLen+len(f.Title)+len(f.EpisodeID)+len(f.Body))
 	copy(b[:16], f.Session[:])
@@ -88,7 +88,7 @@ func EncodeEffectFrame(f EffectFrame) []byte {
 	copy(b[EffectFrameHeaderLen:], f.Title)
 	copy(b[EffectFrameHeaderLen+len(f.Title):], f.EpisodeID)
 	copy(b[EffectFrameHeaderLen+len(f.Title)+len(f.EpisodeID):], f.Body)
-	return b
+	return b, nil
 }
 
 func DecodeEffectFrame(b []byte) (EffectFrame, error) {

@@ -268,8 +268,13 @@ func TestAnEffectFrameReachesItsNamedAttachment(t *testing.T) {
 					_, _ = out.Write(proto.EncodeFrame(proto.TypeResponse, 0, 0, resp))
 					return
 				}
-				effect := proto.EffectFrame{Session: sessionRaw, Subscriber: subRaw, Generation: 1, EffectID: 42, StreamOffset: 123, Kind: proto.EffectNotification, Title: []byte("Tests failed"), Body: []byte("2 failed")}
-				_, _ = out.Write(proto.EncodeFrame(proto.TypeSessionEffect, 0, 0, proto.EncodeEffectFrame(effect)))
+				effect := proto.EffectFrame{Session: sessionRaw, Subscriber: subRaw, Generation: 1, EffectID: 42, Kind: proto.EffectNotification, Title: []byte("Tests failed"), Body: []byte("2 failed")}
+				effectPayload, encodeErr := proto.EncodeEffectFrame(effect)
+				if encodeErr != nil {
+					t.Errorf("EncodeEffectFrame: %v", encodeErr)
+					return
+				}
+				_, _ = out.Write(proto.EncodeFrame(proto.TypeSessionEffect, 0, 0, effectPayload))
 				resp, _ := json.Marshal(proto.Response{ID: req.ID})
 				_, _ = out.Write(proto.EncodeFrame(proto.TypeResponse, 0, 0, resp))
 			}
@@ -303,7 +308,7 @@ func TestAnEffectFrameReachesItsNamedAttachment(t *testing.T) {
 	}
 	select {
 	case effect := <-got:
-		if effect.EffectID != 42 || effect.Generation != 1 || effect.StreamOffset != 123 || effect.Kind != proto.EffectNotification || string(effect.Title) != "Tests failed" || string(effect.Body) != "2 failed" || effect.Session != sessionRaw || effect.Subscriber != subRaw {
+		if effect.EffectID != 42 || effect.Generation != 1 || effect.StreamOffset != 0 || effect.Kind != proto.EffectNotification || string(effect.Title) != "Tests failed" || string(effect.Body) != "2 failed" || effect.Session != sessionRaw || effect.Subscriber != subRaw {
 			t.Fatalf("effect = %+v", effect)
 		}
 	case <-ctx.Done():

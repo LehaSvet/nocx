@@ -561,6 +561,12 @@ test.describe('tab completion', () => {
     // graphify-output so the row assertions below still name row 0.
     fs.mkdirSync(path.join(fixture, 'repos', 'meshynet', 'grz-sibling'))
     try {
+      // The kit's 640px ceiling is the product contract. At the suite's
+      // default viewport, this pane is 744px wide, so a valid capped panel
+      // fails the separate 75%-of-pane shape before the overflow assertions
+      // run. Use a wide pane to exercise the real ceiling without weakening
+      // either bound or shortening the overflowing suggestion.
+      await page.setViewportSize({ width: 1600, height: 900 })
       await page.goto('/')
       await expect(page.locator('.nocx-tab')).toHaveCount(1)
       await promptReady(page)

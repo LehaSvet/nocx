@@ -374,7 +374,11 @@ func (h *Host) SendScreenFrame(f proto.ScreenDataFrame) error {
 // SendEffectFrame writes one runtime effect to the coordinator on its own
 // identity-bearing plane, never on the full-screen snapshot carrier.
 func (h *Host) SendEffectFrame(f proto.EffectFrame) error {
-	return h.write(proto.TypeSessionEffect, proto.EncodeEffectFrame(f))
+	payload, err := proto.EncodeEffectFrame(f)
+	if err != nil {
+		return fmt.Errorf("encode session effect frame: %w", err)
+	}
+	return h.write(proto.TypeSessionEffect, payload)
 }
 
 // effectData refuses the reverse direction: only the helper's runtime may

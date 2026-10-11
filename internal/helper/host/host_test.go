@@ -168,6 +168,14 @@ func readResponse(t *testing.T, ch <-chan frame) proto.Response {
 	return resp
 }
 
+func TestSendEffectFrameReturnsEncodingError(t *testing.T) {
+	h := host.New(nil, nil, "testhash", "instance-1", nil)
+	err := h.SendEffectFrame(proto.EffectFrame{Kind: proto.EffectNotification, StreamOffset: 1})
+	if !errors.Is(err, proto.ErrInvalidStreamOffset) {
+		t.Fatalf("SendEffectFrame error = %v, want %v", err, proto.ErrInvalidStreamOffset)
+	}
+}
+
 func TestHelloVersionMismatchWritesNothing(t *testing.T) {
 	var out bytes.Buffer
 	in := bytes.NewReader(proto.EncodeFrame(proto.TypeHello, 0, 0,
