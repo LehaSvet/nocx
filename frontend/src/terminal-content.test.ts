@@ -4938,7 +4938,7 @@ describe('the projections consume the kernel through the composition root (ADR-0
         },
       })
       // A full-screen program owns the terminal when its command ends.
-      if (opts.alternate) rendererOf(content)._fireBufferChange('alternate')
+      if (opts.alternate) fireBufferState(sessionOf(content), 'alternate', 20)
       handler({
         lane: 'lane-1',
         lifecycle: 'running',
@@ -5562,11 +5562,7 @@ describe('the projections consume the kernel through the composition root (ADR-0
     }
   })
 
-  it('reports the lane buffer kind to the backend on every buffer change and at session open (ADR-0020 decision 3)', async () => {
-    // The backend cannot see the alternate screen (AD-6 — it never sniffs
-    // the byte stream), so the renderer reports the buffer kind it owns
-    // and the backend decides the awaiting-takeover transition from it:
-    // a program that takes the alternate screen demotes the agent.
+  it('reports accepted backend frame buffer state to the lane, not the renderer parser (ADR-0020 decision 3)', async () => {
     const client = makeClient()
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
@@ -5575,27 +5571,21 @@ describe('the projections consume the kernel through the composition root (ADR-0
       const renderer = rendererOf(content)
       const session = sessionOf(content)
 
-      // The open re-reported the CURRENT kind once the session had a
-      // backend id (a change before open had no session to name).
-      expect(laneCalls().length).toBeGreaterThanOrEqual(1)
-      expect(laneCalls()[0][1]).toEqual({ sessionId: session.sessionId, bufferKind: 'normal' })
-
-      // A program enters the alternate screen: reported as it happens.
+      // No frame has been accepted yet, so the renderer cannot seed lane state.
+      expect(laneCalls()).toEqual([])
       renderer._fireBufferChange('alternate')
-      await vi.waitFor(() => {
-        expect(laneCalls()[laneCalls().length - 1]?.[1]).toEqual({
-          sessionId: session.sessionId,
-          bufferKind: 'alternate',
-        })
-      })
-      // The TUI exits: the lane leaves awaiting-takeover, reported again.
-      renderer._fireBufferChange('normal')
-      await vi.waitFor(() => {
-        expect(laneCalls()[laneCalls().length - 1]?.[1]).toEqual({
-          sessionId: session.sessionId,
-          bufferKind: 'normal',
-        })
-      })
+      expect(laneCalls()).toEqual([])
+
+      // The lane follows the same accepted state as the painted screen.
+      fireBufferState(session, 'alternate', 20)
+      expect(laneCalls()).toEqual([
+        ['agent.laneInteractivity', { sessionId: session.sessionId, bufferKind: 'alternate' }],
+      ])
+      fireBufferState(session, 'normal', 21)
+      expect(laneCalls()).toEqual([
+        ['agent.laneInteractivity', { sessionId: session.sessionId, bufferKind: 'alternate' }],
+        ['agent.laneInteractivity', { sessionId: session.sessionId, bufferKind: 'normal' }],
+      ])
     } finally {
       teardown()
     }
@@ -6854,15 +6844,14 @@ describe('alt-screen exit and the ready prompt present the structured layout (no
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
       const handler = factHandler(client)
-      const renderer = rendererOf(content)
       handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
       // vim enters the alternate buffer: the program takes the pane.
-      renderer._fireBufferChange('alternate')
+      fireBufferState(sessionOf(content), 'alternate', 20)
       expect(scrollbackOf(content).mode).toBe('fullscreen')
       // vim quits: leaving the alternate buffer must land on the structured
       // idle layout, not the flat conventional grid — the live domain
       // entitles the session to the block model on the way out too.
-      renderer._fireBufferChange('normal')
+      fireBufferState(sessionOf(content), 'normal', 21)
       expect(scrollbackOf(content).mode).toBe('idle')
       expect(
         scrollbackOf(content).scrollbackInner.classList.contains('inner-fullscreen-mode'),
@@ -6875,7 +6864,6 @@ describe('alt-screen exit and the ready prompt present the structured layout (no
   it('leaving the alternate buffer while the attempt still runs keeps the live region up (nocx-u7uh.26)', async () => {
     const client = makeClient()
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
-    const renderer = rendererOf(content)
     /* eslint-disable @typescript-eslint/unbound-method */
     const protoScrollTo = Element.prototype.scrollTo
     const protoScrollIntoView = Element.prototype.scrollIntoView
@@ -6894,12 +6882,12 @@ describe('alt-screen exit and the ready prompt present the structured layout (no
         attempt: { id: 'att-1', state: 'open', origin: 'shell', command: 'vim file' },
       })
       expect(scrollbackOf(content).mode).toBe('running')
-      renderer._fireBufferChange('alternate')
+      fireBufferState(sessionOf(content), 'alternate', 20)
       expect(scrollbackOf(content).mode).toBe('fullscreen')
       // vim exits before the completion fact lands: the command cycle still
       // owns the live region, so the pane stays in the running layout until
       // the authenticated completion freezes the block.
-      renderer._fireBufferChange('normal')
+      fireBufferState(sessionOf(content), 'normal', 21)
       expect(scrollbackOf(content).mode).toBe('running')
     } finally {
       Element.prototype.scrollTo = protoScrollTo
@@ -6912,12 +6900,11 @@ describe('alt-screen exit and the ready prompt present the structured layout (no
     const client = makeClient()
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
-      const renderer = rendererOf(content)
       // Native: no domain, a conventional terminal. The alt-screen path
       // must leave it exactly as it found it — a flat grid.
-      renderer._fireBufferChange('alternate')
+      fireBufferState(sessionOf(content), 'alternate', 20)
       expect(scrollbackOf(content).mode).toBe('fullscreen')
-      renderer._fireBufferChange('normal')
+      fireBufferState(sessionOf(content), 'normal', 21)
       expect(scrollbackOf(content).mode).toBe('unstructured')
     } finally {
       teardown()
@@ -11263,7 +11250,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       scrollback.blockManager.bindAttempt('att-run')
       closeRunningBlock(scrollback.blockManager)
       const renderer = rendererOf(content)
-      renderer._fireBufferChange('alternate')
+      fireBufferState(sessionOf(content), 'alternate', 20)
       renderer._fireWriteParsed()
 
       await summonChord(content)
@@ -11292,7 +11279,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       scrollback.beginBlock('top', '~', 0)
       scrollback.blockManager.bindAttempt('att-run')
       const renderer = rendererOf(content)
-      renderer._fireBufferChange('alternate')
+      fireBufferState(sessionOf(content), 'alternate', 20)
       renderer._fireWriteParsed()
 
       await summonChord(content)
@@ -12343,7 +12330,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       startCommand(client, 'htop')
       const renderer = rendererOf(content)
       const session = sessionOf(content)
-      renderer._fireBufferChange('alternate')
+      fireBufferState(sessionOf(content), 'alternate', 20)
       const dimensions = { cols: renderer.cols, rows: renderer.rows }
       const resizeCalls = session.sendResize.mock.calls.length
 
@@ -13819,7 +13806,7 @@ describe('the summoned frame stays a local display pin', () => {
       content.setVisible(true)
       startRunning(client)
       const renderer = rendererOf(content)
-      renderer._fireBufferChange('alternate')
+      fireBufferState(sessionOf(content), 'alternate', 20)
       const capture = vi.fn().mockResolvedValue(frame('top: load 1.00\nTasks: 254 total'))
       renderer.captureLiveFrame = capture
 
@@ -13877,9 +13864,8 @@ describe('the summoned frame stays a local display pin', () => {
     try {
       content.setVisible(true)
       startRunning(client)
-      const renderer = rendererOf(content)
       const session = sessionOf(content)
-      renderer._fireBufferChange('alternate')
+      fireBufferState(sessionOf(content), 'alternate', 20)
       content.switchToTerminalInput()
       session.send.mockClear()
       session.sendResize.mockClear()
@@ -15462,8 +15448,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
     try {
       content.setVisible(true)
       startCommand(client)
-      const renderer = rendererOf(content)
-      renderer._fireBufferChange('alternate')
+      fireBufferState(sessionOf(content), 'alternate', 20)
       await summon(content)
       const answer = await submitQuestion(content, client, 'leave when the program thaws')
       const pane = answer.closest<HTMLElement>('.pane')
@@ -15472,7 +15457,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
       expect(answer.isConnected).toBe(true)
       expect(paneElement.querySelector('.nocx-freeze-frame')).not.toBeNull()
 
-      renderer._fireBufferChange('normal')
+      fireBufferState(sessionOf(content), 'normal', 21)
 
       expect(answer.isConnected).toBe(true)
       expect(answer.parentElement).toBe(
@@ -16420,6 +16405,16 @@ function screenFrame(
     },
     rows,
   }
+}
+
+function fireBufferState(
+  session: SessionFake,
+  bufferKind: 'normal' | 'alternate',
+  revision: number,
+): void {
+  const frame = screenFrame(revision, [])
+  frame.state.bufferKind = bufferKind
+  session.fireScreenFrame(frame)
 }
 
 function fireFrameMetadata(

@@ -810,12 +810,9 @@ export interface PaneBlock {
 export class TerminalContent extends BasePaneContent {
   // The CONCRETE renderer, not the interface. mount() constructs it here and
   // nothing injects one, so `TerminalRenderer | null` was a seam with no
-  // second implementation behind it — and it cost a real one: _bindSession
-  // needs `activeBufferKind` and `snapshotStore`, which are the renderer's
-  // and not the interface's, so a rebind could not be handed the renderer the
-  // pane already holds. Narrowing the field states what is true rather than
-  // widening the interface with two members no other implementation would
-  // have. Everything else here still uses it through the interface's methods.
+  // second implementation behind it. Narrowing the field states what is true
+  // without widening the interface; the accepted backend frame, not xterm's
+  // parser, owns buffer-kind decisions.
   private renderer: XtermRenderer | null = null
   private session: SessionHandle | null = null
   private _metadataSessionId: string | null = null
@@ -2245,11 +2242,9 @@ export class TerminalContent extends BasePaneContent {
    *  facts already pushed to the composer's PromptContext
    *  (`_applyEnvironmentView`, `_onHomeKnown`, `_onBranchChanged`), read
    *  fresh rather than cached a second time. `program` is chosen from the
-   *  renderer's own buffer report (`this.scrollback.mode`), never a
-   *  heuristic over the byte stream (AD-6): an alt-screen program takes
-   *  the pane and this strip switches with it, in both directions, from
-   *  the same `renderer.onBufferChange` callback that drives
-   *  `enterFullscreen`/`exitFullscreen`.
+   *  accepted backend frame's buffer state, reflected in `this.scrollback.mode`,
+   *  never a heuristic over the byte stream (AD-6): an alt-screen program
+   *  takes the pane and this strip switches with it, in both directions.
    *
    *  Session actions (the mockup's `02` trailing control) is deliberately
    *  NOT wired here yet: the decision record asks this strip to "expose
@@ -2487,15 +2482,6 @@ export class TerminalContent extends BasePaneContent {
       // delegates here — the same handler the editor's arbiter calls, so
       // both keyboard paths reach the ONE opener (design §10.1, AD-8).
       renderer.onSnippetChord?.(() => this.handleSnippetChord())
-
-      // The lane's interactivity report (ADR-0020 decision 3): the backend
-      // cannot see the alternate screen (AD-6 — it never sniffs the byte
-      // stream) and the renderer owns the buffer kind, so the renderer
-      // reports every buffer change and the backend decides the lane's
-      // awaiting-takeover transition from it. Before the session opens the
-      // report has no session to name — the open handler re-reports the
-      // current kind (reportLaneBufferKind).
-      renderer.onBufferChange((bufferKind) => this.reportLaneBufferKind(bufferKind))
 
       // ── DOM scrollback controller ───────────────────────────────────────
       this.scrollback = new ScrollbackController({
@@ -3438,50 +3424,6 @@ export class TerminalContent extends BasePaneContent {
               error: err instanceof Error ? err.message : String(err),
             })
           })
-      })
-
-      renderer.onBufferChange((type) => {
-        const thawing = this._bufferType === 'alternate' && type === 'normal'
-        this._bufferType = type
-        // The ask interval ends at the program's thaw: clear the frozen
-        // presentation, then seat every answer before normal-buffer ownership
-        // resumes. The shared helper preserves each exact answer node.
-        if (thawing && this._summoned) this._endSummonAndSeatAnswers()
-        // The buffer is its own axis (ADR-0024 §6): a renderer-owned
-        // presentation fact, never an authority. The kernel tracks it
-        // independently of the lifecycle, so entering or leaving the
-        // alternate buffer can never restore ownership.
-        this.lifecycle.setBuffer(type)
-        if (type === 'alternate') {
-          this.scrollback?.enterFullscreen()
-        } else {
-          // A conventional terminal stays unstructured: the scrollback-block
-          // model never takes over (ADR-0024 §4). exitFullscreen first —
-          // setUnstructured declines while an alt-screen program owns the
-          // pane.
-          this.scrollback?.exitFullscreen()
-          if (
-            fallsToConventionalGrid(
-              shellStateFromLifecycle(this.lifecycle.state, this.lifecycle.domainStack),
-            )
-          ) {
-            this.scrollback?.setUnstructured()
-          } else if (this.lifecycle.state.kind === 'running') {
-            // A command still in flight (the completion fact has not
-            // landed): the command cycle owns the live region, so keep it
-            // up — the authenticated completion freezes the block and
-            // collapses it. A ready prompt (prompt_ready) stays on
-            // exitFullscreen's idle layout, the structured block
-            // presentation the live domain entitles the session to
-            // (nocx-u7uh.26).
-            this.scrollback?.setRunning()
-          }
-        }
-        // AFTER the transition, not before: `_syncPaneContext` reads
-        // `this.scrollback.mode`, which `enterFullscreen`/`exitFullscreen`
-        // above just set — reading it earlier would show the strip the
-        // buffer it is LEAVING, one event late.
-        this._syncPaneContext()
       })
 
       this._lifecycleChangeUnsub = this.lifecycle.onChange(() => {
@@ -4695,13 +4637,6 @@ export class TerminalContent extends BasePaneContent {
       workspace: session.workspaceId,
     })
 
-    // Re-report the CURRENT buffer kind now that the session has a
-    // backend id: a buffer change before open had no session to name,
-    // and the backend's lane starts at normal — the report brings a lane
-    // already inside a TUI (an alt screen restored by replay) up to
-    // date (ADR-0020 decision 3).
-    this.reportLaneBufferKind(renderer.activeBufferKind())
-
     // The open ack carries the resolved launch policy and the refusal
     // reason (nocx-4t37.2): the capability control starts from the
     // backend's own resolution, never from a second fetch that could
@@ -4893,6 +4828,7 @@ export class TerminalContent extends BasePaneContent {
     }
     installPaneScreenSeam()
     paneScreenReaders.set(session.sessionId, () => readPaneScreen(cellModel, this._lastReport))
+    let reportedBufferKind: 'normal' | 'alternate' | null = null
     session.onScreenFrame((frame: SessionFrame) => {
       if (this.session !== session || this._cellModel !== cellModel) return
       const model = cellModel
@@ -4907,6 +4843,12 @@ export class TerminalContent extends BasePaneContent {
           // Latest-value metadata is consumed only with an accepted frame:
           // its title/cwd and cell rows belong to the same backend revision.
           this._resetFrameMetadataSession(session.sessionId)
+          const bufferKind = result.snapshot.state.bufferKind
+          if (this._bufferType !== bufferKind) this._applyBufferKind(bufferKind)
+          if (reportedBufferKind !== bufferKind) {
+            this.reportLaneBufferKind(bufferKind)
+            reportedBufferKind = bufferKind
+          }
           if (frame.state.title !== null) this._applyTerminalTitle(frame.state.title)
           if (frame.state.cwd !== null) this._applyTerminalCwd(frame.state.cwd.path)
           // THE PAINTER'S ONLY FEED: one accepted revision joins the
@@ -5080,6 +5022,7 @@ export class TerminalContent extends BasePaneContent {
       this._publishConnectionCondition()
     })
     session.onReset(() => {
+      reportedBufferKind = null
       renderer.reset()
       this._projections?.reset()
       this.lifecycle.reset()
@@ -6513,6 +6456,44 @@ export class TerminalContent extends BasePaneContent {
     if (path === this._frameCwdPath) return
     this._frameCwdPath = path
     this.env?.recordCwd(path)
+  }
+
+  /** Apply alternate-screen presentation only from a locally accepted backend
+   *  frame. The frame is the same revision the painter shows; the hidden xterm
+   *  parser is not a second authority for buffer identity. */
+  private _applyBufferKind(type: 'normal' | 'alternate'): void {
+    if (this._bufferType === type) return
+    const thawing = this._bufferType === 'alternate' && type === 'normal'
+    this._bufferType = type
+    // The ask interval ends at the program's thaw: clear the frozen
+    // presentation, then seat every answer before normal-buffer ownership
+    // resumes. The shared helper preserves each exact answer node.
+    if (thawing && this._summoned) this._endSummonAndSeatAnswers()
+    // Buffer is an axis of its own (ADR-0024 §6); it never restores lifecycle
+    // ownership. The runtime's frame supplies this state independently.
+    this.lifecycle.setBuffer(type)
+    if (type === 'alternate') {
+      this.scrollback?.enterFullscreen()
+    } else {
+      // A conventional terminal stays unstructured: the scrollback-block
+      // model never takes over (ADR-0024 §4). Exit fullscreen before deciding
+      // which layout the lifecycle currently owns.
+      this.scrollback?.exitFullscreen()
+      if (
+        fallsToConventionalGrid(
+          shellStateFromLifecycle(this.lifecycle.state, this.lifecycle.domainStack),
+        )
+      ) {
+        this.scrollback?.setUnstructured()
+      } else if (this.lifecycle.state.kind === 'running') {
+        // A command still in flight owns the live region until its completion
+        // freezes the block. A ready prompt returns to the structured idle
+        // layout (nocx-u7uh.26).
+        this.scrollback?.setRunning()
+      }
+    }
+    // Read pane context after the transition because it reads scrollback.mode.
+    this._syncPaneContext()
   }
 
   private reportLaneBufferKind(bufferKind: 'normal' | 'alternate'): void {
