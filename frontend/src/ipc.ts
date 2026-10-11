@@ -26,6 +26,7 @@ import type { SessionEffect } from './generated/session.effect'
 import { isValidCommandSnapshotNames } from './command-snapshot'
 import type { SessionHistoryPage } from './generated/session.historyPage'
 import type { SessionHistoryPageRows } from './generated/session.historyPageRows'
+import type { BlockOutputStart } from './generated/block.outputStart'
 import type { SessionIntentResult } from './generated/session.intent'
 import type { SessionObservationChanged } from './generated/session.observationChanged'
 import type { SessionIntegrationChanged } from './generated/session.integrationChanged'
@@ -746,8 +747,28 @@ export class WSClient {
   // own shape for the created fact's own reason — a broadcast, and the window
   // drawing the strip is not the caller that asked for the close.
   private workerTabClosedHandlers = new Set<(fact: WorkersTabClosed) => void>()
+  private blockOutputStartHandlers = new Set<(fact: BlockOutputStart) => void>()
 
   constructor(private readonly dispatcherImpl: Dispatcher) {
+    dispatcherImpl.subscribe('block.outputStart', (params: unknown) => {
+      if (!params || typeof params !== 'object') return
+      const raw = params as Record<string, unknown>
+      if (typeof raw.entryId !== 'string' || raw.entryId.length === 0) return
+      if (typeof raw.row !== 'number' || !Number.isSafeInteger(raw.row) || raw.row < 0) return
+      if (
+        typeof raw.screenRevision !== 'number' ||
+        !Number.isSafeInteger(raw.screenRevision) ||
+        raw.screenRevision < 0
+      )
+        return
+      if (raw.bufferKind !== 'normal' && raw.bufferKind !== 'alternate') return
+      if (typeof raw.bufferInstance !== 'string' || !/^[1-9][0-9]*$/.test(raw.bufferInstance))
+        return
+      if (typeof raw.cols !== 'number' || !Number.isSafeInteger(raw.cols) || raw.cols < 1) return
+      if (typeof raw.rows !== 'number' || !Number.isSafeInteger(raw.rows) || raw.rows < 1) return
+      const fact = raw as unknown as BlockOutputStart
+      for (const handler of this.blockOutputStartHandlers) handler(fact)
+    })
     // Wire binary frame handling and session reattach on every connect/reconnect.
     this.dispatcher.onConnect(() => {
       const ws = this.dispatcher.socket!
@@ -1761,6 +1782,12 @@ export class WSClient {
    *  from this client's map when a handler runs: the backend has stopped
    *  sending its output and refuses its input, so the only honest state here
    *  is not holding it. Returns an unsubscribe. */
+  /** Subscribe to the session-scoped block.outputStart anchor notification. */
+  onBlockOutputStart(cb: (fact: BlockOutputStart) => void): () => void {
+    this.blockOutputStartHandlers.add(cb)
+    return () => this.blockOutputStartHandlers.delete(cb)
+  }
+
   onSessionDisplaced(cb: (displaced: SessionDisplaced) => void): () => void {
     this.displacedHandlers.add(cb)
     return () => this.displacedHandlers.delete(cb)

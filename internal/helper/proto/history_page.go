@@ -36,9 +36,14 @@ type HistoryPageParams struct {
 // and the rows themselves, oldest first, pre-encoded in the frame contract's
 // rows array shape.
 type HistoryPageResult struct {
-	Floor uint64          `json:"floor"`
-	Start uint64          `json:"start"`
-	End   uint64          `json:"end"`
-	More  bool            `json:"more"`
-	Rows  json.RawMessage `json:"rows"`
+	Floor          uint64          `json:"floor"`
+	Start          uint64          `json:"start"`
+	End            uint64          `json:"end"`
+	More           bool            `json:"more"`
+	BufferKind     string          `json:"bufferKind"`
+	BufferInstance string          `json:"bufferInstance"`
+	BaseRow        uint64          `json:"baseRow"`
+	Cols           int             `json:"cols"`
+	GeometryRows   int             `json:"geometryRows"`
+	Rows           json.RawMessage `json:"rows"`
 }

@@ -92,6 +92,7 @@ type Frame struct {
 }
 
 type frameState struct {
+	BaseRow        uint64     `json:"baseRow"`
 	BufferKind     string     `json:"bufferKind"`
 	BufferInstance string     `json:"bufferInstance"`
 	BracketedPaste bool       `json:"bracketedPaste"`
@@ -136,6 +137,13 @@ func EncodeFrame(snap Snapshot) ([]byte, error) {
 		return nil, ErrNoScreen
 	}
 	geom := snap.Geometry.Geometry
+	geometryRows, err := screenIntToUint64(geom.Rows, "frame geometry rows")
+	if err != nil {
+		return nil, err
+	}
+	if snap.BaseRow > MaxScreenRowOffset || geometryRows > MaxScreenRowOffset-snap.BaseRow {
+		return nil, fmt.Errorf("sessionruntime: absolute screen rows exceed JSON safe-integer ceiling %d", MaxScreenRowOffset)
+	}
 	f := Frame{
 		Revision: uint64(snap.Revision),
 		Geometry: frameGeometry{
@@ -147,6 +155,7 @@ func EncodeFrame(snap Snapshot) ([]byte, error) {
 		},
 		Cursor: frameCursor{X: snap.Cursor.X, Y: snap.Cursor.Y, Visible: snap.Cursor.Visible},
 		State: frameState{
+			BaseRow:        snap.BaseRow,
 			BufferKind:     frameBufferKind(snap.Identity.AltScreen),
 			BufferInstance: strconv.FormatUint(snap.Identity.BufferInstance, 10),
 			BracketedPaste: snap.Modes.BracketedPaste,

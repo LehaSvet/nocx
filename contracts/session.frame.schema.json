@@ -73,6 +73,7 @@
       "required": [
         "bufferKind",
         "bufferInstance",
+        "baseRow",
         "bracketedPaste",
         "mouseTracking",
         "title",
@@ -89,6 +90,12 @@
           "type": "string",
           "pattern": "^[1-9][0-9]*$",
           "description": "A decimal string identifying the active buffer instance. It is a string because the runtime counter is uint64 and JSON numbers are not exact across JavaScript's full range."
+        },
+        "baseRow": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "The absolute row number of rows[0] in the active buffer's shared screen coordinate. The frame covers [baseRow, baseRow + geometry.rows); the same coordinate is used by session.read, session.historyPage, and block output anchors. Alternate buffers have their own bufferInstance and start at row zero."
         },
         "bracketedPaste": {
           "type": "boolean",

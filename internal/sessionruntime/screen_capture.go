@@ -90,18 +90,10 @@ func (s *Session) ReadScreenCapture(region *ScreenRange) (ScreenCapture, error) 
 		if err != nil {
 			return ScreenCapture{}, fmt.Errorf("sessionruntime: screen capture history size: %w", err)
 		}
-		owed, owedErr := term.ReportedRowsOnScreen()
-		if owedErr != nil {
-			return ScreenCapture{}, fmt.Errorf("sessionruntime: screen capture history boundary: %w", owedErr)
-		}
-		owedRows, owedConversionErr := screenIntToUint64(owed, "reported screen rows")
-		if owedConversionErr != nil {
-			return ScreenCapture{}, owedConversionErr
-		}
-		if owedRows > s.screenDepartedRows {
-			return ScreenCapture{}, fmt.Errorf("sessionruntime: screen capture history boundary exceeds departed rows")
-		}
-		head = s.screenDepartedRows - owedRows
+	}
+	head, err = s.activeBaseRowLocked(alt)
+	if err != nil {
+		return ScreenCapture{}, fmt.Errorf("sessionruntime: screen capture history boundary: %w", err)
 	}
 	if head > MaxScreenRowOffset || geometryRows > MaxScreenRowOffset-head {
 		return ScreenCapture{}, fmt.Errorf("sessionruntime: absolute screen rows exceed JSON safe-integer ceiling %d", MaxScreenRowOffset)
@@ -176,6 +168,55 @@ func (s *Session) ReadScreenCapture(region *ScreenRange) (ScreenCapture, error) 
 	}, nil
 }
 
+// screenRowAnchorLocked reads the active cursor row and its buffer identity
+// under the session lock. It is the absolute screen coordinate at an OSC 133 C
+// sighting, distinct from the row-stream FromRow emitted beside it.
+func (s *Session) screenRowAnchorLocked() (ScreenRowAnchor, error) {
+	term := s.emulator
+	geom, err := term.Geometry()
+	if err != nil {
+		return ScreenRowAnchor{}, fmt.Errorf("sessionruntime: screen anchor geometry: %w", err)
+	}
+	if !geom.Valid() {
+		return ScreenRowAnchor{}, fmt.Errorf("sessionruntime: screen anchor geometry %dx%d is invalid", geom.Cols, geom.Rows)
+	}
+	active, err := term.Screen()
+	if err != nil {
+		return ScreenRowAnchor{}, fmt.Errorf("sessionruntime: screen anchor buffer: %w", err)
+	}
+	alt := active == emulator.ScreenAlternate
+	s.observeBufferLocked(alt)
+	cursor, err := term.Cursor()
+	if err != nil {
+		return ScreenRowAnchor{}, fmt.Errorf("sessionruntime: screen anchor cursor: %w", err)
+	}
+	cursorRow, err := screenIntToUint64(cursor.Y, "cursor row")
+	if err != nil || cursor.Y >= geom.Rows {
+		return ScreenRowAnchor{}, fmt.Errorf("sessionruntime: screen anchor cursor row %d is outside geometry", cursor.Y)
+	}
+	base, err := s.activeBaseRowLocked(alt)
+	if err != nil {
+		return ScreenRowAnchor{}, fmt.Errorf("sessionruntime: screen anchor history boundary: %w", err)
+	}
+	geometryRows, err := screenIntToUint64(geom.Rows, "screen anchor geometry rows")
+	if err != nil {
+		return ScreenRowAnchor{}, err
+	}
+	if base > MaxScreenRowOffset || geometryRows > MaxScreenRowOffset-base || cursorRow > MaxScreenRowOffset-base {
+		return ScreenRowAnchor{}, fmt.Errorf("sessionruntime: absolute screen row exceeds JSON safe-integer ceiling %d", MaxScreenRowOffset)
+	}
+	return ScreenRowAnchor{
+		Row: base + cursorRow,
+		// Ingest publishes the full frame after finishing this marker's parse;
+		// the next revision is the lower bound that includes this observation.
+		Revision: s.rev + 1,
+		Identity: ScreenIdentity{
+			At: s.inc, AltScreen: alt, BufferInstance: s.bufferInstance,
+			Cols: geom.Cols, Rows: geom.Rows,
+		},
+	}, nil
+}
+
 func screenIntToUint64(value int, name string) (uint64, error) {
 	if value < 0 {
 		return 0, fmt.Errorf("sessionruntime: %s is negative: %d", name, value)
@@ -188,4 +229,27 @@ func screenUint64ToInt(value uint64, name string) (int, error) {
 		return 0, fmt.Errorf("sessionruntime: %s %d exceeds platform int", name, value)
 	}
 	return int(value), nil
+}
+
+// activeBaseRowLocked is the single owner of the active rectangle's absolute
+// top. The primary buffer shares screenDepartedRows coordinates with retained
+// history, adjusted for rows currently on screen that were already reported
+// as departures after a pane grew. The alternate buffer has its own space at
+// zero. Callers hold s.mu so this boundary and the rows around it are one read.
+func (s *Session) activeBaseRowLocked(alternate bool) (uint64, error) {
+	if alternate {
+		return 0, nil
+	}
+	owed, err := s.emulator.ReportedRowsOnScreen()
+	if err != nil {
+		return 0, err
+	}
+	owedRows, err := screenIntToUint64(owed, "reported screen rows")
+	if err != nil {
+		return 0, err
+	}
+	if owedRows > s.screenDepartedRows {
+		return 0, fmt.Errorf("sessionruntime: history boundary exceeds departed rows")
+	}
+	return s.screenDepartedRows - owedRows, nil
 }

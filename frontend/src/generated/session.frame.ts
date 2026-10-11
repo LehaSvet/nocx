@@ -95,6 +95,10 @@ export interface SessionFrame {
      */
     bufferInstance: string
     /**
+     * The absolute row number of rows[0] in the active buffer's shared screen coordinate. The frame covers [baseRow, baseRow + geometry.rows); the same coordinate is used by session.read, session.historyPage, and block output anchors. Alternate buffers have their own bufferInstance and start at row zero.
+     */
+    baseRow: number
+    /**
      * Whether the running program has enabled DEC private mode 2004.
      */
     bracketedPaste: boolean

@@ -56,6 +56,7 @@ function defaultFrameState(): SessionFrame['state'] {
   return {
     bufferKind: 'normal',
     bufferInstance: '1',
+    baseRow: 0,
     bracketedPaste: false,
     mouseTracking: false,
     title: null,
@@ -139,6 +140,7 @@ describe('backend terminal state', () => {
       {
         bufferKind: 'alternate',
         bufferInstance: '18446744073709551615',
+        baseRow: 0,
         bracketedPaste: true,
         mouseTracking: true,
         title: null,
@@ -152,12 +154,24 @@ describe('backend terminal state', () => {
     expect(result.snapshot.state).toEqual({
       bufferKind: 'alternate',
       bufferInstance: '18446744073709551615',
+      baseRow: 0,
       bracketedPaste: true,
       mouseTracking: true,
       title: null,
       cwd: null,
     })
     expect(Object.isFrozen(result.snapshot.state)).toBe(true)
+  })
+
+  it('refuses an absolute row range outside JSON-safe coordinates without replacing the prior revision', () => {
+    const model = createCellModel()
+    const first = model.apply(fixtureFrameOf(1, [[['a', 1, true]]]))
+    expect(first.ok).toBe(true)
+    const malformed = fixtureFrameOf(2, [[['b', 1, true]]])
+    malformed.state.baseRow = Number.MAX_SAFE_INTEGER
+    const second = model.apply(malformed)
+    expect(second).toEqual({ ok: false, refusal: { reason: 'malformed-state' } })
+    expect(model.current()?.revision).toBe(1)
   })
 
   it('refuses malformed mode or buffer identity without replacing the prior revision', () => {
@@ -168,6 +182,7 @@ describe('backend terminal state', () => {
     const malformed = fixtureFrameOf(2, [[['b', 1, true]]], undefined, undefined, {
       bufferKind: 'normal',
       bufferInstance: '0',
+      baseRow: 0,
       bracketedPaste: false,
       mouseTracking: false,
       title: null,

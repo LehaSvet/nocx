@@ -152,7 +152,10 @@ func (a *AttachedSession) deliverClearBoundary() {
 }
 
 // OutputStartRow is the absolute row position where command output begins.
-type OutputStartRow struct{ FromRow uint64 }
+type OutputStartRow struct {
+	FromRow uint64
+	Anchor  *proto.OutputStartScreenAnchor
+}
 
 // OnOutputStartRow registers the ordered output-position marker consumer.
 func (a *AttachedSession) OnOutputStartRow(f func(OutputStartRow)) {
@@ -183,7 +186,7 @@ func (c *Client) outputStartRow(payload []byte) {
 		c.log.Warn("output-start-row frame dropped: no matching attachment", "fromRow", f.FromRow)
 		return
 	}
-	a.deliverOutputStartRow(OutputStartRow{FromRow: f.FromRow})
+	a.deliverOutputStartRow(OutputStartRow{FromRow: f.FromRow, Anchor: f.Anchor})
 }
 
 // outputRows is one TypeOutputRows frame arriving: decode, find the

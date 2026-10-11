@@ -19,6 +19,7 @@ import (
 
 	"github.com/shady2k/nocx/internal/content"
 	"github.com/shady2k/nocx/internal/emulator"
+	"github.com/shady2k/nocx/internal/helper/proto"
 	"github.com/shady2k/nocx/internal/lifecycle"
 	"github.com/shady2k/nocx/internal/lifecyclepub"
 	"github.com/shady2k/nocx/internal/session"
@@ -2055,4 +2056,23 @@ func TestBlockClosed_EndsWithoutACompletionAreSaid(t *testing.T) {
 			t.Fatalf("block.closed = %+v, want entry %q not kept", got, sshID)
 		}
 	})
+}
+
+func TestBlockOutputStart_OverTheWireConformsToContract(t *testing.T) {
+	schema := loadSchema(t, "block.outputStart.schema.json")
+	e, pub, lane, h, sid, _ := newLifecycleLedgerEnv(t, true)
+	e.ws.AttachBlockRows(session.ID(sid))
+	entry := startsACommand(t, e, pub, lane, h, 2, "printf output")
+	e.ws.BlockOutputStartRowWithAnchor(session.ID(sid), 900, proto.OutputStartScreenAnchor{
+		Row: 4, ScreenRevision: 12, BufferKind: "alternate", BufferInstance: "2", Cols: 80, Rows: 24,
+	})
+	params := readNotification(t, e.conn, "block.outputStart", wantWithin)
+	validateJSON(t, schema, params, "block.outputStart params")
+	var got blockOutputStartParams
+	if err := json.Unmarshal(params, &got); err != nil {
+		t.Fatalf("unmarshal params: %v", err)
+	}
+	if got.EntryID != entry || got.Row != 4 || got.ScreenRevision != 12 || got.BufferKind != "alternate" || got.BufferInstance != "2" || got.Cols != 80 || got.Rows != 24 {
+		t.Fatalf("anchor = %+v; must carry screen row 4 separately from stream row 900", got)
+	}
 }

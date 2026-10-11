@@ -133,6 +133,7 @@ export function snapshotForRows(lines: readonly LedgerBlockRowsLine[]) {
     state: {
       bufferKind: 'normal',
       bufferInstance: '1',
+      baseRow: 0,
       bracketedPaste: false,
       mouseTracking: false,
       title: null,

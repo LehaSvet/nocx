@@ -482,3 +482,17 @@ func TestTheRowsContractRefusesRowsOnAnIncompleteMarker(t *testing.T) {
 		t.Fatal("the contract accepted an incomplete marker carrying rows")
 	}
 }
+
+func TestOutputStartRowWithAnchorKeepsScreenAndStreamCoordinatesSeparate(t *testing.T) {
+	hs, _, sink := rowsBridgeSession(t, 80, 24)
+	anchor := sessionruntime.ScreenRowAnchor{
+		Row: 5, Revision: sessionruntime.Revision(9),
+		Identity: sessionruntime.ScreenIdentity{BufferInstance: 2, Cols: 120, Rows: 40, AltScreen: true},
+	}
+	(&rowBridge{hs: hs}).OutputStartRowWithAnchor(900, anchor)
+	sink.waitForOutputStarts(1)
+	got := sink.outputStarts[0]
+	if got.FromRow != 900 || got.Anchor == nil || got.Anchor.Row != 5 || got.Anchor.ScreenRevision != 9 || got.Anchor.BufferKind != "alternate" || got.Anchor.BufferInstance != "2" || got.Anchor.Cols != 120 || got.Anchor.Rows != 40 {
+		t.Fatalf("frame = %+v; want stream fromRow 900 and independent screen anchor %+v", got, anchor)
+	}
+}

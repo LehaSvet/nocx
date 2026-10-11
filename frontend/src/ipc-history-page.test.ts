@@ -88,6 +88,11 @@ describe('historyPage', () => {
         floor: 0,
         more: true,
         durableThrough: null,
+        bufferKind: 'normal',
+        bufferInstance: '1',
+        baseRow: 40,
+        cols: 80,
+        rows: 24,
       },
     })
     await expect(pending).resolves.toEqual({
@@ -97,6 +102,11 @@ describe('historyPage', () => {
       floor: 0,
       more: true,
       durableThrough: null,
+      bufferKind: 'normal',
+      bufferInstance: '1',
+      baseRow: 40,
+      cols: 80,
+      rows: 24,
     })
   })
 
@@ -114,7 +124,19 @@ describe('historyPage', () => {
     ws.deliverText({
       jsonrpc: '2.0',
       id: req.id,
-      result: { pageId: PAGE_ID, start: 12, end: 17, floor: 0, more: true, durableThrough: null },
+      result: {
+        pageId: PAGE_ID,
+        start: 12,
+        end: 17,
+        floor: 0,
+        more: true,
+        durableThrough: null,
+        bufferKind: 'normal',
+        bufferInstance: '1',
+        baseRow: 17,
+        cols: 80,
+        rows: 24,
+      },
     })
   })
 
@@ -147,6 +169,11 @@ describe('historyPage', () => {
         floor: 0,
         more: false,
         durableThrough: null,
+        bufferKind: 'normal',
+        bufferInstance: '1',
+        baseRow: 12,
+        cols: 80,
+        rows: 24,
       },
     })
     await pending

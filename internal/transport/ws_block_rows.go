@@ -44,6 +44,7 @@ import (
 
 	"github.com/shady2k/nocx/internal/content"
 	"github.com/shady2k/nocx/internal/emulator"
+	"github.com/shady2k/nocx/internal/helper/proto"
 	"github.com/shady2k/nocx/internal/lifecycle"
 	"github.com/shady2k/nocx/internal/lifecyclecommit"
 	"github.com/shady2k/nocx/internal/lifecyclepub"
@@ -1290,6 +1291,47 @@ func (s *WSServer) BlockOutputStartPlaneAttached(sid session.ID) {
 		}
 	}
 	bs.mu.Unlock()
+}
+
+// blockOutputStartParams is the screen anchor attached to the row-stream mark.
+type blockOutputStartParams struct {
+	EntryID        string `json:"entryId"`
+	Row            uint64 `json:"row"`
+	ScreenRevision uint64 `json:"screenRevision"`
+	BufferKind     string `json:"bufferKind"`
+	BufferInstance string `json:"bufferInstance"`
+	Cols           uint32 `json:"cols"`
+	Rows           uint32 `json:"rows"`
+}
+
+// BlockOutputStartRowWithAnchor carries screen coordinates only when the
+// helper supplied an independently captured screen anchor. FromRow remains
+// the row-stream coordinate and is never used to derive the screen row.
+// The WSServer is this notification's owner; its closing event is the
+// lifecycle-frame commit or, outside a frame, the session subscriber closing.
+func (s *WSServer) BlockOutputStartRowWithAnchor(sid session.ID, fromRow uint64, anchor proto.OutputStartScreenAnchor) {
+	s.BlockOutputStartRow(sid, fromRow)
+	if anchor.Row > math.MaxInt64 || anchor.Row > 9007199254740991 || anchor.BufferInstance == "" || anchor.Cols == 0 || anchor.Rows == 0 || (anchor.BufferKind != "normal" && anchor.BufferKind != "alternate") {
+		return
+	}
+	bs := s.blockStream
+	bs.mu.Lock()
+	block := bs.current[sid]
+	entry := ""
+	if block != nil && block.entry != "" {
+		entry = block.entry
+	}
+	bs.mu.Unlock()
+	if entry == "" {
+		return
+	}
+	// The WSServer is this notification's owner; its closing event is the
+	// lifecycle-frame commit or the session subscriber closing.
+	s.notifyBlockSubscriber(context.Background(), sid, "block.outputStart", blockOutputStartParams{
+		EntryID: entry, Row: anchor.Row, ScreenRevision: anchor.ScreenRevision,
+		BufferKind: anchor.BufferKind, BufferInstance: anchor.BufferInstance,
+		Cols: anchor.Cols, Rows: anchor.Rows,
+	})
 }
 
 // BlockOutputStartRow carries a position mark on the ordered rows stream. It

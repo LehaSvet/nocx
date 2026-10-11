@@ -97,12 +97,25 @@ function pageOf(
   count: number,
   floor: number,
   more: boolean,
+  baseRow = start + count,
 ): ScriptedPage {
   const rows: SessionHistoryPageRows['rows'] = []
   for (let i = 0; i < count; i++) rows.push(textRow(`L${String(start + i).padStart(6, '0')}`))
   return {
     pageId: id,
-    result: { pageId: id, start, end: start + count, floor, more, durableThrough: null },
+    result: {
+      pageId: id,
+      start,
+      end: start + count,
+      floor,
+      more,
+      durableThrough: null,
+      bufferKind: 'normal',
+      bufferInstance: '1',
+      baseRow,
+      cols: 80,
+      rows: 24,
+    },
     rows,
   }
 }
@@ -194,6 +207,45 @@ describe('live-history', () => {
     scrollNearTop(scroller, 0)
     await settle()
     expect(surface.el.querySelectorAll('.term-grid-row').length).toBe(96)
+  })
+
+  it('never joins pages whose absolute rows belong to another buffer instance', async () => {
+    const { surface, scroller } = mount()
+    atBottom(scroller)
+    const second = pageOf('B'.repeat(32), 22, 10, 0, false)
+    second.result.bufferInstance = '2'
+    const source = scriptedSource([pageOf('A'.repeat(32), 32, 10, 0, true), second])
+    surface.setMode('unstructured')
+    surface.bind(source)
+    await settle()
+    expect(surface.el.querySelectorAll('.term-grid-row').length).toBe(10)
+
+    scrollNearTop(scroller, 0)
+    await settle()
+    const rows = surface.el.querySelectorAll('.term-grid-row')
+    expect(rows.length).toBe(10)
+    expect(rows[0].textContent).toContain('L000022')
+    expect(Array.from(rows, (row) => row.textContent).join('\n')).not.toContain('L000032')
+    expect(source.requested).toEqual([null, 32])
+  })
+
+  it('keeps active-screen rows out of scrollback and preserves the page buffer identity', async () => {
+    const { surface, scroller } = mount()
+    atBottom(scroller)
+    const page = pageOf('a'.repeat(32), 10, 5, 0, false, 13)
+    page.result.bufferKind = 'alternate'
+    page.result.bufferInstance = '2'
+    surface.setMode('unstructured')
+    surface.bind(scriptedSource([page]))
+    await settle()
+
+    const rows = surface.el.querySelectorAll('.term-grid-row')
+    expect(rows.length).toBe(3)
+    expect(rows[0].textContent).toContain('L000010')
+    expect(rows[2].textContent).toContain('L000012')
+    expect(Array.from(rows, (row) => row.textContent).join('\n')).not.toContain('L000013')
+    expect(surface.el.firstElementChild?.getAttribute('data-start')).toBe('10')
+    expect(surface.el.firstElementChild?.getAttribute('data-end')).toBe('13')
   })
 
   it('keeps the reader anchored: a page installed above adds its height to scrollTop', async () => {

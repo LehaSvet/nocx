@@ -2744,3 +2744,37 @@ describe('session.effect notification', () => {
     })
   })
 })
+
+describe('block.outputStart notification', () => {
+  it('delivers a valid screen anchor and refuses unsafe or malformed coordinates', async () => {
+    const client = new WSClient(mockDispatcher())
+    client.start()
+    await Promise.resolve()
+    const ws = socket()
+    ws.serverAccepts()
+    const received: unknown[] = []
+    client.onBlockOutputStart((fact) => received.push(fact))
+    const valid = {
+      entryId: 'entry-1',
+      row: 4,
+      screenRevision: 12,
+      bufferKind: 'alternate',
+      bufferInstance: '2',
+      cols: 80,
+      rows: 24,
+    }
+    ws.deliverText({ jsonrpc: '2.0', method: 'block.outputStart', params: valid })
+    ws.deliverText({
+      jsonrpc: '2.0',
+      method: 'block.outputStart',
+      params: { ...valid, row: Number.MAX_SAFE_INTEGER + 1 },
+    })
+    ws.deliverText({
+      jsonrpc: '2.0',
+      method: 'block.outputStart',
+      params: { ...valid, bufferInstance: '0' },
+    })
+    expect(received).toEqual([valid])
+    client.close()
+  })
+})

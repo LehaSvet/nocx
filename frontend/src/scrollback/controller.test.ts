@@ -509,7 +509,7 @@ describe('ScrollbackController render-fence rendezvous (nocx-u7uh.8)', () => {
     // boundary is still pending: a NEW block opens and owns the running
     // slot (the owner's Ctrl-C then `codex` again — keys are raw, so the
     // second command arrives through openBlock, not the editor).
-    controller.beginBlock('codex', '~', 4)
+    controller.beginBlock('codex', '~', 0)
     controller.blockManager.bindAttempt('att-2')
     expect(controller.blockManager.blocks).toHaveLength(2)
     expect(controller.blockManager.runningBlock?.status).toBe('running')
@@ -678,59 +678,32 @@ describe('the echoed command line leaves the live region too (nocx-w1n4)', () =>
     fence,
   })
 
-  /** A renderer whose cell geometry the controller can read, with a
-   *  settable viewport top — the number that decides when the echo has
-   *  scrolled out of the grid. */
-  function rendererWithGeometry(): {
-    renderer: TerminalRenderer
-    setViewportTop: (line: number) => void
-  } {
+  function rendererWithGeometry(): TerminalRenderer {
     const renderer = makeRenderer()
-    let top = 0
     Object.defineProperty(renderer, 'cellHeight', { value: 16, configurable: true })
-    Object.defineProperty(renderer, 'viewportTopLine', {
-      configurable: true,
-      get: () => top,
-    })
-    return {
-      renderer,
-      setViewportTop: (line: number) => {
-        top = line
-      },
-    }
+    return renderer
   }
 
-  it('releases the shift when the program overwrote the echo row (nocx-hp8p2.9)', () => {
-    const { renderer } = rendererWithGeometry()
-    const pane = document.createElement('div')
+  it('releases the shift only when an accepted backend row no longer contains the echo', () => {
+    const renderer = rendererWithGeometry()
     const controller = new ScrollbackController({
-      pane,
+      pane: document.createElement('div'),
       renderer,
       snapshotStore: new CommandSnapshotStore(),
     })
-    Object.defineProperty(controller.scrollbackArea, 'clientHeight', {
-      value: 360,
-      configurable: true,
-    })
-    controller.scrollbackArea.scrollTo = vi.fn()
-
-    controller.beginBlock('top', '~', 0, 1)
+    controller.beginBlock('top', '~', 0)
+    const record = controller.blockManager.runningBlock!
+    record.outputAnchorOffset = 1
+    record.outputAnchorText = 'prompt top'
+    controller.outputAnchorChanged()
     expect(controller.xtermInner.style.transform).toBe('translateY(-16px)')
-
-    // `top` clears the screen and paints from home, so its FIRST line lands
-    // on the row the shell echoed the command on. The shift would then hide
-    // a line of the program's output — the uptime header — instead of the
-    // echo, which is exactly what the owner saw.
-    renderer.getBufferLine = () =>
-      ({
-        translateToString: () => 'top - 19:20:15 up 18 days,  1:53,  2 users',
-      }) as unknown as ReturnType<typeof renderer.getBufferLine>
-    controller.setLiveHeight(3 * 16)
+    record.outputAnchorText = 'top - 19:20:15 up 18 days,  1:53,  2 users'
+    controller.outputAnchorChanged()
     expect(controller.xtermInner.style.transform).toBe('')
   })
 
-  it('hides the echo row from the running block and releases it once the grid scrolls past', () => {
-    const { renderer, setViewportTop } = rendererWithGeometry()
+  it('hides the backend-anchored echo row and sizes the live region without renderer line numbers', () => {
+    const renderer = rendererWithGeometry()
 
     const pane = document.createElement('div')
     const controller = new ScrollbackController({
@@ -744,11 +717,13 @@ describe('the echoed command line leaves the live region too (nocx-w1n4)', () =>
     })
     controller.scrollbackArea.scrollTo = vi.fn()
 
-    // App-owned submit: the block opens at the prompt line and the output
-    // range starts one row later (nocx-4yhi) — the shape Defect 1 is about.
-    // The grid was cleared at the previous freeze, so the echo row IS the
-    // grid's top row and the shift is exactly one cell.
-    controller.beginBlock('ls', '~', 0, 1)
+    // The accepted backend anchor says the echoed command is one row below
+    // the current base row. No renderer viewport line is consulted.
+    controller.beginBlock('ls', '~', 0)
+    const record = controller.blockManager.runningBlock!
+    record.outputAnchorOffset = 1
+    record.outputAnchorText = 'prompt ls'
+    controller.outputAnchorChanged()
     expect(controller.mode).toBe('running')
     expect(controller.xtermInner.style.transform).toBe('translateY(-16px)')
 
@@ -765,19 +740,19 @@ describe('the echoed command line leaves the live region too (nocx-w1n4)', () =>
     expect(controller.xtermLiveContainer.style.height).toBe('0px')
     expect(controller.xtermLiveViewport.style.height).toBe('0px')
 
-    // The output outgrows the viewport: the echo row scrolls above the
-    // grid, and the shift MUST release — a stale shift would clip the
-    // first real output row instead.
-    setViewportTop(1)
+    // A backend frame can move the base row past the anchor. Its new offset
+    // is zero, so the first real output row is no longer shifted.
+    record.outputAnchorOffset = 0
+    controller.outputAnchorChanged()
     controller.setLiveHeight(24 * 16)
     expect(controller.xtermInner.style.transform).toBe('')
     // Both the content clip and flow box clamp to the live-region cap.
     expect(controller.xtermLiveViewport.style.height).toBe('360px')
     expect(controller.xtermLiveContainer.style.height).toBe('360px')
 
-    // The shift is live, not one-shot: back before the echo scrolled out,
-    // it re-applies on the next sizing frame.
-    setViewportTop(0)
+    // A later matching accepted frame may place the anchor back in view.
+    record.outputAnchorOffset = 1
+    controller.outputAnchorChanged()
     controller.setLiveHeight(3 * 16)
     expect(controller.xtermInner.style.transform).toBe('translateY(-16px)')
     expect(controller.xtermLiveViewport.style.height).toBe('32px')
@@ -802,7 +777,7 @@ describe('the echoed command line leaves the live region too (nocx-w1n4)', () =>
     // which hangs from its bottom edge — moved at every freeze. The number
     // is never repeated in TypeScript: the controller reads it off the
     // element, which is what this test writes to it.
-    const { renderer } = rendererWithGeometry()
+    const renderer = rendererWithGeometry()
     const pane = document.createElement('div')
     const controller = new ScrollbackController({
       pane,
@@ -818,7 +793,10 @@ describe('the echoed command line leaves the live region too (nocx-w1n4)', () =>
     })
     controller.scrollbackArea.scrollTo = vi.fn()
 
-    controller.beginBlock('ls', '~', 0, 1)
+    controller.beginBlock('ls', '~', 0)
+    controller.blockManager.runningBlock!.outputAnchorOffset = 1
+    controller.blockManager.runningBlock!.outputAnchorText = 'prompt ls'
+    controller.outputAnchorChanged()
     // Two shown rows (the third is the translated echo): the clip holds the
     // rows, the flow box holds the rows plus the body's 8px.
     controller.setLiveHeight(3 * 16)
@@ -839,7 +817,7 @@ describe('the echoed command line leaves the live region too (nocx-w1n4)', () =>
     // Rows carry the pane gutter now, the live region included, so the grid's
     // box is the scroller MINUS that inset. Read off the element, like the body
     // padding above: the stylesheet stays the one place the number lives.
-    const { renderer } = rendererWithGeometry()
+    const renderer = rendererWithGeometry()
     const pane = document.createElement('div')
     const controller = new ScrollbackController({
       pane,
@@ -910,7 +888,7 @@ describe('the pane moves rather than jumping (nocx-i4h04.2)', () => {
     // and removed.
     const { controller, frames } = movingController([500, 440])
 
-    controller.beginBlock('ls', '~', 0, 1)
+    controller.beginBlock('ls', '~', 0)
 
     // ONE element, because the stack is one element — and the follow
     // observer's sentinel is deliberately outside it (nocx-i4h04.3).
@@ -951,7 +929,7 @@ describe('the pane moves rather than jumping (nocx-i4h04.2)', () => {
       const writes = new MutationObserver((records) => written.push(...records))
       writes.observe(controller.scrollbackArea, { attributes: true, attributeFilter: ['class'] })
 
-      controller.beginBlock('ls', '~', 0, 1)
+      controller.beginBlock('ls', '~', 0)
       await Promise.resolve()
       await Promise.resolve()
 
@@ -989,7 +967,7 @@ describe('the pane moves rather than jumping (nocx-i4h04.2)', () => {
       }) as unknown as MediaQueryList
     const { controller, frames } = movingController([500, 440])
 
-    controller.beginBlock('ls', '~', 0, 1)
+    controller.beginBlock('ls', '~', 0)
 
     expect(frames).toEqual([])
     controller.blockManager.clearAll()
@@ -1002,7 +980,7 @@ describe('the pane moves rather than jumping (nocx-i4h04.2)', () => {
     const { controller, frames } = movingController([500, 440])
     stopFollowing(controller)
 
-    controller.beginBlock('ls', '~', 0, 1)
+    controller.beginBlock('ls', '~', 0)
 
     expect(frames).toEqual([])
     controller.blockManager.clearAll()
@@ -1116,7 +1094,7 @@ describe('the running live region follows its written rows', () => {
       configurable: true,
     })
 
-    controller.beginBlock('printf slow', '~', 0, 0)
+    controller.beginBlock('printf slow', '~', 0)
     expect(controller.xtermLiveContainer.style.height).toBe('19px')
     expect(controller.xtermLiveViewport.style.height).toBe('19px')
 
@@ -1146,7 +1124,7 @@ describe('the running live region follows its written rows', () => {
       configurable: true,
     })
 
-    controller.beginBlock('ls', '~', 0, 1)
+    controller.beginBlock('ls', '~', 0)
 
     expect(controller.xtermLiveContainer.style.height).toBe('')
     expect(controller.xtermLiveViewport.style.height).toBe('')
@@ -1170,7 +1148,7 @@ describe('the running live region follows its written rows', () => {
       configurable: true,
     })
 
-    controller.beginBlock('ls', '~', 0, 1)
+    controller.beginBlock('ls', '~', 0)
 
     // The waiting stand-in keeps the CSS fallback box until output retires it.
     expect(controller.xtermLiveContainer.style.height).toBe('')
@@ -1391,7 +1369,7 @@ describe('ScrollbackController tells the pet how the command went', () => {
     exitCode: number,
     author: 'shell' | 'agent' = 'shell',
   ): void {
-    controller.beginBlock('ls', '~', 0, undefined, author)
+    controller.beginBlock('ls', '~', 0, author)
     controller.blockManager.bindAttempt('att-1')
     controller.blockManager.blockClosed('att-1')
     controller.freezeFromAttempt(
@@ -1484,7 +1462,7 @@ describe('ScrollbackController tells the pet a command has started', () => {
 
   it('tells it whose lane the command is in', () => {
     const { controller, heard } = petController()
-    controller.beginBlock('go test ./...', '~', 0, undefined, 'agent')
+    controller.beginBlock('go test ./...', '~', 0, 'agent')
     expect(heard).toHaveBeenCalledWith('agent')
   })
 

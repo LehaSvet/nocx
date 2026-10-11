@@ -157,9 +157,9 @@ func TestCommandSnapshotEffectFrameRoundTripsItsTypedPayload(t *testing.T) {
 	}
 }
 
-func TestHelperProtocolVersionBumpedForCommandSnapshot(t *testing.T) {
-	if Version != "21" {
-		t.Fatalf("helper protocol version = %q, want 21", Version)
+func TestHelperProtocolVersionBumpedForOutputStartAnchor(t *testing.T) {
+	if Version != "22" {
+		t.Fatalf("helper protocol version = %q, want 22", Version)
 	}
 }
 

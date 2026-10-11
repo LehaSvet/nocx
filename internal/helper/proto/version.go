@@ -315,4 +315,6 @@ package proto
 // This is 21 rather than 20 because TypeSessionEffect gained the
 // commandSnapshot kind. A 20-helper rejects its kind value, so both peers must
 // fence the new typed session-local command state at hello.
-const Version = "21"
+const Version = "22"
+
+// Version 22 adds the optional screen-row anchor document to TypeOutputStartRow.

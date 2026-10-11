@@ -1,45 +1,44 @@
 package sessionruntime
 
-// The live history page's read (nocx-zg3k3.10.3): one page of the scrollback
-// the emulator holds, as the emulator holds it.
+// The live history page's read (nocx-zg3k3.10.3): one page of retained
+// history followed, in the same absolute coordinate, by the active screen.
+// The frame, read-screen capture and block output anchors use this coordinate
+// too; the active range therefore joins history without a gap or overlap.
 //
 // # The cursor, and what it must survive
 //
-// A client pages BACKWARDS while output keeps arriving, so the cursor it
-// holds cannot be a position in the buffer — positions move. It is an
-// ABSOLUTE history row number: this package has counted every row that left
-// the top of the screen since the session began (screenDepartedRows), and a
-// row keeps the number of its departure for its whole life. Against that
-// numbering:
+// A client pages BACKWARDS while output keeps arriving, so its cursor cannot
+// be a position in the moving buffer. It is an ABSOLUTE row number: every
+// primary row keeps the number assigned when it first left the top of the
+// screen, even when output arrives or a pane grows and pulls rows back. The
+// active screen starts at screenDepartedRows less the emulator's owed rows.
+// Against that numbering:
 //
-//   - output arriving appends at the head and moves nothing below it;
-//   - a pane that grew pulled rows back onto the screen: they are OWED their
-//     departure (ReportedRowsOnScreen) and are not in the history any more,
-//     so the head the history is measured against is the count minus what is
-//     owed, and the first page never names a row that is on the screen;
-//   - the alternate screen holds no history: a page answers the empty
-//     interval at the head and never the primary's rows, and the primary's
-//     rows come back under the same numbers when it is restored;
-//   - retention pruning and an erase-saved-lines (ED3) really remove rows:
-//     the floor — the number below which nothing is retained — rises, and a
-//     cursor below it is answered with the empty interval at that cursor and
-//     the floor stated, never a short list a caller could read as a short
-//     history. After ED3 the floor IS the head: the emulator's history is
-//     what it holds, and no boundary is invented.
+//   - output appends at the head and moves nothing below it;
+//   - a page may include active-screen rows, and baseRow names the first one;
+//     a consumer that paints the live grid separately stops scrollback at
+//     this boundary;
+//   - the alternate screen uses its own buffer identity and starts at row
+//     zero. It never exposes primary rows; leaving it restores the primary
+//     identity and the primary's unchanged row numbers;
+//   - retention pruning and erase-saved-lines (ED3) raise the floor. A cursor
+//     below it is answered with an empty interval at that cursor and the
+//     floor stated. After ED3 the floor is the head, but the page still
+//     carries the active screen and invents no boundary row.
 //
 // # One instant
 //
-// The head, the debt, the total and the rows are taken under ONE acquisition
-// of the runtime lock, exactly as [Session.ReadDepartedScreen] takes the
-// departure count and the terminal: a page measured against a head its rows
-// disagree with is the torn read nocx-zg3k3.5.10 already paid for once.
+// The head, the debt, the buffer identity, geometry and rows are taken under
+// ONE acquisition of the runtime lock: a page measured against a different
+// screen than its rows would be a torn read.
 //
-// The bound on one page is a page ON PURPOSE: one helper round trip and one
-// carrier document, small by construction, with paging — not a bigger page —
-// as how a caller reaches deeper history.
+// The bound on one page is deliberate: one helper round trip and one carrier
+// document, small by construction, with paging — not a bigger page — as how a
+// caller reaches deeper history.
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/shady2k/nocx/internal/emulator"
 )
@@ -57,11 +56,16 @@ const MaxHistoryPageRows = 64
 // at — so a caller's next page is always before = Start, whatever the answer
 // held.
 type HistoryPageView struct {
-	Floor uint64
-	Start uint64
-	End   uint64
-	More  bool
-	Rows  []emulator.Row
+	Floor          uint64         `json:"floor"`
+	Start          uint64         `json:"start"`
+	End            uint64         `json:"end"`
+	More           bool           `json:"more"`
+	BufferKind     string         `json:"bufferKind"`
+	BufferInstance string         `json:"bufferInstance"`
+	BaseRow        uint64         `json:"baseRow"`
+	Cols           int            `json:"cols"`
+	GeometryRows   int            `json:"rows"`
+	Rows           []emulator.Row `json:"-"`
 }
 
 // ReadHistoryPage reads one page of the session's live history. before is
@@ -80,52 +84,56 @@ func (s *Session) ReadHistoryPage(before *uint64, limit int) (HistoryPageView, e
 	if err != nil {
 		return HistoryPageView{}, err
 	}
-	owed, err := s.emulator.ReportedRowsOnScreen()
+	activeRows, _, identity, _ := s.screenStateLocked()
+	activeBase, err := s.activeBaseRowLocked(identity.AltScreen)
 	if err != nil {
 		return HistoryPageView{}, err
 	}
-	// The head: every row that ever departed, less the ones a growing pane
-	// pulled back onto the screen. Every owed row was counted when it first
-	// departed, so the subtraction cannot go round the counter.
-	head := s.screenDepartedRows - uint64(owed) //nolint:gosec // a row count, not a byte count
-	total := uint64(base.Total)                 //nolint:gosec // a row count, not a byte count
-	// The floor: head less what the history holds. Only a capture that tore
-	// can push the true floor below zero — rows departed that the report
-	// never let this session count — and a torn report is a hole the stream
-	// already states elsewhere; here the numbering clamps at the buffer's
-	// beginning and stays consistent, because it never heals backwards.
 	var floor uint64
-	if head > total {
-		floor = head - total
+	if !identity.AltScreen {
+		historyRows := uint64(base.Total) //nolint:gosec // emulator row count
+		if activeBase > historyRows {
+			floor = activeBase - historyRows
+		}
 	}
-	end := head
+	// In primary mode retained history ends at activeBase. In alternate mode
+	// the active grid owns a separate local coordinate beginning at zero.
+	activeCount := uint64(len(activeRows)) //nolint:gosec // emulator row count
+	if activeBase > MaxScreenRowOffset || activeCount > MaxScreenRowOffset-activeBase {
+		return HistoryPageView{}, fmt.Errorf("sessionruntime: absolute screen rows exceed JSON safe-integer ceiling %d", MaxScreenRowOffset)
+	}
+	total := activeBase + activeCount
+	end := total
 	if before != nil && *before < end {
 		end = *before
 	}
 	start := end
 	if end > floor {
 		start = floor
-		if room := end - floor; room > uint64(limit) { //nolint:gosec // a row count, not a byte count
-			start = end - uint64(limit) //nolint:gosec // a row count, not a byte count
+		if room := end - floor; room > uint64(limit) { //nolint:gosec // row count
+			start = end - uint64(limit) //nolint:gosec // row count
 		}
 	}
-	var rows []emulator.Row
-	if end > start {
-		// [start, end) sits inside [floor, head) by construction, so the
-		// history index asked for is start-floor and the count is the
-		// interval's own: the emulator clamps nothing here, and what it
-		// returns is the page whole.
-		page, err := s.emulator.HistoryRows(int(start-floor), int(end-start)) //nolint:gosec // a row count, not a byte count
+	rows := make([]emulator.Row, 0, end-start)
+	historyEnd := min(end, activeBase)
+	if !identity.AltScreen && start < historyEnd {
+		page, err := s.emulator.HistoryRows(int(start-floor), int(historyEnd-start)) //nolint:gosec // bounded by limit
 		if err != nil {
 			return HistoryPageView{}, err
 		}
-		rows = page.Rows
+		rows = append(rows, page.Rows...)
+	}
+	activeStart := max(start, activeBase)
+	if end > activeStart {
+		from := int(activeStart - activeBase) //nolint:gosec // bounded by screen geometry
+		to := int(end - activeBase)           //nolint:gosec // bounded by screen geometry
+		rows = append(rows, activeRows[from:to]...)
 	}
 	return HistoryPageView{
-		Floor: floor,
-		Start: start,
-		End:   start + uint64(len(rows)), //nolint:gosec // a row count, not a byte count
-		More:  start > floor,
-		Rows:  rows,
+		Floor: floor, Start: start, End: start + uint64(len(rows)),
+		BaseRow: activeBase, BufferKind: frameBufferKind(identity.AltScreen),
+		BufferInstance: strconv.FormatUint(identity.BufferInstance, 10),
+		Cols:           identity.Cols, GeometryRows: identity.Rows,
+		More: start > floor, Rows: rows,
 	}, nil
 }

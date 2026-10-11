@@ -4,7 +4,8 @@
 // subtle background tint on hover/select.
 
 import type { CommandSnapshotStore } from '../command-snapshot'
-import type { TerminalBufferLine } from '../terminal-types'
+import type { BlockOutputStart } from '../generated/block.outputStart'
+import type { ScreenSnapshot } from '../cell-model'
 import { paintUnreadableRows, type StoredBlockRows } from './block-rows'
 import { wordRangeIn } from '../word-selection'
 import { createSecretChipUnresolved } from '../ui/secret-chip'
@@ -684,7 +685,13 @@ export interface BlockRecord {
    *  The range and the creation time are two different things, and this
    *  is the record of that; a shell-originated block opens after its echo
    *  and defaults to `startLine`. */
-  outputStart: number
+  outputStart?: number
+  /** Backend-owned screen anchor; renderer cursor positions are never substitutes. */
+  outputAnchor?: BlockOutputStart
+  /** Offset from the accepted frame base row when its identity matches the anchor. */
+  outputAnchorOffset?: number
+  /** Text of the anchor row from the accepted backend frame. */
+  outputAnchorText?: string
   /** IMarker line for D boundary (approx). */
   endLine: number
   /** Whether OSC 133 C was received for this command. False when the
@@ -692,9 +699,6 @@ export interface BlockRecord {
   cReceived: boolean
   el: HTMLElement
 }
-
-/** Line accessor function for structural terminal buffer lines. */
-export type GetLineFn = (y: number) => TerminalBufferLine | undefined
 
 // ── DOM helpers ────────────────────────────────────────────────────────────
 
@@ -2025,7 +2029,6 @@ export class BlockManager {
       /** The terminal status the logical freeze applied — handed to the
        *  DOM exactly as the event decided. */
       status: FrozenStatus
-      getLine: GetLineFn
       endLine: number
       /** Where the block ran, as the pane stood when it ENDED: by its
        *  block.closed an environment entry has moved the pane to the far
@@ -2409,6 +2412,11 @@ export class BlockManager {
     this._attemptId = attemptId
     if (this._runningBlock) {
       this._runningBlock.attemptId = attemptId
+      const anchor = this._pendingOutputAnchors.get(attemptId)
+      if (anchor) {
+        this._pendingOutputAnchors.delete(attemptId)
+        this.setOutputStartAnchor(attemptId, anchor)
+      }
       this._runningBlock.el.dataset.entryId = attemptId
       const pending = this._pendingStoredRows.get(attemptId)
       if (pending) {
@@ -2416,6 +2424,65 @@ export class BlockManager {
         this._pendingStoredRows.delete(attemptId)
         this._paintStoredRows?.(this._runningBlock.el, pending)
       }
+    }
+  }
+
+  /** Attach a backend screen anchor, parking it if lifecycle binding has not arrived yet. */
+  setOutputStartAnchor(entryId: string, anchor: BlockOutputStart): void {
+    const rec = this.blockForAttempt(entryId)
+    if (!rec) {
+      if (this._pendingOutputAnchors.size >= MAX_PENDING_STORED_ROWS) {
+        const first = this._pendingOutputAnchors.keys().next().value
+        if (first !== undefined) this._pendingOutputAnchors.delete(first)
+      }
+      this._pendingOutputAnchors.set(entryId, anchor)
+      return
+    }
+    rec.outputAnchor = Object.freeze({ ...anchor })
+    rec.outputStart = undefined
+    rec.outputAnchorOffset = undefined
+    rec.outputAnchorText = undefined
+  }
+
+  /** Consume only a frame accepted by the pane CellModel and matching every anchor identity field. */
+  acceptOutputStartFrame(snapshot: ScreenSnapshot): void {
+    for (const rec of this._blocks) {
+      const anchor = rec.outputAnchor
+      if (!anchor) continue
+      // A frame for another buffer or geometry is not evidence about this
+      // anchor. Keep the last matching row, so a transient mismatch cannot
+      // release the echo shift.
+      if (
+        snapshot.revision < anchor.screenRevision ||
+        snapshot.state.bufferKind !== anchor.bufferKind ||
+        snapshot.state.bufferInstance !== anchor.bufferInstance ||
+        snapshot.geometry.cols !== anchor.cols ||
+        snapshot.geometry.rows !== anchor.rows ||
+        anchor.bufferKind !== 'normal'
+      )
+        continue
+      rec.outputStart = anchor.row
+      const index = anchor.row - snapshot.state.baseRow
+      if (index <= 0) {
+        // The anchor names the first output row. Its preceding echo row is
+        // already above the visible screen (or absent), so there is no shift.
+        rec.outputAnchorOffset = 0
+        rec.outputAnchorText = ''
+        continue
+      }
+      if (index >= snapshot.geometry.rows) {
+        rec.outputAnchorOffset = undefined
+        rec.outputAnchorText = undefined
+        continue
+      }
+      const echoRow = snapshot.rowAt(index - 1)
+      if (!echoRow) continue
+      rec.outputAnchorOffset = index
+      rec.outputAnchorText = echoRow.cells
+        .filter((cell) => cell.hasText)
+        .map((cell) => cell.grapheme)
+        .join('')
+        .trimEnd()
     }
   }
 
@@ -2502,6 +2569,7 @@ export class BlockManager {
    */
   /** Where this session is — `user@host`, or empty for a local shell. */
   private _location = ''
+  private readonly _pendingOutputAnchors = new Map<string, BlockOutputStart>()
 
   setLocation(location: string): void {
     this._location = location
@@ -2511,7 +2579,6 @@ export class BlockManager {
     command: string,
     cwd: string,
     startLine: number,
-    outputStart = startLine,
     /** Who submitted the command (design §3.1, nocx-iadtt): the app-owned
      *  submit passes the minted author; a shell-originated block is the
      *  human's shell and defaults to 'shell'. */
@@ -2560,13 +2627,7 @@ export class BlockManager {
       exitCode: null,
       status: 'running',
       startLine,
-      // The output range and the creation line are two different things
-      // (nocx-4yhi): the app-owned submit opens the block before the bytes
-      // and passes outputStart = startLine + 1, because the shell's echo
-      // of the command lands on the creation line and the block's body
-      // must not repeat the command its header already shows. A
-      // shell-originated block opens after its echo and keeps the default.
-      outputStart,
+      // Output start is unknown until the backend publishes its screen anchor.
       endLine: startLine,
       cReceived: false,
       stopRequested: false,
@@ -2687,13 +2748,13 @@ export class BlockManager {
    * model-level completion arrives later from the authenticated lifecycle
    * transition — this only paints the block.
    */
-  freezeEntered(getLine: GetLineFn, endLine: number): BlockRecord | null {
+  freezeEntered(endLine: number): BlockRecord | null {
     const rec = this._runningBlock
     if (!rec) return null
     const status = this._logicalFreeze(rec, null, 'entered')
     // The backend seals the local interval at the entry and says
     // block.closed for it; the block closes on screen then.
-    return this._closeOnBackend(rec, getLine, endLine, status) ? rec : null
+    return this._closeOnBackend(rec, endLine, status) ? rec : null
   }
 
   /** The VISUAL half of every end the backend knows about: close the block
@@ -2701,18 +2762,13 @@ export class BlockManager {
    *  it until `blockClosed` names it. Answers whether it closed now. A block
    *  bound to no attempt has no entry the backend could name, so it closes
    *  at once — reached only through abandonUnbound's own case. */
-  private _closeOnBackend(
-    rec: BlockRecord,
-    getLine: GetLineFn,
-    endLine: number,
-    status: FrozenStatus,
-  ): boolean {
+  private _closeOnBackend(rec: BlockRecord, endLine: number, status: FrozenStatus): boolean {
     const id = rec.attemptId
     if (id === undefined || this._closedEarly.delete(id)) {
-      this._freezeCard(rec, getLine, endLine, status)
+      this._freezeCard(rec, endLine, status)
       return true
     }
-    this._awaitingClose.set(id, { rec, status, getLine, endLine, location: this._location })
+    this._awaitingClose.set(id, { rec, status, endLine, location: this._location })
     return false
   }
 
@@ -2725,13 +2781,7 @@ export class BlockManager {
     for (const [id, waiting] of [...this._awaitingClose]) {
       this._awaitingClose.delete(id)
       if (!this._blocks.includes(waiting.rec)) continue
-      this._freezeCard(
-        waiting.rec,
-        waiting.getLine,
-        waiting.endLine,
-        waiting.status,
-        waiting.location,
-      )
+      this._freezeCard(waiting.rec, waiting.endLine, waiting.status, waiting.location)
     }
     this._closedEarly.clear()
   }
@@ -2766,7 +2816,6 @@ export class BlockManager {
    *  command printed by reading its input buffer. */
   private _freezeCard(
     rec: BlockRecord,
-    _getLine: GetLineFn,
     endLine: number,
     status: FrozenStatus,
     location = this._location,
@@ -2828,11 +2877,7 @@ export class BlockManager {
    *  kernels refuse a completion without its fence, and an interval the
    *  helper settles without SIGHTING the fence still reaches the
    *  coordinator and ends in block.closed (nocx-2v80t.3.29). */
-  freezeFromAttempt(
-    attempt: ExecutionAttempt,
-    getLine: GetLineFn,
-    endLine: number,
-  ): BlockRecord | null {
+  freezeFromAttempt(attempt: ExecutionAttempt, endLine: number): BlockRecord | null {
     if (attempt.state !== 'completed') return null
     if (this._attemptId !== attempt.id) return null
     const code = attempt.exitCode ?? null
@@ -2866,7 +2911,7 @@ export class BlockManager {
     const terminal = this._logicalFreeze(rec, code, status)
     this._attemptId = null
 
-    return this._closeOnBackend(rec, getLine, endLine, terminal) ? rec : null
+    return this._closeOnBackend(rec, endLine, terminal) ? rec : null
   }
 
   /** The backend said this entry's block is closed (block.closed): its rows
@@ -2880,13 +2925,7 @@ export class BlockManager {
       this._awaitingClose.delete(entryId)
       // A block cleared since its completion has nothing left to close.
       if (!this._blocks.includes(waiting.rec)) return
-      this._freezeCard(
-        waiting.rec,
-        waiting.getLine,
-        waiting.endLine,
-        waiting.status,
-        waiting.location,
-      )
+      this._freezeCard(waiting.rec, waiting.endLine, waiting.status, waiting.location)
       // Settle around it only if no newer command owns the running slot.
       if (this._runningBlock === null) this._onDeferredFreeze?.(waiting.rec)
       return
@@ -2909,7 +2948,6 @@ export class BlockManager {
    *  session go has nobody left to say it, and closes at once. */
   abandonAttempt(
     attempt: ExecutionAttempt,
-    getLine: GetLineFn,
     endLine: number,
     sessionGone = false,
   ): BlockRecord | null {
@@ -2923,10 +2961,10 @@ export class BlockManager {
     const status = this._logicalFreeze(rec, null, 'unknown')
     this._attemptId = null
     if (sessionGone) {
-      this._freezeCard(rec, getLine, endLine, status)
+      this._freezeCard(rec, endLine, status)
       return rec
     }
-    return this._closeOnBackend(rec, getLine, endLine, status) ? rec : null
+    return this._closeOnBackend(rec, endLine, status) ? rec : null
   }
 
   /** Freeze a running block that never bound to an attempt at all. The
@@ -2940,12 +2978,12 @@ export class BlockManager {
    *  It closes at once, on the pane's own word, and that is deliberate
    *  (nocx-2v80t.3.30): the backend names a block by its attempt, and this
    *  block never had one, so no block.closed could ever name it. */
-  abandonUnbound(getLine: GetLineFn, endLine: number): BlockRecord | null {
+  abandonUnbound(endLine: number): BlockRecord | null {
     if (this._attemptId !== null) return null
     const rec = this._runningBlock
     if (!rec) return null
     const status = this._logicalFreeze(rec, null, 'unknown')
-    this._freezeCard(rec, getLine, endLine, status)
+    this._freezeCard(rec, endLine, status)
     return rec
   }
 
@@ -3308,6 +3346,7 @@ export class BlockManager {
     this._awaitingClose.clear()
     this._closedEarly.clear()
     this._pendingStoredRows.clear()
+    this._pendingOutputAnchors.clear()
     this._storedRowsCursor.clear()
     this._clearCommandIndicator()
     // ONE list, because there is one owner: whatever this manager put in

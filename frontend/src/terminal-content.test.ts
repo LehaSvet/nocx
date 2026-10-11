@@ -1389,6 +1389,57 @@ describe("the dropdown owns the arrows while it is open; recall's bare-Up gestur
   })
 })
 
+describe('the terminal keyboard sends physical key intents', () => {
+  it('preserves Shift+Enter as a key intent instead of xterm-encoded bytes', async () => {
+    const { content, teardown } = await mountTerminal(makeClipboard())
+    try {
+      const session = sessionOf(content)
+      const input = (content as unknown as { _intentInput: { element: HTMLTextAreaElement } })
+        ._intentInput.element
+      const event = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      })
+      input.dispatchEvent(event)
+      expect(event.defaultPrevented).toBe(true)
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('key', 'Shift+enter'))
+      expect(session.send).not.toHaveBeenCalled()
+      expect(rendererOf(content).paste).not.toHaveBeenCalled()
+    } finally {
+      teardown()
+    }
+  })
+})
+
+describe('clipboard paste into the live terminal uses session intents', () => {
+  it.each([
+    ['right-click', 'contextmenu', undefined],
+    ['middle-click', 'mousedown', 1],
+  ])('%s queues one paste intent instead of using xterm', async (_name, eventType, button) => {
+    const clipboard = makeClipboard({ readText: vi.fn().mockResolvedValue('clipboard text') })
+    const { content, teardown } = await mountTerminal(clipboard)
+    try {
+      const session = sessionOf(content)
+      const renderer = rendererOf(content)
+      const target = (content as unknown as { _paneTarget: HTMLElement })._paneTarget
+      target.dispatchEvent(
+        eventType === 'contextmenu'
+          ? new MouseEvent(eventType, { bubbles: true, cancelable: true })
+          : new MouseEvent(eventType, { bubbles: true, cancelable: true, button }),
+      )
+      await vi.waitFor(() => expect(clipboard.readText).toHaveBeenCalledOnce())
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('paste', 'clipboard text'))
+      expect(renderer.paste).not.toHaveBeenCalled()
+      expect(session.send).not.toHaveBeenCalled()
+    } finally {
+      teardown()
+    }
+  })
+})
+
 describe('paste with focus on a frozen block (nocx-w7h.9)', () => {
   it('Cmd/Ctrl+V redirects to the editor, deselects the block, and never reaches the session', async () => {
     const { ed, content, teardown } = await mountTerminal(makeClipboard(), {
@@ -1696,12 +1747,11 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
       expect(client.call).toHaveBeenCalledWith('vault.resolveLine', {
         line: 'run {{secret:pi@far}}',
       })
-      // The paste goes through the engine with the resolved line, and the
-      // engine's onData is what reaches the session — byte for byte. No
-      // newline is appended anywhere on this path (§9.3).
-      expect(renderer.paste).toHaveBeenCalledWith('run hunter2')
-      const sent = session.send.mock.calls.slice(sentBefore).map((c: unknown[]) => c[0])
-      expect(sent).toEqual(['run hunter2'])
+      // The resolved body remains one paste intent (no newline); the runtime
+      // applies the program's current paste mode.
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('paste', 'run hunter2'))
+      expect(renderer.paste).not.toHaveBeenCalled()
+      expect(session.send.mock.calls.length).toBe(sentBefore)
     } finally {
       teardown()
     }
@@ -1804,7 +1854,8 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
         ok: true,
         where: 'pty',
       })
-      expect(renderer.paste).toHaveBeenCalledWith('line1\nhunter2')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('paste', 'line1\nhunter2'))
+      expect(renderer.paste).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -1876,9 +1927,9 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
         line: 'line1\n{{secret:pi@far}}',
       })
       // One document: resolved, newline intact, nothing appended (§9.4).
-      expect(renderer.paste).toHaveBeenCalledWith('line1\nhunter2')
-      const sent = session.send.mock.calls.slice(sentBefore).map((c: unknown[]) => c[0])
-      expect(sent).toEqual(['line1\nhunter2'])
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('paste', 'line1\nhunter2'))
+      expect(renderer.paste).not.toHaveBeenCalled()
+      expect(session.send.mock.calls.length).toBe(sentBefore)
     } finally {
       teardown()
     }
@@ -1896,7 +1947,10 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
           ok: true,
           where: 'pty',
         })
-        expect(renderer.paste).toHaveBeenCalledWith('echo hunter2')
+        await vi.waitFor(() =>
+          expect(sessionOf(content).intent).toHaveBeenCalledWith('paste', 'echo hunter2'),
+        )
+        expect(renderer.paste).not.toHaveBeenCalled()
       } finally {
         teardown()
       }
@@ -1918,7 +1972,7 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
     }
   })
 
-  it('a paste that reports no write is a refusal, not a reported delivery', async () => {
+  it('snippet paste is queued as a session intent, not written by xterm', async () => {
     const { content, teardown } = await mountTerminal(
       makeClipboard(),
       {},
@@ -1928,13 +1982,12 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
       const session = sessionOf(content)
       const renderer = rendererOf(content)
       editorOf(content).hide()
-      renderer.paste.mockReturnValue(false)
-      const sentBefore = session.send.mock.calls.length
       await expect(content.insertSnippet('echo {{secret:pi@far}}')).resolves.toEqual({
-        ok: false,
-        reason: 'write-failed',
+        ok: true,
+        where: 'pty',
       })
-      expect(session.send.mock.calls.length).toBe(sentBefore)
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('paste', 'echo hunter2'))
+      expect(renderer.paste).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -4706,6 +4759,15 @@ describe('the projections consume the kernel through the composition root (ADR-0
       handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
 
       const pending = content.submitAgentCommand('make')
+      const session = sessionOf(content)
+      await vi.waitFor(() =>
+        expect(session.intent.mock.calls.slice(-2)).toEqual([
+          ['paste', 'make'],
+          ['key', 'enter'],
+        ]),
+      )
+      expect(session.send).not.toHaveBeenCalled()
+      expect(rendererOf(content).paste).not.toHaveBeenCalled()
 
       // The ordinary path ran: the ledger record was minted at submit with
       // the agent's author (design §3.1) — the command exists as a command,
@@ -6290,12 +6352,8 @@ describe('two attempts and the live region stay separate while running (nocx-m87
       view.contentDOM.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
       )
-      // The authenticated start opens the block — and it arrives BEFORE the
-      // bytes (the fact precedes the RPC response on the wire), on the
-      // prompt line (fixture cursorLine is 0). The shell's echo of `ls`
-      // will land on that same line, so the block's OUTPUT range starts one
-      // row later; the creation line and the output range are two different
-      // things (nocx-4yhi, nocx-2v80t.3.2).
+      // The authenticated start opens the block before the bytes. Its output
+      // anchor remains unknown until the backend publishes screen coordinates.
       handler({
         lane: 'lane-1',
         lifecycle: 'running',
@@ -6312,7 +6370,7 @@ describe('two attempts and the live region stay separate while running (nocx-m87
       const block = withScrollback.scrollback.blockManager.runningBlock
       expect(block).not.toBeNull()
       expect(block!.startLine).toBe(0)
-      expect(block!.outputStart).toBe(1)
+      expect(block!.outputStart).toBeUndefined()
     } finally {
       teardown()
     }
@@ -6334,10 +6392,77 @@ describe('two attempts and the live region stay separate while running (nocx-m87
       })
       const block = withScrollback.scrollback.blockManager.blockForAttempt('att-1')
       expect(block).not.toBeNull()
-      // The user typed at the shell: the command was echoed as they typed,
-      // and the running fact landed after it — so the block's output range
-      // is exactly where the block opened, no echo to skip.
-      expect(block!.startLine).toBe(block!.outputStart)
+      // Renderer cursor geometry is not an output anchor.
+      expect(block!.outputStart).toBeUndefined()
+    } finally {
+      teardown()
+    }
+  })
+
+  it('wires backend output anchors to the attempt and uses only a matching accepted screen frame', async () => {
+    const client = makeClient()
+    const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    const handler = factHandler(client)
+    const scrollback = (content as unknown as { scrollback: ScrollbackController }).scrollback
+    const anchor = {
+      entryId: 'att-anchor',
+      row: 12,
+      screenRevision: 5,
+      bufferKind: 'normal' as const,
+      bufferInstance: '1',
+      cols: SCREEN_COLS,
+      rows: SCREEN_ROWS,
+    }
+    try {
+      // The notification can beat the authenticated running fact.
+      client._fireBlockOutputStart(anchor)
+      handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
+      handler({
+        lane: 'lane-1',
+        lifecycle: 'running',
+        domain: 'd1',
+        epoch: 1,
+        attempt: { id: 'att-anchor', state: 'open', origin: 'shell', command: 'ls' },
+      })
+      const block = scrollback.blockManager.blockForAttempt('att-anchor')!
+      expect(block.outputStart).toBeUndefined()
+      expect(block.outputAnchor).toEqual(anchor)
+
+      const older = screenFrame(4, ['prompt ls', '', ''])
+      older.state.baseRow = 10
+      client._sessions[0].fireScreenFrame(older)
+      expect(block.outputAnchorOffset).toBeUndefined()
+
+      const alternate = screenFrame(5, ['prompt ls', '', ''])
+      alternate.state.bufferKind = 'alternate'
+      alternate.state.baseRow = 10
+      client._sessions[0].fireScreenFrame(alternate)
+      expect(block.outputAnchorOffset).toBeUndefined()
+
+      const wrongInstance = screenFrame(6, ['prompt ls', '', ''])
+      wrongInstance.state.baseRow = 10
+      wrongInstance.state.bufferInstance = '2'
+      client._sessions[0].fireScreenFrame(wrongInstance)
+      expect(block.outputAnchorOffset).toBeUndefined()
+
+      const wrongGeometry = screenFrame(7, ['prompt ls', '', ''], { cols: SCREEN_COLS + 1 })
+      wrongGeometry.state.baseRow = 10
+      client._sessions[0].fireScreenFrame(wrongGeometry)
+      expect(block.outputAnchorOffset).toBeUndefined()
+
+      const accepted = screenFrame(8, ['', 'prompt ls', ''])
+      accepted.state.baseRow = 10
+      client._sessions[0].fireScreenFrame(accepted)
+      expect(block.outputAnchor).toEqual(anchor)
+      expect(block.outputAnchorOffset).toBe(2)
+      expect(block.outputAnchorText).toBe('prompt ls')
+      expect(block.outputStart).toBe(12)
+      const mismatchAfterAcceptance = screenFrame(9, ['', '', 'replacement'])
+      mismatchAfterAcceptance.state.baseRow = 10
+      mismatchAfterAcceptance.state.bufferInstance = '2'
+      client._sessions[0].fireScreenFrame(mismatchAfterAcceptance)
+      expect(block.outputAnchorOffset).toBe(2)
+      expect(block.outputAnchorText).toBe('prompt ls')
     } finally {
       teardown()
     }
@@ -11776,13 +11901,12 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
   // These tests press the chord from every place a person's focus can be.
   describe('the target chord has one owner (nocx-a7mw7.6)', () => {
     /** A settled block with output, the way the ask-entry specs build one. */
-    function frozenBlock(content: TerminalContent, command: string, output: string[]): HTMLElement {
+    function frozenBlock(content: TerminalContent, command: string): HTMLElement {
       const manager = (content as unknown as { scrollback: ScrollbackController }).scrollback
         .blockManager
       manager.startBlock(command, '~', 0)
       manager.bindAttempt(`att-chord-${manager.blocks.length}`)
-      const lines = output.map((t) => new BufferLine(t))
-      const frozen = closeRunningBlock(manager, 0, (y) => lines[y])
+      const frozen = closeRunningBlock(manager, 0)
       expect(frozen).not.toBeNull()
       return frozen!.el
     }
@@ -11866,7 +11990,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         content.setVisible(true)
         ed.show()
         ed.focus()
-        frozenBlock(content, 'top', ['screen marker'])
+        frozenBlock(content, 'top')
         const renderer = rendererOf(content)
         // The prompt came back and finished painting — the screen is nobody's
         // as of this pass.
@@ -11898,7 +12022,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         content.setVisible(true)
         ed.show()
         ed.focus()
-        frozenBlock(content, 'echo beta', ['beta'])
+        frozenBlock(content, 'echo beta')
         const renderer = rendererOf(content)
         // Screen bytes may parse before the corresponding control-plane
         // boundary. Switching to Ask in that gap must not treat the prompt as
@@ -11939,7 +12063,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         content.setVisible(true)
         ed.show()
         ed.focus()
-        frozenBlock(content, 'top', ['screen marker'])
+        frozenBlock(content, 'top')
         const renderer = rendererOf(content)
         await promptPainted(content, renderer)
         // A background TUI paints after the prompt. Ask begins capturing that
@@ -11984,7 +12108,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         content.setVisible(true)
         ed.show()
         ed.focus()
-        frozenBlock(content, 'old command', ['old output'])
+        frozenBlock(content, 'old command')
         const renderer = rendererOf(content)
         const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
         renderer.captureLiveFrame = captureLiveFrame
@@ -12016,7 +12140,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         content.setVisible(true)
         ed.show()
         ed.focus()
-        frozenBlock(content, 'echo beta', ['beta'])
+        frozenBlock(content, 'echo beta')
         const renderer = rendererOf(content)
         let releaseBarrier!: () => void
         renderer.hasUnsettledWrite.mockReturnValue(true)
@@ -12061,7 +12185,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         content.setVisible(true)
         ed.show()
         ed.focus()
-        frozenBlock(content, 'echo beta', ['beta'])
+        frozenBlock(content, 'echo beta')
         const renderer = rendererOf(content)
         // The prompt's own bytes, parsed after the freeze — the one write
         // this screen will ever see again, and it ends in B. Fire it WITHOUT
@@ -12093,7 +12217,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         content.setVisible(true)
         ed.show()
         ed.focus()
-        frozenBlock(content, 'echo beta', ['beta'])
+        frozenBlock(content, 'echo beta')
         const renderer = rendererOf(content)
 
         // All prompt bytes have parsed before the ordered effect arrives.
@@ -12257,7 +12381,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       try {
         content.setVisible(true)
         ed.show()
-        const block = frozenBlock(content, 'git status', ['clean'])
+        const block = frozenBlock(content, 'git status')
         block.querySelector<HTMLButtonElement>('[data-block-actions]')!.click()
         expect(document.querySelector('[data-testid="block-actions-menu"]')).not.toBeNull()
 
@@ -16426,6 +16550,7 @@ function screenFrame(
     state: {
       bufferKind: 'normal',
       bufferInstance: '1',
+      baseRow: 0,
       bracketedPaste: false,
       mouseTracking: false,
       title: null,

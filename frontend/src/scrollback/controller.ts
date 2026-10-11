@@ -114,6 +114,8 @@ export class ScrollbackController {
    * evidence, leave only at a command boundary.
    */
   private _filledPane = false
+  /** Most recent exact-row capture used to decide whether the shell echo still occupies the live grid. */
+  private _lastLiveHeightPx: number | null = null
   /** True while the end of the live output is visible. The intent lives in
    *  `tail-follow.ts`, which owns the same concept for the summoned answer
    *  list — one predicate, one memory, two scrollers. */
@@ -419,6 +421,11 @@ export class ScrollbackController {
    * Height changes are synchronous: animation can be only 2–4px open when a
    * fast command freezes, turning one layout change into two movements.
    */
+  /** Recompute the live clip after an accepted backend output anchor/frame update. */
+  outputAnchorChanged(): void {
+    this.setLiveHeight(this._lastLiveHeightPx ?? this._renderer.liveContentHeight())
+  }
+
   setLiveHeight(px: number | null): void {
     // The two modes where the terminal owns the pane are re-measured from the
     // scroller, and `px` — the running region's measured content — is not
@@ -432,10 +439,10 @@ export class ScrollbackController {
       return
     }
     if (this._mode !== 'running') return
-    // nocx-w1n4: the echoed command line leaves the LIVE region the same way
-    // it leaves the frozen body — the first shown row is the running block's
-    // outputStart. Applied before the height guards so a viewport scroll that
-    // leaves the box size unchanged still releases the shift.
+    this._lastLiveHeightPx = px
+    // The backend anchor and its accepted frame decide the echo shift. Apply
+    // it before height guards so a frame update can release the shift even
+    // when the measured live box does not change.
     this._applyEchoShift()
     // Null is the renderer saying it cannot measure; the class's fallback
     // height stands. Zero is a grid nobody has written to yet. While the
@@ -500,67 +507,18 @@ export class ScrollbackController {
     return (Number.isFinite(left) ? left : 0) + (Number.isFinite(right) ? right : 0)
   }
 
-  /**
-   * The vertical offset, in CSS pixels, that moves the live region's first
-   * SHOWN row to the running block's outputStart (nocx-w1n4).
-   *
-   * The frozen body already skips the shell's echo of the command: the
-   * app-owned submit opens the block before the bytes, the echo lands on
-   * the creation line, and the output range starts one row later
-   * (nocx-4yhi). The live region is the grid itself, which still holds
-   * that echoed line on the creation row — so the running block showed one
-   * row more than the frozen one will. The box clips the grid's TOP rows,
-   * which is why offsetting the measured height does nothing useful: it
-   * hides the bottom rows, never the echo. The grid itself must move.
-   *
-   * The offset is `outputStart - viewportTopLine`: exactly the rows between
-   * the top of the viewport and the first row the frozen block will
-   * contain. While the echo is the top visible row that is one cell; the
-   * moment the output outgrows the viewport and the echo scrolls above the
-   * grid, the offset drops to zero and the first real output row is left
-   * alone.
-   */
+  /** The vertical offset that hides the shell echo at the backend-anchored
+   * screen row. Both row text and offset are supplied only by an accepted,
+   * identity-matching CellModel snapshot. */
   private _echoShiftPx(): number {
     if (this._mode !== 'running') return 0
     const rec = this._blockManager.runningBlock
-    if (!rec) return 0
+    if (!rec || rec.outputAnchorOffset === undefined) return 0
     const cell = this._renderer.cellHeight
     if (!cell || cell <= 0) return 0
-    const top = this._renderer.viewportTopLine ?? 0
-    const rows = rec.outputStart - top
-    if (rows <= 0) return 0
-    // AND ONLY WHILE THE ECHO IS STILL THERE (nocx-hp8p2.9). The shift hides
-    // the row the shell echoed the command on. A program that CLEARS THE
-    // SCREEN — `top`, and every full-viewport program that repaints from the
-    // home position — writes its own first line onto that row, and the shift
-    // then hides a line of the program's output instead: `top`'s uptime and
-    // load-average header was missing from a block whose rows below it were
-    // all present.
-    //
-    // The condition is read from the grid rather than from a clear event,
-    // because it is the condition the shift is actually FOR: no clear event
-    // exists for a program's own erase, and one that did would still not
-    // cover a program that simply overwrites the row.
-    return this._echoStillOnRow(rec) ? rows * cell : 0
-  }
-
-  /** Whether the block's creation row still holds the shell's echo of the
-   *  command. The echo is the prompt followed by the command, so the row
-   *  ENDS with it; a repaint by the program does not. */
-  private _echoStillOnRow(rec: { outputStart: number; command: string }): boolean {
     const command = rec.command.trim()
-    if (command === '') return true
-    const line = this._renderer.getBufferLine(rec.outputStart - 1)
-    if (!line) return true
-    const text = line.translateToString(true).trimEnd()
-    // THE SHIFT IS THE DEFAULT AND ONLY EVIDENCE TAKES IT AWAY. A row we
-    // cannot read, or one that is blank, says nothing about whether the echo
-    // is still there — and dropping the shift on silence would put the echo
-    // back into every running block that has not painted yet. Only a row
-    // that HAS content and does not end with the command is proof the
-    // program overwrote it.
-    if (text === '') return true
-    return text.endsWith(command)
+    if (command !== '' && !(rec.outputAnchorText ?? '').endsWith(command)) return 0
+    return rec.outputAnchorOffset * cell
   }
 
   /** Apply the echo shift to the grid, or clear it. The write is guarded:
@@ -729,7 +687,6 @@ export class ScrollbackController {
     command: string,
     cwd: string,
     startLine: number,
-    outputStart?: number,
     /** Who submitted the command (design §3.1, nocx-iadtt): the app-owned
      *  submit passes the minted author; a shell-originated block — the
      *  shell's own start event, no app-owned submit — is the human's
@@ -738,7 +695,7 @@ export class ScrollbackController {
   ): void {
     const cmd = command || '(empty)'
     this._glide(() => {
-      this._blockManager.startBlock(cmd, cwd, startLine, outputStart, author)
+      this._blockManager.startBlock(cmd, cwd, startLine, author)
       // The pet learned only about endings before this, so during the minute a
       // build takes — the minute somebody is actually watching the terminal —
       // it wandered about as though nothing were happening.
@@ -1105,8 +1062,7 @@ export class ScrollbackController {
    *  authority check (kernel freezeBlock) is the caller's. */
   freezeFromAttempt(attempt: ExecutionAttempt, endLine: number): boolean {
     const followIntent = this._followIntent()
-    const getLine = (y: number) => this._renderer.getBufferLine(y)
-    const rec = this._blockManager.freezeFromAttempt(attempt, getLine, endLine)
+    const rec = this._blockManager.freezeFromAttempt(attempt, endLine)
     if (rec) {
       this._finishFreeze(rec, followIntent)
       return true
@@ -1118,8 +1074,7 @@ export class ScrollbackController {
    *  freezes as abandoned — never successful (ADR-0024 §5). */
   abandonAttempt(attempt: ExecutionAttempt, endLine: number, sessionGone = false): boolean {
     const followIntent = this._followIntent()
-    const getLine = (y: number) => this._renderer.getBufferLine(y)
-    const rec = this._blockManager.abandonAttempt(attempt, getLine, endLine, sessionGone)
+    const rec = this._blockManager.abandonAttempt(attempt, endLine, sessionGone)
     if (rec) {
       this._finishFreeze(rec, followIntent)
       return true
@@ -1132,8 +1087,7 @@ export class ScrollbackController {
    *  (nocx-mlyu). Unknown, never successful. */
   abandonUnbound(endLine: number): boolean {
     const followIntent = this._followIntent()
-    const getLine = (y: number) => this._renderer.getBufferLine(y)
-    const rec = this._blockManager.abandonUnbound(getLine, endLine)
+    const rec = this._blockManager.abandonUnbound(endLine)
     if (rec) {
       this._finishFreeze(rec, followIntent)
       return true
@@ -1146,8 +1100,7 @@ export class ScrollbackController {
    *  failure, and the running slot is freed for the blocks that follow. */
   enterBlock(endLine: number): boolean {
     const followIntent = this._followIntent()
-    const getLine = (y: number) => this._renderer.getBufferLine(y)
-    const rec = this._blockManager.freezeEntered(getLine, endLine)
+    const rec = this._blockManager.freezeEntered(endLine)
     if (rec) {
       this._finishFreeze(rec, followIntent)
       return true

@@ -430,6 +430,7 @@ type hostSession struct {
 	rowState            rowRecording
 	rowStreamNext       uint64
 	outputStartRow      uint64
+	outputStartAnchor   *proto.OutputStartScreenAnchor
 	outputStartKnown    bool
 	outputStartSequence uint64
 	// rowWake wakes the pump when the queue was empty and a new emission

@@ -39,8 +39,11 @@ func TestHistoryPageOpAnswersWhatTheRuntimeHolds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("historyPage: %v", err)
 	}
-	if res.Start != 27 || res.End != 37 {
-		t.Fatalf("the op answers [%d,%d), want [27,37)", res.Start, res.End)
+	if res.Start != 51 || res.End != 61 {
+		t.Fatalf("the op answers [%d,%d), want [51,61) including the active screen", res.Start, res.End)
+	}
+	if res.BufferKind != "normal" || res.BufferInstance != "1" || res.BaseRow != 37 || res.Cols != 80 || res.GeometryRows != 24 {
+		t.Fatalf("active screen identity = kind %q instance %q baseRow %d geometry %dx%d, want normal/1 baseRow 37 geometry 80x24", res.BufferKind, res.BufferInstance, res.BaseRow, res.Cols, res.GeometryRows)
 	}
 	if res.Floor != 0 {
 		t.Fatalf("the op answers floor %d, want 0", res.Floor)
@@ -53,7 +56,11 @@ func TestHistoryPageOpAnswersWhatTheRuntimeHolds(t *testing.T) {
 		t.Fatalf("the op's rows hold %d entries, want 10", len(texts))
 	}
 	for i, txt := range texts {
-		if want := fmt.Sprintf("L%06d", 27+i); txt != want {
+		want := fmt.Sprintf("L%06d", 51+i)
+		if i == len(texts)-1 {
+			want = ""
+		}
+		if txt != want {
 			t.Fatalf("row %d reads %q, want %q", i, txt, want)
 		}
 	}

@@ -56,11 +56,16 @@ func (h historyPageSource) HistoryPage(ctx context.Context, sessionID string, be
 		return transport.HistoryPage{}, fmt.Errorf("app: the helper answered a history page whose rows are not JSON")
 	}
 	return transport.HistoryPage{
-		Floor: res.Floor,
-		Start: res.Start,
-		End:   res.End,
-		More:  res.More,
-		Rows:  res.Rows,
+		Floor:          res.Floor,
+		Start:          res.Start,
+		End:            res.End,
+		More:           res.More,
+		BufferKind:     res.BufferKind,
+		BufferInstance: res.BufferInstance,
+		BaseRow:        res.BaseRow,
+		Cols:           res.Cols,
+		GeometryRows:   res.GeometryRows,
+		Rows:           res.Rows,
 	}, nil
 }
 

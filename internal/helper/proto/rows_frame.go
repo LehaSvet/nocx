@@ -21,9 +21,10 @@ package proto
 //	bytes 32..39  end-row        uint64 big-endian
 //	bytes 40..    payload        one session.interval-end document
 //
-// The payload of a TypeOutputStartRow frame is exactly 40 bytes: the same
-// two identities followed by the output mark's absolute row index. The mark
-// shares the ordered stream but carries no lifecycle authority.
+// The payload of a TypeOutputStartRow frame starts with the same 40-byte
+// header: two identities followed by the output mark's absolute row index.
+// An optional JSON screen-anchor document follows the header. The mark shares
+// the ordered stream but carries no lifecycle authority.
 //
 // It is the screen frame's layout reduced to what a row needs, and its
 // reasons are the screen frame's own (ADR-0073): identity is the HOST
@@ -66,6 +67,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"strconv"
 )
 
 const (
@@ -301,25 +303,53 @@ type IntervalEndDoc struct {
 
 // OutputStartRowFrame places the command-output boundary in the same absolute
 // row-index space as output batches, on the same ordered carrier.
+type OutputStartScreenAnchor struct {
+	Row            uint64 `json:"row"`
+	ScreenRevision uint64 `json:"screenRevision"`
+	BufferKind     string `json:"bufferKind"`
+	BufferInstance string `json:"bufferInstance"`
+	Cols           uint32 `json:"cols"`
+	Rows           uint32 `json:"rows"`
+}
+
 type OutputStartRowFrame struct {
 	Session    [16]byte
 	Subscriber [16]byte
 	FromRow    uint64
+	Anchor     *OutputStartScreenAnchor
 }
 
 const OutputStartRowFrameHeaderLen = 40
 
 func EncodeOutputStartRowFrame(f OutputStartRowFrame) ([]byte, error) {
-	return encodeRowsPlaneFrame(f.Session, f.Subscriber, f.FromRow, nil)
+	var payload []byte
+	if f.Anchor != nil {
+		var err error
+		payload, err = json.Marshal(f.Anchor)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return encodeRowsPlaneFrame(f.Session, f.Subscriber, f.FromRow, payload)
 }
 
 func DecodeOutputStartRowFrame(payload []byte) (OutputStartRowFrame, error) {
-	if len(payload) != OutputStartRowFrameHeaderLen {
+	if len(payload) < OutputStartRowFrameHeaderLen {
 		return OutputStartRowFrame{}, ErrOutputStartRowFrameSize
 	}
 	var f OutputStartRowFrame
 	copy(f.Session[:], payload[:16])
 	copy(f.Subscriber[:], payload[16:32])
 	f.FromRow = binary.BigEndian.Uint64(payload[32:40])
+	if len(payload) > OutputStartRowFrameHeaderLen {
+		f.Anchor = new(OutputStartScreenAnchor)
+		if err := json.Unmarshal(payload[40:], f.Anchor); err != nil {
+			return OutputStartRowFrame{}, ErrOutputStartRowFrameSize
+		}
+		instance, instanceErr := strconv.ParseUint(f.Anchor.BufferInstance, 10, 64)
+		if (f.Anchor.BufferKind != "normal" && f.Anchor.BufferKind != "alternate") || instanceErr != nil || instance == 0 || strconv.FormatUint(instance, 10) != f.Anchor.BufferInstance || f.Anchor.Cols == 0 || f.Anchor.Rows == 0 {
+			return OutputStartRowFrame{}, ErrOutputStartRowFrameSize
+		}
+	}
 	return f, nil
 }

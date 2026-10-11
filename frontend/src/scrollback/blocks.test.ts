@@ -28,7 +28,6 @@ import { clampMenuPosition } from '../ui/menu-geometry'
 import { shellHighlightReady } from '../shell-highlight'
 import { applyReasoningExpanded } from '../reasoning-expanded'
 import { clearToasts, toasts } from '../ui/toast'
-import { BufferLine } from './test-helpers'
 import { _resetThemeState } from '../renderers/theme-adapter'
 import { CommandSnapshotStore } from '../command-snapshot'
 import { mintDomain, type IntegrationDomain } from '../lifecycle/domains'
@@ -1042,7 +1041,7 @@ describe('BlockManager', () => {
   })
 
   it('the author mark survives the running → frozen replacement (nocx-iadtt)', () => {
-    const rec = manager.startBlock('ls', '~', 0, undefined, 'agent')
+    const rec = manager.startBlock('ls', '~', 0, 'agent')
     expect(rec.author).toBe('agent')
     expect(rec.el.querySelector('.ui-badge[data-author="agent"]')).not.toBeNull()
     closeRunningBlock(manager)
@@ -1579,7 +1578,7 @@ describe('BlockManager entered freeze (N6, nocx-y5v5)', () => {
 
   it('freezeEntered freezes the running block as entered with no exit code', () => {
     const rec = manager.startBlock('ssh pi@192.168.0.93', '~', 0)
-    const entered = manager.freezeEntered(() => undefined, 3)
+    const entered = manager.freezeEntered(3)
     expect(entered).not.toBeNull()
     expect(entered!.id).toBe(rec.id)
     expect(entered!.status).toBe('entered')
@@ -1596,12 +1595,12 @@ describe('BlockManager entered freeze (N6, nocx-y5v5)', () => {
   })
 
   it('freezeEntered returns null when no block is running', () => {
-    expect(manager.freezeEntered(() => undefined, 0)).toBeNull()
+    expect(manager.freezeEntered(0)).toBeNull()
   })
 
   it('after freezeEntered the next startBlock creates a new running block and leaves the entered one untouched', () => {
     manager.startBlock('ssh pi@192.168.0.93', '~', 0)
-    const entered = manager.freezeEntered(() => undefined, 3)
+    const entered = manager.freezeEntered(3)
     expect(manager.runningBlock).toBeNull()
 
     const remote = manager.startBlock('pwd', '~', 5)
@@ -1616,7 +1615,7 @@ describe('BlockManager entered freeze (N6, nocx-y5v5)', () => {
 
   it('a normal D freeze after an entered block still renders success/failure from the real code', () => {
     manager.startBlock('ssh pi@192.168.0.93', '~', 0)
-    manager.freezeEntered(() => undefined, 3)
+    manager.freezeEntered(3)
     manager.startBlock('pwd', '~', 5)
     const done = closeRunningBlock(manager)
     expect(done!.status).toBe('success')
@@ -1671,7 +1670,7 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
     // The backend's block.closed landed before the completion: the block
     // closes the moment the completion arrives.
     manager.blockClosed('att-1')
-    const frozen = manager.freezeFromAttempt(attempt({ exitCode: 0 }), () => undefined, 8)
+    const frozen = manager.freezeFromAttempt(attempt({ exitCode: 0 }), 8)
     expect(frozen).not.toBeNull()
     expect(frozen!.status).toBe('success')
     expect(frozen!.exitCode).toBe(0)
@@ -1692,7 +1691,7 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
     const rec = manager.startBlock('make deploy', '~', 0)
     manager.bindAttempt('att-1')
     manager.blockClosed('att-1')
-    const frozen = manager.freezeFromAttempt(attempt({ exitCode: 1 }), () => undefined, 8)
+    const frozen = manager.freezeFromAttempt(attempt({ exitCode: 1 }), 8)
     expect(frozen).toBe(rec)
     expect(rec.el.dataset.recorded).toBeUndefined()
 
@@ -1728,7 +1727,7 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
     manager.bindAttempt('att-1')
     rec.stopRequested = true
     manager.blockClosed('att-1')
-    const frozen = manager.freezeFromAttempt(attempt({ exitCode: 130 }), () => undefined, 8)
+    const frozen = manager.freezeFromAttempt(attempt({ exitCode: 130 }), 8)
     expect(frozen).not.toBeNull()
     expect(frozen!.status).toBe('cancelled')
     expect(frozen!.exitCode).toBe(130)
@@ -1746,7 +1745,7 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
     manager.bindAttempt('att-1')
     expect(rec.stopRequested).toBe(false)
     manager.blockClosed('att-1')
-    const frozen = manager.freezeFromAttempt(attempt({ exitCode: 130 }), () => undefined, 8)
+    const frozen = manager.freezeFromAttempt(attempt({ exitCode: 130 }), 8)
     expect(frozen).not.toBeNull()
     expect(frozen!.status).toBe('failure')
     expect(frozen!.el.dataset.outcome).toBe('failure')
@@ -1760,14 +1759,14 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
   it('freezeFromAttempt refuses a non-completed attempt — an open attempt cannot freeze a block', () => {
     manager.startBlock('make', '~', 0)
     manager.bindAttempt('att-1')
-    expect(manager.freezeFromAttempt(attempt({ state: 'open' }), () => undefined, 8)).toBeNull()
+    expect(manager.freezeFromAttempt(attempt({ state: 'open' }), 8)).toBeNull()
     expect(manager.runningBlock?.status).toBe('running')
   })
 
   it('freezeFromAttempt refuses when the running block is bound to a different attempt', () => {
     manager.startBlock('make', '~', 0)
     manager.bindAttempt('att-1')
-    expect(manager.freezeFromAttempt(attempt({ id: 'att-other' }), () => undefined, 8)).toBeNull()
+    expect(manager.freezeFromAttempt(attempt({ id: 'att-other' }), 8)).toBeNull()
     expect(manager.runningBlock?.status).toBe('running')
   })
 
@@ -1775,7 +1774,7 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
     const rec = manager.startBlock('sleep 100', '~', 0)
     manager.bindAttempt('att-1')
     manager.blockClosed('att-1')
-    const frozen = manager.abandonAttempt(attempt({ state: 'unknown' }), () => undefined, 6)
+    const frozen = manager.abandonAttempt(attempt({ state: 'unknown' }), 6)
     expect(frozen).not.toBeNull()
     expect(frozen!.status).toBe('unknown')
     expect(frozen!.exitCode).toBeNull()
@@ -1796,7 +1795,7 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
     manager.bindAttempt('att-1')
     rec.stopRequested = true
     manager.blockClosed('att-1')
-    const frozen = manager.abandonAttempt(attempt({ state: 'unknown' }), () => undefined, 6)
+    const frozen = manager.abandonAttempt(attempt({ state: 'unknown' }), 6)
     expect(frozen).not.toBeNull()
     expect(frozen!.status).toBe('unknown')
     expect(frozen!.el.dataset.outcome).toBeUndefined()
@@ -1805,10 +1804,8 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
   it('abandonAttempt refuses a completed attempt and a foreign binding', () => {
     manager.startBlock('make', '~', 0)
     manager.bindAttempt('att-1')
-    expect(manager.abandonAttempt(attempt(), () => undefined, 6)).toBeNull()
-    expect(
-      manager.abandonAttempt(attempt({ id: 'att-other', state: 'unknown' }), () => undefined, 6),
-    ).toBeNull()
+    expect(manager.abandonAttempt(attempt(), 6)).toBeNull()
+    expect(manager.abandonAttempt(attempt({ id: 'att-other', state: 'unknown' }), 6)).toBeNull()
     expect(manager.runningBlock?.status).toBe('running')
   })
 
@@ -1861,7 +1858,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
     // The completion: the LOGICAL freeze lands now — status, exit code, the
     // running slot freed. The deferred return tells the caller the close is
     // still to come.
-    expect(manager.freezeFromAttempt(attempt(), () => undefined, 1)).toBeNull()
+    expect(manager.freezeFromAttempt(attempt(), 1)).toBeNull()
     expect(manager.runningBlock).toBeNull()
     const block = manager.blockForAttempt('att-1')!
     expect(block.status).toBe('success')
@@ -1883,7 +1880,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
     // how it ended.
     expect(manager.runningBlock?.status).toBe('running')
 
-    const frozen = manager.freezeFromAttempt(attempt(), () => undefined, 4)
+    const frozen = manager.freezeFromAttempt(attempt(), 4)
     expect(frozen).not.toBeNull()
     expect(closedOnScreen('att-1')).toBe(true)
   })
@@ -1894,7 +1891,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
 
     manager.startBlock('cmd', '~', 0)
     manager.bindAttempt('att-1')
-    manager.freezeFromAttempt(attempt(), () => undefined, 0)
+    manager.freezeFromAttempt(attempt(), 0)
     manager.blockClosed('att-1')
     const closedEl = manager.blockForAttempt('att-1')!.el
     manager.blockClosed('att-1')
@@ -1907,7 +1904,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
     try {
       manager.startBlock('cmd', '~', 0)
       manager.bindAttempt('att-1')
-      manager.freezeFromAttempt(attempt(), () => undefined, 0)
+      manager.freezeFromAttempt(attempt(), 0)
       vi.advanceTimersByTime(60_000)
       expect(closedOnScreen('att-1')).toBe(false)
       manager.blockClosed('att-1')
@@ -1920,16 +1917,10 @@ describe("the block's close: the completion and the backend's block.closed (nocx
   it('two completed blocks each close on their own block.closed', () => {
     manager.startBlock('first', '~', 0)
     manager.bindAttempt('att-1')
-    expect(manager.freezeFromAttempt(attempt({ id: 'att-1' }), () => undefined, 0)).toBeNull()
+    expect(manager.freezeFromAttempt(attempt({ id: 'att-1' }), 0)).toBeNull()
     manager.startBlock('second', '~', 3)
     manager.bindAttempt('att-2')
-    expect(
-      manager.freezeFromAttempt(
-        attempt({ id: 'att-2', fence: 'b'.repeat(64) }),
-        () => undefined,
-        3,
-      ),
-    ).toBeNull()
+    expect(manager.freezeFromAttempt(attempt({ id: 'att-2', fence: 'b'.repeat(64) }), 3)).toBeNull()
 
     manager.blockClosed('att-2')
     expect(closedOnScreen('att-2')).toBe(true)
@@ -1944,7 +1935,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
     // (nocx-2v80t.3.29). There is no exception for the pane to take.
     manager.startBlock('cmd', '~', 0)
     manager.bindAttempt('att-1')
-    expect(manager.freezeFromAttempt(attempt({ fence: undefined }), () => undefined, 0)).toBeNull()
+    expect(manager.freezeFromAttempt(attempt({ fence: undefined }), 0)).toBeNull()
     expect(manager.blockForAttempt('att-1')!.status).toBe('success')
     expect(closedOnScreen('att-1')).toBe(false)
     manager.blockClosed('att-1')
@@ -1956,7 +1947,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
   it('an environment entry frees the running slot now, and the block closes on screen only on block.closed', () => {
     manager.startBlock('ssh host', '~', 0)
     manager.bindAttempt('att-ssh')
-    expect(manager.freezeEntered(() => undefined, 3)).toBeNull()
+    expect(manager.freezeEntered(3)).toBeNull()
     expect(manager.runningBlock).toBeNull()
     expect(manager.blockForAttempt('att-ssh')!.status).toBe('entered')
     expect(closedOnScreen('att-ssh')).toBe(false)
@@ -1968,7 +1959,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
   it('an entered block is labelled where it ran, not where the pane stands by its block.closed', () => {
     manager.startBlock('ssh far', '~', 0)
     manager.bindAttempt('att-ssh')
-    manager.freezeEntered(() => undefined, 3)
+    manager.freezeEntered(3)
     // The far session begins before the local block's close arrives.
     manager.setLocation('dev@far-host')
     manager.blockClosed('att-ssh')
@@ -1980,14 +1971,14 @@ describe("the block's close: the completion and the backend's block.closed (nocx
     manager.startBlock('ssh host', '~', 0)
     manager.bindAttempt('att-ssh')
     manager.blockClosed('att-ssh')
-    expect(manager.freezeEntered(() => undefined, 3)).not.toBeNull()
+    expect(manager.freezeEntered(3)).not.toBeNull()
     expect(closedOnScreen('att-ssh')).toBe(true)
   })
 
   it('an attempt gone unknown is never successful at once, and closes on screen only on block.closed', () => {
     manager.startBlock('sleep 100', '~', 0)
     manager.bindAttempt('att-1')
-    expect(manager.abandonAttempt(attempt({ state: 'unknown' }), () => undefined, 6)).toBeNull()
+    expect(manager.abandonAttempt(attempt({ state: 'unknown' }), 6)).toBeNull()
     expect(manager.runningBlock).toBeNull()
     expect(manager.blockForAttempt('att-1')!.status).toBe('unknown')
     expect(closedOnScreen('att-1')).toBe(false)
@@ -1999,14 +1990,14 @@ describe("the block's close: the completion and the backend's block.closed (nocx
   it('an attempt the pane abandons because it let its session go closes at once — nobody is left to say block.closed', () => {
     manager.startBlock('sleep 100', '~', 0)
     manager.bindAttempt('att-1')
-    const frozen = manager.abandonAttempt(attempt({ state: 'unknown' }), () => undefined, 6, true)
+    const frozen = manager.abandonAttempt(attempt({ state: 'unknown' }), 6, true)
     expect(frozen).not.toBeNull()
     expect(closedOnScreen('att-1')).toBe(true)
   })
 
   it('a block never bound to an attempt closes at once — the backend has no entry to name it by', () => {
     manager.startBlock('exit', '~', 0)
-    const frozen = manager.abandonUnbound(() => undefined, 2)
+    const frozen = manager.abandonUnbound(2)
     expect(frozen).not.toBeNull()
     expect(frozen!.el.classList.contains('cmd-block-running')).toBe(false)
   })
@@ -2014,7 +2005,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
   it('a session let go settles every block still waiting for its block.closed', () => {
     manager.startBlock('cmd', '~', 0)
     manager.bindAttempt('att-1')
-    manager.freezeFromAttempt(attempt(), () => undefined, 0)
+    manager.freezeFromAttempt(attempt(), 0)
     expect(closedOnScreen('att-1')).toBe(false)
     manager.settleWithoutBackend()
     expect(closedOnScreen('att-1')).toBe(true)
@@ -2029,7 +2020,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
     })
     manager.startBlock('cmd', '~', 0)
     manager.bindAttempt('att-1')
-    manager.freezeFromAttempt(attempt(), () => undefined, 0)
+    manager.freezeFromAttempt(attempt(), 0)
     expect(onDeferredFreeze).not.toHaveBeenCalled()
     manager.blockClosed('att-1')
     expect(onDeferredFreeze).toHaveBeenCalledTimes(1)
@@ -2038,7 +2029,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
   it('clearAll drops a block awaiting its close — a later block.closed closes nothing', () => {
     manager.startBlock('cmd', '~', 0)
     manager.bindAttempt('att-1')
-    manager.freezeFromAttempt(attempt(), () => undefined, 0)
+    manager.freezeFromAttempt(attempt(), 0)
     manager.clearAll()
     manager.blockClosed('att-1')
     expect(manager.blocks).toHaveLength(0)
@@ -2539,11 +2530,7 @@ describe('the working stand-in (nocx-vnirv.1)', () => {
     const { xtermContainer, inner, manager } = newManager()
     manager.startBlock('ssh host', '~', 0)
     manager.bindAttempt('att-1')
-    manager.abandonAttempt(
-      { id: 'att-1', state: 'unknown' } as ExecutionAttempt,
-      () => undefined,
-      6,
-    )
+    manager.abandonAttempt({ id: 'att-1', state: 'unknown' } as ExecutionAttempt, 6)
     expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
     manager.dispose()
     inner.remove()
@@ -2593,7 +2580,7 @@ describe('the working stand-in (nocx-vnirv.1)', () => {
     const { inner, manager } = newManager()
     const h = manager.addAnswerBlock('q', '/')
     h.toolCall({ callId: 'c1', tool: 'run', effect: 'mutate-destructive', opensBlock: true })
-    manager.startBlock('make', '/repo', 0, 0, 'agent')
+    manager.startBlock('make', '/repo', 0, 'agent')
     const children = h.el.querySelector(':scope > .cmd-children')!
     // The stand-in marks where the answer will continue: after the block
     // the call opened, never pushed aside by it.
@@ -4535,9 +4522,7 @@ describe('backend-owned block rows', () => {
   it('does not paint terminal-buffer text when backend history is absent', () => {
     const { manager } = newManager()
     manager.startBlock('echo local', '/repo', 0)
-    const frozen = closeRunningBlock(manager, 0, (line) =>
-      line === 0 ? new BufferLine('local') : undefined,
-    )!
+    const frozen = closeRunningBlock(manager)!
     expect(frozen.el.querySelector('.cmd-output')).toBeNull()
   })
 })

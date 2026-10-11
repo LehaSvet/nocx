@@ -6,6 +6,7 @@ import (
 
 	"github.com/shady2k/nocx/internal/emulator"
 	"github.com/shady2k/nocx/internal/helper/client"
+	"github.com/shady2k/nocx/internal/helper/proto"
 	nocxlog "github.com/shady2k/nocx/internal/log"
 	"github.com/shady2k/nocx/internal/session"
 )
@@ -48,6 +49,7 @@ type blockRowsSink interface {
 	BlockClearBoundary(sid session.ID)
 	BlockOutputStartPlaneAttached(sid session.ID)
 	BlockOutputStartRow(sid session.ID, fromRow uint64)
+	BlockOutputStartRowWithAnchor(sid session.ID, fromRow uint64, anchor proto.OutputStartScreenAnchor)
 	// BlockOutputIncomplete is the helper's one marker that its row buffer
 	// overflowed (nocx-2v80t.3.36), on the same ordered sequence.
 	BlockOutputIncomplete(sid session.ID, fromRow uint64)
@@ -135,7 +137,11 @@ func bindBlockRowsTo(ctx context.Context, sink blockRowsSink, sid session.ID, sr
 		sink.BlockClearBoundary(sid)
 	})
 	src.OnOutputStartRow(func(mark client.OutputStartRow) {
-		sink.BlockOutputStartRow(sid, mark.FromRow)
+		if mark.Anchor != nil {
+			sink.BlockOutputStartRowWithAnchor(sid, mark.FromRow, *mark.Anchor)
+		} else {
+			sink.BlockOutputStartRow(sid, mark.FromRow)
+		}
 	})
 
 	var once sync.Once

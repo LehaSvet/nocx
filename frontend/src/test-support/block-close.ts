@@ -5,7 +5,7 @@
 // production caller, so a test that went through it was testing a path
 // nobody takes.
 
-import type { BlockManager, BlockRecord, GetLineFn } from '../scrollback/blocks'
+import type { BlockManager, BlockRecord } from '../scrollback/blocks'
 import { mintDomain, type IntegrationDomain } from '../lifecycle/domains'
 
 const domain = mintDomain({
@@ -20,13 +20,8 @@ let minted = 0
 /** Complete the running block with `exitCode` and deliver its block.closed.
  *  A block not yet bound to an attempt is bound to a fresh one first, as the
  *  authenticated start would have. `getLine` is the terminal buffer the close
- *  is handed — a test that asserts the block never reads it passes one with
- *  text in it. Answers the closed record, or null when nothing is running. */
-export function closeRunningBlock(
-  manager: BlockManager,
-  exitCode = 0,
-  getLine: GetLineFn = () => undefined,
-): BlockRecord | null {
+ *  is handed. Answers the closed record, or null when nothing is running. */
+export function closeRunningBlock(manager: BlockManager, exitCode = 0): BlockRecord | null {
   const rec = manager.runningBlock
   if (rec === null) return null
   let id = rec.attemptId
@@ -34,11 +29,7 @@ export function closeRunningBlock(
     id = `att-closed-${++minted}`
     manager.bindAttempt(id)
   }
-  manager.freezeFromAttempt(
-    { id, domain, state: 'completed', exitCode, fence: 'f'.repeat(64) },
-    getLine,
-    0,
-  )
+  manager.freezeFromAttempt({ id, domain, state: 'completed', exitCode, fence: 'f'.repeat(64) }, 0)
   manager.blockClosed(id)
   return manager.blockForAttempt(id)
 }

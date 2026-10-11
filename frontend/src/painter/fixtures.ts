@@ -145,6 +145,7 @@ export function frameOf(
   state: SessionFrame['state'] = {
     bufferKind: 'normal',
     bufferInstance: '1',
+    baseRow: 0,
     bracketedPaste: false,
     mouseTracking: false,
     title: null,

@@ -1004,6 +1004,9 @@ type Snapshot struct {
 	// Nil when the screen could not be read (a closed emulator), exactly the
 	// case Screen answers nil for.
 	Rows []emulator.Row
+	// BaseRow is the active rectangle's top in absolute screen-row coordinates.
+	// It is distinct from the row stream's FromRow index.
+	BaseRow uint64
 	// Cursor is the caret [Digest] folds in for an `input` target.
 	Cursor emulator.Cursor
 	// Modes is the emulator-owned routing state needed by the client for

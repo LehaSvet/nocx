@@ -39,6 +39,7 @@ package session
 import (
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"time"
 	"unsafe"
 
@@ -81,6 +82,7 @@ type rowEmission struct {
 	markSequence uint64
 	nonce        sessionruntime.FenceNonce
 	from         uint64
+	anchor       *proto.OutputStartScreenAnchor
 	lost         uint64
 	rows         []emulator.Row
 	closing      []emulator.Row
@@ -150,13 +152,44 @@ func (b *rowBridge) ClearBoundary() {
 }
 
 func (b *rowBridge) OutputStartRow(from uint64) {
+	b.outputStartRow(from, nil)
+}
+
+func (b *rowBridge) OutputStartRowWithAnchor(from uint64, anchor sessionruntime.ScreenRowAnchor) {
+	cols, colsOK := screenDimensionToUint32(anchor.Identity.Cols)
+	rows, rowsOK := screenDimensionToUint32(anchor.Identity.Rows)
+	if !colsOK || !rowsOK || anchor.Identity.BufferInstance == 0 {
+		b.outputStartRow(from, nil)
+		return
+	}
+	kind := "normal"
+	if anchor.Identity.AltScreen {
+		kind = "alternate"
+	}
+	a := &proto.OutputStartScreenAnchor{
+		Row: anchor.Row, ScreenRevision: uint64(anchor.Revision), BufferKind: kind,
+		BufferInstance: strconv.FormatUint(anchor.Identity.BufferInstance, 10),
+		Cols:           cols, Rows: rows,
+	}
+	b.outputStartRow(from, a)
+}
+
+func screenDimensionToUint32(value int) (uint32, bool) {
+	if value <= 0 || int64(value) > int64(^uint32(0)) {
+		return 0, false
+	}
+	return uint32(value), true // #nosec G115 -- bounded to positive uint32 range above
+}
+
+func (b *rowBridge) outputStartRow(from uint64, anchor *proto.OutputStartScreenAnchor) {
 	b.hs.rowMu.Lock()
 	b.hs.outputStartRow = from
+	b.hs.outputStartAnchor = anchor
 	b.hs.outputStartKnown = true
 	b.hs.outputStartSequence++
 	sequence := b.hs.outputStartSequence
 	b.hs.rowMu.Unlock()
-	b.hs.enqueueRowEmission(rowEmission{outputStart: true, from: from, markSequence: sequence})
+	b.hs.enqueueRowEmission(rowEmission{outputStart: true, from: from, anchor: anchor, markSequence: sequence})
 }
 
 // enqueueRowEmission appends one emission to the FIFO if the buffer can hold
@@ -737,6 +770,7 @@ func (s *hostSession) resendFromScrollback() bool {
 	// those rows to an authenticated Start without a lifecycle-envelope field.
 	s.rowMu.Lock()
 	outputStartRow, outputStartKnown := s.outputStartRow, s.outputStartKnown
+	outputStartAnchor := s.outputStartAnchor
 	outputStartSequence := s.outputStartSequence
 	s.rowMu.Unlock()
 	if outputStartKnown {
@@ -750,7 +784,7 @@ func (s *hostSession) resendFromScrollback() bool {
 			if sink, ok := sub.sink.(interface {
 				SendOutputStartRow(proto.OutputStartRowFrame) error
 			}); ok {
-				if err := sink.SendOutputStartRow(proto.OutputStartRowFrame{Session: s.raw, Subscriber: sub.raw, FromRow: outputStartRow}); err != nil {
+				if err := sink.SendOutputStartRow(proto.OutputStartRowFrame{Session: s.raw, Subscriber: sub.raw, FromRow: outputStartRow, Anchor: outputStartAnchor}); err != nil {
 					s.log.Warn("session output-start replay mark not delivered", "session", s.id.Session, "subscriber", sub.id, "fromRow", outputStartRow, "err", err)
 				}
 			}
@@ -947,7 +981,7 @@ func (s *hostSession) deliverRowEmission(em rowEmission) bool {
 				s.log.Warn("session output-start mark not delivered: sink lacks row-mark support", "session", s.id.Session, "subscriber", sub.id, "fromRow", em.from)
 				continue
 			}
-			if err := sink.SendOutputStartRow(proto.OutputStartRowFrame{Session: s.raw, Subscriber: sub.raw, FromRow: em.from}); err != nil {
+			if err := sink.SendOutputStartRow(proto.OutputStartRowFrame{Session: s.raw, Subscriber: sub.raw, FromRow: em.from, Anchor: em.anchor}); err != nil {
 				s.log.Warn("session output-start mark not delivered", "session", s.id.Session, "subscriber", sub.id, "fromRow", em.from, "err", err)
 			}
 		}

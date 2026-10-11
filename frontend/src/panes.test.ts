@@ -72,6 +72,7 @@ function fireFrameMetadata(
   const state: SessionFrame['state'] = {
     bufferKind: metadata.bufferKind ?? 'normal',
     bufferInstance: '1',
+    baseRow: 0,
     bracketedPaste: false,
     mouseTracking: false,
     title: metadata.title ?? null,
@@ -1330,10 +1331,11 @@ describe('PaneManager', () => {
     const cb = makeClipboard({
       readText: vi.fn().mockResolvedValue('right-click text'),
     })
-    const { bar } = await mountPaneManager(undefined, cb)
+    const { bar, client } = await mountPaneManager(undefined, cb)
 
     await Promise.resolve()
-    const renderers = await getRendererMocks()
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
 
     const pane = bar.parentElement!.querySelector('.pane.active')!
     pane.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
@@ -1341,17 +1343,18 @@ describe('PaneManager', () => {
     await vi.waitFor(() => {
       expect(cb.readText).toHaveBeenCalled()
     })
-    expect(renderers[0].paste).toHaveBeenCalledWith('right-click text')
+    await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('paste', 'right-click text'))
   })
 
   it('pastes on middle-click', async () => {
     const cb = makeClipboard({
       readText: vi.fn().mockResolvedValue('middle-click text'),
     })
-    const { bar } = await mountPaneManager(undefined, cb)
+    const { bar, client } = await mountPaneManager(undefined, cb)
 
     await Promise.resolve()
-    const renderers = await getRendererMocks()
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
 
     const pane = bar.parentElement!.querySelector('.pane.active')!
     pane.dispatchEvent(new MouseEvent('mousedown', { button: 1, bubbles: true }))
@@ -1359,7 +1362,9 @@ describe('PaneManager', () => {
     await vi.waitFor(() => {
       expect(cb.readText).toHaveBeenCalled()
     })
-    expect(renderers[0].paste).toHaveBeenCalledWith('middle-click text')
+    await vi.waitFor(() =>
+      expect(session.intent).toHaveBeenCalledWith('paste', 'middle-click text'),
+    )
   })
 
   it('confirms before pasting multi-line text in the normal screen', async () => {
@@ -1369,10 +1374,11 @@ describe('PaneManager', () => {
     const confirm = showConfirmMock
     confirm.mockReset()
 
-    const { bar } = await mountPaneManager(undefined, cb)
+    const { bar, client } = await mountPaneManager(undefined, cb)
 
     await Promise.resolve()
-    const renderers = await getRendererMocks()
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
 
     // Default _bufferType is 'normal'.
     confirm.mockResolvedValueOnce(false)
@@ -1383,13 +1389,13 @@ describe('PaneManager', () => {
       expect(cb.readText).toHaveBeenCalled()
     })
     // User declined — nothing should reach the terminal.
-    expect(renderers[0].paste).not.toHaveBeenCalled()
+    expect(session.intent).not.toHaveBeenCalledWith('paste', 'line1\nline2')
 
     // Now confirm.
     confirm.mockResolvedValueOnce(true)
     pane.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
     await vi.waitFor(() => {
-      expect(renderers[0].paste).toHaveBeenCalledWith('line1\nline2')
+      expect(session.intent).toHaveBeenCalledWith('paste', 'line1\nline2')
     })
   })
 
@@ -1403,7 +1409,8 @@ describe('PaneManager', () => {
     const { bar, client } = await mountPaneManager(undefined, cb)
 
     await Promise.resolve()
-    const renderers = await getRendererMocks()
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
 
     // The accepted backend frame owns buffer identity (ADR-0083).
     fireFrameMetadata(client._sessions[0], 1, { bufferKind: 'alternate' })
@@ -1416,7 +1423,7 @@ describe('PaneManager', () => {
     })
     // No confirmation in alternate screen — full-screen program is not a shell.
     expect(confirm).not.toHaveBeenCalled()
-    expect(renderers[0].paste).toHaveBeenCalledWith('line1\nline2')
+    expect(session.intent).toHaveBeenCalledWith('paste', 'line1\nline2')
   })
 
   // ── OSC 52 gate ────────────────────────────────────────────────────

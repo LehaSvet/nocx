@@ -85,6 +85,10 @@ interface InstalledPage {
    *  session.historyPage result named it. */
   start: number
   readonly end: number
+  /** Identity from the same backend read as this page. Absolute row numbers
+   *  from different buffer instances are never joined. */
+  readonly bufferKind: SessionHistoryPage['bufferKind']
+  readonly bufferInstance: string
   /** The page's rows as the cell model decoded them, oldest first —
    *  `rows[i]` is absolute row `start + i`. Kept so a floor that lands
    *  inside the page can trim what the emulator no longer holds without a
@@ -643,6 +647,41 @@ export class LiveHistorySurface {
     this._docs.delete(pageId)
     if (entry.epoch !== this._epoch) return
     const { page } = entry
+    if (
+      !Number.isSafeInteger(page.start) ||
+      !Number.isSafeInteger(page.end) ||
+      !Number.isSafeInteger(page.floor) ||
+      !Number.isSafeInteger(page.baseRow) ||
+      !Number.isSafeInteger(page.cols) ||
+      !Number.isSafeInteger(page.rows) ||
+      page.start < 0 ||
+      page.end < page.start ||
+      page.end > page.baseRow + page.rows ||
+      page.baseRow < 0 ||
+      page.rows < 1 ||
+      page.cols < 1 ||
+      page.baseRow + page.rows > Number.MAX_SAFE_INTEGER ||
+      page.end - page.start !== doc.rows.length ||
+      (page.bufferKind !== 'normal' && page.bufferKind !== 'alternate') ||
+      !/^[1-9][0-9]*$/.test(page.bufferInstance)
+    ) {
+      log.debug('nocx: history page refused by its row/identity contract', { page })
+      this._rearHeadRefresh()
+      return
+    }
+
+    // A buffer switch creates a new row address space even if its numbers
+    // happen to match. Never join pages from separate screen instances.
+    const newest = this._pages[this._pages.length - 1]
+    if (
+      newest !== undefined &&
+      (newest.bufferKind !== page.bufferKind || newest.bufferInstance !== page.bufferInstance)
+    ) {
+      for (const installed of this._pages) installed.el.remove()
+      this._pages = []
+      this._dirty = false
+      this._rebuildTailGap = null
+    }
 
     // The floor is the emulator's own word on how far its history still
     // reaches. Painted pages at or below it are rows the library no longer
@@ -652,14 +691,10 @@ export class LiveHistorySurface {
     // caught: the floor is the head, everything painted is below it, and
     // the surface empties instead of inventing a boundary.
     this._pruneBelow(page.floor)
-    this._cursor = page.start
+    this._cursor = Math.min(page.start, page.baseRow)
     // "Nothing remains below the cursor" is the READ's verdict, and it
     // stands only if nothing has departed since the read began.
     this._exhausted = !page.more && entry.readSeq === this._outputSeq
-    if (doc.rows.length === 0) {
-      this._rearHeadRefresh()
-      return
-    }
     if (entry.readSeq !== this._outputSeq) {
       // The page was read BEFORE output departed during its flight: its
       // coverage already ends below the head the emulator holds now, and
@@ -673,6 +708,15 @@ export class LiveHistorySurface {
       // The refresh intent was FOR this page: the wheel has somewhere to
       // go, and the coverage is current.
       this._refreshPending = false
+    }
+    const historicalCount = Math.max(0, Math.min(doc.rows.length, page.baseRow - page.start))
+    if (historicalCount === 0) {
+      // A head page may consist only of the active screen. It contributes
+      // no scrollback rows; a page with older retained rows is followed at
+      // baseRow, while an empty/changed head waits for the scheduled refresh.
+      if (page.more && !this._dirty) this._pump()
+      this._rearHeadRefresh()
+      return
     }
     this._paint(page, doc)
     this._pump()
@@ -711,27 +755,37 @@ export class LiveHistorySurface {
     // Ours, not the engine's: a reveal has nothing left to undo here.
     this._releaseHold()
     if (removed > 0) this._scroller.scrollTop = Math.max(0, this._scroller.scrollTop - removed)
-    this._pages[0] = { el, start: floor, end: oldest.end, rows: keep }
+    this._pages[0] = {
+      el,
+      start: floor,
+      end: oldest.end,
+      bufferKind: oldest.bufferKind,
+      bufferInstance: oldest.bufferInstance,
+      rows: keep,
+    }
   }
 
   /** Decode one page through the pane's cell model and paint it with the
    *  live painter's own row primitive, above everything painted so far. */
   private _paint(page: SessionHistoryPage, doc: SessionHistoryPageRows): void {
-    const cols = this._columns()
-    if (cols === null || cols === 0) return
+    const cols = page.cols
+    const historyCount = Math.max(0, Math.min(doc.rows.length, page.baseRow - page.start))
+    const historyRows = doc.rows.slice(0, historyCount)
+    if (cols < 1 || historyRows.length === 0) return
     const frame = {
       revision: 1,
-      geometry: { cols, rows: doc.rows.length, cellWidthPx: 1, cellHeightPx: 1, revision: 1 },
+      geometry: { cols, rows: historyRows.length, cellWidthPx: 1, cellHeightPx: 1, revision: 1 },
       cursor: { x: 0, y: 0, visible: false },
       state: {
-        bufferKind: 'normal' as const,
-        bufferInstance: '1',
+        bufferKind: page.bufferKind,
+        bufferInstance: page.bufferInstance,
+        baseRow: page.start,
         bracketedPaste: false,
         mouseTracking: false,
         title: null,
         cwd: null,
       },
-      rows: doc.rows,
+      rows: historyRows,
     }
     const result = createCellModel().apply(frame)
     if (!result.ok) {
@@ -745,8 +799,9 @@ export class LiveHistorySurface {
     this._warm?.(fitCandidatesOf(result.snapshot.rows))
     const pageEl = document.createElement('div')
     pageEl.className = 'live-history-page'
+    const historyEnd = page.start + historyRows.length
     pageEl.dataset.start = String(page.start)
-    pageEl.dataset.end = String(page.end)
+    pageEl.dataset.end = String(historyEnd)
     for (const row of result.snapshot.rows) {
       pageEl.appendChild(paintRow(row, { metric, palette: this._palette }))
     }
@@ -777,7 +832,9 @@ export class LiveHistorySurface {
     this._pages.unshift({
       el: pageEl,
       start: page.start,
-      end: page.end,
+      end: historyEnd,
+      bufferKind: page.bufferKind,
+      bufferInstance: page.bufferInstance,
       rows: result.snapshot.rows,
     })
   }

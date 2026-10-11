@@ -57,7 +57,7 @@ func dialHistoryStub(t *testing.T, svc host.Service) *client.Client {
 
 func TestHistoryPageRoundTripsTheOpShape(t *testing.T) {
 	svc := &historyStubService{result: proto.HistoryPageResult{
-		Floor: 3, Start: 13, End: 23, More: true,
+		Floor: 3, Start: 13, End: 23, More: true, BufferKind: "normal", BufferInstance: "1", BaseRow: 20, Cols: 80, GeometryRows: 24,
 		Rows: json.RawMessage(`[{"text":"L000013"}]`),
 	}}
 	c := dialHistoryStub(t, svc)
@@ -67,7 +67,7 @@ func TestHistoryPageRoundTripsTheOpShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HistoryPage: %v", err)
 	}
-	if res.Floor != 3 || res.Start != 13 || res.End != 23 || !res.More {
+	if res.Floor != 3 || res.Start != 13 || res.End != 23 || !res.More || res.BufferKind != "normal" || res.BufferInstance != "1" || res.BaseRow != 20 || res.Cols != 80 || res.GeometryRows != 24 {
 		t.Fatalf("HistoryPage = %+v, want the stub's answer", res)
 	}
 	if string(res.Rows) != `[{"text":"L000013"}]` {

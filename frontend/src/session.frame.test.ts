@@ -70,7 +70,13 @@ describe('session.frame contract parity', () => {
     >()
     expectTypeOf<keyof SessionFrame['cursor']>().toEqualTypeOf<'x' | 'y' | 'visible'>()
     expectTypeOf<keyof SessionFrame['state']>().toEqualTypeOf<
-      'bufferKind' | 'bufferInstance' | 'bracketedPaste' | 'mouseTracking' | 'title' | 'cwd'
+      | 'bufferKind'
+      | 'bufferInstance'
+      | 'baseRow'
+      | 'bracketedPaste'
+      | 'mouseTracking'
+      | 'title'
+      | 'cwd'
     >()
     expectTypeOf<keyof Row>().toEqualTypeOf<'text' | 'marks' | 'runs' | 'wrap' | 'continuation'>()
     // The mark is the positional tuple [position, codepoints, width] and the
@@ -99,6 +105,7 @@ describe('session.frame contract parity', () => {
       state: {
         bufferKind: 'normal',
         bufferInstance: '1',
+        baseRow: 0,
         bracketedPaste: false,
         mouseTracking: false,
         title: null,

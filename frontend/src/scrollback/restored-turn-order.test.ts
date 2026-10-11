@@ -125,7 +125,7 @@ describe('a restored turn reads the same as the live turn it came from', () => {
     })
     live.append(BEFORE)
     live.toolCall({ callId: 'c1', tool: 'run', effect: 'mutate-destructive', opensBlock: true })
-    manager.startBlock(COMMAND, '/repo', 0, 0, 'agent')
+    manager.startBlock(COMMAND, '/repo', 0, 'agent')
     live.append(AFTER)
     live.close('success')
     return inner

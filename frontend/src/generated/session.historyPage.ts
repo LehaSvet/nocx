@@ -37,4 +37,24 @@ export interface SessionHistoryPage {
    * RESERVED for the live↔durable join (nocx-zg3k3.10.3 reserves it; a later task gives it meaning): how far the durable record of the session reaches, in its own cursor space, so a client can one day tell where the live tier's history hands over to the durable tier's. null until that join exists, which is every answer today.
    */
   durableThrough: number | null
+  /**
+   * The active buffer whose absolute rows the page carries.
+   */
+  bufferKind: 'normal' | 'alternate'
+  /**
+   * The active buffer identity. Pages from another instance cannot be joined by matching row numbers alone.
+   */
+  bufferInstance: string
+  /**
+   * The absolute row number of the active screen's first row in this buffer. History pages may include rows at or beyond baseRow; their [start,end) is always the shared screen coordinate, with no gap or overlap at this boundary.
+   */
+  baseRow: number
+  /**
+   * The active buffer's committed column count at the instant the page was read.
+   */
+  cols: number
+  /**
+   * The active buffer's committed screen row count at the instant the page was read.
+   */
+  rows: number
 }

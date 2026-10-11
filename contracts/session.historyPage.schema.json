@@ -5,7 +5,19 @@
   "description": "The session.historyPage JSON-RPC result: the facts of one page of a session's live history, read as the emulator holds it (nocx-zg3k3.10.3). The rows themselves ride the binary data plane on the screen frame's own carrier, keyed by pageId — terminal presentation data does not travel inside a JSON-RPC result (AD-1, ADR-0066, ADR-0073). The interval, the floor and more describe one instant of the buffer, read under one lock beside the rows they name.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["pageId", "start", "end", "floor", "more", "durableThrough"],
+  "required": [
+    "pageId",
+    "start",
+    "end",
+    "floor",
+    "more",
+    "durableThrough",
+    "bufferKind",
+    "bufferInstance",
+    "baseRow",
+    "cols",
+    "rows"
+  ],
   "properties": {
     "pageId": {
       "description": "Minted for this call; the session.historyPageRows document carrying this page's rows names the same id. A client matches document to result by it and never by arrival order.",
@@ -34,6 +46,32 @@
     "durableThrough": {
       "description": "RESERVED for the live↔durable join (nocx-zg3k3.10.3 reserves it; a later task gives it meaning): how far the durable record of the session reaches, in its own cursor space, so a client can one day tell where the live tier's history hands over to the durable tier's. null until that join exists, which is every answer today.",
       "type": ["integer", "null"]
+    },
+    "bufferKind": {
+      "type": "string",
+      "enum": ["normal", "alternate"],
+      "description": "The active buffer whose absolute rows the page carries."
+    },
+    "bufferInstance": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "description": "The active buffer identity. Pages from another instance cannot be joined by matching row numbers alone."
+    },
+    "baseRow": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "The absolute row number of the active screen's first row in this buffer. History pages may include rows at or beyond baseRow; their [start,end) is always the shared screen coordinate, with no gap or overlap at this boundary."
+    },
+    "cols": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The active buffer's committed column count at the instant the page was read."
+    },
+    "rows": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The active buffer's committed screen row count at the instant the page was read."
     }
   }
 }

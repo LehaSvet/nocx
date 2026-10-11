@@ -49,10 +49,15 @@ func (hs *hostSession) historyPage(before *uint64, limit int) (proto.HistoryPage
 		return proto.HistoryPageResult{}, err
 	}
 	return proto.HistoryPageResult{
-		Floor: view.Floor,
-		Start: view.Start,
-		End:   view.End,
-		More:  view.More,
-		Rows:  rows,
+		Floor:          view.Floor,
+		Start:          view.Start,
+		End:            view.End,
+		More:           view.More,
+		BufferKind:     view.BufferKind,
+		BufferInstance: view.BufferInstance,
+		BaseRow:        view.BaseRow,
+		Cols:           view.Cols,
+		GeometryRows:   view.GeometryRows,
+		Rows:           rows,
 	}, nil
 }

@@ -11074,6 +11074,9 @@
       "$ref": "https://nocx.local/contracts/block.grew.schema.json"
     },
     {
+      "$ref": "https://nocx.local/contracts/block.outputStart.schema.json"
+    },
+    {
       "$ref": "https://nocx.local/contracts/checkouts.status.schema.json"
     },
     {

@@ -11,6 +11,7 @@ import { vi, type Mock } from 'vitest'
 import type { SessionFrame } from '../generated/session.frame'
 import type { SessionEffect } from '../generated/session.effect'
 import type { SessionOutputGap } from '../generated/session.outputGap'
+import type { BlockOutputStart } from '../generated/block.outputStart'
 import type { SessionIntegrationChanged } from '../generated/session.integrationChanged'
 import type {
   CommandMarkerCallback,
@@ -531,6 +532,11 @@ export function makeSession(overrides?: Partial<SessionFake>): SessionFake {
         floor: 0,
         more: false,
         durableThrough: null,
+        bufferKind: 'normal',
+        bufferInstance: '1',
+        baseRow: 0,
+        cols: 80,
+        rows: 24,
       }),
     ),
     fireData: (data: string) => {
@@ -623,6 +629,8 @@ export interface ClientFake {
   onSessionData: ReturnType<typeof vi.fn>
   onSessionExit: ReturnType<typeof vi.fn>
   onSessionReset: ReturnType<typeof vi.fn>
+  onBlockOutputStart: (cb: (anchor: BlockOutputStart) => void) => () => void
+  _fireBlockOutputStart: (anchor: BlockOutputStart) => void
   /** Control-plane calls (history.record, history.query, …). Rejects by
    *  default — the no-store state, which the recall overlay labels
    *  source=session. */
@@ -779,6 +787,7 @@ export function makeClient(overrides?: Partial<ClientFake>): ClientFake {
   const displacedHandlers = new Set<(d: DisplacedFact) => void>()
   const workerTabCreatedHandlers = new Set<(fact: WorkersTabCreated) => void>()
   const workerTabClosedHandlers = new Set<(fact: WorkersTabClosed) => void>()
+  const blockOutputStartHandlers = new Set<(anchor: BlockOutputStart) => void>()
   const newSession = (): SessionFake => {
     const s = makeSession()
     sessions.push(s)
@@ -800,6 +809,13 @@ export function makeClient(overrides?: Partial<ClientFake>): ClientFake {
     onSessionData: vi.fn(),
     onSessionExit: vi.fn(),
     onSessionReset: vi.fn(),
+    onBlockOutputStart: (cb) => {
+      blockOutputStartHandlers.add(cb)
+      return () => blockOutputStartHandlers.delete(cb)
+    },
+    _fireBlockOutputStart: (anchor) => {
+      for (const cb of [...blockOutputStartHandlers]) cb(anchor)
+    },
     notifyPaneClosed: vi.fn(),
     onReconnectResult: vi.fn((cb: (r: { resumed: number; lost: number }) => void) => {
       reconnectHandlers.add(cb)

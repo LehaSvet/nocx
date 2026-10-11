@@ -3455,21 +3455,14 @@ export class TerminalContent extends BasePaneContent {
         // one that exists from the moment the port does.
         {
           bindBlock: (attempt) => {
-            // The authenticated start opens the card (nocx-2v80t.3.2): the
-            // submit opened only the ledger record and wrote the bytes. The
-            // fact precedes the RPC response on the wire, so the shell's
-            // echo is not out yet — the OUTPUT range starts one row below
-            // the creation line, the rule the submit-time open followed
-            // (nocx-4yhi), now cut on the runtime's word.
-            this._openAuthenticatedBlock(renderer, attempt, renderer.cursorLine() + 1)
+            // The authenticated start opens the card; its output coordinates
+            // arrive independently from the backend screen anchor.
+            this._openAuthenticatedBlock(renderer, attempt)
           },
           openBlock: (attempt) => {
             // A shell-originated attempt: the block gives a native-mode
-            // command structure; its text is already on the terminal and
-            // never persists (the command-text decision). No outputStart
-            // override — the fact lands on or past the echo line, so the
-            // range defaults to the creation line (nocx-4yhi).
-            this._openAuthenticatedBlock(renderer, attempt, undefined)
+            // command structure; output coordinates still come from backend.
+            this._openAuthenticatedBlock(renderer, attempt)
           },
           freezeBlock: (attempt) => {
             // ADR-0024 §7: the freeze is authorized only by the authenticated
@@ -3933,7 +3926,7 @@ export class TerminalContent extends BasePaneContent {
             const confirmed = await showConfirm('Paste multi-line text?', 'Paste', 'Cancel')
             if (!confirmed) return
           }
-          renderer.paste(text)
+          this.onSessionIntent({ kind: 'paste', payload: text })
         } catch (e) {
           console.warn('nocx: clipboard read failed (paste)', e)
         }
@@ -4446,6 +4439,10 @@ export class TerminalContent extends BasePaneContent {
       this.client.dispatcher.subscribe('block.grew', refreshBlockRows),
       this.client.dispatcher.subscribe('block.closed', onBlockClosed),
       this.client.dispatcher.subscribe('block.cleared', onBlockCleared),
+      this.client.onBlockOutputStart((anchor) => {
+        this.scrollback?.blockManager.setOutputStartAnchor(anchor.entryId, anchor)
+        this.scrollback?.outputAnchorChanged()
+      }),
     )
     const session = await this.openSessionWithHostKeyRecovery(signal, renderer)
 
@@ -4744,6 +4741,8 @@ export class TerminalContent extends BasePaneContent {
           // Latest-value metadata is consumed only with an accepted frame:
           // its title/cwd and cell rows belong to the same backend revision.
           this._resetFrameMetadataSession(session.sessionId)
+          this.scrollback?.blockManager.acceptOutputStartFrame(result.snapshot)
+          this.scrollback?.outputAnchorChanged()
           const bufferKind = result.snapshot.state.bufferKind
           if (this._bufferType !== bufferKind) this._applyBufferKind(bufferKind)
           if (reportedBufferKind !== bufferKind) {
@@ -4840,11 +4839,11 @@ export class TerminalContent extends BasePaneContent {
     // the runtime owns both (ADR-0065/0066).
     //
     // WHAT IS LEFT ON onData BELOW IS NOT THE PERSON'S KEYBOARD. xterm still
-    // receives this session's bytes (renderer.write), answers program queries
-    // and handles explicit client writes such as the grid's context-menu paste;
-    // those arrive here as bytes and go out as bytes. Shell submission no
-    // longer uses that path: its paste and Enter are session intents, serialized
-    // by the queue above. The remaining xterm writes are a separate cutover.
+    // receives this session's bytes (renderer.write) and may emit protocol
+    // replies or data if its hidden input element is activated. Normal pane
+    // input, pointer gestures, clipboard paste, snippets and shell submission
+    // use session intents; the serial queue above preserves their order. The
+    // renderer onData bridge remains for the separate xterm cutover.
     renderer.onData((data: string) => {
       // The integration gate stays where it was (nocx-ui8q6.1): the bytes that
       // still travel this way are the client's own writes, and a write to a
@@ -7782,7 +7781,6 @@ export class TerminalContent extends BasePaneContent {
       return { ok: true, where: 'editor' }
     }
     if (owner === 'none') return { ok: false, reason: 'no-owner' }
-    const renderer = this.renderer
     if (text.includes('\n')) {
       // Paste policy follows only a locally accepted backend frame. Its mode
       // bits were captured with the same revision as the visible screen; a
@@ -7816,8 +7814,9 @@ export class TerminalContent extends BasePaneContent {
       }
       line = resolved.line
     }
-    const delivered = renderer?.paste(line) ?? false
-    if (!delivered) return { ok: false, reason: 'write-failed' }
+    if (!this.onSessionIntent({ kind: 'paste', payload: line })) {
+      return { ok: false, reason: 'write-failed' }
+    }
     return { ok: true, where: 'pty' }
   }
 
@@ -7888,8 +7887,8 @@ export class TerminalContent extends BasePaneContent {
    *  same read; there is no "same read" here — every intent is one act, so
    *  whatever the person does next arrives on its own and is delivered on its
    *  own. That was the point of the tail, and it is preserved by construction. */
-  private onSessionIntent(intent: SessionIntent): void {
-    if (isAwaitingIntegration(this._integration, this._awaitsIntegration)) return
+  private onSessionIntent(intent: SessionIntent): boolean {
+    if (isAwaitingIntegration(this._integration, this._awaitsIntegration)) return false
     const held = this._heldRaw
     if (held !== null && !held.cancelled) {
       if (intent.kind === 'key' && intent.payload === INTERRUPT_KEY) {
@@ -7901,12 +7900,12 @@ export class TerminalContent extends BasePaneContent {
         // arrives as a fresh intent once this window is gone.
         held.keys = []
         held.cancelled = true
-        return
+        return true
       }
       held.keys.push(intent)
-      return
+      return true
     }
-    this.sendIntent(intent)
+    return this.sendIntent(intent)
   }
 
   /** Hand one intent to the session, which decides what it means.
@@ -7917,9 +7916,9 @@ export class TerminalContent extends BasePaneContent {
    *  failing — a closed socket, a refused call — and it is logged rather than
    *  swallowed: a keystroke that reached nobody is a fact the person is owed,
    *  and printing it to a console would be the silent version of it. */
-  private sendIntent(intent: SessionIntent): void {
+  private sendIntent(intent: SessionIntent): boolean {
     const session = this.session
-    if (!session) return
+    if (!session) return false
     const tail = this._intentQueue[this._intentQueue.length - 1]
     if (intent.kind === 'text' && tail?.session === session && tail.intent.kind === 'text') {
       this._intentQueue[this._intentQueue.length - 1] = {
@@ -7930,6 +7929,7 @@ export class TerminalContent extends BasePaneContent {
       this._intentQueue.push({ session, intent })
     }
     void this.drainIntentQueue()
+    return true
   }
 
   private async drainIntentQueue(): Promise<void> {
@@ -8679,11 +8679,7 @@ export class TerminalContent extends BasePaneContent {
    *  guess made before the runtime had spoken. An agent lane's parked run
    *  wait transfers to the block here, keyed by the submit token the
    *  attempt echoes. */
-  private _openAuthenticatedBlock(
-    renderer: TerminalRenderer,
-    attempt: ExecutionAttempt,
-    outputStart: number | undefined,
-  ): void {
+  private _openAuthenticatedBlock(renderer: TerminalRenderer, attempt: ExecutionAttempt): void {
     if (!this.scrollback) return
     const author =
       (attempt.submitId ? this.ledger?.recordForAttempt(attempt.id)?.author : undefined) ?? 'shell'
@@ -8691,7 +8687,6 @@ export class TerminalContent extends BasePaneContent {
       attempt.command || '(empty)',
       this._cwd,
       renderer.cursorLine(),
-      outputStart,
       author,
     )
     this.scrollback.blockManager.bindAttempt(attempt.id)
@@ -8798,8 +8793,8 @@ export class TerminalContent extends BasePaneContent {
         return true
       },
       sendLine: (d) => {
-        this.renderer?.paste(d)
-        this.session?.send('\r')
+        this.sendIntent({ kind: 'paste', payload: d })
+        this.sendIntent({ kind: 'key', payload: 'enter' })
       },
     })
     openedSubmitId = submitId

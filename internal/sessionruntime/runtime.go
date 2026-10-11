@@ -605,6 +605,13 @@ func (s *Session) Snapshot() Snapshot {
 // taken from inside it.
 func (s *Session) snapshotLocked() Snapshot {
 	rows, cur, identity, modes := s.screenStateLocked()
+	baseRow, err := s.activeBaseRowLocked(identity.AltScreen)
+	if err != nil {
+		// A failed boundary read cannot establish a truthful absolute row.
+		// Refuse this frame rather than publish a plausible but wrong base.
+		rows = nil
+		baseRow = 0
+	}
 	var title *string
 	if s.title != nil {
 		value := *s.title
@@ -625,6 +632,7 @@ func (s *Session) snapshotLocked() Snapshot {
 		PendingRendezvous: s.pendingRendezvousLocked(),
 		Completeness:      s.completeness,
 		Rows:              rows,
+		BaseRow:           baseRow,
 		Cursor:            cur,
 		Identity:          identity,
 		Modes:             modes,

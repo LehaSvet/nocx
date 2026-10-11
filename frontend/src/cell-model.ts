@@ -316,6 +316,9 @@ function refusalFor(frame: SessionFrame, currentRevision: number | null): FrameR
     typeof state !== 'object' ||
     (state.bufferKind !== 'normal' && state.bufferKind !== 'alternate') ||
     !/^[1-9][0-9]*$/.test(state.bufferInstance) ||
+    !Number.isSafeInteger(state.baseRow) ||
+    state.baseRow < 0 ||
+    state.baseRow + frame.geometry.rows > Number.MAX_SAFE_INTEGER ||
     typeof state.bracketedPaste !== 'boolean' ||
     typeof state.mouseTracking !== 'boolean' ||
     (state.title !== null && typeof state.title !== 'string') ||
