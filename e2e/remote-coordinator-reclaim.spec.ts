@@ -571,6 +571,14 @@ test('a remote helper build survives a fresh coordinator, names what it lost, an
     await first.locator(`.nocx-tab[aria-controls="${paneDomId}"]`).click()
     await promptReady(first)
 
+    // `promptReady` checks editor focus, not shell-integration readiness.
+    // While the accessible status is present, the product hides scrollback,
+    // so a running command block exists but cannot be seen. Settle that state
+    // before starting the fixture command.
+    await expect(commandPane.getByRole('status', { name: 'Checking this shell…' })).toHaveCount(0, {
+      timeout: 30_000,
+    })
+
     // ── the build starts ──────────────────────────────────────────────────
     //
     // The filler is sized from the HOST's own window, read out of its
