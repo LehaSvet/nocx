@@ -232,10 +232,10 @@ export interface SessionFake {
    *  pane behavior that does not scroll. */
   historyPage: ReturnType<typeof vi.fn>
   /** What a reclaim recovered before it attached (ipc.SessionRecovery), or
-   *  undefined for a handle that was opened rather than taken back. `size` is
-   *  the grid the BACKEND says the session runs at — the one the recovered
-   *  bytes were wrapped at (nocx-eidfb.3). */
-  recovered?: SessionRecovery
+   *  null for a fresh handle that was opened rather than taken back. `size`
+   *  is the grid the BACKEND says the session runs at — the one the recovered
+   *  bytes were wrapped at (nocx-eidfb.3). Mirrors SessionHandle exactly. */
+  recovered: SessionRecovery | null
   /** Bytes waiting for a data callback, flushed synchronously the moment one
    *  is registered — exactly what WSClient.onSessionData does with what
    *  reclaimSession queued ahead of the live stream (ipc.ts). A fixture that
@@ -279,6 +279,7 @@ export function makeSession(overrides?: Partial<SessionFake>): SessionFake {
     desiredMode: 'script',
     parent: null,
     awaitsIntegration: false,
+    recovered: null,
     send: vi.fn(),
     sendResize: vi.fn<(size: SessionSize) => boolean>(),
     intent: vi.fn(() => Promise.resolve({ state: 'executed', bytesWritten: 1, fenceAfter: 0 })),

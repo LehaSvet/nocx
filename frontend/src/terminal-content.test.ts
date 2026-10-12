@@ -16141,7 +16141,7 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
   /** The pane's own reclaim: a session handle carrying what the claim
    *  recovered, handed back by the thunk PaneManager supplies. */
   function reclaiming(recovered: SessionRecovery | null) {
-    const session = makeSession({ recovered: recovered ?? undefined })
+    const session = makeSession({ recovered })
     return {
       session,
       hooks: { adoptSession: () => Promise.resolve(asSessionHandleForTest(session)) },
