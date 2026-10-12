@@ -191,18 +191,6 @@ func (r *fakeRecorder) firstOffset() uint64 {
 	return r.firstAt
 }
 
-func (r *fakeRecorder) setReadFailure(err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.readErr = err
-}
-
-func (r *fakeRecorder) readCount() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.reads
-}
-
 func (r *fakeRecorder) Stance() content.SessionOutputStance {
 	r.mu.Lock()
 	defer r.mu.Unlock()

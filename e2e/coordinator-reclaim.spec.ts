@@ -48,7 +48,7 @@
  * running mark. Those are what say "this tab is the pane that never stopped",
  * and they are asserted on screen. The BYTES and the MARKERS are read off the
  * backend's recording — which is not a second source: it is exactly what the
- * reclaim feeds into the pane, read through `session.output`, the method the
+ * reclaim renders the backend-owned screen and history, while recovery metadata is read through `session.recoveryStatus`, the method the
  * renderer itself uses for the same purpose.
  *
  * WHY THIS SPEC OWNS ITS BACKEND. It closes and reopens a client against one
@@ -134,56 +134,29 @@ async function liveSessions(ep: BackendEndpoint): Promise<LiveSession[]> {
   return result.sessions
 }
 
-interface Recording {
+interface RecoveryStatus {
   produced: number
-  runs: { offset: number; body: string }[]
+  gaps: { start: number; end: number; reason: string }[]
 }
 
-/** What the backend has recorded for this session from `from` onward, and how
- *  far its stream has got. `produced` is the recording's end offset, in the
- *  same coordinate the ring and the ack speak. */
-function recording(ep: BackendEndpoint, live: LiveSession, from: number): Promise<Recording> {
-  return ask<Recording>(ep, 'session.output', {
+/** Read the durable output frontier and gap metadata, never terminal bytes. */
+function recoveryStatus(ep: BackendEndpoint, live: LiveSession): Promise<RecoveryStatus> {
+  return ask<RecoveryStatus>(ep, 'session.recoveryStatus', {
     sessionId: live.sessionId,
     instanceId: live.instanceId,
     sessionEpoch: live.sessionEpoch,
-    from,
   })
 }
 
-/** The recording, whole, decoded, in stream order. Used once — after the
- *  return — to count what happened while nothing was attached. */
-async function recordedText(ep: BackendEndpoint, live: LiveSession): Promise<string> {
-  let text = ''
-  let at = 0
-  for (;;) {
-    const page = await recording(ep, live, at)
-    let cursor = at
-    for (const run of page.runs) {
-      text += Buffer.from(run.body, 'base64').toString('utf8')
-      cursor = run.offset + Buffer.from(run.body, 'base64').length
-    }
-    if (cursor <= at || cursor >= page.produced) return text
-    at = cursor
-  }
+async function screenText(page: Page): Promise<string> {
+  return (await page.locator('.pane.active .terminal-live-grid').textContent()) ?? ''
 }
 
-/** Every marker index the recording carries, in the order it carries them. */
+/** Every marker index currently present on the painted screen. */
 function markersIn(text: string): number[] {
   return [...text.matchAll(/NOCXMARK-(\d{3})/g)].map((m) => Number(m[1]))
 }
 
-/**
- * The highest marker the recording has reached, or -1 before the first one.
- *
- * THE INDEX, NOT THE COUNT, and that distinction is the whole of condition 2.
- * The index is the command's own counter and advances once a second no matter
- * what anybody records; a count is a property of the RECORDING, which AD-10
- * permits to have holes and which `session.output` reports gaps for. Asserting
- * a contiguous count would be asserting that the recorder is lossless — a
- * different claim, owned by nocx-22k1c, and one this test would fail for the
- * wrong reason.
- */
 function lastMarker(text: string): number {
   const seen = markersIn(text)
   return seen.length === 0 ? -1 : Math.max(...seen)
@@ -257,11 +230,11 @@ test.describe('the coordinator outlives its window', () => {
     // from. Polled on the recording rather than on the screen, for the reason
     // in the header: the grid is a canvas.
     await expect
-      .poll(async () => lastMarker(await recordedText(ep, live)), { timeout: 60_000 })
+      .poll(async () => lastMarker(await screenText(first)), { timeout: 60_000 })
       .toBeGreaterThanOrEqual(0)
 
-    const producedAtDetach = (await recording(ep, live, 0)).produced
-    const markerAtDetach = lastMarker(await recordedText(ep, live))
+    const producedAtDetach = (await recoveryStatus(ep, live)).produced
+    const markerAtDetach = lastMarker(await screenText(first))
 
     // ── the window closes, ENTIRELY ───────────────────────────────────────
     await first.context().close()
@@ -281,7 +254,7 @@ test.describe('the coordinator outlives its window', () => {
     // A `sleep 20` would be the same number on a fast machine and the wrong
     // one on a slow one, which is exactly the test AGENTS.md forbids.
     await expect
-      .poll(async () => (await recording(ep, live, producedAtDetach)).produced - producedAtDetach, {
+      .poll(async () => (await recoveryStatus(ep, live)).produced - producedAtDetach, {
         timeout: 240_000,
         intervals: [1_000],
       })
@@ -318,7 +291,7 @@ test.describe('the coordinator outlives its window', () => {
     // many seconds the process was RUNNING with nobody attached. A process
     // that had been suspended and resumed, or one whose pane merely rendered
     // afterwards, cannot move it.
-    const text = await recordedText(ep, live)
+    const text = await screenText(second)
     const markers = markersIn(text)
     const markerAtReturn = lastMarker(text)
     // In stream order, which is what says these are one process's output and
@@ -333,7 +306,7 @@ test.describe('the coordinator outlives its window', () => {
     // AND THE PERSON CAN SEE IT. The epic's sentence is "find that same pane
     // STILL RUNNING", so the fresh window has to show the work, not merely
     // hold the session id: the command block is back, with its header and its
-    // running mark, drawn from the recording the reclaim fed into the pane.
+    // running mark, drawn from backend screen frames and live-history pages.
     await expect(second.locator(RUNNING_BLOCK).filter({ hasText: 'NOCXMARK' })).toBeVisible({
       timeout: 120_000,
     })
@@ -341,7 +314,7 @@ test.describe('the coordinator outlives its window', () => {
     // Still running THROUGH the reclaim, not merely up to it: markers the
     // session had not printed when the fresh client attached keep arriving.
     await expect
-      .poll(async () => lastMarker(await recordedText(ep, live)), {
+      .poll(async () => lastMarker(await screenText(second)), {
         timeout: 60_000,
         intervals: [1_000],
       })

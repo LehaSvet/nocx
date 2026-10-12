@@ -1,4 +1,8 @@
-import type { CommandMarker } from './renderers/types'
+export interface CommandMarker {
+  kind: 'A' | 'B' | 'C' | 'D'
+  exitCode?: number
+  nocxEnv?: string
+}
 
 /**
  * Parses an OSC 133 payload into a CommandMarker. Returns null for invalid

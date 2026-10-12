@@ -46,7 +46,7 @@ const serverBin = () => readStand().server
 
 const TITLE = '.nocx-tab-title'
 const INPUT = '.pane.active .nocx-editor-input'
-const GRID = '.pane.active .xterm-live-container'
+const GRID = '.pane.active .terminal-live-container'
 const FREEZE = '.pane.active .nocx-freeze-frame'
 const RUNNING_BLOCK = '.pane.active .cmd-block.cmd-block-running'
 const SETTINGS_AI_NAV = '.ui-grouped-nav__item[data-item="endpoints"]'
@@ -746,7 +746,7 @@ test.describe('asking about a full-screen program without leaving it (nocx-7l4ex
     // rides with the block it belongs to, and the freeze empties it in place
     // rather than moving it (nocx-hp8p2.8).
     expect(seating!.first).toBeGreaterThan(seating!.command)
-    for (const cls of seating!.between) expect(cls).toContain('xterm-live-container')
+    for (const cls of seating!.between) expect(cls).toContain('terminal-live-container')
     expect(seating!.second).toBe(seating!.first + 1)
 
     await expect

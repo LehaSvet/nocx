@@ -43,8 +43,6 @@ export interface CommandRecord {
   exitCode: number | null
   startedAt: number | null
   endedAt: number | null
-  /** Live marker line accessor — read fresh, never cached. */
-  readonly lineOf: () => number | undefined
   disposed: boolean
 }
 
@@ -106,18 +104,11 @@ export class CommandLedger {
    * @param command The app-owned submitted command text (from the DOM editor).
    * @param cwd Current working directory at submission time.
    * @param host Empty for local shells, hostname for SSH.
-   * @param lineOf An opaque accessor backed by a live xterm IMarker.
    * @param author The submitting target's author — minted at submit, by
    *   the target that submits, and required so no submit path can forget
    *   it and silently attribute a command to the human (design §3.1).
    */
-  open(
-    command: string,
-    cwd: string,
-    host: string,
-    lineOf: () => number | undefined,
-    author: CommandAuthor,
-  ): CommandRecord {
+  open(command: string, cwd: string, host: string, author: CommandAuthor): CommandRecord {
     if (!command) throw new Error('command must not be empty')
 
     const rec: CommandRecord = {
@@ -131,7 +122,6 @@ export class CommandLedger {
       endedAt: null,
       author,
       submitId: this._mintSubmitId(),
-      lineOf,
       disposed: false,
     }
     this._records.push(rec)

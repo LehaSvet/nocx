@@ -18,12 +18,11 @@
 // a test harness has no composition root, and it should render, not fail.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import type { TerminalRenderer } from '../renderers/types'
 import type { ActiveOrigin } from '../pane-content'
 import { createLinkOpener, type LinkOpenDeps, type LinkOpener } from './open'
 import { trackLinkModifier, type ArmedTracker } from './armed'
 import { attachLinkClicks } from './surface'
-import { createLivePolicy } from './live'
+import { createLivePolicy, type LivePolicy } from './live'
 
 // No re-export barrel: the modules below are imported directly by the two
 // places that need them (blocks.ts asks decorate.ts, the renderer asks
@@ -47,17 +46,14 @@ export function registerTerminalLinks(deps: LinkOpenDeps): void {
   }
 }
 
-/**
- * Give one tab both halves of the feature: ⌘-click on the frozen DOM
- * scrollback, and the link policy for the live xterm grid.
- *
- * Returns a detach the pane MUST call on dispose — the listeners and the
- * engine registration both close over this tab's origin.
- */
+/** One tab's frozen DOM and painter-owned live screen share the same
+ *  grammar and link opener. The live reader supplies the row text and UTF-16
+ *  offset under a click, so this path does not depend on a terminal emulator. */
 export function attachTerminalLinks(
   scrollbackRoot: HTMLElement,
-  renderer: TerminalRenderer,
+  liveSurface: HTMLElement,
   origin: () => Omit<ActiveOrigin, 'paneId'> | null,
+  lineAtPoint: (event: MouseEvent) => { text: string; offset: number } | null,
 ): () => void {
   const w = wiring
   if (w === null) return () => {}
@@ -66,11 +62,20 @@ export function attachTerminalLinks(
     origin,
     armed: w.armed,
   })
-  renderer.setLinkPolicy?.(
-    createLivePolicy({ opener: w.opener, origin, armed: w.armed, notify: w.notify }),
-  )
+  const policy: LivePolicy = createLivePolicy({
+    opener: w.opener,
+    origin,
+    armed: w.armed,
+    notify: w.notify,
+  })
+  const onClick = (event: MouseEvent): void => {
+    if (!(event.metaKey || event.ctrlKey)) return
+    const point = lineAtPoint(event)
+    if (point !== null) policy.activateAt(point.text, point.offset)
+  }
+  liveSurface.addEventListener('click', onClick)
   return () => {
     detachClicks()
-    renderer.setLinkPolicy?.(null)
+    liveSurface.removeEventListener('click', onClick)
   }
 }

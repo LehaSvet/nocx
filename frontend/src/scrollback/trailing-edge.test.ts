@@ -156,7 +156,7 @@ describe('rows are full width, and the gutter lives in them (nocx-9bpeq.8)', () 
     // the pane's edge while every other row kept the gutter.
     for (const selector of [
       '.cmd-block',
-      '.xterm-live-container',
+      '.terminal-live-container',
       '.scrollback-restore-boundary',
     ]) {
       for (const property of INLINE) expect(shipped(selector, property)).toBeNull()
@@ -170,14 +170,14 @@ describe('rows are full width, and the gutter lives in them (nocx-9bpeq.8)', () 
     // freezes into. `padding-block` only ever touches top/bottom, whatever
     // its own value — the inline inset stays whatever `.scrollback-inner > *`
     // (fact 3 above) already gave it.
-    expect(shipped('.xterm-live-container.live-running', 'padding')).toBeNull()
+    expect(shipped('.terminal-live-container.live-running', 'padding')).toBeNull()
     // The bottom half grew by --terminal-block-trailing-space (nocx-9bpeq.23,
     // round 2): a frozen block pays that space OUTSIDE `.cmd-output`, on
     // `.cmd-block` itself; the running region has no such outer box — it IS
     // the body — so its own bottom padding is where the same total is paid,
     // or the freeze reads as a 16px shrink. Only the bottom changed: the top
     // pad is untouched, so the first output row's baseline does not move.
-    expect(shipped('.xterm-live-container.live-running', 'padding-block')).toBe(
+    expect(shipped('.terminal-live-container.live-running', 'padding-block')).toBe(
       'var(--cmd-output-pad-top)\n    calc(var(--cmd-output-pad-bottom) + var(--terminal-block-trailing-space))',
     )
   })

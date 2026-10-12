@@ -23,7 +23,7 @@
  *  2. Test 3 asserts both the old and new port/token and repeats the drop/return
  *     cycle three times, then counts the mounted sidebar and open dialogs.
  *  3. Test 4 cuts a fault proxy while its daemon stays alive, and reads the
- *     terminal recording through session.output because the terminal grid is a
+ *     terminal state through recovery metadata because the terminal grid is a
  *     canvas and DOM text cannot prove scrollback identity.
  *  4. Test 6 supplies each exact FailureKind message/remedy from the backend
  *     source. The server-binary remedy is platform-specific; this run is Linux.
@@ -133,11 +133,6 @@ interface LiveSession {
   paneId: string | null
 }
 
-interface Recording {
-  produced: number
-  runs: { offset: number; body: string }[]
-}
-
 async function oneLiveSession(endpoint: BackendEndpoint): Promise<LiveSession> {
   const result = await controlCall<{ sessions: LiveSession[] }>(endpoint, 'sessions.live', {})
   if (result.sessions.length !== 1) {
@@ -146,15 +141,17 @@ async function oneLiveSession(endpoint: BackendEndpoint): Promise<LiveSession> {
   return result.sessions[0]
 }
 
-async function recording(endpoint: BackendEndpoint, live: LiveSession): Promise<Buffer> {
-  const result = await controlCall<Recording>(endpoint, 'session.output', {
+async function recoveryFrontier(endpoint: BackendEndpoint, live: LiveSession): Promise<number> {
+  const status = await controlCall<{ produced: number }>(endpoint, 'session.recoveryStatus', {
     sessionId: live.sessionId,
     instanceId: live.instanceId,
     sessionEpoch: live.sessionEpoch,
-    from: 0,
   })
-  const chunks = result.runs.map((run) => Buffer.from(run.body, 'base64'))
-  return Buffer.concat(chunks)
+  return status.produced
+}
+
+async function liveScreenText(page: Page): Promise<string> {
+  return (await page.locator('.pane.active .terminal-live-grid').textContent()) ?? ''
 }
 
 const FAILURE_CASES = [
@@ -324,32 +321,28 @@ test.describe('connection overlay survives backend loss', () => {
     await page.keyboard.press('Enter')
 
     const live = await oneLiveSession(current)
-    const beforeMarker = Buffer.from('NOCX_SCROLLBACK_BEFORE')
-    const duringMarker = Buffer.from('NOCX_SCROLLBACK_DURING')
     await expect
-      .poll(async () => (await recording(current, live)).includes(beforeMarker))
-      .toBe(true)
-    const before = await recording(current, live)
+      .poll(async () => liveScreenText(page), { timeout: 20_000 })
+      .toContain('NOCX_SCROLLBACK_BEFORE')
+    const before = await recoveryFrontier(current, live)
 
-    // Hold all reconnect attempts in the proxy so the following recording
-    // growth is unambiguously produced while the daemon remains alive but the
-    // page is disconnected.
+    // Hold all reconnect attempts in the proxy so the following recovery
+    // frontier growth is unambiguously produced while the daemon remains alive
+    // but the page is disconnected. The live screen itself is asserted after
+    // reconnection through the painter-owned DOM surface.
     proxy.blackhole()
     proxy.cut()
     await expect(overlay(page)).toBeVisible()
     await expect
-      .poll(async () => {
-        const output = await recording(current, live)
-        return output.length > before.length && output.includes(duringMarker)
-      })
-      .toBe(true)
+      .poll(async () => (await recoveryFrontier(current, live)) - before, { timeout: 30_000 })
+      .toBeGreaterThan(0)
 
     proxy.pass()
     await expect(overlay(page)).toHaveAttribute('data-state', 'online')
+    await expect
+      .poll(async () => liveScreenText(page), { timeout: 30_000 })
+      .toContain('NOCX_SCROLLBACK_DURING')
 
-    const after = await recording(current, live)
-    expect(after.subarray(0, before.length).equals(before)).toBe(true)
-    expect(after.includes(duringMarker)).toBe(true)
     await expect(page.locator('#sidebar > .ui-sidebar-view')).toHaveCount(1)
     await expect(page.getByRole('toolbar', { name: 'Activity bar' })).toBeVisible()
     await expect(page.locator('.ui-sidebar-view__header')).toBeVisible()

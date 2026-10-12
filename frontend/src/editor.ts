@@ -1,7 +1,7 @@
 // Passive DOM command editor (ADR-0004 §3, ADR-0010). Holds text + selection
 // only; a registered action decides where a submit goes. Keyboard routing
 // to/from the PTY is by FOCUS: while shown the editor captures keys; while
-// hidden the xterm has focus and keys flow to the PTY as usual.
+// hidden the terminal input surface has focus and key intents flow to the session.
 //
 // The input surface is a CodeMirror 6 EditorView mounted inside the
 // `.nocx-editor` card (ADR-0010 §1), which since the mockup pass

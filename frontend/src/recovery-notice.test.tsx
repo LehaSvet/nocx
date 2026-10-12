@@ -20,9 +20,9 @@ import type { SessionRecovery } from './ipc'
 
 function recovery(over: Partial<SessionRecovery> = {}): SessionRecovery {
   return {
-    bytes: 0,
+    produced: 0,
     gaps: [],
-    size: { cols: 80, rows: 24, xpixel: 0, ypixel: 0 },
+
     statusUnavailable: false,
     ...over,
   }

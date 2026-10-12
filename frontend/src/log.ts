@@ -95,7 +95,7 @@ export function isDecisionTracing(): boolean {
 
 /** The stable prefix every decision trace carries — filter the devtools
  *  console on exactly this string to see the whole decision stream. */
-export const DECISION_PREFIX = 'nocx:decide'
+const DECISION_PREFIX = 'nocx:decide'
 
 /** Emit one decision trace through the existing seam (Wails FFI, or the
  *  console when no runtime). No-op without even building the message while

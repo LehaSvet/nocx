@@ -60,7 +60,7 @@ export function paintRow(
   // here recomputes it. A spacerTail (width 3) is skipped: the wide cell
   // before it already stands in its column (span 2), and spelling it too
   // pushed every later cell one column right of the model and the mapping.
-  // The frozen path's walk steps over xterm's spacer the same way. A
+  // The frozen path's walk steps over the same blank spacer cell. A
   // spacerHead (width 4) is its own column, and paints as a blank.
   const cells: GridCell<Style>[] = row.cells
     .filter((cell) => cell.width !== 3)

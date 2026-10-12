@@ -4,7 +4,7 @@
 // free and matches termic's palette.
 //
 // The predicate is ONE thing, owned here, read by both keyboard boundaries
-// — xterm's custom key handler (renderers/xterm.ts) and the editor's
+// — terminal input and the editor's
 // arbiter chain (terminal-content.ts) — which then delegate to the SAME
 // opener (AD-8: one owner per behaviour). A second derivation of "is this
 // the chord" would be how the two boundaries start disagreeing about it.

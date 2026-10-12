@@ -724,17 +724,17 @@ describe('block selection model (P1-7, P1-8)', () => {
 describe('BlockManager', () => {
   let manager: BlockManager
   let inner: HTMLElement
-  let xtermContainer: HTMLElement
+  let liveContainer: HTMLElement
   let fixedNow: number
 
   beforeEach(() => {
     _resetThemeState()
     inner = document.createElement('div')
-    xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
+    liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
     document.body.appendChild(inner)
     fixedNow = 1000
-    manager = new BlockManager(inner, xtermContainer, {
+    manager = new BlockManager(inner, liveContainer, {
       now: () => fixedNow,
       snapshotStore: freshStore(),
     })
@@ -785,10 +785,10 @@ describe('BlockManager', () => {
         destroy: () => {},
       }
       localInner = document.createElement('div')
-      const localXterm = document.createElement('div')
-      localInner.appendChild(localXterm)
+      const localLive = document.createElement('div')
+      localInner.appendChild(localLive)
       document.body.appendChild(localInner)
-      localManager = new BlockManager(localInner, localXterm, {
+      localManager = new BlockManager(localInner, localLive, {
         now: () => fixedNow,
         snapshotStore: freshStore(),
         appVisibility,
@@ -846,15 +846,15 @@ describe('BlockManager', () => {
     expect(rec.command).toBe('ls -la')
     expect(rec.status).toBe('running')
     expect(rec.id).toBe(1)
-    expect(inner.children.length).toBe(2) // running block + xterm container
+    expect(inner.children.length).toBe(2) // running block + live container
     expect(inner.children[0].classList.contains('cmd-block-running')).toBe(true)
     expect(manager.runningBlock).toBe(rec)
   })
 
-  it('inserts the running block before the xterm container', () => {
+  it('inserts the running block before the live container', () => {
     manager.startBlock('cmd', '~', 5)
     expect(inner.children[0]).toBe(manager.blocks[0]?.el)
-    expect(inner.children[1]).toBe(xtermContainer)
+    expect(inner.children[1]).toBe(liveContainer)
   })
 
   it('finalizes orphaned running block on next start', () => {
@@ -872,13 +872,13 @@ describe('BlockManager', () => {
     // between the start and the next focus call was lost (CI run
     // 36105113564: `read x` got an empty line for a typed `hello`).
     const gridInput = document.createElement('textarea')
-    xtermContainer.appendChild(gridInput)
+    liveContainer.appendChild(gridInput)
     gridInput.focus()
     expect(document.activeElement).toBe(gridInput)
 
     manager.startBlock('read x', '~', 0)
 
-    expect(xtermContainer.previousElementSibling).toBe(manager.runningBlock?.el)
+    expect(liveContainer.previousElementSibling).toBe(manager.runningBlock?.el)
     expect(document.activeElement).toBe(gridInput)
   })
 
@@ -886,7 +886,7 @@ describe('BlockManager', () => {
     // The other half: the region is re-seated without claiming a focus it
     // never had — the editor, a menu, anything outside it keeps the keys.
     const gridInput = document.createElement('textarea')
-    xtermContainer.appendChild(gridInput)
+    liveContainer.appendChild(gridInput)
     const elsewhere = document.createElement('input')
     document.body.appendChild(elsewhere)
     elsewhere.focus()
@@ -930,7 +930,7 @@ describe('BlockManager', () => {
 
     expect(inner.querySelectorAll('.cmd-block').length).toBe(0)
     expect(inner.querySelector('.scrollback-restore-boundary')).toBeNull()
-    expect(inner.children.length).toBe(1) // only the xterm container remains
+    expect(inner.children.length).toBe(1) // only the live container remains
   })
 
   it('restorePast with nothing to draw adds no boundary — an empty past is not a past', () => {
@@ -1030,7 +1030,7 @@ describe('BlockManager', () => {
     manager.startBlock('test', '~', 0)
     expect(inner.children.length).toBe(2)
     manager.clearAll()
-    expect(inner.children.length).toBe(1) // only xterm container remains
+    expect(inner.children.length).toBe(1) // only live container remains
     expect(manager.blocks.length).toBe(0)
     expect(manager.runningBlock).toBeNull()
   })
@@ -1562,15 +1562,15 @@ describe('freezeBlock entered presentation (N6, nocx-y5v5)', () => {
 describe('BlockManager entered freeze (N6, nocx-y5v5)', () => {
   let manager: BlockManager
   let inner: HTMLElement
-  let xtermContainer: HTMLElement
+  let liveContainer: HTMLElement
 
   beforeEach(() => {
     _resetThemeState()
     inner = document.createElement('div')
-    xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
+    liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
     document.body.appendChild(inner)
-    manager = new BlockManager(inner, xtermContainer, {
+    manager = new BlockManager(inner, liveContainer, {
       now: () => 1000,
       snapshotStore: freshStore(),
     })
@@ -1628,15 +1628,15 @@ describe('BlockManager entered freeze (N6, nocx-y5v5)', () => {
 describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh.7)', () => {
   let manager: BlockManager
   let inner: HTMLElement
-  let xtermContainer: HTMLElement
+  let liveContainer: HTMLElement
 
   beforeEach(() => {
     _resetThemeState()
     inner = document.createElement('div')
-    xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
+    liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
     document.body.appendChild(inner)
-    manager = new BlockManager(inner, xtermContainer, {
+    manager = new BlockManager(inner, liveContainer, {
       now: () => 1000,
       snapshotStore: freshStore(),
     })
@@ -1884,15 +1884,15 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
 describe("the block's close: the completion and the backend's block.closed (nocx-2v80t.3.27)", () => {
   let manager: BlockManager
   let inner: HTMLElement
-  let xtermContainer: HTMLElement
+  let liveContainer: HTMLElement
 
   beforeEach(() => {
     _resetThemeState()
     inner = document.createElement('div')
-    xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
+    liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
     document.body.appendChild(inner)
-    manager = new BlockManager(inner, xtermContainer, {
+    manager = new BlockManager(inner, liveContainer, {
       now: () => 1000,
       snapshotStore: freshStore(),
     })
@@ -2077,7 +2077,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
 
   it('onDeferredFreeze fires when block.closed closes a block whose completion was waiting', () => {
     const onDeferredFreeze = vi.fn()
-    manager = new BlockManager(inner, xtermContainer, {
+    manager = new BlockManager(inner, liveContainer, {
       now: () => 1000,
       snapshotStore: freshStore(),
       onDeferredFreeze,
@@ -2149,17 +2149,17 @@ function newManager(
   // applier that opens the thinking notes already on screen walks the
   // document, and a detached tree is not on screen.
   document.body.appendChild(inner)
-  const xtermContainer = document.createElement('div')
-  // The manager inserts blocks BEFORE the xterm container, so the
+  const liveContainer = document.createElement('div')
+  // The manager inserts blocks BEFORE the live container, so the
   // container must already be a child (the mount path attaches both).
-  inner.appendChild(xtermContainer)
-  const manager = new BlockManager(inner, xtermContainer, {
+  inner.appendChild(liveContainer)
+  const manager = new BlockManager(inner, liveContainer, {
     snapshotStore: freshStore(),
     sessionName,
     answerText,
     toolResult,
   })
-  return { inner, xtermContainer, manager }
+  return { inner, liveContainer, manager }
 }
 
 describe('BlockManager.addAnswerBlock', () => {
@@ -2529,22 +2529,22 @@ describe('BlockManager.addAnswerBlock', () => {
 // одинаковое" — the behavior should be the same.
 describe('the working stand-in (nocx-vnirv.1)', () => {
   it('shows a running command indicator immediately', () => {
-    const { xtermContainer, inner, manager } = newManager()
+    const { liveContainer, inner, manager } = newManager()
     manager.startBlock('make', '~', 0)
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
     manager.dispose()
     inner.remove()
   })
 
   it('the turn and the running command wear the SAME indicator — one class, one owner', () => {
-    const { inner, xtermContainer, manager } = newManager()
+    const { inner, liveContainer, manager } = newManager()
     const h = manager.addAnswerBlock('q', '/')
     manager.startBlock('make', '~', 0)
     expect(h.el.querySelector('.cmd-answer-typing')).not.toBeNull()
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
 
     const turn = h.el.querySelector('.cmd-answer-typing')
-    const command = xtermContainer.querySelector('.cmd-answer-typing')
+    const command = liveContainer.querySelector('.cmd-answer-typing')
     expect(command).not.toBeNull()
     // AD-8: NOT two indicators that merely look alike — the same class.
     expect(command!.className).toBe(turn!.className)
@@ -2553,68 +2553,68 @@ describe('the working stand-in (nocx-vnirv.1)', () => {
   })
 
   it('a running command shows the stand-in immediately until the first byte', () => {
-    const { xtermContainer, inner, manager } = newManager()
+    const { liveContainer, inner, manager } = newManager()
     manager.startBlock('sleep 5', '~', 0)
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
 
     // The seam: the first parsed output byte stands it down. Idempotent —
     // every later chunk calls the seam again and nothing changes.
     manager.noteCommandOutput()
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).toBeNull()
     manager.noteCommandOutput()
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).toBeNull()
     manager.dispose()
     inner.remove()
   })
 
   it('a command that completes with no output leaves no dots behind', () => {
-    const { xtermContainer, inner, manager } = newManager()
+    const { liveContainer, inner, manager } = newManager()
     manager.startBlock('true', '~', 0)
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
     closeRunningBlock(manager)
 
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).toBeNull()
     manager.dispose()
     inner.remove()
   })
 
   it('a terminal freeze removes an indicator after output has started', () => {
-    const { xtermContainer, inner, manager } = newManager()
+    const { liveContainer, inner, manager } = newManager()
     manager.startBlock('sleep 5', '~', 0)
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
     closeRunningBlock(manager)
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).toBeNull()
     manager.dispose()
     inner.remove()
   })
 
   it('an abandoned command removes the stand-in too — cancellation is a close', () => {
-    const { xtermContainer, inner, manager } = newManager()
+    const { liveContainer, inner, manager } = newManager()
     manager.startBlock('ssh host', '~', 0)
     manager.bindAttempt('att-1')
     manager.abandonAttempt({ id: 'att-1', state: 'unknown' } as ExecutionAttempt, 6)
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).toBeNull()
     manager.dispose()
     inner.remove()
   })
 
   it('clearAll removes the stand-in with everything else', () => {
-    const { xtermContainer, inner, manager } = newManager()
+    const { liveContainer, inner, manager } = newManager()
     manager.startBlock('make', '~', 0)
     manager.clearAll()
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).toBeNull()
     manager.dispose()
     inner.remove()
   })
 
   it('a second command replaces the first stand-in rather than reviving it', () => {
-    const { xtermContainer, inner, manager } = newManager()
+    const { liveContainer, inner, manager } = newManager()
     manager.startBlock('one', '~', 0)
     manager.startBlock('two', '~', 1)
 
-    expect(xtermContainer.querySelectorAll('.cmd-answer-typing').length).toBe(1)
+    expect(liveContainer.querySelectorAll('.cmd-answer-typing').length).toBe(1)
     manager.dispose()
     inner.remove()
   })
@@ -2682,11 +2682,11 @@ describe('the working stand-in (nocx-vnirv.1)', () => {
     // controller measures and sizes, and that box is exactly the frozen
     // body that replaces the region. Nothing moves at the swap.
     const css = readFileSync(resolve(import.meta.dirname ?? '.', '..', 'style.css'), 'utf8')
-    const container = css.match(/\.xterm-live-container\.live-running\s*\{([^}]*)\}/)
+    const container = css.match(/\.terminal-live-container\.live-running\s*\{([^}]*)\}/)
     expect(container).not.toBeNull()
     expect(container![1]).toContain('position: relative')
     const standIn = css.match(
-      /\.xterm-live-container\.live-running > \.cmd-answer-typing\s*\{([^}]*)\}/,
+      /\.terminal-live-container\.live-running > \.cmd-answer-typing\s*\{([^}]*)\}/,
     )
     expect(standIn).not.toBeNull()
     expect(standIn![1]).toContain('position: absolute')
@@ -2792,12 +2792,12 @@ describe('the block kind owns the grammar (nocx-ex636)', () => {
     answerText?: (entryId: string) => Promise<string | null>,
   ) {
     const inner = document.createElement('div')
-    const xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
+    const liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
     // Attached to the document like the real scrollback: the ⋮ menu renders
     // at body level and is found from there.
     document.body.appendChild(inner)
-    const manager = new BlockManager(inner, xtermContainer, {
+    const manager = new BlockManager(inner, liveContainer, {
       snapshotStore: freshStore(),
       sessionName,
       answerText,
@@ -3241,9 +3241,9 @@ describe('no finished block renders an ask control (nocx-4wtlh)', () => {
     expect(running.querySelector('.cmd-ask-btn')).toBeNull()
 
     const inner = document.createElement('div')
-    const xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
-    const manager = new BlockManager(inner, xtermContainer, { snapshotStore: freshStore() })
+    const liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
+    const manager = new BlockManager(inner, liveContainer, { snapshotStore: freshStore() })
     manager.startBlock('ls', '~', 0)
     const frozen = closeRunningBlock(manager)
     expect(frozen).not.toBeNull()
@@ -3255,10 +3255,10 @@ describe('no finished block renders an ask control (nocx-4wtlh)', () => {
 
 it('closes every body-level overflow menu when its pane is hidden', () => {
   const inner = document.createElement('div')
-  const xtermContainer = document.createElement('div')
-  inner.appendChild(xtermContainer)
+  const liveContainer = document.createElement('div')
+  inner.appendChild(liveContainer)
   document.body.appendChild(inner)
-  const manager = new BlockManager(inner, xtermContainer, { snapshotStore: freshStore() })
+  const manager = new BlockManager(inner, liveContainer, { snapshotStore: freshStore() })
   try {
     manager.startBlock('ls', '~', 0)
     const frozen = closeRunningBlock(manager)
@@ -3303,9 +3303,9 @@ it('blockCommandText reads the header, and the recorded command when the ack lan
 
 it('selectBlock is a non-toggle single-select: the id and the class move together', () => {
   const inner = document.createElement('div')
-  const xtermContainer = document.createElement('div')
-  inner.appendChild(xtermContainer)
-  const manager = new BlockManager(inner, xtermContainer, { snapshotStore: freshStore() })
+  const liveContainer = document.createElement('div')
+  inner.appendChild(liveContainer)
+  const manager = new BlockManager(inner, liveContainer, { snapshotStore: freshStore() })
   manager.startBlock('a', '~', 0)
   const a = closeRunningBlock(manager)!.el
   manager.startBlock('b', '~', 0)
@@ -3450,10 +3450,10 @@ describe('the header states an outcome only when it is news (nocx-9bpeq.6, nocx-
    *  test chose rather than however long jsdom took. */
   function newManager(now: () => number = () => 0) {
     const inner = document.createElement('div')
-    const xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
+    const liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
     document.body.appendChild(inner)
-    const manager = new BlockManager(inner, xtermContainer, {
+    const manager = new BlockManager(inner, liveContainer, {
       snapshotStore: freshStore(),
       now,
     })
@@ -4449,10 +4449,10 @@ describe('backend-owned block rows', () => {
 
   function newManager() {
     const inner = document.createElement('div')
-    const xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
+    const liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
     document.body.appendChild(inner)
-    const manager = new BlockManager(inner, xtermContainer, {
+    const manager = new BlockManager(inner, liveContainer, {
       snapshotStore: freshStore(),
       paintStoredRows: (block, rows) =>
         paintStoredRows(block, rows, { metric: null, palette: DEFAULT_SNAPSHOT }),

@@ -15,10 +15,7 @@ import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { cleanup, fireEvent, render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 // test-support must initialize before the static './tabs' import: its
-// createRendererMock backs the hoisted xterm mock, and tabs transitively
-// loads terminal-content, which imports the mocked xterm module.
 import {
-  createRendererMock,
   makeBanner,
   makeClient,
   makeClipboard,
@@ -40,10 +37,6 @@ import { ToastHost } from './ui/toast'
 import type { PortsStatusResult } from './generated/ports.status'
 import type { TunnelOpenResult } from './generated/tunnel.open'
 import { LOCAL_TARGET_ID } from './ports-client'
-
-vi.mock('./renderers/xterm', () => ({
-  XtermRenderer: vi.fn(createRendererMock),
-}))
 
 afterEach(() => {
   cleanup()

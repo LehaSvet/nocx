@@ -33,9 +33,9 @@ afterEach(() => {
 function newManager(sessionName?: (id: string) => string | null) {
   const inner = document.createElement('div')
   document.body.appendChild(inner)
-  const xtermContainer = document.createElement('div')
-  inner.appendChild(xtermContainer)
-  const manager = new BlockManager(inner, xtermContainer, {
+  const liveContainer = document.createElement('div')
+  inner.appendChild(liveContainer)
+  const manager = new BlockManager(inner, liveContainer, {
     snapshotStore: new CommandSnapshotStore(),
     sessionName,
   })

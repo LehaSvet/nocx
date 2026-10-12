@@ -7,7 +7,7 @@
  * unfixed and fails the same way, one axis over — the viewport delivered to
  * content is `pane.getBoundingClientRect()`, a BORDER box that includes
  * `.pane`'s `padding: 0 10px`, so `cols` was computed from 20px the grid does
- * not have and the last columns landed past the right edge of `.xterm-inner`,
+ * not have and the last columns landed past the right edge of `.terminal-live-inner`,
  * where its `overflow: hidden` cut them mid-glyph.
  *
  * Why this must run in a browser and in BOTH engines: the amount clipped
@@ -54,7 +54,7 @@ test('the grid is not wider than the scroller it is drawn in', async ({ page }) 
   const geometry = () =>
     page.evaluate(() => {
       const pane = document.querySelector('.pane.active')
-      const live = pane?.querySelector('.xterm-live-container') as HTMLElement | null
+      const live = pane?.querySelector('.terminal-live-container') as HTMLElement | null
       const row = pane?.querySelector('.term-grid-row') as HTMLElement | null
       if (!live || !row) return { overhang: 1, fill: 0, settled: false }
       // THE GRID'S BOX IS THE LIVE ROW'S CONTENT BOX (nocx-9bpeq.8): rows

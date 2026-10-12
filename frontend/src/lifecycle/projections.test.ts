@@ -88,7 +88,7 @@ describe('the projections consume the kernel (ADR-0024, bead nocx-u7uh.7)', () =
   it('an app submit binds to the published attempt and completes on its authenticated completion — once', () => {
     const { kernel, ledger, blocks, persist } = makeEnv()
     // The editor submit: app-owned text, before any pty bytes.
-    ledger.open('make {{secret:ci}}', '/repo', '', () => undefined, 'shell')
+    ledger.open('make {{secret:ci}}', '/repo', '', 'shell')
     kernel.applyFact(promptReady())
     // The shell start attaches: the pending record binds to the attempt.
     kernel.applyFact(
@@ -128,7 +128,7 @@ describe('the projections consume the kernel (ADR-0024, bead nocx-u7uh.7)', () =
 
   it('an abandoned attempt is unknown, never successful, and persists nothing', () => {
     const { kernel, ledger, blocks, persist } = makeEnv()
-    ledger.open('sleep 100', '/', '', () => undefined, 'shell')
+    ledger.open('sleep 100', '/', '', 'shell')
     kernel.applyFact(promptReady())
     kernel.applyFact(running('d1', 1, { id: 'att-1', origin: 'app', submitId: 'sub-1' }))
     kernel.applyFact(running('d1', 1, { id: 'att-1', state: 'unknown' }))
@@ -160,7 +160,7 @@ describe('the projections consume the kernel (ADR-0024, bead nocx-u7uh.7)', () =
 
   it('a completed fact with no prior open fact still completes the pending app record (reconnect replay)', () => {
     const { kernel, ledger, persist } = makeEnv()
-    ledger.open('make', '/', '', () => undefined, 'shell')
+    ledger.open('make', '/', '', 'shell')
     kernel.applyFact(promptReady())
     // The open fact was lost (reattach replay of the completed state): the
     // authenticated completion resolves the single pending app record.
@@ -175,7 +175,7 @@ describe('the projections consume the kernel (ADR-0024, bead nocx-u7uh.7)', () =
 
   it('logical completion does not wait for the render fence — ledger and history land on the event alone (u7uh.8)', () => {
     const { kernel, ledger, blocks, persist } = makeEnv()
-    ledger.open('make', '/repo', '', () => undefined, 'shell')
+    ledger.open('make', '/repo', '', 'shell')
     kernel.applyFact(promptReady())
     kernel.applyFact(
       running('d1', 1, { id: 'att-1', origin: 'app', submitId: 'sub-1', command: 'make' }),
@@ -209,7 +209,7 @@ describe('the projections consume the kernel (ADR-0024, bead nocx-u7uh.7)', () =
 
   it('lane loss abandons the bound projections — unknown, never success, nothing persisted', () => {
     const { kernel, ledger, blocks, persist } = makeEnv()
-    ledger.open('make', '/', '', () => undefined, 'shell')
+    ledger.open('make', '/', '', 'shell')
     kernel.applyFact(promptReady())
     kernel.applyFact(running('d1', 1, { id: 'att-1', origin: 'app', submitId: 'sub-1' }))
     kernel.applyFact(lostF())
@@ -278,7 +278,7 @@ describe('the projections consume the kernel (ADR-0024, bead nocx-u7uh.7)', () =
 
     // The user submits `exit` in the editor: a record and a running block
     // open at the submit, before any byte goes out (ADR-0024 §5).
-    const rec = ledger.open('exit', '/home/pi', 'far-host', () => undefined, 'shell')
+    const rec = ledger.open('exit', '/home/pi', 'far-host', 'shell')
     expect(rec.status).toBe('running')
 
     kernel.applyFact(nativeFact()) // the child's domain closed
@@ -295,7 +295,7 @@ describe('the projections consume the kernel (ADR-0024, bead nocx-u7uh.7)', () =
   it('a domain that merely suspends abandons nothing — the parent block outlives the nested session', () => {
     const { kernel, ledger, blocks } = makeEnv()
     kernel.applyFact(promptReady('parent', 1))
-    const rec = ledger.open('ssh pi@far', '/home/me', '', () => undefined, 'shell')
+    const rec = ledger.open('ssh pi@far', '/home/me', '', 'shell')
     kernel.applyFact(running('parent', 1, { id: 'att-ssh', origin: 'app', submitId: 'sub-1' }))
     kernel.applyFact(nativeFact()) // suspended, NOT closed
     kernel.applyFact(promptReady('child', 2))
@@ -358,12 +358,12 @@ describe('the projections consume the kernel (ADR-0024, bead nocx-u7uh.7)', () =
   })
   it('resets projection guards before a new session can reuse attempt identity', () => {
     const { kernel, ledger, blocks, projections } = makeEnv()
-    const first = ledger.open('first', '/', '', () => undefined, 'shell')
+    const first = ledger.open('first', '/', '', 'shell')
     kernel.applyFact(promptReady())
     kernel.applyFact(
       running('d1', 1, { id: 'att-reused', origin: 'app', submitId: 'sub-1', command: 'first' }),
     )
-    const pending = ledger.open('pending', '/', '', () => undefined, 'shell')
+    const pending = ledger.open('pending', '/', '', 'shell')
     expect(blocks.events).toEqual(['bind:att-reused'])
 
     projections.reset()
@@ -377,7 +377,7 @@ describe('the projections consume the kernel (ADR-0024, bead nocx-u7uh.7)', () =
     expect(blocks.settled).toBe(1)
 
     kernel.reset()
-    ledger.open('second', '/', '', () => undefined, 'shell')
+    ledger.open('second', '/', '', 'shell')
     kernel.applyFact(promptReady('d2', 1))
     kernel.applyFact(
       running('d2', 1, { id: 'att-reused', origin: 'app', submitId: 'sub-1', command: 'second' }),
@@ -392,7 +392,7 @@ describe('the projections consume the kernel (ADR-0024, bead nocx-u7uh.7)', () =
   })
   it('does not abandon pending work in a fresh session after a previous domain ended', () => {
     const { kernel, ledger, blocks, projections } = makeEnv()
-    ledger.open('first session', '/', '', () => undefined, 'shell')
+    ledger.open('first session', '/', '', 'shell')
     kernel.applyFact(promptReady('first-domain'))
     kernel.applyFact(lostF())
     kernel.applyFact(nativeFact())
@@ -401,7 +401,7 @@ describe('the projections consume the kernel (ADR-0024, bead nocx-u7uh.7)', () =
     // A replacement session uses a fresh domain id. The old session's ended
     // count must not be mistaken for an ending in this session.
     kernel.reset()
-    ledger.open('second session', '/', '', () => undefined, 'shell')
+    ledger.open('second session', '/', '', 'shell')
     kernel.applyFact(promptReady('second-domain'))
 
     expect(
@@ -441,10 +441,10 @@ describe('an attempt binds the record its own submit opened', () => {
 
     // Submit one, refused: no attempt is ever published for it. The command
     // still ran — that is what fail-open means — so its record is left open.
-    ledger.open('deploy staging', '/repo', '', () => undefined, 'shell')
+    ledger.open('deploy staging', '/repo', '', 'shell')
 
     // Submit two, on a domain that is live this time.
-    ledger.open('echo second', '/repo', '', () => undefined, 'shell')
+    ledger.open('echo second', '/repo', '', 'shell')
     kernel.applyFact(
       running('d1', 1, { id: 'att-2', origin: 'app', submitId: 'sub-2', command: 'echo second' }),
     )
@@ -507,7 +507,7 @@ describe('a command whose outcome is authenticated and recorded nowhere leaves a
     kernel.applyFact(promptReady('parent', 1))
     kernel.applyFact(nativeFact())
     kernel.applyFact(promptReady('child', 2))
-    const rec = ledger.open('exit', '/home/pi', 'far-host', () => undefined, 'shell')
+    const rec = ledger.open('exit', '/home/pi', 'far-host', 'shell')
 
     kernel.applyFact(nativeFact())
     kernel.applyFact(promptReady('parent', 1))
@@ -552,7 +552,7 @@ describe('a record orphaned by a fail-open submit is still the command that ran'
 
   it('binds the next unattributed attempt, so one block carries the outcome', () => {
     const { kernel, ledger, blocks, persist } = makeEnv()
-    const rec = ledger.open('make test', '/repo', '', () => undefined, 'shell')
+    const rec = ledger.open('make test', '/repo', '', 'shell')
     // The submit was refused: nothing will ever carry this record's token.
     ledger.orphan(rec.id)
     kernel.applyFact(promptReady())
@@ -573,7 +573,7 @@ describe('a record orphaned by a fail-open submit is still the command that ran'
 
   it('and a record nobody orphaned is still never claimed by a tokenless attempt', () => {
     const { kernel, ledger, blocks } = makeEnv()
-    ledger.open('make test', '/repo', '', () => undefined, 'shell')
+    ledger.open('make test', '/repo', '', 'shell')
     kernel.applyFact(promptReady())
     // No orphan mark: this is the guess nocx-td6d4.10 removed, and it stays
     // removed — a live submit's record is not up for grabs.

@@ -1253,7 +1253,7 @@ describe('withSessionText: this session comes back as it was run (nocx-xkve.4)',
    *  stamps startedAt at open (ADR-0024 §5) — the match key. */
   const ran = (command: string, cwd: string, host: string): CommandLedger => {
     const ledger = new CommandLedger({ now: () => 1000 })
-    ledger.open(command, cwd, host, () => undefined, 'shell')
+    ledger.open(command, cwd, host, 'shell')
     return ledger
   }
 
@@ -1329,9 +1329,9 @@ describe('queryLedgerHistory: the session fallback behind the generated types', 
   it('maps the ledger newest-first, filtered to the ladder rung', () => {
     const now = () => 1000
     const ledger = new CommandLedger({ now })
-    ledger.open('first', '/a', 'h1', () => undefined, 'shell')
-    ledger.open('second', '/b', 'h1', () => undefined, 'shell')
-    ledger.open('third', '/a', 'h2', () => undefined, 'shell')
+    ledger.open('first', '/a', 'h1', 'shell')
+    ledger.open('second', '/b', 'h1', 'shell')
+    ledger.open('third', '/a', 'h2', 'shell')
 
     const dir = queryLedgerHistory(ledger, 'directory', '/a', 'h1')
     expect(dir.entries.map((e) => e.command)).toEqual(['first'])
@@ -1347,9 +1347,9 @@ describe('queryLedgerHistory: the session fallback behind the generated types', 
   it('filters by text the same way the store does, case-insensitively', () => {
     const now = () => 1000
     const ledger = new CommandLedger({ now })
-    ledger.open('make deploy', '/a', 'h1', () => undefined, 'shell')
-    ledger.open('git status', '/a', 'h1', () => undefined, 'shell')
-    ledger.open('MAKE PROD', '/a', 'h1', () => undefined, 'shell')
+    ledger.open('make deploy', '/a', 'h1', 'shell')
+    ledger.open('git status', '/a', 'h1', 'shell')
+    ledger.open('MAKE PROD', '/a', 'h1', 'shell')
 
     const filtered = queryLedgerHistory(ledger, 'everywhere', '/a', 'h1', 'make')
     expect(filtered.entries.map((e) => e.command)).toEqual(['MAKE PROD', 'make deploy'])
@@ -1366,9 +1366,9 @@ describe('queryLedgerHistory: the session fallback behind the generated types', 
     // The app-owned submit stamps the attempt start (ADR-0024 §5); nothing
     // completes a record in the severed world, so no endedAt exists and the
     // horizon stays null.
-    ledger.open('first', '/a', 'h1', () => undefined, 'shell')
-    ledger.open('second', '/a', 'h1', () => undefined, 'shell')
-    ledger.open('third', '/a', 'h2', () => undefined, 'shell')
+    ledger.open('first', '/a', 'h1', 'shell')
+    ledger.open('second', '/a', 'h1', 'shell')
+    ledger.open('third', '/a', 'h2', 'shell')
 
     const dir = queryLedgerHistory(ledger, 'directory', '/a', 'h1')
     expect(dir.coverage).toBe(null) // nothing completed, session-wide
@@ -1382,7 +1382,7 @@ describe('queryLedgerHistory: the session fallback behind the generated types', 
   it('a ledger with nothing completed states no horizon', () => {
     const now = () => 1000
     const ledger = new CommandLedger({ now })
-    ledger.open('only', '/a', 'h1', () => undefined, 'shell') // still running
+    ledger.open('only', '/a', 'h1', 'shell') // still running
     const q = queryLedgerHistory(ledger, 'everywhere', '/a', 'h1')
     expect(q.coverage).toBe(null)
   })

@@ -2,8 +2,8 @@
 //
 // A coding agent runs as one long shell command, so OSC 133 — which marks
 // shell command boundaries (nocx-5mn.4) — cannot see inside it. What agents do
-// expose is their state in the title they set via OSC 0/2, and we already
-// receive that through TerminalRenderer.onTitle. Orca reads the same signal
+// expose is their state in the title they set via OSC 0/2, and the accepted
+// backend frame carries that title metadata. Orca reads the same signal
 // (src/shared/terminal-title-status.ts); this is the same idea, kept to the
 // markers we can actually verify.
 //

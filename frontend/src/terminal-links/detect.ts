@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // The link grammar — ONE owner for both surfaces that show terminal text.
 //
-// The live xterm grid and the frozen DOM scrollback are two renderings of the
+// The live painter grid and frozen DOM scrollback are two renderings of the
 // same bytes, so they must not carry two answers to "is this a link". The
 // repo has already paid for a second derivation of one predicate once (the
 // two `is this an ssh context` answers that agreed everywhere except the one

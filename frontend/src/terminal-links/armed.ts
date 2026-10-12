@@ -2,7 +2,7 @@
 // "Is the link modifier held?" — asked by BOTH surfaces, so it is answered
 // once (AD-8).
 //
-// The frozen DOM decides whether a click opens; the live xterm decides
+// The frozen DOM decides whether a click opens; accepted live cells decide
 // whether a link EXISTS at all (its provider returns nothing while unarmed,
 // which is how the engine's own hover underline is kept from advertising a
 // click that would do nothing). Two trackers would let those two disagree

@@ -17,9 +17,9 @@ export interface LiveSelectionGestureOptions {
   readonly surface: HTMLElement
   readonly gestureRoot?: HTMLElement
   readonly surfaceId: string
-  /** The input renderer owns mouse reporting; selection must not consume its clicks. */
+  /** The backend frame's mouse mode owns reporting; selection must not consume those clicks. */
   readonly mouseReportingActive?: () => boolean
-  /** Return keyboard input to xterm when a joined gesture reaches live output. */
+  /** Return keyboard input to the terminal input element after a joined gesture. */
   readonly focusInput?: () => void
   readonly copy: (text: string) => void
 }

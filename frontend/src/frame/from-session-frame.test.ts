@@ -1,6 +1,8 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_SNAPSHOT } from '../scrollback/serializer'
 import { captureAcceptedScreen } from './from-session-frame'
+import { createCapturedFrameView } from './display'
 import { frameOf, snapshotOf, styleOf } from '../painter/fixtures'
 import type { CellSpec } from '../painter/fixtures'
 import type { CapturedFrame } from './types'
@@ -60,6 +62,12 @@ describe('captureAcceptedScreen', () => {
       char: 'A',
       attrs: { fg: 'rgb(255, 0, 0)', bold: true },
     })
+    const view = createCapturedFrameView(captured)
+    expect(view.className).toBe('nocx-freeze-frame')
+    expect(view.dataset.source).toBe('live')
+    expect(view.textContent).toContain('A')
+    expect(view.querySelectorAll('.nocx-freeze-frame__row')).toHaveLength(1)
+    expect(view.querySelectorAll('.nocx-freeze-frame__cell')).toHaveLength(4)
   })
 
   it('rejects ranges that exceed the JSON-safe absolute row boundary', () => {

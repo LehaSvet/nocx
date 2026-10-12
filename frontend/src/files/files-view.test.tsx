@@ -19,7 +19,7 @@ import { cleanup, fireEvent, render } from '@solidjs/testing-library'
 import { FILES_VIEW_ID, FILES_VIEW_ORDER, createFilesView } from './files-view'
 import { mountSidebar, type SidebarHandle, type SidebarViewDescriptor } from '../sidebar'
 import { PlugIcon } from '../ui/icons'
-import { createRendererMock, makeClient, mountPaneManager } from '../test-support/panes-fixtures'
+import { makeClient, mountPaneManager } from '../test-support/panes-fixtures'
 import { setDocumentHidden } from '../test-support/document-visibility'
 import type { FilesListEntry, FilesListResult } from '../generated/files.list'
 import type { FilesRefreshStateChanged } from '../generated/files.refreshStateChanged'
@@ -48,10 +48,6 @@ function clipboardFixture(over: Partial<ClipboardAccess> = {}): ClipboardAccess 
     ...over,
   }
 }
-
-vi.mock('../renderers/xterm', () => ({
-  XtermRenderer: vi.fn(createRendererMock),
-}))
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
 

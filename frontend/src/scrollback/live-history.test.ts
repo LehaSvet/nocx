@@ -128,7 +128,7 @@ function mount(): {
 } {
   const stack = document.createElement('div')
   const live = document.createElement('div')
-  live.className = 'xterm-live-container'
+  live.className = 'terminal-live-container'
   stack.appendChild(live)
   const scroller = document.createElement('div')
   scroller.appendChild(stack)
@@ -817,7 +817,7 @@ describe('live-history', () => {
     await settle()
     expect(scroller.scrollTop).toBe(40 * ROW_PX)
 
-    // xterm's layer above the live screen consumes the gesture's default
+    // the terminal input layer above the live screen consumes the gesture's default
     // action; the scroller's own owner still sees the event (a
     // preventDefault cancels the default, never the propagation) and
     // applies the delta itself — the person's wheel moves the history.

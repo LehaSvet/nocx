@@ -1,10 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import {
-  createRendererMock,
-  resetSessionCounter,
-  mountPaneManager,
-} from './test-support/panes-fixtures'
+import { resetSessionCounter, mountPaneManager } from './test-support/panes-fixtures'
 
 // A window is told when another one takes a pane's session (nocx-oevq4, the
 // nocx-server design D8).
@@ -14,9 +10,6 @@ import {
 // is raised. That is the point of the test — a displacement the product only
 // writes to a log leaves a terminal that looks live and swallows every
 // keystroke, which is the surface AGENTS.md says must not exist.
-vi.mock('./renderers/xterm', () => ({
-  XtermRenderer: vi.fn(createRendererMock),
-}))
 
 const showToastMock = vi.fn()
 vi.mock('./ui/toast', () => ({

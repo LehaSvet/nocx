@@ -66,7 +66,7 @@ body {
    the two engines render different scrollbars from the same stylesheet.
 
    Colours are tokens, so this follows the theme without a second declaration.
-   Terminal viewports are deliberately included: xterm's scrollbar is the same
+   Terminal viewports are deliberately included: the terminal viewport scrollbar is the same
    chrome and had the same problem (nocx-vnbv). */
 
 ::-webkit-scrollbar {
@@ -106,8 +106,8 @@ body {
    what it means: this text is terminal output, a command, or a value whose
    column alignment matters. The places that need it declare it —
    `.cmd-output` (and the `.term-line` spans inside it), `.cmd-header-text`,
-   `.nocx-editor-input`, `.pane-error` — and xterm carries its own
-   FONT_FAMILY, so the terminal itself is unaffected either way. */
+   `.nocx-editor-input`, `.pane-error` — and the terminal input declares its own
+   monospace font rule, so the terminal itself is unaffected either way. */
 #app {
   display: flex;
   flex-direction: column;

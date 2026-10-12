@@ -49,7 +49,7 @@
    `_liveFollows`), never a child of it — so the trailing space above must
    not sit here while running, or it lands BEFORE the live region instead of
    after it, which is the gap the mockup pass measured. D's live-running
-   container (style.css `.xterm-live-container.live-running`) must carry
+   container (style.css `.terminal-live-container.live-running`) must carry
    the SAME amount at its own trailing edge instead; see this task's report
    for the exact requirement. This rule only stops the space being paid
    twice — once here, once there — while the block is still running. */

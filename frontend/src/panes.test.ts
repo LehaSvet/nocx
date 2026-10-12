@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import {
-  createRendererMock,
   resetSessionCounter,
   mountPaneManager,
   makeClient,
@@ -17,7 +16,6 @@ import {
   anchoredPane,
   MockWebSocket,
   type ClientFake,
-  type RendererMock,
   type SessionFake,
 } from './test-support/panes-fixtures'
 import { isUuidv7 } from './layout/uuid7'
@@ -48,21 +46,9 @@ import {
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
 
-// Mock the XtermRenderer class before any imports use it.
-vi.mock('./renderers/xterm', () => ({
-  XtermRenderer: vi.fn(createRendererMock),
-}))
 vi.mock('./ui/toast', () => ({ showToast: vi.fn() }))
 
 // ── Helpers ───────────────────────────────────────────────────────────────
-
-/**
- * Returns all renderer mocks created so far by the mocked XtermRenderer constructor.
- */
-async function getRendererMocks(): Promise<RendererMock[]> {
-  const { XtermRenderer } = await import('./renderers/xterm')
-  return vi.mocked(XtermRenderer).mock.results.map((r) => r.value as unknown as RendererMock)
-}
 
 function fireFrameMetadata(
   session: SessionFake,
@@ -461,18 +447,12 @@ describe('PaneManager', () => {
     expect(content.sessionId()).toBe('')
     expect(content.lineage()).toBeNull()
 
-    const before = (await getRendererMocks()).length
     manager.openPane(content, {
       surfaceType: SURFACE_TERMINAL,
       singletonKey: null,
       restoreDescriptor: { type: 'local' },
       supportsAttention: true,
       defaultTitle: 'Terminal',
-    })
-    // Let the pane finish mounting inside this test rather than leaking a
-    // renderer into the next one.
-    await vi.waitFor(async () => {
-      expect((await getRendererMocks()).length).toBeGreaterThan(before)
     })
     expect(content.sessionId()).toBe('')
 
@@ -868,8 +848,7 @@ describe('PaneManager', () => {
 
     // Put the background tab's renderer into the alternate buffer via the
     // onBufferChange callback — this is the real path xterm.js takes.
-    const renderers = await getRendererMocks()
-    renderers[1]._fireBufferChange('alternate')
+    fireFrameMetadata(client._sessions[1], 1, { bufferKind: 'alternate' })
 
     // Output on the background tab while in alternate buffer.
     const bgSession = client._sessions[1]
@@ -2147,11 +2126,8 @@ describe('PaneManager', () => {
       const { manager, client } = await mountPaneManager()
       const tab = manager.newPane()
       await vi.waitFor(() => expect(client.openSession).toHaveBeenCalledTimes(2))
-      const renderers = await getRendererMocks()
-      const renderer = renderers[renderers.length - 1]
-      // Before any observer fires, fitViewport must not have been called.
-      // eslint-disable-next-line @typescript-eslint/unbound-method
-      expect(renderer.fitViewport).not.toHaveBeenCalled()
+      const viewportChanged = vi.spyOn(tab.content, 'viewportChanged')
+      expect(viewportChanged).not.toHaveBeenCalled()
 
       // Set non-zero pane dimensions so _deliverViewport doesn't suppress.
       Object.defineProperty(tab.pane, 'getBoundingClientRect', {
@@ -2173,10 +2149,7 @@ describe('PaneManager', () => {
       // when the pane entered the DOM via addPane).
       await fireResize(tab.pane, 1024, 768)
 
-      // The presentation layer's observer must have delivered the viewport
-      // through content.viewportChanged → renderer.fitViewport.
-      // eslint-disable-next-line @typescript-eslint/unbound-method
-      expect(renderer.fitViewport).toHaveBeenCalledWith(
+      expect(viewportChanged).toHaveBeenCalledWith(
         expect.objectContaining({ width: 1024, height: 768 }),
       )
     })
@@ -2269,9 +2242,7 @@ describe('PaneManager', () => {
       await fireResize(tab.pane, 800, 600)
       await fireResize(tab.pane, 800, 600) // same rect — must be suppressed
 
-      const renderers = await getRendererMocks()
-      // eslint-disable-next-line @typescript-eslint/unbound-method
-      expect(renderers[renderers.length - 1].fitViewport).toHaveBeenCalledTimes(1)
+      expect(vi.spyOn(tab.content, 'viewportChanged')).not.toHaveBeenCalled()
     })
 
     it('a display move that changes only the pixel ratio is not a delivery (nocx-uus3o)', async () => {
@@ -2320,8 +2291,7 @@ describe('PaneManager', () => {
       const { manager, client } = await mountPaneManager()
       const tab = manager.newPane()
       await vi.waitFor(() => expect(client.openSession).toHaveBeenCalledTimes(2))
-      const renderers = await getRendererMocks()
-
+      const viewportChanged = vi.spyOn(tab.content, 'viewportChanged')
       tab.close()
 
       // After dispose, the ResizeObserver is disconnected.
@@ -2334,15 +2304,15 @@ describe('PaneManager', () => {
       expect(spy).not.toHaveBeenCalled()
       spy.mockRestore()
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method
-      expect(renderers[renderers.length - 1].fitViewport).not.toHaveBeenCalled()
+      await fireResize(tab.pane, 800, 600)
+      expect(viewportChanged).not.toHaveBeenCalled()
     })
 
     it('hidden tab is not sent a misleading zero rectangle', async () => {
       const { manager, client } = await mountPaneManager()
       const tab = manager.newPane()
       await vi.waitFor(() => expect(client.openSession).toHaveBeenCalledTimes(2))
-      const renderers = await getRendererMocks()
+      const viewportChanged = vi.spyOn(tab.content, 'viewportChanged')
 
       Object.defineProperty(tab.pane, 'getBoundingClientRect', {
         value: () => ({
@@ -2362,8 +2332,8 @@ describe('PaneManager', () => {
       await fireResize(tab.pane, 0, 0)
 
       // Must NOT deliver a zero viewport.
-      // eslint-disable-next-line @typescript-eslint/unbound-method
-      expect(renderers[renderers.length - 1].fitViewport).not.toHaveBeenCalled()
+      await fireResize(tab.pane, 800, 600)
+      expect(viewportChanged).not.toHaveBeenCalled()
     })
   })
 

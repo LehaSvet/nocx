@@ -1,78 +1,120 @@
 /**
- * The live region is the painter's picture, end to end (nocx-zg3k3.2.5).
- *
- * After the cutover, what a person sees in the live region is the cell
- * painter drawing the backend's frames, and xterm — still in the live
- * region as the INVISIBLE input layer — draws nothing: no visual renderer
- * is mounted, and its root is occluded. What a person DOES still reaches
- * the program through xterm, and that path is proven here at its hardest:
- * a program that enabled mouse reporting must receive a click at the cell
- * the person clicked on the PAINTER's surface, which means the painter's
- * cell grid and xterm's coincide — asserted at two zoom levels, where a
- * zoom is a resize the runtime commits and the next frame re-binds the
- * mapping.
- *
- * The mouse proof runs the full circle over the real backend: the printed
- * escape turns mouse reporting on in BOTH parsers that still see bytes
- * (the runtime's, for the screen; xterm's, for the input encoding), and
- * `cat -v` echoes back the SGR sequence a click encodes — so the bytes the
- * PROGRAM received are read off the painted screen. Every wait is on
- * painted or model state, never on a duration.
+ * The cell painter is the only live terminal renderer (nocx-zg3k3.8).
+ * A user types and executes a command, sees its output in the painted grid,
+ * and clicks a painted cell. The browser sends zero-based mouse intent; the
+ * backend runtime encodes it for the program as one-based SGR coordinates.
  */
 
 import { test, expect, promptReady } from './harness'
 import type { Page } from './harness'
 
-test('a program output appears in the painted grid, and xterm draws nothing', async ({ page }) => {
+const LIVE = '.pane.active .terminal-live-grid'
+
+test('painted output and backend mouse intent work without xterm or session.output replay', async ({
+  page,
+  browserName,
+}) => {
+  let sessionOutputCalls = 0
+  const mouseIntents: string[] = []
+  page.on('websocket', (socket) => {
+    socket.on('framesent', (frame) => {
+      if (typeof frame.payload !== 'string') return
+      try {
+        const decoded: unknown = JSON.parse(frame.payload)
+        const envelopes = Array.isArray(decoded) ? decoded : [decoded]
+        for (const envelope of envelopes) {
+          if (typeof envelope !== 'object' || envelope === null || !('method' in envelope)) continue
+          if (envelope.method === 'session.output') sessionOutputCalls += 1
+          if (envelope.method !== 'session.intent' || !('params' in envelope)) continue
+          const params = envelope.params
+          if (
+            typeof params === 'object' &&
+            params !== null &&
+            'kind' in params &&
+            params.kind === 'mouse' &&
+            'payload' in params &&
+            typeof params.payload === 'string'
+          ) {
+            mouseIntents.push(Buffer.from(params.payload, 'base64').toString('utf8'))
+          }
+        }
+      } catch {
+        // Non-JSON text frames are unrelated to JSON-RPC requests.
+      }
+    })
+  })
+
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.goto('/')
   await promptReady(page)
 
-  // The marker is split across two shell strings, so only the command's
-  // output — never the prompt echo — can carry the contiguous text.
   const nonce = Date.now().toString(36)
   const marker = `NOCX-PAINTED-${nonce}`
   await page.keyboard.type(`printf '%s\\n' 'NOCX-PAI''NTED-${nonce}'`)
   await page.keyboard.press('Enter')
-
-  // THE OUTPUT IS PAINTED: the live region's grid carries it in its rows —
-  // the same surface a screenshot would show, read as DOM. The marker is
-  // an evaluate ARGUMENT: a serialised closure carries nothing else.
   await expect
     .poll(
       async () =>
-        page.evaluate((marker) => {
-          const live = document.querySelector('.pane.active .xterm-live-container')
-          return live?.textContent?.includes(marker) ?? false
-        }, marker),
-      { timeout: 15_000, message: `the painted grid never carried the output marker` },
+        page
+          .locator(`${LIVE} .term-grid-row`)
+          .evaluateAll(
+            (rows, outputMarker) => rows.some((row) => row.textContent?.includes(outputMarker)),
+            marker,
+          ),
+      { timeout: 15_000, message: 'the painted grid never carried the output marker' },
     )
     .toBe(true)
-  // And the exact output row, not just somewhere in the region's text.
-  await expect(
-    page.locator('.pane.active .xterm-live-container .term-grid-row', { hasText: marker }),
-  ).toHaveCount(1)
+  await expect(page.locator(`${LIVE} .term-grid-row`, { hasText: marker })).toHaveCount(1)
+  await expect(page.locator('.pane.active .xterm')).toHaveCount(0)
+  await expect(page.locator('.pane.active canvas')).toHaveCount(0)
 
-  // XTERM DRAWS NOTHING HERE: its root in the live region is the occluded
-  // input layer, and no visual renderer was mounted — a canvas is what the
-  // WebGL or canvas renderer would have brought, and neither is mounted.
-  const occluded = await page.evaluate(() => {
-    const live = document.querySelector('.pane.active .xterm-live-container')
-    const root = live?.querySelector('.xterm')
-    return {
-      occluded: root?.classList.contains('xterm-occluded') ?? false,
-      canvases: live?.querySelectorAll('canvas').length ?? -1,
-    }
-  })
-  expect(occluded.occluded).toBe(true)
-  expect(occluded.canvases).toBe(0)
+  // The zoom proof uses CDP's device-metrics override, available only in
+  // Chromium. The first geometry still runs in every browser.
+  await clickRound(page, 12, 'Z1-OK', mouseIntents)
+  if (browserName === 'chromium') {
+    // This spec proves painted mouse intent/SGR, not implicit click-to-focus.
+    // Use the visible Interrupt control only to clean up cat -v.
+    const interrupt = page.locator('.pane.active').getByRole('button', { name: 'Interrupt' })
+    await expect(interrupt).toBeVisible()
+    await interrupt.click()
+    await promptReady(page)
+    const cellWidthBefore = await page.evaluate(
+      () =>
+        (
+          window as unknown as {
+            __nocxPaneScreen?: () => { geometry: { cellWidthPx: number } | null } | null
+          }
+        ).__nocxPaneScreen?.()?.geometry?.cellWidthPx ?? 0,
+    )
+    const cdp = await page.context().newCDPSession(page)
+    await cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: 1282,
+      height: 802,
+      deviceScaleFactor: 2,
+      mobile: false,
+    })
+    expect(await page.evaluate(() => window.devicePixelRatio)).toBe(2)
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(
+            () =>
+              (
+                window as unknown as {
+                  __nocxPaneScreen?: () => { geometry: { cellWidthPx: number } | null } | null
+                }
+              ).__nocxPaneScreen?.()?.geometry?.cellWidthPx ?? 0,
+          ),
+        { timeout: 15_000, message: 'the committed cell metric never moved with the zoom' },
+      )
+      .toBeGreaterThan(cellWidthBefore * 1.5)
+    await clickRound(page, 30, 'Z2-OK', mouseIntents)
+    await cdp.send('Emulation.clearDeviceMetricsOverride')
+  }
+
+  expect(sessionOutputCalls).toBe(0)
 })
 
-/** Everything the click math needs: the page pixel at the centre of one
- *  cell of the PAINTED grid, and that cell's (row, col) on the painter's
- *  grid. The numbers come from the painted surface itself — the rows' own
- *  rects — so the expected cell is what the person's view says, never
- *  xterm's. */
 interface ClickTarget {
   x: number
   y: number
@@ -80,160 +122,137 @@ interface ClickTarget {
   col: number
 }
 
-/** A painted grid row the live box can actually hit: the box clips the
- *  surface, and a click outside it lands on nothing. */
-async function clickTarget(page: Page, colWithin: number): Promise<ClickTarget | null> {
-  return page.evaluate((colWithin) => {
-    const live = document.querySelector<HTMLElement>('.pane.active .xterm-live-container')
-    const clip = document.querySelector<HTMLElement>('.pane.active .xterm-live-viewport')
-    const rows = live?.querySelectorAll<HTMLElement>('.term-grid-row')
-    if (!live || !clip || !rows || rows.length === 0) return null
-    // THE REAL CLIP IS THE VIEWPORT, not the live flow box: the box's
-    // inline height and the echo shift decide which painted rows a person
-    // — and a click — can actually reach.
-    const box = clip.getBoundingClientRect()
-    const grid = rows[0].parentElement
-    if (!grid) return null
-    const gridTop = grid.getBoundingClientRect().top
-    const pitch = rows[0].getBoundingClientRect().height
-    const rowRange = document.createRange()
-    rowRange.selectNodeContents(rows[0])
-    const firstRow = rowRange.getBoundingClientRect()
-    const cols = rows[0].textContent?.length ?? 0
-    if (cols === 0 || firstRow.width === 0 || pitch === 0) return null
-    const cellWidth = firstRow.width / cols
-    const col = Math.min(colWithin, cols - 1)
-    for (let r = 0; r < rows.length; r++) {
-      const rowRect = rows[r].getBoundingClientRect()
-      if (rowRect.top < box.top || rowRect.bottom > box.bottom) continue
-      const x = firstRow.left + (col + 0.5) * cellWidth
-      const y = gridTop + (r + 0.5) * pitch
-      if (x < box.left || x > box.right) continue
-      return { x, y, row: r, col }
-    }
-    return null
-  }, colWithin)
+async function clickTarget(
+  page: Page,
+  marker: string,
+  colWithin: number,
+): Promise<{ target: ClickTarget | null; diagnostic: string }> {
+  return page.evaluate(
+    ({ marker, colWithin }) => {
+      const live = document.querySelector<HTMLElement>('.pane.active .terminal-live-grid')
+      const clip = document.querySelector<HTMLElement>('.pane.active .terminal-live-viewport')
+      const rows = live ? [...live.querySelectorAll<HTMLElement>('.term-grid-row')] : []
+      const row = rows.find((candidate) => candidate.textContent?.includes(marker))
+      const rowIndex = row ? rows.indexOf(row) : -1
+      const screen = (
+        window as Window & {
+          __nocxPaneScreen?: () => { geometry: { cols: number; rows: number } | null } | null
+          __nocxPaneCellToPixel?: (col: number, row: number) => { x: number; y: number } | null
+        }
+      ).__nocxPaneScreen?.()
+      const geometry = screen?.geometry
+      if (!live || !clip || !row || rowIndex < 0 || !geometry) {
+        return {
+          target: null,
+          diagnostic: JSON.stringify({
+            live: Boolean(live),
+            clip: Boolean(clip),
+            row: Boolean(row),
+            rowIndex,
+            geometry,
+          }),
+        }
+      }
+      const clipRect = clip.getBoundingClientRect()
+      const liveRect = live.getBoundingClientRect()
+      const rowRect = row.getBoundingClientRect()
+      const col = Math.min(colWithin, geometry.cols - 1)
+      const point = (
+        window as Window & {
+          __nocxPaneCellToPixel?: (col: number, row: number) => { x: number; y: number } | null
+        }
+      ).__nocxPaneCellToPixel?.(col, rowIndex)
+      const cellWidth = geometry.cols > 0 ? rowRect.width / geometry.cols : 0
+      if (!point || cellWidth <= 0 || rowRect.height <= 0) {
+        return {
+          target: null,
+          diagnostic: JSON.stringify({
+            point,
+            cols: geometry.cols,
+            rows: geometry.rows,
+            rowIndex,
+            cellWidth,
+            rowHeight: rowRect.height,
+            rowWidth: rowRect.width,
+          }),
+        }
+      }
+      const x = liveRect.left + point.x + cellWidth / 2
+      const y = liveRect.top + point.y + rowRect.height / 2
+      if (rowRect.top < clipRect.top || rowRect.bottom > clipRect.bottom) {
+        return {
+          target: null,
+          diagnostic: JSON.stringify({
+            reason: 'row clipped',
+            row: { top: rowRect.top, bottom: rowRect.bottom },
+            clip: { top: clipRect.top, bottom: clipRect.bottom },
+          }),
+        }
+      }
+      if (x < clipRect.left || x > clipRect.right) {
+        return {
+          target: null,
+          diagnostic: JSON.stringify({
+            reason: 'x clipped',
+            x,
+            clip: { left: clipRect.left, right: clipRect.right },
+          }),
+        }
+      }
+      return { target: { x, y, row: rowIndex, col }, diagnostic: 'click target ready' }
+    },
+    { marker, colWithin },
+  )
 }
 
-/** One zoom level of the mouse proof: print a round marker, turn mouse
- *  reporting on, park `cat -v` on the pty, click the cell the painter's
- *  grid says, and read back the SGR sequence the program received — off
- *  the painted screen. */
-async function clickRound(page: Page, colWithin: number, roundMarker: string): Promise<void> {
+async function clickRound(
+  page: Page,
+  colWithin: number,
+  roundMarker: string,
+  mouseIntents: string[],
+): Promise<void> {
+  const splitAt = Math.ceil(roundMarker.length / 2)
+  const shellMarker = `${roundMarker.slice(0, splitAt)}''${roundMarker.slice(splitAt)}`
   await page.keyboard.type(
-    `printf '%s\\n' '${roundMarker}'; printf '\\033[?1000h\\033[?1006h'; cat -v`,
+    `printf '%s\\n' '${shellMarker}'; printf '\\033[?1000h\\033[?1006h'; cat -v`,
   )
   await page.keyboard.press('Enter')
+  await expect(page.locator(LIVE)).toContainText(roundMarker, { timeout: 15_000 })
 
-  // The round started (its marker is painted) before any click.
-  await expect
-    .poll(
-      async () =>
-        page.evaluate((roundMarker) => {
-          const live = document.querySelector('.pane.active .xterm-live-container')
-          return live?.textContent?.includes(roundMarker) ?? false
-        }, roundMarker),
-      { timeout: 15_000, message: `the round marker ${roundMarker} never painted` },
-    )
-    .toBe(true)
-
-  // The click target is read only after the grid is painted and visible.
   let target: ClickTarget | null = null
-  await expect
-    .poll(
-      async () => {
-        target = await clickTarget(page, colWithin)
-        return target !== null
-      },
-      { timeout: 15_000, message: 'no clickable painted row ever appeared' },
-    )
-    .toBe(true)
+  let diagnostic = 'no probe result'
+  try {
+    await expect
+      .poll(
+        async () => {
+          const probe = await clickTarget(page, roundMarker, colWithin)
+          target = probe.target
+          diagnostic = probe.diagnostic
+          return target !== null
+        },
+        { timeout: 15_000, message: 'no clickable painted row ever appeared' },
+      )
+      .toBe(true)
+  } catch {
+    throw new Error(`no clickable painted row ever appeared; last probe: ${diagnostic}`)
+  }
 
+  const intentStart = mouseIntents.length
   await page.mouse.click(target!.x, target!.y)
 
-  // THE PROGRAM'S OWN ECHO IS THE PROOF: `cat -v` prints the SGR mouse
-  // sequence it received — ESC spelled ^[ — and the painted grid carries
-  // it. The cell it names must be the cell the person clicked.
-  const wanted = `^[[<0;${target!.col + 1};${target!.row + 1}M`
+  // The pane emits a zero-based intent for the exact cell the painted grid
+  // selected. No browser-side code constructs a terminal escape sequence.
+  const expectedIntent = `press left ${target!.col} ${target!.row}`
+  await expect.poll(() => mouseIntents.slice(intentStart).includes(expectedIntent)).toBe(true)
+
+  // cat -v prints the backend runtime's one-based SGR encoding back into the
+  // painted screen, proving the program received the event for that cell.
+  const expectedSGR = `^[[<0;${target!.col + 1};${target!.row + 1}M`
   await expect
-    .poll(
-      async () =>
-        page.evaluate(
-          ([wanted, roundMarker]) => {
-            const live = document.querySelector('.pane.active .xterm-live-container')
-            const text = live?.textContent ?? ''
-            return text.includes(wanted) && text.includes(roundMarker)
-          },
-          [wanted, roundMarker],
-        ),
-      {
-        timeout: 15_000,
-        message: `the program never received a click for ${wanted} (${roundMarker})`,
-      },
+    .poll(() =>
+      page
+        .locator(LIVE)
+        .evaluate((live, wanted) => live.textContent?.includes(wanted), expectedSGR),
     )
     .toBe(true)
 }
-
-test('a mouse-reporting program receives the clicked painter cell, at two zoom levels', async ({
-  page,
-  browserName,
-}) => {
-  // The zoom is simulated with a CDP device-metrics override (below), and
-  // CDP is a Chromium-only protocol — the same reason api-import.spec.ts's
-  // drag test is chromium-only. This is not the retired serializer path
-  // this file's own suite was written against (nocx-zg3k3.2.5); it is an
-  // unrelated, pre-existing browser-capability limit the test never
-  // guarded, newly exposed because this spec is new on this branch.
-  test.skip(browserName !== 'chromium', 'zoom emulation needs CDP, which only Chromium exposes')
-  await page.setViewportSize({ width: 1280, height: 800 })
-  await page.goto('/')
-  await promptReady(page)
-
-  // Zoom level 1: the display as it comes up.
-  await clickRound(page, 12, 'Z1-OK')
-
-  // Leave `cat -v`, then move the display: a zoom is a resize the runtime
-  // commits, so the next frame re-binds the committed geometry.
-  await page.keyboard.press('Control+C')
-  await promptReady(page)
-  const committedCellBefore = await page.evaluate(
-    () =>
-      (
-        window as unknown as {
-          __nocxPaneScreen?: () => { geometry: { cellWidthPx: number } | null } | null
-        }
-      ).__nocxPaneScreen?.()?.geometry?.cellWidthPx ?? 0,
-  )
-  const cdp = await page.context().newCDPSession(page)
-  // The override must carry the NEW SIZE ITSELF: it pins the view, so a
-  // later setViewportSize lands on nothing. Size + ratio in one override
-  // is the reflow that makes the pane re-fit and re-report at the new
-  // ratio (the override does not deliver the resolution media-change
-  // event the renderer's watcher listens for — a real display move does).
-  await cdp.send('Emulation.setDeviceMetricsOverride', {
-    width: 1282,
-    height: 802,
-    deviceScaleFactor: 2,
-    mobile: false,
-  })
-  // The zoom is in force only when the COMMITTED metric reflects it: the
-  // device cell doubles with the ratio, so the committed px doubles too.
-  await expect
-    .poll(
-      async () =>
-        page.evaluate(
-          () =>
-            (
-              window as unknown as {
-                __nocxPaneScreen?: () => { geometry: { cellWidthPx: number } | null } | null
-              }
-            ).__nocxPaneScreen?.()?.geometry?.cellWidthPx ?? 0,
-        ),
-      { timeout: 15_000, message: 'the committed cell metric never moved with the zoom' },
-    )
-    .toBeGreaterThan(committedCellBefore * 1.5)
-
-  // Zoom level 2: a different cell, same circle, on the re-committed grid.
-  await clickRound(page, 30, 'Z2-OK')
-  await cdp.send('Emulation.clearDeviceMetricsOverride')
-})

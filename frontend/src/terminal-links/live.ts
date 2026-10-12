@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// The LIVE region's policy — the object the xterm renderer is handed.
+// The LIVE region's policy — applied to links derived from accepted cells.
 //
 // Same grammar, same opener, same armed tracker as the frozen scrollback;
 // only the plumbing differs, because one half of the terminal is a grid and
@@ -16,7 +16,6 @@
 // nobody granted it.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import type { LinkPolicy, RendererLinkRange } from '../renderers/types'
 import type { ActiveOrigin } from '../pane-content'
 import { detectLinks } from './detect'
 import type { LinkOpener } from './open'
@@ -35,7 +34,24 @@ export interface LivePolicyDeps {
  *  place that decides this would be a third answer. */
 const ALLOWED_SCHEME = /^https?:\/\//i
 
-export function createLivePolicy(deps: LivePolicyDeps): LinkPolicy {
+interface RendererLinkRange {
+  from: number
+  to: number
+}
+
+export interface LivePolicy {
+  ranges(lineText: string): RendererLinkRange[]
+  activate(lineText: string, from: number, to: number): void
+  activateAt(lineText: string, offset: number): void
+  activateHyperlink(url: string): void
+}
+
+export function createLivePolicy(deps: LivePolicyDeps): LivePolicy {
+  const activate = (lineText: string, from: number, to: number): void => {
+    const span = detectLinks(lineText).find((s) => s.from === from && s.to === to)
+    if (span === undefined) return
+    void deps.opener.open(span.target, deps.origin())
+  }
   return {
     ranges(lineText: string): RendererLinkRange[] {
       // Unarmed means no links exist, not "links that ignore clicks": the
@@ -47,11 +63,13 @@ export function createLivePolicy(deps: LivePolicyDeps): LinkPolicy {
 
     activate(lineText: string, from: number, to: number): void {
       // Re-derived rather than carried: the grammar is deterministic over
-      // the row's text, and holding the target on the engine's link object
-      // would put a copy of it somewhere the frozen surface cannot reach.
-      const span = detectLinks(lineText).find((s) => s.from === from && s.to === to)
-      if (span === undefined) return
-      void deps.opener.open(span.target, deps.origin())
+      // the row's text, and holding a target on the renderer would fork it.
+      activate(lineText, from, to)
+    },
+
+    activateAt(lineText: string, offset: number): void {
+      const span = detectLinks(lineText).find((s) => offset >= s.from && offset < s.to)
+      if (span !== undefined) activate(lineText, span.from, span.to)
     },
 
     activateHyperlink(url: string): void {

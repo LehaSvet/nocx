@@ -35,7 +35,7 @@ const serverBin = () => readStand().server
 
 const TITLE = '.nocx-tab-title'
 const INPUT = '.pane.active .nocx-editor-input'
-const GRID = '.pane.active .xterm-live-container'
+const GRID = '.pane.active .terminal-live-container'
 const GRANT_CHIP = '.pane.active [data-control="grant"]'
 const FREEZE = '.pane.active .nocx-editor [role="status"]'
 const RUNNING_BLOCK = '.pane.active .cmd-block.cmd-block-running'

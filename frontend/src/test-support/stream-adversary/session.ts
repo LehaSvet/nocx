@@ -88,7 +88,7 @@ export function assembleTodaySession(): SessionAssembly {
       case 'app': {
         if (frame.payload.startsWith('submit:')) {
           const command = frame.payload.slice('submit:'.length)
-          ledger.open(command, '/tmp', '', () => undefined, 'shell')
+          ledger.open(command, '/tmp', '', 'shell')
           events.push(`app:submit:${command}`)
         } else {
           events.push(`app:unknown:${frame.payload}`)

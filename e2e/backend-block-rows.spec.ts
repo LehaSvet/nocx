@@ -46,7 +46,7 @@ test('a running command block grows from backend-stored rows', async ({ page }) 
   const earlyCount = await rows.count()
   await page.keyboard.press('Enter')
   await expect.poll(async () => rows.count(), { timeout: 10_000 }).toBeGreaterThan(earlyCount)
-  await expect(page.locator('.pane.active .xterm-live-container')).toContainText(finalMarker, {
+  await expect(page.locator('.pane.active .terminal-live-container')).toContainText(finalMarker, {
     timeout: 20_000,
   })
 

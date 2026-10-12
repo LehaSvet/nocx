@@ -181,62 +181,6 @@ func TestRingHoleLeavesTheRingWhenItsConsumersHavePassedIt(t *testing.T) {
 	}
 }
 
-// And the product's own answer: a client reading the recording back is told
-// where the hole is, how wide it is and who took the bytes — and the runs on
-// either side are the session's own output, byte for byte.
-func TestSessionOutputReportsTheHostWindowHole(t *testing.T) {
-	const lost = uint64(4096)
-	before, after := recordingStream(2048), recordingStream(3072)
-	// The three offsets this test is about, named once: where the hole
-	// starts, where it ends, and what the session has produced by the end.
-	holeAt, resumeAt := uint64(len(before)), uint64(len(before))+lost
-	produced := resumeAt + uint64(len(after))
-	db := openRecordingStore(t, 1<<20)
-
-	term := newFeedablePTY()
-	ws, stop := newRecordingWSServer(t, term, WithSessionOutputRecorder(db.SessionOutput()))
-	defer stop()
-
-	conn := connectWS(t, ws)
-	sid := openSessionOnConn(t, ws, conn, 1)
-
-	awaitPush(t, "the output before the hole", pushOutput(term, before))
-	awaitProduced(t, db, sid, holeAt)
-
-	// The helper's reset, at the point in the stream it happened: this is
-	// what internal/helper/client's OnOutputHole delivers on the pump's own
-	// goroutine, and internal/app hands to the ring through
-	// HostedSessionOpen.ObserveOutputHoles.
-	ws.getRx(session.ID(sid)).ring.hole(lost, content.GapReasonHostWindow)
-
-	awaitPush(t, "the output after the hole", pushOutput(term, after))
-	awaitProduced(t, db, sid, produced)
-
-	got := mustReadSessionOutput(t, conn, 42, map[string]any{"sessionId": sid, "from": 0})
-	if len(got.Gaps) != 1 {
-		t.Fatalf("gaps = %+v, want exactly the hole the host's window left", got.Gaps)
-	}
-	if got.Gaps[0].Start != holeAt || got.Gaps[0].End != resumeAt {
-		t.Fatalf("the hole is reported as [%d,%d), want [%d,%d)",
-			got.Gaps[0].Start, got.Gaps[0].End, holeAt, resumeAt)
-	}
-	if got.Gaps[0].Reason != content.GapReasonHostWindow {
-		t.Fatalf("the hole reads back as %q, want %q — the retention bound never had these bytes and no recorder was missing",
-			got.Gaps[0].Reason, content.GapReasonHostWindow)
-	}
-	if len(got.Runs) != 2 {
-		t.Fatalf("runs = %d, want two: the recording may not join two stretches that are not adjacent", len(got.Runs))
-	}
-	if got.Runs[0].Offset != 0 || !bytesEqual(got.bodyAt(t, 0), before) {
-		t.Fatalf("the run before the hole is not the session's own output (offset %d, %d bytes)",
-			got.Runs[0].Offset, len(got.bodyAt(t, 0)))
-	}
-	if got.Runs[1].Offset != resumeAt || !bytesEqual(got.bodyAt(t, 1), after) {
-		t.Fatalf("the run after the hole is at %d and is not the session's own output; want offset %d and %d bytes",
-			got.Runs[1].Offset, resumeAt, len(after))
-	}
-}
-
 // The one place the host's vocabulary and the store's meet. A generation that
 // names a cause this build has never heard of must reach a person as "we do
 // not know" rather than as this build's guess at what it meant — which is
@@ -710,14 +654,6 @@ func TestSessionByteOffsetJSONBoundaryIsInclusiveAndRejectsUnsafeValues(t *testi
 			if !tc.wantError && got != "" {
 				t.Fatalf("attach rejected maximum safe offset: %s", got)
 			}
-			output := json.RawMessage(fmt.Sprintf(`{"sessionId":"0123456789abcdef0123456789abcdef","from":%d}`, tc.value))
-			got = validateSessionOutputRaw(output)
-			if tc.wantError && got == "" {
-				t.Fatalf("session.output accepted unsafe offset %d", tc.value)
-			}
-			if !tc.wantError && got != "" {
-				t.Fatalf("session.output rejected maximum safe offset: %s", got)
-			}
 		})
 	}
 }
@@ -731,17 +667,4 @@ func TestSessionOutputGapDTOConformsAtSafeBoundary(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	validateJSON(t, loadSchema(t, "session.outputGap.schema.json"), raw, "session.outputGap DTO at safe boundary")
-}
-
-func TestSessionOutputOffsetEmissionRejectsUnsafeValueExplicitly(t *testing.T) {
-	const ceiling = uint64(9007199254740991)
-	if err := validateSessionOutputOffsets(ceiling, content.SessionOutputRecording{Produced: ceiling}); err != nil {
-		t.Fatalf("maximum safe offset rejected: %v", err)
-	}
-	for _, value := range []uint64{ceiling + 1} {
-		err := validateSessionOutputOffsets(value, content.SessionOutputRecording{Produced: value})
-		if err == nil || !strings.Contains(err.Error(), "JSON-safe") {
-			t.Fatalf("unsafe output boundary error = %v, want explicit JSON-safe boundary error", err)
-		}
-	}
 }

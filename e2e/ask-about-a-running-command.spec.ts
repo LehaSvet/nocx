@@ -63,7 +63,7 @@ const serverBin = () => readStand().server
 
 const TITLE = '.nocx-tab-title'
 const INPUT = '.pane.active .nocx-editor-input'
-const GRID = '.pane.active .xterm-live-container'
+const GRID = '.pane.active .terminal-live-container'
 const RUNNING_BLOCK = '.pane.active .cmd-block.cmd-block-running'
 const SETTINGS_AI_NAV = '.ui-grouped-nav__item[data-item="endpoints"]'
 const SETTINGS_ROLES_NAV = '.ui-grouped-nav__item[data-item="roles"]'

@@ -57,7 +57,7 @@ test('a click into the pane leaves the terminal taking keystrokes', async ({ pag
   await page.keyboard.type("printf 'NOCX-D1F-%s\\n' CLICK")
   await page.keyboard.press('Enter')
   await expect(
-    page.locator('.pane.active .xterm-live-container .term-grid-row', { hasText: marker }),
+    page.locator('.pane.active .terminal-live-container .term-grid-row', { hasText: marker }),
   ).toBeVisible({
     timeout: 5000,
   })

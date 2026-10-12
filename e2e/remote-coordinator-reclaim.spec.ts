@@ -46,7 +46,7 @@
  *
  * The terminal grid is a canvas, so marker counts come from the remote
  * process's own file and the byte accounting from `sessions.inventory` and
- * `session.output` — the coordinator's own methods, and the very ones the
+ * `session.recoveryStatus` — the coordinator's metadata method, and the very one the
  * reclaim itself reads. The COMMAND BLOCK and the missing-output notice are
  * asserted in the product DOM, because "a block in the pane, not a line in a
  * log" is itself one of this bead's criteria (moved here from nocx-k6p18.22).
@@ -162,12 +162,9 @@ interface InventorySession {
   exit: { code: number; signal?: number; at: string } | null
 }
 
-interface SessionOutput {
+interface RecoveryStatus {
   sessionId: string
-  from: number
-  effectiveSize: { cols: number; rows: number }
   produced: number
-  runs: { offset: number; body: string }[]
   gaps: { start: number; end: number; reason: string }[]
 }
 
@@ -258,53 +255,15 @@ function helperSession(
   return entries.find((entry) => entry.hostSessionId.session === sessionId)
 }
 
-async function output(
+async function recoveryStatus(
   endpoint: BackendEndpoint,
   live: Pick<LiveSession, 'sessionId' | 'instanceId' | 'sessionEpoch'>,
-  from: number,
-): Promise<SessionOutput> {
-  return ask<SessionOutput>(endpoint, 'session.output', {
+): Promise<RecoveryStatus> {
+  return ask<RecoveryStatus>(endpoint, 'session.recoveryStatus', {
     sessionId: live.sessionId,
     instanceId: live.instanceId,
     sessionEpoch: live.sessionEpoch,
-    from,
   })
-}
-
-/** Read every recorded run, advancing over explicit gaps as well as bytes.
- *  The gaps are collected rather than stepped over in silence: they are half
- *  of what this test is here to assert. */
-async function recordedText(
-  endpoint: BackendEndpoint,
-  live: Pick<LiveSession, 'sessionId' | 'instanceId' | 'sessionEpoch'>,
-): Promise<{ text: string; produced: number; gaps: SessionOutput['gaps'] }> {
-  let text = ''
-  let at = 0
-  const seen = new Set<string>()
-  const gaps: SessionOutput['gaps'] = []
-  for (;;) {
-    const page = await output(endpoint, live, at)
-    let cursor = at
-    for (const gap of page.gaps) {
-      // Paging re-reports a gap that straddles the cursor, and a duplicate
-      // would make "how many holes" a property of the page size.
-      const key = `${gap.start}:${gap.end}:${gap.reason}`
-      if (!seen.has(key)) {
-        seen.add(key)
-        gaps.push(gap)
-      }
-      cursor = Math.max(cursor, gap.end)
-    }
-    for (const run of page.runs) {
-      const bytes = Buffer.from(run.body, 'base64')
-      text += bytes.toString('utf8')
-      cursor = Math.max(cursor, run.offset + bytes.length)
-    }
-    if (cursor <= at || cursor >= page.produced) {
-      return { text, produced: page.produced, gaps }
-    }
-    at = cursor
-  }
 }
 
 function markersIn(text: string): number[] {
@@ -625,7 +584,7 @@ test('a remote helper build survives a fresh coordinator, names what it lost, an
     const markerAtDetach = markerCountOnFixtureHost(gates.markerFile)
     const writtenAtDetach = helperSession(await inventory(endpoint), liveBefore.sessionId)!.window
       .written
-    const producedAtDetach = (await recordedText(endpoint, liveBefore)).produced
+    const producedAtDetach = (await recoveryStatus(endpoint, liveBefore)).produced
 
     // ── the window closes, and then so does nocx ──────────────────────────
     //
@@ -782,7 +741,7 @@ test('a remote helper build survives a fresh coordinator, names what it lost, an
     // data-output-evicted="true">`, resolving 120-odd times across 60 s — and
     // is `display: none`. A pane with no lifecycle domain reads its shell as
     // markerless, enters `unstructured` mode, and
-    // `.scrollback-inner.inner-fullscreen-mode > *:not(.xterm-live-container)`
+    // `.scrollback-inner.inner-fullscreen-mode > *:not(.terminal-live-container)`
     // takes every block in the stack with it (style.css; controller.ts
     // `setUnstructured`). A history a person cannot see has not survived
     // anything, so `toBeAttached` here would be this test agreeing with the
@@ -823,7 +782,7 @@ test('a remote helper build survives a fresh coordinator, names what it lost, an
     // hostWindow notice. Derive its exact byte count from the coordinator's
     // output ledger, then require the cap clause and exclude the already-named
     // hostWindow range.
-    const finalOutput = await recordedText(endpoint, liveAfter!)
+    const finalOutput = await recoveryStatus(endpoint, liveAfter!)
     const capLossBytes = finalOutput.gaps
       .filter((gap) => gap.reason === 'cap')
       .reduce((total, gap) => total + gap.end - gap.start, 0)
@@ -864,7 +823,9 @@ test('a remote helper build survives a fresh coordinator, names what it lost, an
 
     // The markers the recording DOES hold are one process's output in stream
     // order — not two runs spliced together at the reclaim.
-    const finalMarkers = markersIn(finalOutput.text)
+    const finalMarkers = markersIn(
+      (await returnedPane.locator('.terminal-live-grid').textContent()) ?? '',
+    )
     expect(finalMarkers.length).toBeGreaterThan(1)
     expect(Math.max(...finalMarkers)).toBeGreaterThan(Math.min(...finalMarkers))
 

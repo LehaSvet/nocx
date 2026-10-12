@@ -427,7 +427,7 @@ export function blockKindRules(kind: BlockKind): BlockKindRules {
 // ── Block model ────────────────────────────────────────────────────────────
 
 /** The handle the ask surface drives one answer block with (nocx-x8s2.2).
- *  The answer is NOT xterm output — it arrives as plain text over the
+ *  The answer is NOT terminal screen output — it arrives as plain text over the
  *  control plane — so the body is rendered as escaped term-lines (the
  *  flow's one text vocabulary). The handle is the ONLY way the block's
  *  body and status change; the ask surface never touches the block DOM
@@ -590,7 +590,7 @@ export function toolCallExpansion(
 export type ToolResultSource = (actionEntryId: string) => Promise<string | null>
 
 /** One answer block's bookkeeping (nocx-x8s2.2): the question it answers
- *  and its DOM element. Deliberately NOT a BlockRecord — no xterm lines,
+ *  and its DOM element. Deliberately NOT a BlockRecord — no live-cell range,
  *  no freeze lifecycle; the command paths must never see it. */
 interface AnswerBlockRecord {
   id: number
@@ -733,7 +733,7 @@ export interface BlockRecord {
    *  is the record of that; a shell-originated block opens after its echo
    *  and defaults to `startLine`. */
   outputStart?: number
-  /** Backend-owned screen anchor; renderer cursor positions are never substitutes. */
+  /** Backend-owned screen anchor; cursor position is never a substitute. */
   outputAnchor?: BlockOutputStart
   /** Offset from the accepted frame base row when its identity matches the anchor. */
   outputAnchorOffset?: number
@@ -1620,7 +1620,7 @@ export function createCommandBlock(
     // fixed from this moment and never re-serialized, so a pass per block
     // beats a pass per click. The gesture itself is attached once per tab
     // (terminal-links/surface.ts); this only puts the elements in reach of
-    // it. The grammar is shared with the live xterm surface rather than
+    // it. The grammar is shared with the live terminal grid rather than
     // spelled twice — see terminal-links/detect.ts for why that matters.
     decorateLinks(outputEl)
   }
@@ -1998,7 +1998,7 @@ export interface BlockManagerOpts {
 export class BlockManager {
   private _blocks: BlockRecord[] = []
   /** Answer blocks (nocx-x8s2.2): the assistant's streamed replies, kept
-   *  OUT of _blocks because they have no xterm line range — the freeze,
+   *  OUT of _blocks because they have no accepted screen range — the freeze,
    *  serialize and reconstruction paths iterate _blocks and must never see
    *  a record with sentinel lines. They share the id space and the DOM
    *  selection API; the ask surface drives them through AnswerBlockHandle
@@ -2021,7 +2021,7 @@ export class BlockManager {
   private _now: () => number
   private _onBlockFrozen?: (rec: BlockRecord) => void
   private _scrollbackInner: HTMLElement
-  private _xtermContainer: HTMLElement
+  private _liveContainer: HTMLElement
   private _runningBlock: BlockRecord | null = null
   private _cmdStartTime: number | null = null
   /** Currently selected block id, or null if none selected (P1-8). */
@@ -2102,9 +2102,9 @@ export class BlockManager {
    *  that never reached a command cannot adopt an unrelated block later. */
   private _claimedBy: HTMLElement | null = null
 
-  constructor(scrollbackInner: HTMLElement, xtermContainer: HTMLElement, opts: BlockManagerOpts) {
+  constructor(scrollbackInner: HTMLElement, liveContainer: HTMLElement, opts: BlockManagerOpts) {
     this._scrollbackInner = scrollbackInner
-    this._xtermContainer = xtermContainer
+    this._liveContainer = liveContainer
     this._now = opts.now ?? (() => performance.now())
     this._snapshotStore = opts.snapshotStore
     this._onDeferredFreeze = opts.onDeferredFreeze
@@ -2156,7 +2156,7 @@ export class BlockManager {
    *
    *  A running command's output is not inside its block: the block holds
    *  its header until the freeze, and the bytes are in
-   *  `.xterm-live-container`. So the live region sits immediately AFTER the
+   *  `.terminal-live-container`. So the live region sits immediately AFTER the
    *  block whose output it is, and everything opened afterwards goes at the
    *  TAIL of the scrollback, below it.
    *
@@ -2188,8 +2188,8 @@ export class BlockManager {
     // lost (nocx-askcb). The focus goes back where it was, in the same task,
     // and only if the region held it.
     const focused = document.activeElement
-    const heldFocus = focused instanceof HTMLElement && this._xtermContainer.contains(focused)
-    this._scrollbackInner.insertBefore(this._xtermContainer, seat.nextSibling)
+    const heldFocus = focused instanceof HTMLElement && this._liveContainer.contains(focused)
+    this._scrollbackInner.insertBefore(this._liveContainer, seat.nextSibling)
     if (heldFocus && document.activeElement !== focused) focused.focus({ preventScroll: true })
   }
 
@@ -2198,7 +2198,7 @@ export class BlockManager {
    *  seated after a block anchors on — the other half of `_liveFollows`,
    *  read from the seating side (nocx-hp8p2.8). */
   tailOf(el: HTMLElement): ChildNode {
-    return el.nextSibling === this._xtermContainer ? this._xtermContainer : el
+    return el.nextSibling === this._liveContainer ? this._liveContainer : el
   }
 
   /** Put a COMMAND block in the next seat: inside the turn that claimed it
@@ -2248,20 +2248,16 @@ export class BlockManager {
    *  replaces the previous command's stand-in. */
   private _showCommandIndicator(): void {
     this._clearCommandIndicator()
-    this._xtermContainer.appendChild(createWorkingIndicator())
+    this._liveContainer.appendChild(createWorkingIndicator())
   }
 
   private _clearCommandIndicator(): void {
-    this._xtermContainer.querySelector(':scope > .cmd-answer-typing')?.remove()
+    this._liveContainer.querySelector(':scope > .cmd-answer-typing')?.remove()
   }
 
-  /** THE SEAM for "the first byte of the command's output arrived"
-   *  (nocx-vnirv.1): the renderer's writeParsed path calls this on the
-   *  first parsed write after the block opens, and the stand-in stands
-   *  down. Idempotent — every later chunk calls it again and nothing
-   *  changes. The call site lives in terminal-content.ts (renderer
-   *  onWriteParsed, beside scheduleLiveResize), which another worker owns;
-   *  this is the seam the coordinator wires. */
+  /** The first accepted backend frame proves command output arrived
+   *  (nocx-vnirv.1). TerminalContent calls this for each accepted frame; the
+   *  first call removes the stand-in and later calls are harmless. */
   noteCommandOutput(): void {
     this._clearCommandIndicator()
   }
@@ -2660,10 +2656,10 @@ export class BlockManager {
     // yet" stand-in stands THERE, where the first output line will be
     // written (nocx-vnirv.1). The height constraint holds by construction:
     // the stand-in is absolutely positioned inside the live container
-    // (style.css, .xterm-live-container.live-running > .cmd-answer-typing),
+    // (style.css, .terminal-live-container.live-running > .cmd-answer-typing),
     // so it takes no flow height, and the box the controller measures and
     // sizes is exactly the box the frozen body replaces — nothing moves at
-    // the swap. Removed by the first byte of output (noteCommandOutput) or
+    // the swap. Removed by the first accepted output frame (noteCommandOutput) or
     // by the block's terminal freeze.
     this._showCommandIndicator()
 

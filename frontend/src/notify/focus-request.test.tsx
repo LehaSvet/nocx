@@ -12,7 +12,6 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import {
-  createRendererMock,
   resetSessionCounter,
   mountPaneManager,
   makeClient,
@@ -21,10 +20,6 @@ import {
 import { subscribeSessionFocus } from './focus-request'
 import { LOCAL_BACKEND_ID, type PaneManager } from '../panes'
 import type { SessionFocus } from '../generated/session.focus'
-
-vi.mock('../renderers/xterm', () => ({
-  XtermRenderer: vi.fn(createRendererMock),
-}))
 
 function fakeDispatcher() {
   const handlers = new Map<string, Set<(p: unknown) => void>>()

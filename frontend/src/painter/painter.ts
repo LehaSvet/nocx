@@ -18,7 +18,7 @@
 //
 // Selection, copy, IME and the aria-live channel are later slices of the
 // same epic; the cutover (nocx-zg3k3.2.5) mounts the painter in place of
-// xterm — this module deliberately knows nothing about how it is mounted.
+// terminal input — this module deliberately knows nothing about how it is mounted.
 
 import type { ScreenSnapshot } from '../cell-model'
 import type { CellFit, FitCandidate } from '../scrollback/cell-fit'

@@ -1,7 +1,7 @@
 // The translated element must not clip (nocx-hg0dg).
 //
 // The live region hides the shell's echo of the command by TRANSLATING
-// `.xterm-inner` upward (ScrollbackController._applyEchoShift). That element
+// `.terminal-live-inner` upward (ScrollbackController._applyEchoShift). That element
 // also carried `overflow: hidden`, added as "defence-in-depth against
 // artifacts leaking below it". Against a transform it is not redundant
 // defence: a clip applies in the element's OWN box, before the translation
@@ -70,17 +70,17 @@ function declared(selector: string, property: string): string | null {
 }
 
 describe('the live region clips outside the element it translates (nocx-hg0dg)', () => {
-  it('does not clip on .xterm-inner, which the echo shift transforms', () => {
+  it('does not clip on .terminal-live-inner, which the echo shift transforms', () => {
     // Neither `hidden` nor any other clipping value: `clip`, `scroll` and
     // `auto` all establish the same box, and `auto` would additionally put a
     // scrollbar inside the grid.
-    expect(declared('.xterm-inner', 'overflow')).toBeNull()
+    expect(declared('.terminal-live-inner', 'overflow')).toBeNull()
   })
 
   it('clips on the two ancestors that are never transformed', () => {
     // The row must still not leak below the region — that is what these are
     // for, and the reason the inner clip could be removed rather than moved.
-    expect(declared('.xterm-live-container', 'overflow')).toBe('hidden')
-    expect(declared('.xterm-live-viewport', 'overflow')).toBe('hidden')
+    expect(declared('.terminal-live-container', 'overflow')).toBe('hidden')
+    expect(declared('.terminal-live-viewport', 'overflow')).toBe('hidden')
   })
 })

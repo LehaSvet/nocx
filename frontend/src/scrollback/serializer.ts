@@ -235,10 +235,10 @@ export function attrsEqual(a: CellAttrs, b: CellAttrs): boolean {
 }
 
 /**
- * Extract cell attributes from an xterm buffer cell.
+ * Extract cell attributes from a terminal buffer cell.
  * Works with any terminal line and cell satisfying the structural contract.
  */
-export function cellAttrs(
+function cellAttrs(
   snapshot: TerminalSnapshot,
   line: TerminalBufferLine,
   cellIdx: number,
@@ -251,7 +251,7 @@ export function cellAttrs(
   const bgColor = cell.getBgColor()
   const bgMode = cell.getBgColorMode()
 
-  // xterm hands back the RAW mode flags; normalize to the canonical 0/1/2
+  // The source buffer hands back RAW mode flags; normalize to canonical 0/1/2
   // colorToCSS reasons in (nocx-07o7).
   return {
     fg: colorToCSS(snapshot, fgColor, normalizeColorMode(fgMode)),

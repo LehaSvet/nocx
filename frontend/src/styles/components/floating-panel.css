@@ -34,7 +34,7 @@
      border token draws the edge; the two shadows (kit pattern from toast:
      a tight contact shadow plus a wide soft one) lift the panel off the
      terminal. z-index: 1 keeps the panel above the terminal's positioned
-     layers (the xterm viewport is z-index 0) without competing with
+     layers (the live terminal surface is z-index 0) without competing with
      overlays that must cover it (toast: 300, prompt: 1 + later in the
      tree). */
   border: 1px solid var(--color-border);

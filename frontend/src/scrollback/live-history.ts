@@ -190,14 +190,14 @@ export class LiveHistorySurface {
     const onKeyDown = (ev: KeyboardEvent): void => this._holdThroughTyping(ev)
     opts.scroller.addEventListener('keydown', onKeyDown, true)
     // THE WHEEL, TRANSLATED BY THE SCROLLER'S OWN OWNER (nocx-zg3k3.10.4).
-    // The input surface is still xterm's (until nocx-zg3k3.3), and xterm
+    // The terminal input is a separate surface; the painter receives the accepted frame, and the
     // consumes a wheel over the live screen into its OWN viewport — which
     // is empty now that the emulator is the backend's (ADR-0078): the
     // gesture died there and the person's first wheels after output moved
     // nothing. A preventDefault cancels the default action, never the
     // propagation, so this bubble-phase listener on the scroller still
     // sees every wheel and applies the delta itself — in the unstructured
-    // mode alone. The alternate screen keeps xterm's wheel (mouse
+    // mode alone. The alternate screen keeps the terminal's wheel (mouse
     // reporting, the program's own mode), and keys are untouched.
     const onWheel = (ev: WheelEvent): void => this._translateWheel(ev)
     opts.scroller.addEventListener('wheel', onWheel, { passive: false })
@@ -449,7 +449,7 @@ export class LiveHistorySurface {
    * carries NO scroll call at all — neither this surface's nor the
    * controller's. What moved the scroller is the ENGINE revealing the caret
    * of the focused control by scrolling its ancestors, and the grid's hidden
-   * input (xterm's helper textarea) sits at the cursor: inside this scroller,
+   * input element sits at the cursor: inside this scroller,
    * at the live end. The reader is at the live end afterwards, so this
    * class's own rule — a stale past is rebuilt under a reader who is there
    * (`_fireHeadRefresh`, `tailReengaged`) — takes the rows they were reading
@@ -466,7 +466,7 @@ export class LiveHistorySurface {
    * undo a scroll the reader makes afterwards.
    *
    * The reveal itself is not preventable from here: where that input sits is
-   * xterm's (`position: fixed`, or any containing block outside this
+   * the terminal input's (`position: fixed`, or any containing block outside this
    * scroller, would take the IME's candidate window out with it), so the
    * reader's place is kept on this side instead of the engine's scroll being
    * argued out of happening.

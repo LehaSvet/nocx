@@ -3,7 +3,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { NameColourDraft } from './name-colour-dialog'
 import { applyRestoreOnStartup } from './restore-setting'
 import {
-  createRendererMock,
   resetSessionCounter,
   mountPaneManager,
   makeClient,
@@ -20,9 +19,6 @@ import { BasePaneContent, type ContentDescriptor, type ContentViewport } from '.
 // The terminal renderer is mocked exactly as panes.test.ts mocks it: these
 // tests are about the strip and the chain, and a real xterm in jsdom is
 // neither available nor the subject.
-vi.mock('./renderers/xterm', () => ({
-  XtermRenderer: vi.fn(createRendererMock),
-}))
 
 // THE RENDERER ASKS INSTEAD OF OWNING (nocx-isoph.4, design §4.1 and §4.5).
 //

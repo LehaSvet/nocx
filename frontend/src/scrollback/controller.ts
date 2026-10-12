@@ -1,15 +1,12 @@
-// DOM scrollback controller — wires the renderer's OSC 133 markers to block
-// creation, manages the live region visibility, alt-screen transitions, and
-// `clear` detection. Owns the scrollback DOM structure inside the pane.
+// DOM scrollback controller — manages block layout, live-region visibility,
+// alternate-screen transitions, and clear-boundary cleanup. It owns the
+// scrollback DOM structure inside one pane.
 //
-// ADR-0024 (bead nocx-u7uh.7): the block model is an attempt projection —
-// the freeze/abandon paths below are driven by authenticated attempts, never
-// by OSC 133 C/D (which the renderer now treats as render-only). The
-// authority checks (kernel freezeBlock) run at the composition site; these
-// methods paint the attempt's verdict.
+// ADR-0024 (bead nocx-u7uh.7): blocks project authenticated lifecycle
+// attempts. Freeze and abandon decisions come from the lifecycle kernel;
+// this controller only applies their presentation state.
 
 import type { CommandAuthor } from '../command-ledger'
-import type { TerminalRenderer } from '../renderers/types'
 import {
   BlockManager,
   type BlockRecord,
@@ -36,9 +33,11 @@ const SETTLE_EASING = 'cubic-bezier(0.2, 0, 0, 1)'
 export interface ScrollbackControllerOpts {
   /** The pane this controller owns the scrollback inside. */
   pane: HTMLElement
-  /** The renderer for the terminal. */
-  renderer: TerminalRenderer
-  /** The renderer's per-tab command-existence snapshot store (OSC 636). */
+  /** Current painter row height in CSS pixels, or null before its first frame. */
+  liveContentHeight: () => number | null
+  /** The painter's measured cell width and row pitch, when the frame is laid out. */
+  cellMetrics: () => { cellWidth: number; cellHeight: number } | null
+  /** This tab's command-existence snapshot store (OSC 636). */
   snapshotStore: CommandSnapshotStore
   /** Injectable clock. */
   now?: () => number
@@ -85,17 +84,17 @@ export class ScrollbackController {
   readonly scrollbackArea: HTMLElement
   readonly scrollbackInner: HTMLElement
   /** Outer clipping container — height changes with mode. */
-  readonly xtermLiveContainer: HTMLElement
+  readonly terminalLiveContainer: HTMLElement
   /** The end of the output, as a one-pixel box a sibling of the stack — the
    *  follow observer's target. See the constructor for why it is not the live
    *  region. */
   readonly followSentinel: HTMLElement
   /** Inner clipping window. It tracks the rows written while the outer box
    *  supplies the same height to flex layout. */
-  readonly xtermLiveViewport: HTMLElement
-  /** Inner wrapper with stable min-height — xterm mounts here so its grid
-   *  stays sane regardless of the clipping container's CSS height. */
-  readonly xtermInner: HTMLElement
+  readonly terminalLiveViewport: HTMLElement
+  /** Inner wrapper with stable min-height — the painter surface mounts here
+   *  so row geometry stays sane regardless of the clipping container height. */
+  readonly terminalLiveInner: HTMLElement
   readonly separator: HTMLElement
   /** This tab's OSC 636 store, kept because a block built OUTSIDE the manager
    *  — a restored one (nocx-m3fqk) — needs the same instance its live
@@ -103,7 +102,8 @@ export class ScrollbackController {
   readonly snapshotStore: CommandSnapshotStore
 
   private _blockManager: BlockManager
-  private _renderer: TerminalRenderer
+  private readonly _liveContentHeight: () => number | null
+  private readonly _cellMetrics: () => { cellWidth: number; cellHeight: number } | null
   private _mode: LiveRegionMode = 'idle'
   /** A ready prompt asked for the idle layout while a completed block was
    *  still waiting for its block.closed; applied when the close lands, and
@@ -142,7 +142,8 @@ export class ScrollbackController {
   private readonly _onTailFollow?: (following: boolean) => void
 
   constructor(opts: ScrollbackControllerOpts) {
-    this._renderer = opts.renderer
+    this._liveContentHeight = opts.liveContentHeight
+    this._cellMetrics = opts.cellMetrics
     this._onClear = opts.onClear
     this._onModeChanged = opts.onModeChanged
     this._onTailFollow = opts.onTailFollow
@@ -173,21 +174,22 @@ export class ScrollbackController {
     this.scrollbackArea.appendChild(this.followSentinel)
 
     // The outer container participates in flex layout; the separate inner
-    // viewport clips xterm's larger grid. Both follow the written rows so the
+    // viewport clips the painted grid. Both follow the written rows so the
     // running shape matches the frozen block it becomes.
-    this.xtermLiveContainer = document.createElement('div')
-    this.xtermLiveContainer.className = 'xterm-live-container live-idle'
+    this.terminalLiveContainer = document.createElement('div')
+    this.terminalLiveContainer.className =
+      'terminal-live-container terminal-live-container live-idle'
 
-    this.xtermLiveViewport = document.createElement('div')
-    this.xtermLiveViewport.className = 'xterm-live-viewport'
+    this.terminalLiveViewport = document.createElement('div')
+    this.terminalLiveViewport.className = 'terminal-live-viewport terminal-live-viewport'
 
-    this.xtermInner = document.createElement('div')
-    this.xtermInner.className = 'xterm-inner'
-    this.xtermLiveViewport.appendChild(this.xtermInner)
-    this.xtermLiveContainer.appendChild(this.xtermLiveViewport)
+    this.terminalLiveInner = document.createElement('div')
+    this.terminalLiveInner.className = 'terminal-live-inner terminal-live-inner'
+    this.terminalLiveViewport.appendChild(this.terminalLiveInner)
+    this.terminalLiveContainer.appendChild(this.terminalLiveViewport)
 
     // Separator between blocks and live region — inserted before the
-    // xterm container so blocks stack above it. Hidden when no blocks.
+    // live container so blocks stack above it. Hidden when no blocks.
     //
     // THE ONLY TWO CHILDREN THIS FILE PUTS IN. They are the container's own
     // frame: built with it, never removed, and the anchor the manager
@@ -199,7 +201,7 @@ export class ScrollbackController {
     this.separator.className = 'scrollback-separator'
     this.separator.style.display = 'none'
     this.scrollbackInner.appendChild(this.separator)
-    this.scrollbackInner.appendChild(this.xtermLiveContainer)
+    this.scrollbackInner.appendChild(this.terminalLiveContainer)
 
     this.scrollbackLayout.appendChild(this.scrollbackArea)
 
@@ -207,7 +209,7 @@ export class ScrollbackController {
     // which is absolute-positioned).
     opts.pane.insertBefore(this.scrollbackLayout, opts.pane.firstChild)
 
-    this._blockManager = new BlockManager(this.scrollbackInner, this.xtermLiveContainer, {
+    this._blockManager = new BlockManager(this.scrollbackInner, this.terminalLiveContainer, {
       now,
       snapshotStore: opts.snapshotStore,
       // A DEFERRED freeze landed inside the manager (the backend's
@@ -231,17 +233,11 @@ export class ScrollbackController {
     })
 
     // ── Frozen block cell metric (nocx-yy9g) ──────────────────────────
-    // The frozen block layout must reproduce xterm's cell width exactly,
-    // so the renderer's real measurement is published as custom properties
-    // on the scrollback container (see cell-metric.ts for why the DOM
-    // cannot be trusted to match on its own). Subscribed BEFORE the
-    // renderer mounts, so the mount-end notification lands on a live
-    // subscription; the publish itself is a no-op until the renderer can
-    // measure (cellWidth 0), so the first real publish is the mount-end
-    // fire. Old blocks adopt the current geometry on every republish —
-    // deliberate, see the module comment.
-    this._renderer.onCellDimsChange?.(() => this._republishCellMetric())
-    this._republishCellMetric()
+    // Frozen blocks and the live painter share the cell metric published by
+    // scrollback/cell-metric.ts. Subscribe before the first accepted frame;
+    // the shared font probe supplies the initial value, and later frame or
+    // viewport changes republish it. Existing blocks adopt current geometry.
+    this.cellMetricsChanged()
 
     // ── Follow state ─────────────────────────────────────────────────────
     // Whether the end of the live output is on screen. Not "did the last scroll
@@ -272,11 +268,10 @@ export class ScrollbackController {
     this._followObserver.observe(this.followSentinel)
   }
 
-  /** The element the xterm renderer mounts into. Returns the stable
-   *  xterm-inner wrapper, NOT the clipping live-container, so the grid
-   *  never collapses to 1 row (P0-1 fix). */
+  /** The painter surface mounts into this stable terminal-live-inner wrapper,
+   *  NOT the clipping live-container, so the grid never collapses to one row. */
   get mountTarget(): HTMLElement {
-    return this.xtermInner
+    return this.terminalLiveInner
   }
 
   get blockManager(): BlockManager {
@@ -313,11 +308,12 @@ export class ScrollbackController {
     this._mode = 'idle'
     // Both inline heights have to go: running content height and its clip
     // otherwise outrank the idle/fullscreen mode classes.
-    this.xtermLiveContainer.style.height = ''
-    this.xtermLiveViewport.style.height = ''
+    this.terminalLiveContainer.style.height = ''
+    this.terminalLiveViewport.style.height = ''
     this._setFilledPane(false)
-    this.xtermLiveContainer.className = 'xterm-live-container live-idle'
-    this.xtermInner.className = 'xterm-inner'
+    this.terminalLiveContainer.className =
+      'terminal-live-container terminal-live-container live-idle'
+    this.terminalLiveInner.className = 'terminal-live-inner terminal-live-inner'
     this.scrollbackInner.classList.remove('inner-unstructured')
     // The echo shift is a running-mode property: clear it with the region.
     this._applyEchoShift()
@@ -333,12 +329,13 @@ export class ScrollbackController {
     if (entering) this._runningCap = undefined
     this._mode = 'running'
     if (entering) {
-      this.xtermLiveContainer.style.height = ''
-      this.xtermLiveViewport.style.height = ''
+      this.terminalLiveContainer.style.height = ''
+      this.terminalLiveViewport.style.height = ''
     }
     this._setFilledPane(false)
-    this.xtermLiveContainer.className = 'xterm-live-container live-running'
-    this.xtermInner.className = 'xterm-inner'
+    this.terminalLiveContainer.className =
+      'terminal-live-container terminal-live-container live-running'
+    this.terminalLiveInner.className = 'terminal-live-inner terminal-live-inner'
     this.scrollbackInner.classList.remove('inner-unstructured')
     // The block just opened; its echo row is the grid's top row, so the
     // shift applies from the first frame (nocx-w1n4).
@@ -350,7 +347,7 @@ export class ScrollbackController {
     // opens beside the prompt instead of reserving a pane-high empty window.
     // Both layers change in the same layout pass: a transition here can still
     // be half-open when a fast command freezes, creating an extra jump.
-    this.setLiveHeight(this._renderer.liveContentHeight())
+    this.setLiveHeight(this._liveContentHeight())
     this._scrollToBottom()
   }
 
@@ -364,9 +361,10 @@ export class ScrollbackController {
   setUnstructured(): void {
     if (this._mode === 'fullscreen') return
     this._mode = 'unstructured'
-    this.xtermLiveViewport.style.height = ''
-    this.xtermLiveContainer.className = 'xterm-live-container live-unstructured'
-    this.xtermInner.className = 'xterm-inner inner-fullscreen'
+    this.terminalLiveViewport.style.height = ''
+    this.terminalLiveContainer.className =
+      'terminal-live-container terminal-live-container live-unstructured'
+    this.terminalLiveInner.className = 'terminal-live-inner terminal-live-inner inner-fullscreen'
     this._setFilledPane(true)
     this._applyEchoShift()
     // The live tier's surface is this mode's alone: the class is what the
@@ -419,8 +417,9 @@ export class ScrollbackController {
   /**
    * Size the live output to the rows it actually shows.
    *
-   * The renderer measures the grid, including the echoed command row that
-   * `_applyEchoShift` translates above the clip. Both the outer flow box and
+   * The accepted grid snapshot supplies the full painted height, including
+   * the echoed command row that `_applyEchoShift` translates above the clip.
+   * Both the outer flow box and
    * its inner clip reserve only the remainder. That keeps running geometry
    * aligned with the frozen body, which omits the same echo row.
    * Height changes are synchronous: animation can be only 2–4px open when a
@@ -428,7 +427,7 @@ export class ScrollbackController {
    */
   /** Recompute the live clip after an accepted backend output anchor/frame update. */
   outputAnchorChanged(): void {
-    this.setLiveHeight(this._lastLiveHeightPx ?? this._renderer.liveContentHeight())
+    this.setLiveHeight(this._lastLiveHeightPx ?? this._liveContentHeight())
   }
 
   setLiveHeight(px: number | null): void {
@@ -449,7 +448,7 @@ export class ScrollbackController {
     // it before height guards so a frame update can release the shift even
     // when the measured live box does not change.
     this._applyEchoShift()
-    // Null is the renderer saying it cannot measure; the class's fallback
+    // Null means the accepted grid has no usable metrics; the class fallback
     // height stands. Zero is a grid nobody has written to yet. While the
     // running block still owns its waiting stand-in, keep that fallback:
     // the indicator is absolutely positioned and the padding-only,
@@ -457,7 +456,10 @@ export class ScrollbackController {
     // layout pass. Once output retires the stand-in, zero may size the
     // region to the body's padding again.
     if (px === null) return
-    if (px === 0 && this.xtermLiveContainer.querySelector(':scope > .cmd-answer-typing') !== null) {
+    if (
+      px === 0 &&
+      this.terminalLiveContainer.querySelector(':scope > .cmd-answer-typing') !== null
+    ) {
       return
     }
     const max = this.runningLiveCap
@@ -477,13 +479,13 @@ export class ScrollbackController {
     // layout: `top` redrawing the same 33 rows every three seconds was moving
     // the scroll each time for no reason, which is unpleasant if you are
     // reading. The comparison below is the whole guard.
-    if (this.xtermLiveContainer.style.height !== box) {
-      this.xtermLiveContainer.style.height = box
+    if (this.terminalLiveContainer.style.height !== box) {
+      this.terminalLiveContainer.style.height = box
       if (this._tail.following) this._scrollToBottom()
     }
     const inner = `${content}px`
-    if (this.xtermLiveViewport.style.height !== inner) {
-      this.xtermLiveViewport.style.height = inner
+    if (this.terminalLiveViewport.style.height !== inner) {
+      this.terminalLiveViewport.style.height = inner
     }
   }
 
@@ -493,7 +495,7 @@ export class ScrollbackController {
    *  wherever there is no layout to read (jsdom), which is the same answer
    *  the class's own fallback gives. */
   private _bodyPaddingPx(): number {
-    const cs = getComputedStyle(this.xtermLiveContainer)
+    const cs = getComputedStyle(this.terminalLiveContainer)
     const top = parseFloat(cs.paddingTop)
     const bottom = parseFloat(cs.paddingBottom)
     return (Number.isFinite(top) ? top : 0) + (Number.isFinite(bottom) ? bottom : 0)
@@ -506,7 +508,7 @@ export class ScrollbackController {
    *  stylesheet stays the one place the number lives. Zero wherever there is no
    *  layout to read (jsdom without inline styles). */
   get liveInlineInsetPx(): number {
-    const cs = getComputedStyle(this.xtermLiveContainer)
+    const cs = getComputedStyle(this.terminalLiveContainer)
     const left = parseFloat(cs.paddingLeft)
     const right = parseFloat(cs.paddingRight)
     return (Number.isFinite(left) ? left : 0) + (Number.isFinite(right) ? right : 0)
@@ -519,7 +521,7 @@ export class ScrollbackController {
     if (this._mode !== 'running') return 0
     const rec = this._blockManager.runningBlock
     if (!rec || rec.outputAnchorOffset === undefined) return 0
-    const cell = this._renderer.cellHeight
+    const cell = this._cellMetrics()?.cellHeight ?? 0
     if (!cell || cell <= 0) return 0
     const command = rec.command.trim()
     if (command !== '' && !(rec.outputAnchorText ?? '').endsWith(command)) return 0
@@ -532,18 +534,16 @@ export class ScrollbackController {
   private _applyEchoShift(): void {
     const px = this._echoShiftPx()
     const next = px > 0 ? `translateY(-${px}px)` : ''
-    if (this.xtermInner.style.transform === next) return
-    this.xtermInner.style.transform = next
+    if (this.terminalLiveInner.style.transform === next) return
+    this.terminalLiveInner.style.transform = next
   }
 
-  /** Re-read the renderer's cell metric — width AND row pitch — and
-   *  republish it for the frozen blocks (nocx-yy9g and its vertical twin).
-   *  No-op while the renderer cannot measure; a republish is cheap, so it
-   *  runs on every cell-dims notification without trying to detect whether
-   *  anything actually changed. */
-  private _republishCellMetric(): void {
-    publishCellMetric(this.scrollbackInner, this._renderer.cellWidth)
-    publishRowPitch(this.scrollbackInner, this._renderer.cellHeight)
+  /** Re-publish layout metrics after the cell model accepts new geometry. */
+  cellMetricsChanged(): void {
+    const metric = this._cellMetrics()
+    if (metric === null) return
+    publishCellMetric(this.scrollbackInner, metric.cellWidth)
+    publishRowPitch(this.scrollbackInner, metric.cellHeight)
   }
 
   /**
@@ -614,9 +614,10 @@ export class ScrollbackController {
     this._idleRequested = false
     this._mode = 'fullscreen'
     this._runningCap = undefined
-    this.xtermLiveViewport.style.height = ''
-    this.xtermLiveContainer.className = 'xterm-live-container live-fullscreen'
-    this.xtermInner.className = 'xterm-inner inner-fullscreen'
+    this.terminalLiveViewport.style.height = ''
+    this.terminalLiveContainer.className =
+      'terminal-live-container terminal-live-container live-fullscreen'
+    this.terminalLiveInner.className = 'terminal-live-inner terminal-live-inner inner-fullscreen'
     this._setFilledPane(true)
     this._applyEchoShift()
     // The program owns the pane: the primary's history must not be
@@ -647,18 +648,19 @@ export class ScrollbackController {
    *  A window resize is the same defect with no card in it. */
   private _fillPane(): void {
     const max = this.scrollbackArea.clientHeight
-    if (max > 0) this.xtermLiveContainer.style.height = `${max}px`
+    if (max > 0) this.terminalLiveContainer.style.height = `${max}px`
   }
 
   /** Exit alt-screen: restore normal layout. */
   exitFullscreen(): void {
     this._mode = 'idle'
     this._runningCap = undefined
-    this.xtermLiveContainer.style.height = ''
-    this.xtermLiveViewport.style.height = ''
+    this.terminalLiveContainer.style.height = ''
+    this.terminalLiveViewport.style.height = ''
     this._setFilledPane(false)
-    this.xtermLiveContainer.className = 'xterm-live-container live-idle'
-    this.xtermInner.className = 'xterm-inner'
+    this.terminalLiveContainer.className =
+      'terminal-live-container terminal-live-container live-idle'
+    this.terminalLiveInner.className = 'terminal-live-inner terminal-live-inner'
     this._applyEchoShift()
     this.scrollbackInner.classList.remove('inner-unstructured')
     this.scrollbackInner.classList.remove('inner-fullscreen-mode')
@@ -732,8 +734,8 @@ export class ScrollbackController {
    * almost always the `clear` command's own, still running — which must
    * stay open and keep receiving rows normally; every other block is
    * removed. Null means nothing was open at the sighting, and every block
-   * is removed. The xterm viewport is already cleared by the escape
-   * sequence itself — this only cleans up the DOM blocks.
+   * is removed. The accepted screen frame reflects the erase sequence; this
+   * only cleans up the frozen DOM blocks.
    */
   onClearBoundary(keepEntryId: string | null): void {
     this._blockManager.applyClearBoundary(keepEntryId)

@@ -18,7 +18,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, fireEvent } from '@solidjs/testing-library'
 import {
-  createRendererMock,
   resetSessionCounter,
   mountPaneManager,
   makeClient,
@@ -28,10 +27,6 @@ import { NotificationsPanel } from './notifications-panel'
 import type { FeedStore } from './feed-store'
 import type { NotifyFeedRead, Occurrence } from '../generated/notify.feed.read'
 import type { PaneManager } from '../panes'
-
-vi.mock('../renderers/xterm', () => ({
-  XtermRenderer: vi.fn(createRendererMock),
-}))
 
 const ROW_TITLE = '.notifications-panel__list .ui-record-row__title'
 const ROW_META = '.notifications-panel__list .ui-record-row__meta-text'

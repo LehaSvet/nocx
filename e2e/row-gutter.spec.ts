@@ -18,7 +18,7 @@ async function measure(page: Page) {
     const pane = document.querySelector<HTMLElement>('.pane.active')!
     const area = pane.querySelector<HTMLElement>('.scrollback-area')!
     const inner = pane.querySelector<HTMLElement>('.scrollback-inner')!
-    const live = pane.querySelector<HTMLElement>('.xterm-live-container')!
+    const live = pane.querySelector<HTMLElement>('.terminal-live-container')!
     // THE LIVE COLUMN IS THE PAINTED GRID since the cutover (nocx-zg3k3.2.5):
     // the first painted row's inline content is exactly the grid's columns —
     // every row is a full rectangle — read through a Range because a block
