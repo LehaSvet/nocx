@@ -179,6 +179,52 @@ async function settle(): Promise<void> {
 }
 
 describe('live-history', () => {
+  it('returns pointer focus to the terminal input after an accessible grid-row click', () => {
+    const { surface, scroller } = mount()
+    const pane = document.createElement('div')
+    pane.className = 'pane'
+    document.body.append(pane)
+    pane.append(scroller)
+    const input = document.createElement('textarea')
+    input.className = 'ui-terminal-input'
+    pane.append(input)
+    const grid = document.createElement('div')
+    grid.setAttribute('role', 'grid')
+    const row = document.createElement('div')
+    row.className = 'term-grid-row'
+    row.tabIndex = 0
+    grid.append(row)
+    scroller.querySelector('.terminal-live-container')!.append(grid)
+
+    // A native pointer press focuses the row before click. The delegated
+    // handler restores the pane's keyboard input, but leaves the row's
+    // accessibility and tab-stop contract untouched.
+    row.focus()
+    row.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }))
+    expect(document.activeElement).toBe(input)
+    expect(row.tabIndex).toBe(0)
+
+    // The live grid also has blank cells and cursor/selection overlays; a
+    // click on the grid surface itself must keep the same input ownership.
+    row.focus()
+    grid.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }))
+    expect(document.activeElement).toBe(input)
+    row.focus()
+    scroller
+      .querySelector('.terminal-live-container')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }))
+    expect(document.activeElement).toBe(input)
+
+    // Keyboard activation of the row is not mistaken for a pointer click.
+    row.focus()
+    row.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }))
+    expect(document.activeElement).toBe(row)
+    expect(row.tabIndex).toBe(0)
+
+    surface.dispose()
+    pane.remove()
+  })
+
   it('pages the emulator to the floor: every row that left the screen is found, oldest painted first', async () => {
     const { surface, scroller } = mount()
     atBottom(scroller)

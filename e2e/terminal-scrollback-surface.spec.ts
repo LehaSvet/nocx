@@ -124,12 +124,21 @@ test('scrollback: a markerless session scrolls the rows that left the screen bac
         timeout: 30_000,
       })
       .toBeGreaterThanOrEqual(0)
-    await pane.locator('.terminal-live-container').click()
+    // The pane can paint a first frame before the raw shell's input route is
+    // ready. Wait for the observable integration check to settle, then verify
+    // the terminal's own input element owns focus before sending the command.
+    await expect(pane.getByRole('status', { name: 'Checking this shell…' })).toHaveCount(0, {
+      timeout: 30_000,
+    })
+    const painterGrid = pane.getByRole('grid', { name: 'Terminal output' })
+    const terminalInput = pane.locator('.ui-terminal-input')
+    await painterGrid.click()
+    await expect(terminalInput).toBeFocused()
 
     // ── Clause 1: more than one screen of output, every line found ──────
     const nonce = Date.now().toString(36)
     await type_(
-      `for i in $(seq 1 ${LINES}); do echo ${'SCROLLBK-'}$(printf '%03d' $i); done; echo DONE-${nonce}`,
+      `for i in $(seq 1 ${LINES}); do echo ${'SCROLLBK-'}$(printf '%03d' $i); done; printf '%s%s\\n' 'DONE-' '${nonce}'`,
     )
     await expect.poll(async () => liveRows(), { timeout: 20_000 }).toContain(`DONE-${nonce}`)
 
@@ -211,6 +220,7 @@ test('scrollback: a markerless session scrolls the rows that left the screen bac
       )
       .toBe(true)
     await pane.locator('.terminal-live-container').click()
+    await expect(terminalInput).toBeFocused()
     const lateMarker = `ANCHOR-LATE-${nonce}`
     await type_(`( sleep 15; echo ${lateMarker} ) & echo ANCHOR-ARMED-${nonce}`)
     await expect
@@ -285,7 +295,7 @@ test('scrollback: a markerless session scrolls the rows that left the screen bac
     // At the live end again: a new command's output is followed, not lost
     // below the fold.
     await pane.locator('.terminal-live-container').click()
-    await type_(`echo TAIL-RESUMED-${nonce}`)
+    await type_(`printf '%s%s\\n' 'TAIL-RESUMED-' '${nonce}'`)
     await expect
       .poll(async () => liveRows(), { timeout: 20_000 })
       .toContain(`TAIL-RESUMED-${nonce}`)

@@ -201,10 +201,25 @@ export class LiveHistorySurface {
     // reporting, the program's own mode), and keys are untouched.
     const onWheel = (ev: WheelEvent): void => this._translateWheel(ev)
     opts.scroller.addEventListener('wheel', onWheel, { passive: false })
+    // A pointer press on the live output surface can run the browser's
+    // native focus action after the pane's mousedown handler focused its hidden
+    // keyboard input. Restore that single input owner after the click, without
+    // cancelling the press (which would also disable native text selection).
+    // Keyboard activation has detail=0 and leaves the grid's roving-tabindex
+    // focus available to assistive-technology users.
+    const onLiveOutputClick = (ev: MouseEvent): void => {
+      if (ev.detail === 0 || !(ev.target instanceof Element)) return
+      const liveSurface = ev.target.closest('[role="grid"], .terminal-live-container')
+      if (liveSurface === null || !opts.scroller.contains(liveSurface)) return
+      const pane = opts.scroller.closest('.pane')
+      pane?.querySelector<HTMLTextAreaElement>('.ui-terminal-input')?.focus({ preventScroll: true })
+    }
+    opts.scroller.addEventListener('click', onLiveOutputClick, true)
     this._offScroll = () => {
       opts.scroller.removeEventListener('scroll', onScroll)
       opts.scroller.removeEventListener('wheel', onWheel)
       opts.scroller.removeEventListener('keydown', onKeyDown, true)
+      opts.scroller.removeEventListener('click', onLiveOutputClick, true)
     }
   }
 
