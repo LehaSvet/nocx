@@ -3554,6 +3554,12 @@ export class TerminalContent extends BasePaneContent {
       // connection — and restorePast is a no-op once the past is drawn.
       this._restoreRetryUnsub = this.client.onReconnectResult(() => {
         void this.restorePast()
+        // Notifications are not replayed after a socket outage. Refresh every
+        // mounted command block from its durable rows so output produced while
+        // disconnected is painted even when restorePast has already run.
+        for (const entryId of this.scrollback?.blockManager.storedRowEntryIds() ?? []) {
+          void this._refreshBlockRows(entryId)
+        }
       })
       // A returning socket may be a returning BACKEND, whose endpoints and
       // roles are not the ones this pane last read. The report fires once

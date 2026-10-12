@@ -22,9 +22,9 @@
  *     no page reload is used to recover a dropped socket.
  *  2. Test 3 asserts both the old and new port/token and repeats the drop/return
  *     cycle three times, then counts the mounted sidebar and open dialogs.
- *  3. Test 4 cuts a fault proxy while its daemon stays alive, and reads the
- *     terminal state through recovery metadata because the terminal grid is a
- *     canvas and DOM text cannot prove scrollback identity.
+ *  3. Test 4 cuts a fault proxy while its daemon stays alive. Recovery metadata
+ *     proves the daemon produced output while disconnected; the integrated
+ *     command block's visible output proves the user can read it after recovery.
  *  4. Test 6 supplies each exact FailureKind message/remedy from the backend
  *     source. The server-binary remedy is platform-specific; this run is Linux.
  *  5. Test 7 opens the real vault unlock surface before stopping the backend and
@@ -39,7 +39,7 @@
  * visibility, prompt readiness, or backend recording state.
  */
 import { expect, type Browser, type Page } from '@playwright/test'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -186,11 +186,13 @@ function disposableRoot(prefix: string): DisposableRoot {
 
 test.describe('connection overlay survives backend loss', () => {
   let backend: VaultBackend
+  let backendRoot: DisposableRoot
   const pages: Page[] = []
   const proxies: FaultProxy[] = []
 
   test.beforeEach(() => {
-    backend = new VaultBackend(readStand().server, disposableRoot('nocx-overlay-'))
+    backendRoot = disposableRoot('nocx-overlay-')
+    backend = new VaultBackend(readStand().server, backendRoot)
   })
 
   test.afterEach(async () => {
@@ -309,14 +311,15 @@ test.describe('connection overlay survives backend loss', () => {
     pages.push(page)
     await readyForInput(page)
 
-    // The marker is assembled so the terminal's echoed command cannot satisfy
-    // a recording assertion before the shell actually emits that marker. The
-    // large finite loop keeps the daemon producing bytes after the cut without
-    // making the test wait on a duration.
+    // Keep the first marker in retained history while the daemon continues
+    // producing only after the proxy has cut the page off. The release file
+    // lives under this test's disposable backend root, so no shared state or
+    // timing guess controls the producer.
+    const releaseGate = join(backendRoot.root, 'release-scrollback-producer')
     const command =
-      "printf 'NOCX_SCROLLBACK_'$(printf BEFORE)'\\n'; i=0; " +
-      'while [ "$i" -lt 1000000 ]; do printf \'NOCX_SCROLLBACK_\'$(printf DURING)\'-%06d\\n\' "$i"; ' +
-      'i=$((i+1)); done'
+      `printf 'NOCX_SCROLLBACK_'$(printf BEFORE)'\\n'; while [ ! -f '${releaseGate}' ]; do sleep 0.05; done; ` +
+      `i=1; while [ "$i" -le 40 ]; do printf 'NOCX_SCROLLBACK_DURING-%03d\n' "$i"; i=$((i+1)); done; ` +
+      `printf 'NOCX_SCROLLBACK_'$(printf DONE)'\\n'`
     await page.keyboard.type(command)
     await page.keyboard.press('Enter')
 
@@ -326,22 +329,133 @@ test.describe('connection overlay survives backend loss', () => {
       .toContain('NOCX_SCROLLBACK_BEFORE')
     const before = await recoveryFrontier(current, live)
 
-    // Hold all reconnect attempts in the proxy so the following recovery
-    // frontier growth is unambiguously produced while the daemon remains alive
-    // but the page is disconnected. The live screen itself is asserted after
-    // reconnection through the painter-owned DOM surface.
+    // Hold all reconnect attempts in the proxy while the shell waits at the
+    // gate. Releasing it now produces a bounded, known output burst while the
+    // page is disconnected; the recovery frontier proves the daemon received
+    // that output before the proxy is opened again.
     proxy.blackhole()
     proxy.cut()
     await expect(overlay(page)).toBeVisible()
+    writeFileSync(releaseGate, 'release\n')
+    const expectedBurst =
+      Array.from(
+        { length: 40 },
+        (_, index) => `NOCX_SCROLLBACK_DURING-${String(index + 1).padStart(3, '0')}\n`,
+      ).join('') + 'NOCX_SCROLLBACK_DONE\n'
     await expect
       .poll(async () => (await recoveryFrontier(current, live)) - before, { timeout: 30_000 })
-      .toBeGreaterThan(0)
+      .toBeGreaterThanOrEqual(expectedBurst.length)
 
     proxy.pass()
     await expect(overlay(page)).toHaveAttribute('data-state', 'online')
     await expect
       .poll(async () => liveScreenText(page), { timeout: 30_000 })
-      .toContain('NOCX_SCROLLBACK_DURING')
+      .toContain('NOCX_SCROLLBACK_DONE')
+
+    // This is the default integrated local shell, so its visible history owner
+    // is the command-block transcript (not the unstructured `.live-history`
+    // surface). Select this exact command by its unique marker, then inspect
+    // only its output rows so the echoed command cannot satisfy the checks.
+    const commandBlock = page
+      .locator('.pane.active .scrollback-inner > .cmd-block[data-block-kind="command"]')
+      .filter({ hasText: 'release-scrollback-producer' })
+      .last()
+    const entryId = await commandBlock.getAttribute('data-entry-id')
+    expect(entryId).toBeTruthy()
+    const scrollback = page.locator('.pane.active .scrollback-area')
+    const visibleOutputRows = async (): Promise<string[]> =>
+      page.evaluate((id) => {
+        const area = document.querySelector('.pane.active .scrollback-area')
+        const block = document.querySelector(
+          `.pane.active .scrollback-inner > .cmd-block[data-entry-id="${id}"]`,
+        )
+        if (!(area instanceof HTMLElement) || !(block instanceof HTMLElement)) {
+          throw new Error('scrollback area or command block is missing')
+        }
+        const clip = area.getBoundingClientRect()
+        return Array.from(
+          block.querySelectorAll('.cmd-output .term-line, .cmd-output .term-grid-row'),
+        )
+          .filter((row) => {
+            const bounds = row.getBoundingClientRect()
+            return bounds.bottom > clip.top && bounds.top < clip.bottom
+          })
+          .map((row) => (row.textContent ?? '').trim())
+      }, entryId!)
+    const scrollUntilOutputShows = async (marker: string, deltaY: number): Promise<void> => {
+      await scrollback.hover()
+      try {
+        await expect
+          .poll(
+            async () => {
+              if ((await visibleOutputRows()).some((row) => row.includes(marker))) return true
+              await page.mouse.wheel(0, deltaY)
+              return false
+            },
+            { timeout: 30_000, intervals: [250] },
+          )
+          .toBe(true)
+      } catch (error) {
+        const diagnostic = await page.evaluate((id) => {
+          const area = document.querySelector('.pane.active .scrollback-area')
+          const block = document.querySelector(
+            `.pane.active .scrollback-inner > .cmd-block[data-entry-id="${id}"]`,
+          )
+          const output = block?.querySelector<HTMLElement>('.cmd-output')
+          const clip = area?.getBoundingClientRect()
+          return {
+            outputText: (output?.textContent ?? '').slice(0, 800),
+            outputTextLength: output?.textContent?.length ?? 0,
+            outputClass: output?.className ?? null,
+            areaScrollTop: area instanceof HTMLElement ? area.scrollTop : null,
+            areaClientHeight: area instanceof HTMLElement ? area.clientHeight : null,
+            areaScrollHeight: area instanceof HTMLElement ? area.scrollHeight : null,
+            areaBounds: clip ? { top: clip.top, bottom: clip.bottom } : null,
+            rows: Array.from(
+              block?.querySelectorAll('.cmd-output .term-line, .cmd-output .term-grid-row') ?? [],
+            ).map((row) => {
+              const bounds = row.getBoundingClientRect()
+              return {
+                className: row.className,
+                text: (row.textContent ?? '').slice(0, 100),
+                top: bounds.top,
+                bottom: bounds.bottom,
+                visible: clip !== undefined && bounds.bottom > clip.top && bounds.top < clip.bottom,
+              }
+            }),
+          }
+        }, entryId!)
+        throw new Error(
+          `scrollback output ${marker} not visible: ${JSON.stringify(diagnostic)}; ${String(error)}`,
+        )
+      }
+    }
+    await scrollUntilOutputShows('NOCX_SCROLLBACK_BEFORE', -500)
+    await scrollUntilOutputShows('NOCX_SCROLLBACK_DURING-001', -500)
+    await scrollUntilOutputShows('NOCX_SCROLLBACK_DONE', 500)
+
+    // A real wheel gesture returns the reader to the live end before checking
+    // the command's final row on the current screen.
+    await expect
+      .poll(
+        async () => {
+          const atEnd = await page.evaluate(() => {
+            const area = document.querySelector('.pane.active .scrollback-area')
+            return (
+              area instanceof HTMLElement &&
+              area.scrollTop + area.clientHeight >= area.scrollHeight - 2
+            )
+          })
+          if (atEnd) return true
+          await page.mouse.wheel(0, 1400)
+          return false
+        },
+        { timeout: 30_000, intervals: [250] },
+      )
+      .toBe(true)
+    await expect
+      .poll(async () => liveScreenText(page), { timeout: 20_000 })
+      .toContain('NOCX_SCROLLBACK_DONE')
 
     await expect(page.locator('#sidebar > .ui-sidebar-view')).toHaveCount(1)
     await expect(page.getByRole('toolbar', { name: 'Activity bar' })).toBeVisible()

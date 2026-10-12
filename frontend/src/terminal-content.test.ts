@@ -4256,6 +4256,74 @@ describe('the projections consume the kernel through the composition root (ADR-0
       teardown()
     }
   })
+  it('reconciles mounted command rows from durable storage after reconnect', async () => {
+    const client = makeClient()
+    const line = JSON.stringify({
+      from: 0,
+      row: wireRowOf([['recovered', 1, true] as CellSpec]),
+    })
+    client.call.mockImplementation((method: string) => {
+      if (method === 'ledger.get') {
+        return Promise.resolve({
+          entry: {},
+          edges: [],
+          artifacts: [{ id: 'art-rows', mediaType: 'application/x-nocx-rows' }],
+        })
+      }
+      if (method === 'ledger.artifact') {
+        return Promise.resolve({
+          id: 'art-rows',
+          mediaType: 'application/x-nocx-rows',
+          body: `${line}\n`,
+          truncated: null,
+          byteLen: line.length,
+        })
+      }
+      return Promise.reject(new Error('no store wired (fake)'))
+    })
+    const { view, ed, content, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    const handler = factHandler(client)
+    const withScrollback = content as unknown as { scrollback: ScrollbackController }
+    try {
+      content.setVisible(true)
+      handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
+      ed.insertText('make')
+      view.contentDOM.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+      )
+      handler({
+        lane: 'lane-1',
+        lifecycle: 'running',
+        domain: 'd1',
+        epoch: 1,
+        attempt: {
+          id: 'att-1',
+          state: 'open',
+          origin: 'app',
+          submitId: submitToken(client),
+          command: 'make',
+        },
+      })
+
+      // No block notification is delivered during the outage. Reconnect must
+      // find the already-mounted attempt and fetch its current durable rows.
+      expect(withScrollback.scrollback.scrollbackInner.querySelector('.cmd-output')).toBeNull()
+      client._fireReconnect()
+      await vi.waitFor(() => {
+        expect(
+          withScrollback.scrollback.scrollbackInner.querySelector('.cmd-output')?.textContent,
+        ).toContain('recovered')
+      })
+      expect(client.call.mock.calls.filter(([method]) => method === 'ledger.get')).toHaveLength(1)
+    } finally {
+      teardown()
+    }
+  })
+
   it('follows the tail when a block.grew delivery grows a block after the scroller already settled (nocx-2v80t.3.19)', async () => {
     // block.grew/block.closed only NAME the entry; the rows are a further
     // fetch (ledger.get then ledger.artifact) that resolves well after the

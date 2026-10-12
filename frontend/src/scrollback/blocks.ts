@@ -2370,6 +2370,13 @@ export class BlockManager {
     return this._blocks
   }
 
+  /** Durable row ids for blocks mounted in this manager. A reconnect can
+   *  miss block.grew/block.closed while the socket is down, so the mounted
+   *  command transcript reconciles these entries from the store afterward. */
+  storedRowEntryIds(): string[] {
+    return [...new Set(this._blocks.flatMap((block) => (block.attemptId ? [block.attemptId] : [])))]
+  }
+
   get runningBlock(): BlockRecord | null {
     return this._runningBlock
   }
