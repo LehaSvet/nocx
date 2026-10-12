@@ -4933,13 +4933,19 @@ export class TerminalContent extends BasePaneContent {
     const snapshot = this._cellModel?.current()
     const metrics = this.liveCellMetrics()
     if (!snapshot || !metrics) return null
-    let lastRow = Math.max(0, snapshot.cursor.y)
+    let lastTextRow = -1
     for (let y = 0; y < snapshot.rows.length; y++) {
-      if (snapshot.rows[y].cells.some((cell) => cell.hasText)) lastRow = Math.max(lastRow, y)
+      if (snapshot.rows[y].cells.some((cell) => cell.hasText)) lastTextRow = y
     }
-    // Return the full painted-grid height. ScrollbackController removes the
-    // backend-anchored echo offset once, when it sizes the clipped live body.
-    return Math.max(1, lastRow + 1) * metrics.cellHeight
+    // Keep the cursor only when it follows the visible output directly. A
+    // cursor left at the bottom of a tall screen after a short command must
+    // not make the blank rows between output and cursor part of its live box.
+    const cursorFollowsOutput = lastTextRow >= 0 && snapshot.cursor.y <= lastTextRow + 1
+    const lastRow = cursorFollowsOutput ? Math.max(lastTextRow, snapshot.cursor.y) : lastTextRow
+    // Return the full painted-grid height through the output tail. The
+    // controller removes the backend-anchored echo offset once when it sizes
+    // the clipped live body.
+    return Math.max(0, lastRow + 1) * metrics.cellHeight
   }
 
   private scheduleLiveResize(): void {

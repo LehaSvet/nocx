@@ -6666,6 +6666,76 @@ describe('two attempts and the live region stay separate while running (nocx-m87
     }
   })
 
+  it('sizes a short running block from visible output, not the blank cursor tail', async () => {
+    const client = makeClient()
+    const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    const handler = factHandler(client)
+    const scrollback = (content as unknown as { scrollback: ScrollbackController }).scrollback
+    const viewportRows = 31
+    const anchor = {
+      entryId: 'att-short-output',
+      row: 1,
+      screenRevision: 5,
+      bufferKind: 'normal' as const,
+      bufferInstance: '1',
+      cols: SCREEN_COLS,
+      rows: viewportRows,
+    }
+
+    try {
+      handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
+      handler({
+        lane: 'lane-1',
+        lifecycle: 'running',
+        domain: 'd1',
+        epoch: 1,
+        attempt: { id: 'att-short-output', state: 'open', origin: 'shell', command: 'ls' },
+      })
+      client._fireBlockOutputStart(anchor)
+      Object.defineProperty(scrollback.scrollbackArea, 'clientHeight', {
+        value: 400,
+        configurable: true,
+      })
+      scrollback.blockManager.runningBlock!.el.getBoundingClientRect = () => ({
+        height: 20,
+        width: 800,
+        top: 0,
+        left: 0,
+        right: 800,
+        bottom: 20,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      })
+
+      // The accepted screen has four populated rows, but the cursor remains
+      // in the final row of a taller viewport. A short block stays seated by
+      // its output rather than reserving the blank tail as running content.
+      const frame = screenFrame(6, ['ls', 'A', 'B', 'C'], { rows: viewportRows })
+      frame.cursor.y = viewportRows - 1
+      client._sessions[0].fireScreenFrame(frame)
+
+      await vi.waitFor(() => {
+        expect(scrollback.terminalLiveViewport.style.height).toBe('48px')
+      })
+
+      // A normal-buffer program with output all the way to the cursor still
+      // fills the available running region, up to the same viewport cap.
+      const fullScreen = screenFrame(
+        7,
+        ['ls', 'A', 'B', 'C', ...Array.from({ length: viewportRows - 4 }, () => 'top')],
+        { rows: viewportRows },
+      )
+      fullScreen.cursor.y = viewportRows - 1
+      client._sessions[0].fireScreenFrame(fullScreen)
+      await vi.waitFor(() => {
+        expect(scrollback.terminalLiveViewport.style.height).toBe('380px')
+      })
+    } finally {
+      teardown()
+    }
+  })
+
   it('the first PARSED write stands the running command\u2019s stand-in down (nocx-vnirv.1)', async () => {
     // THE WIRING TEST for the block manager's output-arrival seam and the
     // accepted-frame call site. A running command carries the same "working,
