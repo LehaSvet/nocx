@@ -388,3 +388,50 @@ func TestAMidSessionAttachReceivesTheBaselineBeforeAnyLaterFrame(t *testing.T) {
 		}
 	}
 }
+
+// TestARealShellCDPublishesItsCwdInTheScreenFrame proves the shell report
+// survives the helper and public websocket screen path: the command runs in a
+// real shell on the shipped helper, and the assertion reads the actual
+// type-2 frame sent to the renderer.
+func TestARealShellCDPublishesItsCwdInTheScreenFrame(t *testing.T) {
+	src := realHelperArtifacts(t)
+	home := storagetest.IsolateWithHome(t)
+	t.Cleanup(func() { endTheDaemon(t, filepath.Join(helperRoot(home, src.hash()), "nocx-helper")) })
+
+	a := bootLocalAppOn(t, src)
+	opened, err := a.Transport.OpenSession(context.Background(), transport.OpenSpec{Cols: 100, Rows: 30})
+	if err != nil {
+		t.Fatalf("opening a local pane through the shipped opener: %v", err)
+	}
+	sid := string(opened.Session.ID())
+	conn := dialRenderer(t, a)
+	attachRenderer(t, conn, sid)
+
+	target := filepath.Join(t.TempDir(), "cwd-target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatalf("create target directory: %v", err)
+	}
+	if _, err := opened.Session.Write([]byte("cd '" + target + "'\n")); err != nil {
+		t.Fatalf("write cd to the real shell: %v", err)
+	}
+
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		frame := nextScreenFrame(t, conn)
+		var doc struct {
+			Revision uint64 `json:"revision"`
+			State    struct {
+				Cwd *struct {
+					Path string `json:"path"`
+				} `json:"cwd"`
+			} `json:"state"`
+		}
+		if err := json.Unmarshal(frame.Payload, &doc); err != nil {
+			t.Fatalf("decode real screen frame: %v\n%s", err, frame.Payload)
+		}
+		if doc.State.Cwd != nil && doc.State.Cwd.Path == target {
+			return
+		}
+	}
+	t.Fatalf("no actual metadata/type-2 frame for session %s carried cwd %q", sid, target)
+}

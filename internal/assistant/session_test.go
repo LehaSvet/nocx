@@ -145,8 +145,8 @@ func TestExecuteSessionRead_RunningUsesBackendCaptureAndCarriesState(t *testing.
 	if err != nil {
 		t.Fatalf("executeSessionRead: %v", err)
 	}
-	if !strings.Contains(out, `"state":"running"`) || !strings.Contains(out, `"text":"current"`) {
-		t.Fatalf("running result = %s, want running state and live text", out)
+	if !strings.Contains(out, `"state":"running"`) || !strings.Contains(out, `"text":"current\nrow`) {
+		t.Fatalf("running result = %s, want running state and live text beginning with the current screen row", out)
 	}
 }
 
@@ -163,8 +163,8 @@ func TestExecuteSessionRead_AutomaticItemUsesBackendCaptureWithoutLedgerRow(t *t
 	if err != nil {
 		t.Fatalf("executeSessionRead: %v", err)
 	}
-	if !strings.Contains(out, `"state":"running"`) || !strings.Contains(out, `"text":"current screen"`) {
-		t.Fatalf("automatic result = %s, want backend screen", out)
+	if !strings.Contains(out, `"state":"running"`) || !strings.Contains(out, `"text":"current screen\nrow`) {
+		t.Fatalf("automatic result = %s, want backend screen beginning with the current screen row", out)
 	}
 	if source.calls != 0 {
 		t.Fatalf("source calls = %d, want no ledger read for renderer-owned item", source.calls)

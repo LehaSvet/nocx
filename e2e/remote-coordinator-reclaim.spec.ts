@@ -422,6 +422,13 @@ async function installHelperThroughProduct(
   await expect(helperDialog).not.toBeVisible()
   await expect(page.locator(TAB)).toHaveCount(2, { timeout: 30_000 })
   await promptReady(page)
+  // The editor can be focused before shell integration finishes; wait for the
+  // product's observable readiness state before sending the cd command.
+  await expect(
+    page.locator('.pane.active').getByRole('status', { name: 'Checking this shell…' }),
+  ).toHaveCount(0, {
+    timeout: 30_000,
+  })
   await page.keyboard.type(`cd '${repoPath}'`)
   await page.keyboard.press('Enter')
   await expect(page.locator('.pane.active .nocx-editor-context .ui-prompt-context')).toContainText(

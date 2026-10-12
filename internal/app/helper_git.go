@@ -548,13 +548,17 @@ func (a installFS) ReadFile(p string) ([]byte, error)       { return a.conn.Read
 // exposed, and sharing a helper across principals would be an
 // authorization error. Cross-session sharing waits for that seam.
 type helperRegistry struct {
-	lanes     laneProvider
-	install   helperInstallProvider
-	source    deploy.ArtifactSource
-	log       *slog.Logger
-	consent   *consent.Store
-	registry  *session.Reg
-	lifecycle lifecyclechannel.Kernel
+	lanes   laneProvider
+	install helperInstallProvider
+	source  deploy.ArtifactSource
+	// publishScreen is the coordinator transport's owner of session.frame
+	// metadata; the far-helper attachment forwards each reassembled snapshot
+	// to that existing screen plane rather than deriving CWD a second time.
+	publishScreen func(sid session.ID, revision uint64, doc []byte) bool
+	log           *slog.Logger
+	consent       *consent.Store
+	registry      *session.Reg
+	lifecycle     lifecyclechannel.Kernel
 	// lifecycleLoss carries a helper-hosted adapter's loss cause to the
 	// session integration axis, the same seam the local pty factory uses.
 	// It is a separate seam from the published facts for the same reason it
@@ -1090,6 +1094,19 @@ func (r *helperRegistry) openFarHelper(ctx context.Context, cfg session.Config, 
 	}
 	sid := session.ID(entry.HostSessionID.Session)
 	f.sid = sid
+	// THE FAR ATTACHMENT'S SCREEN DRAIN (nocx-zg3k3.2.2): forward the
+	// helper's reassembled runtime snapshot through the same coordinator
+	// publisher used by the local hosted opener. The helper's OSC 7 state is
+	// already in this document; no second CWD parser belongs here.
+	if r.publishScreen != nil {
+		attached.OnScreenFrame(func(revision uint64, doc []byte) {
+			r.publishScreen(sid, revision, doc)
+		})
+		attached.OnScreenLost(func(reason string) {
+			log.From(ctx).Warn("screen assembly lost on the far-helper attachment",
+				"session", string(sid), "reason", reason)
+		})
+	}
 	if cursor != nil {
 		cursor.bind(entry.HostSessionID.Session, attached.LifecycleIngested())
 	}
