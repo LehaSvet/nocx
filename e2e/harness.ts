@@ -692,6 +692,22 @@ export interface BackendEndpoint {
   token: string
 }
 
+/** End an unattached shell without deleting its pane from the saved layout. */
+export async function endUnattachedSession(
+  endpoint: BackendEndpoint,
+  session: { sessionId: string; replayFrom: number },
+): Promise<void> {
+  // `close` is scoped to sessions owned by this control-plane connection.
+  // Attach the already-unattached session on this socket, then end it there.
+  const wire = await openControlPlane(endpoint.port, endpoint.token)
+  try {
+    await wire.call('attach', { sessionId: session.sessionId, offset: session.replayFrom })
+    await wire.call('close', { sessionId: session.sessionId })
+  } finally {
+    wire.close()
+  }
+}
+
 export async function resolveBackend(page: Page): Promise<BackendEndpoint> {
   return page.evaluate(async () => {
     type Resolution = { ok: true; port: number; token: string } | { ok: false; message: string }

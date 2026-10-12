@@ -2,16 +2,16 @@
  * e2e: the application opens on what you left (nocx-zpq9j, epic nocx-l21ib).
  *
  * The epic's happy path, watched end to end and through the real backend:
- * tabs are opened, a command is run in each, the backend is restarted, and
- * the page is reloaded. What must come back is the tabs, their panes, and the
- * blocks those panes printed — with the text the commands actually produced,
- * read out of the encrypted store rather than out of a process that still
- * remembers writing it.
+ * tabs are opened, commands are run, and the backend is restarted. Tests that
+ * assert a previous-session boundary explicitly end their helper shells first:
+ * a coordinator restart alone can re-adopt those live sessions. What must come
+ * back is the tabs, their panes, and the blocks those panes printed — with the
+ * text the commands actually produced, read from the encrypted store.
  *
  * Its own nocx-server backend, like sidebar-resize and active-tab-restore,
  * precisely so it can be restarted mid-test. Everything asserted is on
- * screen: a person's answer to "did my work come back" is what the pane
- * shows, not what a query returns.
+ * screen: a person's answer to "did my work come back" is what the pane shows,
+ * not what a query returns.
  *
  * The setting is asserted in both directions, because "off gives a clean
  * start" is half of what nocx-l21ib promises and the half nobody would
@@ -26,6 +26,8 @@ import {
   appReadyForInput,
   VaultBackend,
   bindEndpoint,
+  endUnattachedSession,
+  openControlPlane,
   promptReady,
   clickIntoEditor,
   type DisposableRoot,
@@ -44,6 +46,8 @@ const RESTORE_ROW = '.ui-settings-row[data-key="restore.onStartup"]'
 const test = base
 
 type Endpoint = { port: number; token: string }
+
+type LiveSession = { sessionId: string; attached: boolean; replayFrom: number }
 
 /** One JSON-RPC call on a socket of the test's own, against the backend the
  *  page is bound to. The page's client is the product's and is not reachable
@@ -76,6 +80,61 @@ async function rpc(
       }),
     { p: ep.port, t: ep.token, m: method, par: params },
   )
+}
+
+/** Read the sessions still held by the helper, independent of the renderer. */
+async function liveSessions(ep: Endpoint): Promise<LiveSession[]> {
+  const wire = await openControlPlane(ep.port, ep.token)
+  try {
+    return ((await wire.call('sessions.live', {})) as { sessions: LiveSession[] }).sessions
+  } finally {
+    wire.close()
+  }
+}
+
+/**
+ * Leave the renderer and end its shells so the next restore really has a
+ * previous session. Restarting the coordinator alone re-adopts live helper
+ * sessions; the saved layout and its stored blocks stay untouched here.
+ */
+async function endSessionsBeforeRestore(
+  page: import('@playwright/test').Page,
+  ep: Endpoint,
+  expectedCount: number,
+): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const sessions = await liveSessions(ep)
+        return sessions.length === expectedCount && sessions.every((session) => session.attached)
+      },
+      {
+        timeout: 30_000,
+        message: 'the test shells were not all attached before leaving the renderer',
+      },
+    )
+    .toBe(true)
+
+  await page.goto('about:blank')
+  await expect
+    .poll(
+      async () => {
+        const sessions = await liveSessions(ep)
+        return sessions.length === expectedCount && sessions.every((session) => !session.attached)
+      },
+      { timeout: 30_000, message: 'the renderer did not detach all test shells' },
+    )
+    .toBe(true)
+
+  const sessions = await liveSessions(ep)
+  for (const session of sessions) await endUnattachedSession(ep, session)
+
+  await expect
+    .poll(() => liveSessions(ep).then((current) => current.length), {
+      timeout: 30_000,
+      message: 'the test shells remained live after close',
+    })
+    .toBe(0)
 }
 
 /**
@@ -179,11 +238,12 @@ test.describe('the application opens on what you left (nocx-l21ib)', () => {
     await stored(page, ep1, 'echo FIRST-TAB-OUTPUT')
     await stored(page, ep1, 'echo SECOND-TAB-OUTPUT')
 
-    // The application restarts. Nothing in the first process survives it —
-    // including the shells, which is the point: what comes back is the tab.
+    // The helper may re-adopt live shells across coordinator restart. Leave
+    // the renderer and end both shells first; the saved panes and ledger stay.
+    await endSessionsBeforeRestore(page, ep1, 2)
     const ep2 = await backend.restart()
     await bindEndpoint(page, ep2)
-    await page.reload()
+    await page.goto('/')
     await appReadyForInput(page)
 
     await expect(page.locator(TAB)).toHaveCount(2, { timeout: 90_000 })
@@ -226,9 +286,12 @@ test.describe('the application opens on what you left (nocx-l21ib)', () => {
     await run(page, 'echo BOUNDARY-ALT-SCREEN')
     await stored(page, ep1, 'echo BOUNDARY-ALT-SCREEN')
 
+    // This test needs a true previous-session boundary, not just a backend
+    // restart that can re-adopt its still-live helper shell.
+    await endSessionsBeforeRestore(page, ep1, 1)
     const ep2 = await backend.restart()
     await bindEndpoint(page, ep2)
-    await page.reload()
+    await page.goto('/')
     await appReadyForInput(page)
 
     await expect(page.locator(TAB)).toHaveCount(1, { timeout: 90_000 })

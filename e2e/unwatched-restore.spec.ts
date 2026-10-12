@@ -45,6 +45,7 @@ import {
   VaultBackend,
   bindEndpoint,
   clickIntoEditor,
+  endUnattachedSession,
   openControlPlane,
   promptReady,
   type BackendEndpoint,
@@ -92,15 +93,7 @@ async function endUnattachedShell(ep: BackendEndpoint): Promise<void> {
   const session = sessions.find((candidate) => !candidate.attached)
   if (!session) throw new Error('the test expected one unattached shell to end')
 
-  // `close` is scoped to sessions owned by this control-plane connection.
-  // Attach the already-unattached session on this socket, then end it there.
-  const wire = await openControlPlane(ep.port, ep.token)
-  try {
-    await wire.call('attach', { sessionId: session.sessionId, offset: session.replayFrom })
-    await wire.call('close', { sessionId: session.sessionId })
-  } finally {
-    wire.close()
-  }
+  await endUnattachedSession(ep, session)
 }
 
 async function freshClient(browser: Browser, ep: BackendEndpoint): Promise<Page> {
