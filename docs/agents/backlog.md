@@ -1,14 +1,14 @@
 # Backlog integration
 
 Maintained by `setup-shady2k-skills`. The installed checks carry setup protocol
-0.43.0 after this update lands. Its task, "The setup pull request installs
-shady2k-skills 0.43.0 before it merges" (nocx-q8yjf.23), owns the proof
-evidence and any unperformed checks. Protocol 0.42.0 was installed by PR #276
-(nocx-q8yjf.22, nocx-hld9x). A branch alone is not an installed update.
-The protocol ships with the skills and is not restated here. This file holds
-project facts and commands; changing choices live only in the config. Each
-person's plugin, runtime and connected hooks are checked directly, never
-represented as shared installation-state settings.
+0.44.0 after this update lands. Its task, "The setup pull request installs
+shady2k-skills 0.44.0 before it merges" (nocx-q8yjf.24), owns the proof
+evidence and any unperformed checks. Protocol 0.43.0 was installed by PR #280
+(nocx-q8yjf.23). A branch alone is not an installed update. The protocol ships
+with the skills and is not restated here. This file holds project facts and
+commands; changing choices live only in the config. Each person's plugin,
+runtime and connected hooks are checked directly, never represented as shared
+installation-state settings.
 
 AGENTS.md wins over this file wherever they disagree; the disagreement is then this file's
 bug.
@@ -171,7 +171,7 @@ keeps every later change.
   `document-format.mjs`, in [`.githooks/backlog-gate/`](../../.githooks/backlog-gate/).
   These are byte-for-byte copies of the plugin files under
   `skills/backlog/setup-shady2k-skills/` at source commit
-  `da0d4890ec4fda05526deb6d1a3d38cee4792938` (setup protocol 0.43.0), never
+  `3c4e885b2afbe6cf82df1374d346a103b1eafb5e` (setup protocol 0.44.0), never
   edited here. Compare each copy with that source. Run all five `--selftest`
   commands from the plugin directory, where their fixtures live; `check.mjs`
   additionally takes `--config <repo>/.githooks/backlog-gate/config.json` for
@@ -187,11 +187,13 @@ keeps every later change.
   A dead reference the change made refuses it; older drift is printed and fails nothing. The
   first run, on 2026-09-28 at `0ad291c6d`, found three, filed as one debt item (nocx-q8yjf.16).
   No local hook runs it.
-- **Product documents:** the real pre-commit hook runs
+- **Product documents and practices:** the real pre-commit hook runs
   `node .githooks/backlog-gate/check-product.mjs --staged`; CI runs it with
   `--rev <actual PR head or pushed revision>`. It needs no project setting.
-  Existing product documents keep their paths; no catalogue migration occurs
-  during this setup. No product documents means there is nothing to judge.
+  Product documents keep their existing paths. A practice record, when one is
+  adopted, is a `PRA-NNN` file under `docs/practices/`; this repository has no
+  product documents or practice records today, so there is nothing to judge.
+  The separate product/feature/acceptance document gate remains uninstalled.
 - **Work records:** a claim, a receipt of the time a session spent, and the other
   `[shady2k-time v1] …` records are comments on the item, printed by the set's run script
   (`runs.mjs` in the plugin's `take-task`, `close-out` and `ask-shady2k`). The adapter exports
