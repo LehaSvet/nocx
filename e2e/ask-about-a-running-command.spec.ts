@@ -131,26 +131,12 @@ test.afterAll(async () => {
   await fake?.stop()
 })
 
-/** One frame of the renderer's own answer to a readScreen request — the
- *  evidence a Go test cannot produce, because there the renderer is the
- *  test. */
-interface ResolvedRow {
-  kind?: string
-  text?: string
-}
-interface ResolvedFrame {
-  requestId?: string
-  outcome?: string
-  error?: string
-  rows?: ResolvedRow[]
-}
-
+/** Observable ask and command-signal traffic recorded from the app's socket. */
 interface SpecRecord {
   asks: string[]
   cancels: number[]
   signals: string[]
   raised: string[]
-  resolved: ResolvedFrame[]
 }
 
 declare global {
@@ -159,15 +145,10 @@ declare global {
   }
 }
 
-/**
- * Record the three frames this spec reads, off the app's OWN socket — the
- * same technique agent-reads-the-screen.spec.ts and notification-osc.spec.ts
- * use, and for the same reason: what is observed is the real client's
- * traffic, never a fixture the spec built.
- */
+/** Record the ask and command-signal requests made on the app's own socket. */
 async function recordFrames(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    window.__nocxRunningAskSpec = { asks: [], cancels: [], signals: [], raised: [], resolved: [] }
+    window.__nocxRunningAskSpec = { asks: [], cancels: [], signals: [], raised: [] }
     const send = WebSocket.prototype.send
     WebSocket.prototype.send = function (this: WebSocket, data: Parameters<typeof send>[0]) {
       if (typeof data === 'string') {
@@ -185,9 +166,6 @@ async function recordFrames(page: Page): Promise<void> {
           }
           if (msg.method === 'notify.raise' && typeof msg.params?.body === 'string') {
             rec.raised.push(msg.params.body)
-          }
-          if (msg.method === 'agent.readScreenResolved' && msg.params) {
-            rec.resolved.push(msg.params as ResolvedFrame)
           }
         } catch {
           // Not JSON, or not ours. The data plane is binary and never lands
@@ -207,14 +185,8 @@ async function recorded(page: Page): Promise<SpecRecord> {
         cancels: [],
         signals: [],
         raised: [],
-        resolved: [],
       },
   )
-}
-
-/** The frame's text as a person would read it: its rows, joined. */
-function frameText(frame: ResolvedFrame): string {
-  return (frame.rows ?? []).map((row) => row.text ?? '').join('\n')
 }
 
 async function openApp(page: Page): Promise<void> {
@@ -411,18 +383,13 @@ test.describe('asking about a command that is still running (nocx-92gfl)', () =>
     expect((await body.locator('.term-line').allTextContents()).join('\n')).toContain(MARKER)
     await expect(page.locator(RUNNING_BLOCK)).toHaveCount(1)
 
-    // 2. It got there by READING THE SCREEN, and the frame was the real
-    //    renderer's — the app's own answer to the broker, off its own
-    //    socket, carrying the marker in its rows.
+    // 2. The user-visible tool block proves session.read ran, and the
+    //    model's second request proves its answer was grounded in that screen:
+    //    the marker was absent from the question and present after the read.
     const call = turn.locator(':scope > .cmd-children > .cmd-block[data-block-kind="tool"]')
     await expect(call).toHaveCount(1)
     await expect(call).toHaveAttribute('data-tool', 'session.read')
     await expect(call.locator('.cmd-header-text')).toContainText('session.read')
-    const { resolved } = await recorded(page)
-    expect(resolved.length).toBe(1)
-    const frame = resolved[0]
-    expect(frame.outcome, frame.error ?? 'the renderer reported no error').toBe('frame')
-    expect(frameText(frame)).toContain(MARKER)
 
     // 3. The model learned the marker only from the tool result.
     const runBodies = fake

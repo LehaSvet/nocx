@@ -331,6 +331,14 @@ export class IntentInput {
       this.suppressText = true
       return
     }
+    // Let the browser own its physical paste chord. Preventing this keydown
+    // would also suppress the native paste event, which is the only source of
+    // clipboard contents; the paste listener below then emits the paste intent.
+    // Keep Shift+V here too: browsers use it for unformatted paste.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.code === 'KeyV') {
+      this.suppressText = false
+      return
+    }
     if (isDeadKey(e)) {
       // Nothing on its own; whatever it composes arrives as text.
       this.suppressText = false

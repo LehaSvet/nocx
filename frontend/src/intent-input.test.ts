@@ -436,6 +436,23 @@ describe('paste, focus and the element itself', () => {
     expect(input.element.value).toBe('')
   })
 
+  it.each([
+    ['Ctrl+V', { ctrlKey: true }],
+    ['Meta+V', { metaKey: true }],
+  ])('lets %s reach the browser paste event instead of the terminal', (_chord, modifiers) => {
+    const { input, intents } = makeInput()
+
+    const key = keydown('KeyV', { key: 'v', ...modifiers })
+    input.element.dispatchEvent(key)
+
+    expect(key.defaultPrevented).toBe(false)
+    expect(intents).toEqual([])
+
+    input.element.dispatchEvent(pasteEvent('clipboard text'))
+
+    expect(intents).toEqual([{ kind: 'paste', payload: 'clipboard text' }])
+  })
+
   it('reports focus gained and lost', () => {
     const { input, intents } = makeInput()
 

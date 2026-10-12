@@ -32,7 +32,8 @@
  *    the count the FAR host kept.
  * 2. **Answered with no browser client attached.** The pane runs a program that
  *    writes `ESC[6n` (DSR) to its terminal and READS the reply back off its own
- *    pty, then writes those bytes to a file on the far host and prints them.
+ *    pty, writes the raw bytes to a file on the far host, and prints their
+ *    visible hex encoding as a marker.
  *    The probe parks on a file this spec creates, and the spec creates it only
  *    AFTER `sessions.live` reports the session unattached — so the question was
  *    asked and answered while no renderer existed. With the browser gone there
@@ -173,7 +174,8 @@ done
 echo "read: $r" >>"$L"
 stty icanon echo 2>>"$L"
 printf '%s' "$r" >"$HOME/${ANSWER}"
-printf 'NOCXDSR[%s]\\n' "$r"
+hex=$(printf '%s' "$r" | od -An -v -tx1 | tr -d ' \\n')
+printf 'NOCXDSR[%s]\\n' "$hex"
 `
 
 /** A cursor report: the runtime's answer, and nothing else. The ESC is the
@@ -182,8 +184,8 @@ printf 'NOCXDSR[%s]\\n' "$r"
 // eslint-disable-next-line no-control-regex
 const CURSOR_REPORT = /^\u001b\[\d{1,3};\d{1,3}R$/
 
-/** What the far shell prints when it reads the report, and what goes into the
- *  coordinator's recording of this session. */
+/** What the far shell visibly prints after hex-encoding the report, so the
+ *  terminal displays the marker instead of consuming its ESC as a VT control. */
 const DSR_LINE = 'NOCXDSR['
 
 /** The round-trip command of stage 3, and the marker is deliberately NOT
@@ -680,9 +682,10 @@ test.describe('one ssh connection per host, answered unwatched, surviving the co
       const pane = returned.locator(`.pane[data-session-id="${paneSessionId}"]`)
       await expect(pane).toBeVisible({ timeout: 180_000 })
       await promptReady(returned)
+      const printableReport = Buffer.from(report, 'utf8').toString('hex')
       await expect
         .poll(async () => (await screenReading(returned)).rows.join('\n'), { timeout: 120_000 })
-        .toContain(`${DSR_LINE}${report}]`)
+        .toContain(`${DSR_LINE}${printableReport}]`)
       await clickIntoEditor(returned)
 
       // THE SAME FAR SHELL, asked of the far side itself. The shell reports its

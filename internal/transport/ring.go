@@ -621,9 +621,11 @@ func (r *outputRing) inFlightLocked(floor, pos uint64) uint64 {
 	return pos - floor - r.missingBetween(floor, pos)
 }
 
-// waitForCredit blocks until fewer than limit of the bytes this pump sent —
-// the span from `since`, where it attached, to `pos` — are still unacked, the
-// ring is closed, or ctx is cancelled.
+// waitForCreditOrWake blocks until fewer than limit of the bytes this pump
+// sent — the span from `since`, where it attached, to `pos` — are still
+// unacked, the ring is closed, or ctx is cancelled. A wake releases the ring
+// pump to recheck its control-effect queue. The caller still has to satisfy
+// the credit predicate before sending more PTY bytes.
 //
 // The predicate lives here, in one place, rather than being split between
 // the ring and its subscriber. An earlier version waited for the client to
@@ -632,15 +634,7 @@ func (r *outputRing) inFlightLocked(floor, pos uint64) uint64 {
 // therefore never reopened: one burst past the credit limit wedged that
 // session's output permanently. Credit is a sliding window, not
 // stop-and-wait: it reopens as soon as enough has been acked, not once all
-// of it has.
-func (r *outputRing) waitForCredit(ctx context.Context, since, pos, limit uint64) bool {
-	return r.waitForCreditOrWake(ctx, since, pos, limit, nil)
-}
-
-// waitForCreditOrWake applies the same credit bound as waitForCredit, but
-// releases a ring pump to recheck its control-effect queue when wake closes.
-// The caller still has to satisfy the credit predicate before sending more
-// PTY bytes.
+// of it.
 func (r *outputRing) waitForCreditOrWake(ctx context.Context, since, pos, limit uint64, wake <-chan struct{}) (closed bool) {
 	r.mu.Lock()
 

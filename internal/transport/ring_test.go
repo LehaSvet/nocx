@@ -375,7 +375,7 @@ func TestOutputRing_ReattachAfterReclaimIsNotWedgedByCredit(t *testing.T) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), wantWithin)
 		defer cancel()
-		ring.waitForCredit(ctx, w, w, CreditLimit)
+		ring.waitForCreditOrWake(ctx, w, w, CreditLimit, nil)
 		close(done)
 	}()
 	select {

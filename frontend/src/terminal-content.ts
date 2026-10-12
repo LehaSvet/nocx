@@ -4679,7 +4679,10 @@ export class TerminalContent extends BasePaneContent {
           }
           this.scrollback?.blockManager.noteCommandOutput()
           this._liveHistory?.noteOutput()
-          host.requestAttention()
+          // Only normal-buffer output can be unread work in another tab.
+          // Alternate-buffer frames are commonly full-screen redraws; an
+          // explicit bell effect still requests attention independently.
+          if (result.snapshot.state.bufferKind === 'normal') host.requestAttention()
           if (
             (geometry.cellWidthPx <= 0 || geometry.cellHeightPx <= 0) &&
             this.liveCellMetrics() !== null

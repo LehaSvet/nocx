@@ -41,6 +41,11 @@ func (o *orderedSink) BlockIntervalEnded(sid session.ID, nonce [32]byte, endRow 
 	o.fakeSink.BlockIntervalEnded(sid, nonce, endRow, closing, noFence)
 }
 
+func (o *orderedSink) BlockIntervalEndedWithAnchor(sid session.ID, nonce [32]byte, endRow uint64, closing []emulator.Row, anchor *client.ScreenAnchor, noFence bool) {
+	o.note("end")
+	o.fakeSink.BlockIntervalEndedWithAnchor(sid, nonce, endRow, closing, anchor, noFence)
+}
+
 func (o *orderedSink) BlockClearBoundary(sid session.ID) {
 	o.note("clear")
 	o.fakeSink.BlockClearBoundary(sid)

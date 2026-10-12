@@ -343,22 +343,6 @@ func (s *WSServer) sessionRecordingStance() content.SessionOutputStance {
 	return s.sessionRecorder.Stance()
 }
 
-// sessionOutputGapReason names a missing recording range with the store's
-// reason when one overlaps it. Unknown gaps remain unknown rather than being
-// incorrectly attributed to retention.
-func sessionOutputGapReason(start, end uint64, gaps []content.Gap) string {
-	for _, gap := range gaps {
-		if gap.Start < 0 || gap.End < 0 {
-			continue
-		}
-		gs, ge := uint64(gap.Start), uint64(gap.End) //nolint:gosec
-		if gs < end && ge > start && gap.Reason != "" {
-			return gap.Reason
-		}
-	}
-	return content.GapReasonUnknown
-}
-
 // sessionOutputHoleReason translates the execution host's hole vocabulary
 // into the store's. Unknown host reasons remain unknown.
 func sessionOutputHoleReason(reason string) string {

@@ -154,8 +154,16 @@ vi.mock('./ui/dialog', () => ({
  * (PaneHost.contentSettled). Before it, output is the pane's own start and
  * marks nothing — which is what stops a restore from lighting every tab.
  */
-function settlePane(index: number, client: ClientFake): void {
+function settlePane(
+  index: number,
+  client: ClientFake,
+  revision = 1,
+  bufferKind: 'normal' | 'alternate' = 'normal',
+): void {
   const session = client._sessions[index]
+  // A prompt boundary is ordered after the screen revision it names. Exercise
+  // the same accepted-frame barrier as the production session attachment.
+  fireFrameMetadata(session, revision, { bufferKind })
   session.fireEffect({
     sessionId: session.sessionId,
     generation: '1',
@@ -163,6 +171,7 @@ function settlePane(index: number, client: ClientFake): void {
     kind: 'promptBoundary',
     title: '',
     body: '',
+    screenRevision: revision,
   })
 }
 
@@ -804,9 +813,9 @@ describe('PaneManager', () => {
     // arrives now is output rather than a start (PaneHost.contentSettled).
     settlePane(1, client)
 
-    // Deliver output to the background tab (index 1 = session 2).
+    // Deliver an accepted normal-buffer screen frame to the background tab.
     const bgSession = client._sessions[1]
-    bgSession.fireData('hello')
+    bgSession.fireScreenFrame(screenFrameWithText(2, 'hello'))
 
     // The background tab's indicator should have the activity class
     const indicators = bar.querySelectorAll('.nocx-tab-indicator')
@@ -824,10 +833,10 @@ describe('PaneManager', () => {
       expect(client.openSession).toHaveBeenCalledTimes(2)
     })
 
-    // Tab 2 is active. Fire data on it while it's active → no activity mark.
+    // Tab 2 is active. An accepted frame while it's active → no activity mark.
     manager.activateByIndex(1)
     const activeSession = client._sessions[1]
-    activeSession.fireData('output while active')
+    activeSession.fireScreenFrame(screenFrameWithText(1, 'output while active'))
 
     const indicators = bar.querySelectorAll('.nocx-tab-indicator')
     expect(indicators[1].getAttribute('data-activity') === 'true').toBe(false)
@@ -846,13 +855,11 @@ describe('PaneManager', () => {
     // Tab 1 active, tab 2 is background.
     manager.activateByIndex(0)
 
-    // Put the background tab's renderer into the alternate buffer via the
-    // onBufferChange callback — this is the real path xterm.js takes.
-    fireFrameMetadata(client._sessions[1], 1, { bufferKind: 'alternate' })
-
-    // Output on the background tab while in alternate buffer.
+    // Settle the background pane in the alternate buffer through an accepted
+    // screen frame, then deliver another accepted alternate-buffer frame.
+    settlePane(1, client, 1, 'alternate')
     const bgSession = client._sessions[1]
-    bgSession.fireData('spinner repaint')
+    fireFrameMetadata(bgSession, 2, { bufferKind: 'alternate' })
 
     const indicators = bar.querySelectorAll('.nocx-tab-indicator')
     expect(indicators[1].getAttribute('data-activity') === 'true').toBe(false)
@@ -871,15 +878,17 @@ describe('PaneManager', () => {
 
     const bgSession = client._sessions[1]
 
-    // BEFORE THE PROMPT, output is the pane starting up and marks nothing.
-    bgSession.fireData('a banner and an rc file')
+    // BEFORE THE PROMPT, accepted screen output is the pane starting up and
+    // marks nothing.
+    bgSession.fireScreenFrame(screenFrameWithText(1, 'a banner and an rc file'))
     expect(bar.querySelectorAll('.nocx-tab-indicator')[1].getAttribute('data-activity')).not.toBe(
       'true',
     )
 
-    // After it, the same bytes are something a person can have missed.
-    settlePane(1, client)
-    bgSession.fireData('normal output')
+    // After the revisioned prompt boundary, accepted normal-buffer output is
+    // something a person can have missed.
+    settlePane(1, client, 2)
+    bgSession.fireScreenFrame(screenFrameWithText(3, 'normal output'))
 
     const indicators = bar.querySelectorAll('.nocx-tab-indicator')
     expect(indicators[1].getAttribute('data-activity') === 'true').toBe(true)
@@ -902,10 +911,14 @@ describe('PaneManager', () => {
 
     const background = client._sessions[1]
     if (!background) throw new Error('background session not opened')
-    fireFrameMetadata(background, 1, { bufferKind: 'alternate' })
-    fireSessionEffect(background, 'bell', '2')
-
+    fireFrameMetadata(background, 2, { bufferKind: 'alternate' })
     const indicators = bar.querySelectorAll('.nocx-tab-indicator')
+    // Alternate-buffer repaint is not unread normal-screen output.
+    expect(indicators[1].getAttribute('data-activity') === 'true').toBe(false)
+
+    // A bell is an explicit attention effect and still counts in the alternate
+    // buffer, independently of screen-frame attention suppression.
+    fireSessionEffect(background, 'bell', '2')
     expect(indicators[1].getAttribute('data-activity') === 'true').toBe(true)
   })
 

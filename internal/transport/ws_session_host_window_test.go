@@ -130,7 +130,9 @@ func TestRingHoleIsNotChargedToTheCreditWindow(t *testing.T) {
 		t.Fatalf("ack: %v", err)
 	}
 	done := make(chan bool, 1)
-	go func() { done <- ring.waitForCredit(context.Background(), 0, ring.writtenLocked(), CreditLimit) }()
+	go func() {
+		done <- ring.waitForCreditOrWake(context.Background(), 0, ring.writtenLocked(), CreditLimit, nil)
+	}()
 	waittest.WaitForTimeout(t, "the credit window to stay open across a hole", wantWithin, func() bool {
 		select {
 		case <-done:
