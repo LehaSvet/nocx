@@ -178,6 +178,8 @@ const editorOf = (content: TerminalContent): CommandEditor => {
   const withEditor = content as unknown as { editor: CommandEditor }
   return withEditor.editor
 }
+const editorViewOf = (editor: CommandEditor): EditorView =>
+  (editor as unknown as { view: EditorView }).view
 
 /** The live session mock behind TerminalContent's private field — the same
  *  escape hatch editorOf uses. `send` is what a raw pty write lands on. */
@@ -2374,12 +2376,14 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
     const client = makeClient()
     const { content, tab, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
+      content.setVisible(true)
       integrationHandler(client)({
         sessionId: client._sessions[0].sessionId,
         status: 'starting',
         shell: '/bin/zsh',
       })
       expect(tab.pane.querySelector(WAITING)).not.toBeNull()
+      expect(editorOf(content).isVisible).toBe(true)
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('none')
     } finally {
       teardown()
@@ -2410,6 +2414,124 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       expect(tab.pane.querySelector(WAITING)).not.toBeNull()
       expect(scrollback.scrollbackLayout.style.display).toBe('')
       expect(scrollback.blockManager.runningBlock?.command).toBe('sleep 20')
+    } finally {
+      teardown()
+    }
+  })
+
+  it('holds a submitted command until prompt readiness, then attempts before writing it', async () => {
+    const session = makeSession({ awaitsIntegration: true })
+    const client = makeClient()
+    client.openSession.mockResolvedValue(session)
+    const fireIntegration = integrationHandler(client, session)
+    const { content, tab, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    content.setVisible(true)
+    const lifecycle = lifecycleHandler(client, session.sessionId)
+    const editor = editorOf(content)
+    const view = editorViewOf(editor)
+    const scrollback = scrollbackFor(content)
+    try {
+      fireIntegration({ sessionId: session.sessionId, status: 'starting', shell: '/bin/bash' })
+      session.intent.mockClear()
+      session.send.mockClear()
+      client.dispatcher.call.mockClear()
+
+      editor.insertText('sleep 20')
+      view.contentDOM.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+      )
+
+      // Enter during startup keeps the draft intact; neither a paste nor a
+      // newline may reach the shell before prompt_ready.
+      expect(view.state.doc.toString()).toBe('sleep 20')
+      expect(session.intent).not.toHaveBeenCalled()
+      expect(session.send).not.toHaveBeenCalled()
+      expect(client.dispatcher.call).not.toHaveBeenCalled()
+
+      lifecycle({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
+      await vi.waitFor(() =>
+        expect(session.intent.mock.calls).toEqual([
+          ['paste', 'sleep 20'],
+          ['key', 'enter'],
+        ]),
+      )
+
+      const attemptCalls = client.dispatcher.call.mock.calls.filter(
+        (call) => call[0] === 'lifecycle.submitAttempt',
+      )
+      expect(attemptCalls).toHaveLength(1)
+      const attemptIndex = client.dispatcher.call.mock.calls.findIndex(
+        (call) => call[0] === 'lifecycle.submitAttempt',
+      )
+      expect(attemptIndex).toBeGreaterThanOrEqual(0)
+      const attempt = client.dispatcher.call.mock.calls[attemptIndex][1] as {
+        command: string
+        submitId: string
+      }
+      expect(attempt.command).toBe('sleep 20')
+      expect(client.dispatcher.call.mock.invocationCallOrder[attemptIndex]).toBeLessThan(
+        session.intent.mock.invocationCallOrder[0],
+      )
+
+      lifecycle({
+        lane: 'lane-1',
+        lifecycle: 'running',
+        domain: 'd1',
+        epoch: 1,
+        attempt: {
+          id: 'att-0',
+          state: 'open',
+          origin: 'app',
+          submitId: attempt.submitId,
+          command: 'sleep 20',
+        },
+      })
+      expect(tab.pane.querySelector(WAITING)).not.toBeNull()
+      expect(scrollback.blockManager.runningBlock?.command).toBe('sleep 20')
+      expect(scrollback.scrollbackLayout.style.display).toBe('')
+    } finally {
+      teardown()
+    }
+  })
+
+  it('releases a held shell submit as a conventional write when startup settles degraded', async () => {
+    const session = makeSession({ awaitsIntegration: true })
+    const client = makeClient()
+    client.openSession.mockResolvedValue(session)
+    const fireIntegration = integrationHandler(client, session)
+    const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    content.setVisible(true)
+    const editor = editorOf(content)
+    const view = editorViewOf(editor)
+    try {
+      fireIntegration({ sessionId: session.sessionId, status: 'starting', shell: '/bin/bash' })
+      session.intent.mockClear()
+      session.send.mockClear()
+      client.dispatcher.call.mockClear()
+
+      editor.insertText('echo conventional')
+      view.contentDOM.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+      )
+      expect(view.state.doc.toString()).toBe('echo conventional')
+      expect(session.intent).not.toHaveBeenCalled()
+
+      fireIntegration({
+        sessionId: session.sessionId,
+        status: 'conventional',
+        reason: 'unsupported-shell',
+        shell: '/bin/bash',
+      })
+      await vi.waitFor(() =>
+        expect(session.intent.mock.calls).toEqual([
+          ['paste', 'echo conventional'],
+          ['key', 'enter'],
+        ]),
+      )
+      expect(
+        client.dispatcher.call.mock.calls.some((call) => call[0] === 'lifecycle.submitAttempt'),
+      ).toBe(false)
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -2652,6 +2774,7 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       // No integrationHandler call yet — the attach ack's own promise acted
       // on alone, before any session.integrationChanged exists.
       expect(tab.pane.querySelector(WAITING)).not.toBeNull()
+      expect(editorOf(content).isVisible).toBe(true)
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('none')
       session.intent.mockClear()
       session.send.mockClear()
@@ -7956,7 +8079,7 @@ describe('a degraded session says so in the product (nocx-dvql, nocx-5uu5)', () 
 describe('shell submit input intent ordering (nocx-zg3k3.3.1)', () => {
   it('delivers the command paste before Enter through one ordered intent path', async () => {
     const client = makeClient()
-    const session = makeSession({ awaitsIntegration: true })
+    const session = makeSession()
     client.openSession.mockResolvedValue(session)
     const { ed, content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     let releasePaste!: () => void

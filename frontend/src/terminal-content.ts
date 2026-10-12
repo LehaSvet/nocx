@@ -1399,6 +1399,10 @@ export class TerminalContent extends BasePaneContent {
    *  `_bindSession` call — first bind and rebind alike — so a reconnect's new
    *  session is never judged by the old one's answer. */
   private _awaitsIntegration = false
+  /** Human shell submits remain in the editor until startup yields a live prompt
+   *  or settles as conventional. The promise owns the editor draft; this set
+   *  only releases those submits when one of those facts arrives. */
+  private readonly _deferredShellSubmissionWaiters = new Set<(resume: boolean) => void>()
   /** The subscription to that status, dropped on dispose. */
   private _integrationUnsub: (() => void) | null = null
   /** Backend block-row notification subscriptions for the current pane. */
@@ -2993,14 +2997,14 @@ export class TerminalContent extends BasePaneContent {
               // shell.launcherCommand RPC was deleted with the marker
               // latch (nocx-u7uh.1), so the line goes out unchanged —
               // fail-open — until a rewrite input exists.
-              return sync
+              return this.deferShellSubmissionUntilReady(sync)
             }
             return planSubmit(doc, (line) => vault.resolveLine(line)).then((verdict) => {
               if (isSubmitFailure(verdict)) {
                 this.reportSubmitFailure(verdict)
                 return false
               }
-              return verdict
+              return this.deferShellSubmissionUntilReady(verdict)
             })
           },
           submit: (doc: string, plan?: SubmitPlan) => {
@@ -3371,6 +3375,7 @@ export class TerminalContent extends BasePaneContent {
         }
         this._syncIntegrationWaiting()
         this._syncLifecycleOwnership()
+        this._releaseDeferredShellSubmissions()
         // An integrated pane is settled by its authenticated lifecycle fact,
         // not by the non-authoritative promptBoundary observation. Without
         // this, a session that awaited integration never settles before the
@@ -4502,6 +4507,7 @@ export class TerminalContent extends BasePaneContent {
     // installed next.
     this._awaitsIntegration = session.awaitsIntegration
     this._syncIntegrationWaiting()
+    this._syncLifecycleOwnership()
     // The integration axis is a SUBSCRIPTION, not a field of the ack: the
     // backend revises it as it learns (starting → integrated, or →
     // conventional with a reason, or → lost). Subscribed before anything
@@ -4786,6 +4792,7 @@ export class TerminalContent extends BasePaneContent {
       // The session is gone: an origin naming it would name a machine
       // that no longer exists (B.9). True for a clean exit AND a loss.
       this._sessionExited = true
+      this._cancelDeferredShellSubmissions()
       this.hooks.onActiveOriginChange?.()
       this._projections?.reset()
       this.lifecycle.reset()
@@ -6036,6 +6043,8 @@ export class TerminalContent extends BasePaneContent {
     this._integration = fact
     this._updateCapability()
     this._syncIntegrationWaiting()
+    this._releaseDeferredShellSubmissions()
+    this._syncLifecycleOwnership()
     if (!isDegraded(fact)) {
       // Recovered, or never failed. The card belongs to the state that
       // raised it and goes with it — and the terminal gets the space back,
@@ -6194,6 +6203,44 @@ export class TerminalContent extends BasePaneContent {
     this._noticeDispose()
     this._noticeDispose = null
     this.scheduleLiveResize()
+  }
+
+  /** Keep a human shell submit in the editor while the shell is still proving
+   *  its integration state. Once a live prompt exists, the normal submit path
+   *  opens the app-owned attempt before it writes paste+Enter. A settled
+   *  conventional/lost outcome releases the same draft through the ordinary
+   *  raw terminal path instead. */
+  private deferShellSubmissionUntilReady(
+    plan: SubmitPlan,
+  ): SubmitPlan | Promise<SubmitPlan | false> {
+    if (this.inputTargets?.active().routesToShell !== true) return plan
+    if (!isAwaitingIntegration(this._integration, this._awaitsIntegration)) return plan
+    if (this.lifecycle.state.kind === 'prompt_ready' || isDegraded(this._integration)) return plan
+
+    return new Promise<SubmitPlan | false>((resolve) => {
+      let settled = false
+      const finish = (resume: boolean): void => {
+        if (settled) return
+        settled = true
+        this._deferredShellSubmissionWaiters.delete(finish)
+        resolve(resume ? plan : false)
+      }
+      this._deferredShellSubmissionWaiters.add(finish)
+      // Close the check/register gap if a fact is applied in the same turn
+      // between the guard above and the waiter being installed.
+      this._releaseDeferredShellSubmissions()
+    })
+  }
+
+  private _releaseDeferredShellSubmissions(): void {
+    if (this.lifecycle.state.kind !== 'prompt_ready' && !isDegraded(this._integration)) return
+    for (const finish of [...this._deferredShellSubmissionWaiters]) finish(true)
+  }
+
+  /** A closed or replaced session cannot authorize a delayed command. Resolve
+   *  false so the editor keeps its draft for the person to decide what to do. */
+  private _cancelDeferredShellSubmissions(): void {
+    for (const finish of [...this._deferredShellSubmissionWaiters]) finish(false)
   }
 
   /** Show the waiting card and hide the terminal grid for exactly as long as
@@ -7992,8 +8039,16 @@ export class TerminalContent extends BasePaneContent {
     // pane; the native latch still gates both because it is the person's own
     // one-way choice.
     const summoned = this._summoned
+    // During the integration probe, the terminal grid is replaced by the
+    // waiting card but the ordinary composer remains an app-owned draft
+    // surface. Its Enter path is held by deferShellSubmissionUntilReady until
+    // the authenticated prompt arrives, so no input lands on a raw startup
+    // prompt.
+    const startupComposer =
+      this.lifecycle.state.kind === 'native' &&
+      isAwaitingIntegration(this._integration, this._awaitsIntegration)
     const show =
-      (shouldShowEditor(this.lifecycle.state) || summoned) &&
+      (shouldShowEditor(this.lifecycle.state) || summoned || startupComposer) &&
       (summoned || this.lifecycle.buffer === 'normal') &&
       !this.nativeMode
     // The one case in which an authenticated prompt still shows no editor is
@@ -8165,6 +8220,7 @@ export class TerminalContent extends BasePaneContent {
 
   dispose(): void {
     this._disposed = true
+    this._cancelDeferredShellSubmissions()
     // The input element goes with the pane (nocx-zg3k3.3.1): it holds the
     // keyboard and a live listener set, and a disposed pane that kept either
     // would take keys for a session it no longer has.

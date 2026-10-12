@@ -62,6 +62,11 @@ function startSshd(remoteHome: string): Fixture {
 // would skip the defect this test guards against.
 test('a command submitted during shell startup has a visible running block', async ({ page }) => {
   const remoteHome = mkdtempSync(join(tmpdir(), 'nocx-shell-startup-remote-'))
+  const startupRelease = join(remoteHome, '.startup-release')
+  writeFileSync(
+    join(remoteHome, '.bashrc'),
+    'while [ ! -e "$HOME/.startup-release" ]; do sleep 0.05; done\n',
+  )
   const fixture = startSshd(remoteHome)
   let profileId: string | null = null
   const profileName = `startup-visibility-${Date.now()}`
@@ -101,13 +106,16 @@ test('a command submitted during shell startup has a visible running block', asy
     await expect(page.locator('.quick-connect__item').first()).toContainText(profileName)
     await page.keyboard.press('Enter')
 
-    const pane = page.locator('.pane.active')
+    await expect(page.locator('#pane-2')).toBeVisible()
+    const pane = page.locator('#pane-2')
     const checking = pane.getByRole('status', { name: CHECKING })
     const editor = pane.locator('.nocx-editor-input')
     await editor.focus()
-    await page.keyboard.insertText(COMMAND)
+    await editor.fill(COMMAND)
+    await expect(editor).toHaveText(COMMAND)
     await expect(checking).toBeVisible({ timeout: 0 })
     await page.keyboard.press('Enter')
+    writeFileSync(startupRelease, '')
 
     await expect(pane.locator('.ui-process-bar')).toContainText('Process running')
     const block = pane.locator('.cmd-block.cmd-block-running').filter({ hasText: COMMAND })
