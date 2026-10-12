@@ -2386,6 +2386,35 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
     }
   })
 
+  it('shows the running block while the integration status is still starting', async () => {
+    const session = makeSession({ awaitsIntegration: true })
+    const client = makeClient()
+    client.openSession.mockResolvedValue(session)
+    const fireIntegration = integrationHandler(client, session)
+    const { content, tab, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    const lifecycle = lifecycleHandler(client, session.sessionId)
+    const scrollback = scrollbackFor(content)
+    try {
+      fireIntegration({ sessionId: session.sessionId, status: 'starting', shell: '/bin/bash' })
+      expect(scrollback.scrollbackLayout.style.display).toBe('none')
+
+      lifecycle({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
+      lifecycle({
+        lane: 'lane-1',
+        lifecycle: 'running',
+        domain: 'd1',
+        epoch: 1,
+        attempt: { id: 'att-startup', state: 'open', origin: 'shell', command: 'sleep 20' },
+      })
+
+      expect(tab.pane.querySelector(WAITING)).not.toBeNull()
+      expect(scrollback.scrollbackLayout.style.display).toBe('')
+      expect(scrollback.blockManager.runningBlock?.command).toBe('sleep 20')
+    } finally {
+      teardown()
+    }
+  })
+
   it('a key pressed while starting reaches no send path', async () => {
     const client = makeClient()
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)

@@ -3369,6 +3369,7 @@ export class TerminalContent extends BasePaneContent {
         if (this.lifecycle.state.kind === 'running') {
           this._screenHandbackAwaitingBoundary = true
         }
+        this._syncIntegrationWaiting()
         this._syncLifecycleOwnership()
         // An integrated pane is settled by its authenticated lifecycle fact,
         // not by the non-authoritative promptBoundary observation. Without
@@ -6219,10 +6220,18 @@ export class TerminalContent extends BasePaneContent {
   private _syncIntegrationWaiting(): void {
     const waiting = isAwaitingIntegration(this._integration, this._awaitsIntegration)
     if (waiting) {
-      if (this._integrationWaitingDispose || !this._paneTarget) return
-      this._integrationWaitingDispose = mountIntegrationWaiting(this._paneTarget)
-      if (this.scrollback) this.scrollback.scrollbackLayout.style.display = 'none'
-      this.scheduleLiveResize()
+      if (!this._integrationWaitingDispose && this._paneTarget) {
+        this._integrationWaitingDispose = mountIntegrationWaiting(this._paneTarget)
+        this.scheduleLiveResize()
+      }
+      // A running lifecycle fact is authenticated evidence that the shell
+      // has started a command, even if the separate integration-status
+      // notification still says `starting`. Keep the checking card, but show
+      // the scrollback so its running block is not hidden behind that card.
+      if (this.scrollback) {
+        this.scrollback.scrollbackLayout.style.display =
+          this.lifecycle.state.kind === 'running' ? '' : 'none'
+      }
       return
     }
     if (!this._integrationWaitingDispose) return
