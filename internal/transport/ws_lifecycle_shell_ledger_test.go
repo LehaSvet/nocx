@@ -97,6 +97,9 @@ func TestShellOriginatedStart_EntryWithNoWindowAttached(t *testing.T) {
 	if row.Phase != content.PhaseClosed || row.Status != content.EntrySuccess {
 		t.Fatalf("completed row = phase=%q status=%q, want closed/success", row.Phase, row.Status)
 	}
+	if row.DurationMs == nil || *row.DurationMs < 0 {
+		t.Fatalf("completed row duration = %v, want a measured non-negative duration", row.DurationMs)
+	}
 	if row.StartedAt == nil || row.EndedAt == nil {
 		t.Fatalf("completed row times = started=%v ended=%v, want both", row.StartedAt, row.EndedAt)
 	}

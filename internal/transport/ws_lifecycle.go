@@ -819,6 +819,16 @@ func (s *WSServer) syncLifecycleLedger(ctx context.Context, f lifecyclepub.Fact)
 		}
 		if f.Attempt.CompletedAt != nil {
 			end.EndedAt = f.Attempt.CompletedAt.UnixMilli()
+			if !f.Attempt.StartedAt.IsZero() {
+				// Both timestamps come from this lifecycle kernel's clock. Its
+				// time.Time values share a monotonic reading, unlike the wall
+				// stamps used for retention, so this is the run interval even
+				// when no renderer is present to send ledger.close.
+				elapsed := f.Attempt.CompletedAt.Sub(f.Attempt.StartedAt).Milliseconds()
+				if elapsed >= 0 {
+					end.DurationMs = &elapsed
+				}
+			}
 		}
 		payload := content.ShellPayloadJSON(f.Attempt.ExitCode)
 		end.Payload = &payload
