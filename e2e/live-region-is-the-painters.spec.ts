@@ -78,6 +78,10 @@ test('painted output and backend mouse intent work without xterm or session.outp
     await expect(interrupt).toBeVisible()
     await interrupt.click()
     await promptReady(page)
+    // cat -v does not restore the DEC mouse modes set by clickRound.
+    await page.keyboard.type("printf '\\033[?1000l\\033[?1006l'")
+    await page.keyboard.press('Enter')
+    await promptReady(page)
     const cellWidthBefore = await page.evaluate(
       () =>
         (
@@ -244,15 +248,20 @@ async function clickRound(
   // selected. No browser-side code constructs a terminal escape sequence.
   const expectedIntent = `press left ${target!.col} ${target!.row}`
   await expect.poll(() => mouseIntents.slice(intentStart).includes(expectedIntent)).toBe(true)
-
-  // cat -v prints the backend runtime's one-based SGR encoding back into the
-  // painted screen, proving the program received the event for that cell.
-  const expectedSGR = `^[[<0;${target!.col + 1};${target!.row + 1}M`
+  const expectedReleaseIntent = `release left ${target!.col} ${target!.row}`
   await expect
-    .poll(() =>
-      page
-        .locator(LIVE)
-        .evaluate((live, wanted) => live.textContent?.includes(wanted), expectedSGR),
-    )
+    .poll(() => mouseIntents.slice(intentStart).includes(expectedReleaseIntent))
     .toBe(true)
+
+  // cat -v prints both backend-generated SGR reports back into the painted
+  // screen. Wait for the release too, so cleanup cannot race the click's tail.
+  const expectedSGR = `^[[<0;${target!.col + 1};${target!.row + 1}M`
+  const expectedReleaseSGR = `^[[<0;${target!.col + 1};${target!.row + 1}m`
+  for (const sgr of [expectedSGR, expectedReleaseSGR]) {
+    await expect
+      .poll(() =>
+        page.locator(LIVE).evaluate((live, wanted) => live.textContent?.includes(wanted), sgr),
+      )
+      .toBe(true)
+  }
 }

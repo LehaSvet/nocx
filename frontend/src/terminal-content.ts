@@ -846,6 +846,16 @@ function isBlockScreenAnchor(value: unknown): value is BlockScreenAnchor {
   )
 }
 
+type PendingSessionCall =
+  | { type: 'intent'; session: SessionHandle; intent: SessionIntent }
+  | {
+      type: 'signal'
+      session: SessionHandle
+      signal: SessionSignal['signal']
+      resolve: (result: Awaited<ReturnType<SessionHandle['signal']>>) => void
+      reject: (reason?: unknown) => void
+    }
+
 export class TerminalContent extends BasePaneContent {
   // The live terminal is painted from accepted backend frames; no renderer
   // adapter is injected, and the backend remains authoritative for buffer kind.
@@ -853,11 +863,11 @@ export class TerminalContent extends BasePaneContent {
   private _metadataSessionId: string | null = null
   private _frameTitle: string | undefined
   private _frameCwdPath: string | undefined
-  /** Control-plane calls carry user intent in order. Adjacent committed-text
-   *  events coalesce while queued, so fast typing does not flood the bounded
-   *  executor; intervening keys and other intent kinds remain ordering fences. */
-  private _intentQueue: Array<{ session: SessionHandle; intent: SessionIntent }> = []
-  private _intentSending = false
+  /** Session control calls stay in user order. Adjacent committed-text intents
+   *  coalesce while queued, so fast typing does not flood the bounded executor;
+   *  keys, mouse events and signals remain ordering fences. */
+  private _sessionCallQueue: PendingSessionCall[] = []
+  private _sessionCallSending = false
   private editor: CommandEditor | null = null
   private shellTarget: ShellInputTarget | null = null
   /** The input-target registry (ADR-0004 §3): a submitted document routes
@@ -7514,7 +7524,7 @@ export class TerminalContent extends BasePaneContent {
     const revertStopRequested = (): void => {
       if (signal === 'stop' && targetBlock) targetBlock.stopRequested = false
     }
-    void session.signal(signal).then(
+    void this.queueSessionSignal(session, signal).then(
       (result) => {
         // A SWITCH, AND EXHAUSTIVE ON PURPOSE. The outcome set is closed by
         // the contract and this is the branch the person reads, so a word
@@ -7824,37 +7834,64 @@ export class TerminalContent extends BasePaneContent {
   private sendIntent(intent: SessionIntent): boolean {
     const session = this.session
     if (!session) return false
-    const tail = this._intentQueue[this._intentQueue.length - 1]
-    if (intent.kind === 'text' && tail?.session === session && tail.intent.kind === 'text') {
-      this._intentQueue[this._intentQueue.length - 1] = {
+    const tail = this._sessionCallQueue[this._sessionCallQueue.length - 1]
+    if (
+      intent.kind === 'text' &&
+      tail?.type === 'intent' &&
+      tail.session === session &&
+      tail.intent.kind === 'text'
+    ) {
+      this._sessionCallQueue[this._sessionCallQueue.length - 1] = {
+        type: 'intent',
         session,
         intent: { kind: 'text', payload: tail.intent.payload + intent.payload },
       }
     } else {
-      this._intentQueue.push({ session, intent })
+      this._sessionCallQueue.push({ type: 'intent', session, intent })
     }
-    void this.drainIntentQueue()
+    void this.drainSessionCallQueue()
     return true
   }
 
-  private async drainIntentQueue(): Promise<void> {
-    if (this._intentSending) return
-    this._intentSending = true
+  /** Keep Interrupt behind pointer intents already received by this pane. If
+   *  SIGINT ends the foreground program first, its queued mouse release can
+   *  become input to the shell that resumes. */
+  private queueSessionSignal(
+    session: SessionHandle,
+    signal: SessionSignal['signal'],
+  ): Promise<Awaited<ReturnType<SessionHandle['signal']>>> {
+    return new Promise((resolve, reject) => {
+      this._sessionCallQueue.push({ type: 'signal', session, signal, resolve, reject })
+      void this.drainSessionCallQueue()
+    })
+  }
+
+  private async drainSessionCallQueue(): Promise<void> {
+    if (this._sessionCallSending) return
+    this._sessionCallSending = true
     try {
-      while (this._intentQueue.length > 0) {
-        const { session, intent } = this._intentQueue.shift()!
+      while (this._sessionCallQueue.length > 0) {
+        const call = this._sessionCallQueue.shift()!
+        if (call.type === 'signal') {
+          try {
+            void call.session.signal(call.signal).then(call.resolve, call.reject)
+          } catch (err: unknown) {
+            call.reject(err)
+          }
+          continue
+        }
         try {
-          await session.intent(intent.kind, intent.payload)
+          await call.session.intent(call.intent.kind, call.intent.payload)
         } catch (err: unknown) {
           log.warn('nocx: session intent did not reach the session', {
-            kind: intent.kind,
+            kind: call.intent.kind,
             error: String(err),
           })
         }
       }
     } finally {
-      this._intentSending = false
-      if (this._intentQueue.length > 0) void this.drainIntentQueue()
+      this._sessionCallSending = false
+      if (this._sessionCallQueue.length > 0) void this.drainSessionCallQueue()
     }
   }
 

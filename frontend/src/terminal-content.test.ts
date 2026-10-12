@@ -11289,6 +11289,17 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
     handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
   }
 
+  async function waitForSessionQueue(content: TerminalContent): Promise<void> {
+    const queue = content as unknown as {
+      _sessionCallQueue: unknown[]
+      _sessionCallSending: boolean
+    }
+    await vi.waitFor(() => {
+      expect(queue._sessionCallQueue).toHaveLength(0)
+      expect(queue._sessionCallSending).toBe(false)
+    })
+  }
+
   it('uses the accepted backend cursor row for command block coordinates', async () => {
     const client = makeClient()
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
@@ -12583,6 +12594,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
           cancelable: true,
         })
         target.element.dispatchEvent(event)
+        await waitForSessionQueue(content)
         const signals = signalsSent(content)
         results.push({
           target: target.name,
@@ -12662,6 +12674,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
           cancelable: true,
         }),
       )
+      await waitForSessionQueue(content)
 
       expect(signalsSent(content)).toEqual(['interrupt'])
     } finally {
@@ -12775,6 +12788,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       // The command — not the turn — receives exactly one ordinary interrupt
       // through its signal ladder, and the half-typed question survives.
       expect(ed.getDoc()).toBe('what is it waiting on')
+      await waitForSessionQueue(content)
       expect(signalsSent(content)).toEqual(['interrupt'])
       expect(session.send).not.toHaveBeenCalledWith('\x03')
       expect(
@@ -12982,6 +12996,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       const stop = itemNamed(runningBlockMenu(content), 'stop')
       expect(stop, 'the card the runtime opened offers no Stop').toBeDefined()
       stop!.click()
+      await waitForSessionQueue(content)
       expect(signalsSent(content)).toEqual(['stop'])
     } finally {
       restore()
@@ -13026,6 +13041,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
 
       // `stop`, not `interrupt`: the menu item promises the command is gone,
       // and the backend's ladder is what keeps that promise.
+      await waitForSessionQueue(content)
       expect(signalsSent(content)).toEqual(['stop'])
     } finally {
       restore()
@@ -13131,6 +13147,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       )
       expect(stop, 'the running block has no Stop control').not.toBeNull()
       stop!.click()
+      await waitForSessionQueue(content)
       expect(signalsSent(content)).toEqual(['stop'])
       expect(itemNamed(runningBlockMenu(content), 'stop')).not.toBeUndefined()
     } finally {
@@ -13147,6 +13164,84 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
   // otherwise indistinguishable. These two tests are the pairing the bead
   // asks for: the SAME exit code, through the SAME completion path, reading
   // two different ways depending on whether nocx actually sent the signal.
+
+  it('orders Interrupt after a queued mouse release', async () => {
+    const client = makeClient()
+    const { content, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    const restore = stubScrolling()
+    const session = sessionOf(content)
+    let releasePress!: () => void
+    const pressGate = new Promise<void>((resolve) => {
+      releasePress = resolve
+    })
+    const result = { state: 'executed', bytesWritten: 1, fenceAfter: 0 }
+    const events: string[] = []
+    session.intent.mockImplementation((kind: string, payload: string) => {
+      events.push(`intent:${payload}`)
+      return (payload === 'press left 2 1' ? pressGate : Promise.resolve()).then(() => result)
+    })
+    session.signal.mockImplementation((signal: string) => {
+      events.push(`signal:${signal}`)
+      return Promise.resolve({ signal, outcome: 'delivered' })
+    })
+
+    try {
+      content.setVisible(true)
+      const frame = screenFrame(1, ['mouse target'])
+      frame.state.mouseTracking = true
+      session.fireScreenFrame(frame)
+      startCommand(client, 'cat -v')
+
+      const surface = gridOf(content).querySelector<HTMLElement>('.term-grid')!
+      await vi.waitFor(() => expect(surface.textContent).toContain('mouse target'))
+      surface.getBoundingClientRect = () =>
+        ({ left: 10, top: 20, right: 330, bottom: 84, width: 320, height: 64 }) as DOMRect
+      const pointer = (type: 'pointerdown' | 'pointerup', buttons: number): Event => {
+        const event = new Event(type, { bubbles: true, cancelable: true })
+        Object.defineProperties(event, {
+          button: { value: 0 },
+          buttons: { value: buttons },
+          clientX: { value: 26 },
+          clientY: { value: 44 },
+        })
+        return event
+      }
+      surface.dispatchEvent(pointer('pointerdown', 1))
+      surface.dispatchEvent(pointer('pointerup', 0))
+      await vi.waitFor(() => expect(events).toEqual(['intent:press left 2 1']))
+      expect(
+        (
+          content as unknown as {
+            _sessionCallQueue: Array<{ intent?: { payload: string } }>
+          }
+        )._sessionCallQueue.map((call) => call.intent?.payload),
+      ).toEqual(['release left 2 1'])
+
+      const interrupt = paneOf(content).querySelector<HTMLButtonElement>(
+        '[data-control="interrupt"]',
+      )
+      expect(interrupt).not.toBeNull()
+      interrupt!.click()
+      expect(events).toEqual(['intent:press left 2 1'])
+
+      releasePress()
+      await vi.waitFor(() =>
+        expect(events).toEqual([
+          'intent:press left 2 1',
+          'intent:release left 2 1',
+          'signal:interrupt',
+        ]),
+      )
+    } finally {
+      releasePress()
+      restore()
+      teardown()
+    }
+  })
 
   it('a command stopped through the pane settles as cancelled, never failed', async () => {
     const client = makeClient()
@@ -13183,6 +13278,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       // The REAL stop path: the Stop menu item, signalActiveCommand, the
       // pane's session.signal — not a status flipped by hand.
       itemNamed(runningBlockMenu(content), 'stop')!.click()
+      await waitForSessionQueue(content)
       expect(signalsSent(content)).toEqual(['stop'])
 
       // The escalation ladder's SIGINT rung. `fence` is REQUIRED here, not
@@ -13264,6 +13360,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       vi.mocked(showToast).mockClear()
 
       itemNamed(runningBlockMenu(content), 'stop')!.click()
+      await waitForSessionQueue(content)
       expect(signalsSent(content)).toEqual(['stop'])
 
       await vi.waitFor(() => expect(showToast).toHaveBeenCalled())
