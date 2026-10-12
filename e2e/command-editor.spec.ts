@@ -224,6 +224,10 @@ test.describe('command editor (nocx-4ff)', () => {
           blockTop: block ? Math.round(block.getBoundingClientRect().top - areaRect.top) : -1,
           display: editor.style.display,
           visibility: editor.style.visibility,
+          settling: area.classList.contains('is-settling'),
+          runningAnimations: inner
+            .getAnimations()
+            .filter((animation) => animation.playState === 'running').length,
           // The grid's row pitch, published by scrollback/cell-metric.ts. The
           // tolerance below is stated in ROWS, so it must come from the same
           // number the layout is built on rather than from a literal.
@@ -257,6 +261,10 @@ test.describe('command editor (nocx-4ff)', () => {
       // it is never smaller — and the rows are in by the time it passes 50px.
       return clip >= 50 && live >= clip
     })
+    // The submit mutation animates the scrollback stack while the live
+    // region opens. Measure the command only after that observable glide ends;
+    // the transform is not its final layout position.
+    await expect(page.locator('.pane.active .scrollback-area')).not.toHaveClass(/is-settling/)
     const running = await geometry()
 
     // The composer is gone and its height has gone to the scroller — the
@@ -270,6 +278,9 @@ test.describe('command editor (nocx-4ff)', () => {
       ),
     ).toBeLessThanOrEqual(1)
     // A short command starts where the prompt was, not at the top of the pane.
+    if (running.blockTop <= running.areaHeight / 2) {
+      console.error('running command geometry at failure:', JSON.stringify(running))
+    }
     expect(running.blockTop).toBeGreaterThan(running.areaHeight / 2)
 
     // Release the shell-side hold only after observing the running geometry.

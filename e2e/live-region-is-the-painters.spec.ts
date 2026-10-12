@@ -9,6 +9,7 @@ import { test, expect, promptReady } from './harness'
 import type { Page } from './harness'
 
 const LIVE = '.pane.active .terminal-live-grid'
+const SCROLLER = '.pane.active .scrollback-area'
 
 test('painted output and backend mouse intent work without xterm or session.output replay', async ({
   page,
@@ -222,6 +223,11 @@ async function clickRound(
   )
   await page.keyboard.press('Enter')
   await expect(page.locator(LIVE)).toContainText(roundMarker, { timeout: 15_000 })
+  // The settle transform moves the painted row independently of its layout
+  // box. A target measured during that glide can move before the click lands,
+  // sending a different cell intent than the one the test meant. Wait for the
+  // controller's observable settle state to end before measuring the target.
+  await expect(page.locator(SCROLLER)).not.toHaveClass(/is-settling/)
 
   let target: ClickTarget | null = null
   let diagnostic = 'no probe result'
