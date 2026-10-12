@@ -38,3 +38,21 @@ func TestOutputStartRowFrameRefusesNonExactSize(t *testing.T) {
 		t.Fatalf("row index = %d", got)
 	}
 }
+
+func TestOutputStartRowFrameRoundTripWithScreenAnchor(t *testing.T) {
+	f := OutputStartRowFrame{
+		Session: [16]byte{1}, Subscriber: [16]byte{2}, FromRow: 900,
+		Anchor: &OutputStartScreenAnchor{Row: 5, ScreenRevision: 17, BufferKind: "alternate", BufferInstance: "3", Cols: 120, Rows: 40},
+	}
+	wire, err := EncodeOutputStartRowFrame(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeOutputStartRowFrame(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FromRow != f.FromRow || got.Anchor == nil || *got.Anchor != *f.Anchor {
+		t.Fatalf("decoded = %+v, want %+v", got, f)
+	}
+}

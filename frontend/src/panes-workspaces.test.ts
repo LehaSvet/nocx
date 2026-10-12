@@ -1,12 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import type { NameColourDraft } from './name-colour-dialog'
-import {
-  createRendererMock,
-  resetSessionCounter,
-  mountPaneManager,
-  type RendererMock,
-} from './test-support/panes-fixtures'
+import { resetSessionCounter, mountPaneManager } from './test-support/panes-fixtures'
 import { HorizontalTabStrip, VerticalTabStrip } from './tab-strip'
 
 // A window is a VIEWPORT, not a container (tabs/panes design §10): it shows
@@ -15,10 +10,6 @@ import { HorizontalTabStrip, VerticalTabStrip } from './tab-strip'
 // what the chip says about which workspace they are in — plus the rule the
 // whole epic turns on: THE DEFAULT WORKSPACE NEVER RENDERS, and creating a
 // second workspace does not change that.
-
-vi.mock('./renderers/xterm', () => ({
-  XtermRenderer: vi.fn(createRendererMock) as unknown as new () => RendererMock,
-}))
 
 const showConfirmMock = vi.fn()
 const workspaceCreateMock = vi.fn()

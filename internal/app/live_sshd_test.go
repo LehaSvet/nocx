@@ -128,6 +128,9 @@ type liveSshdConfig struct {
 	// it is the option that decides whether a helper can be handed the
 	// credential at all.
 	clientKeyFile bool
+	// sessionHome overrides the disposable login HOME for fixtures whose
+	// helper Unix socket must fit the platform path limit.
+	sessionHome string
 }
 
 // log is the product logger this fixture's compositions use.
@@ -314,7 +317,10 @@ func startLiveSshd(t *testing.T, allowForward bool, opts ...liveSshdOption) *liv
 	// developer's real home is never read or written. The planted .bashrc
 	// names the native prompt deterministically (the refusal proof) and
 	// redirects history away so the session leaves nothing behind.
-	home := filepath.Join(dir, "home")
+	home := fxCfg.sessionHome
+	if home == "" {
+		home = filepath.Join(dir, "home")
+	}
 	if err := os.Mkdir(home, 0o700); err != nil {
 		t.Fatalf("mkdir session home: %v", err)
 	}

@@ -621,9 +621,11 @@ func (r *outputRing) inFlightLocked(floor, pos uint64) uint64 {
 	return pos - floor - r.missingBetween(floor, pos)
 }
 
-// waitForCredit blocks until fewer than limit of the bytes this pump sent —
-// the span from `since`, where it attached, to `pos` — are still unacked, the
-// ring is closed, or ctx is cancelled.
+// waitForCreditOrWake blocks until fewer than limit of the bytes this pump
+// sent — the span from `since`, where it attached, to `pos` — are still
+// unacked, the ring is closed, or ctx is cancelled. A wake releases the ring
+// pump to recheck its control-effect queue. The caller still has to satisfy
+// the credit predicate before sending more PTY bytes.
 //
 // The predicate lives here, in one place, rather than being split between
 // the ring and its subscriber. An earlier version waited for the client to
@@ -632,8 +634,8 @@ func (r *outputRing) inFlightLocked(floor, pos uint64) uint64 {
 // therefore never reopened: one burst past the credit limit wedged that
 // session's output permanently. Credit is a sliding window, not
 // stop-and-wait: it reopens as soon as enough has been acked, not once all
-// of it has.
-func (r *outputRing) waitForCredit(ctx context.Context, since, pos, limit uint64) (closed bool) {
+// of it.
+func (r *outputRing) waitForCreditOrWake(ctx context.Context, since, pos, limit uint64, wake <-chan struct{}) (closed bool) {
 	r.mu.Lock()
 
 	for !r.closed && r.creditFloor(since) < pos && r.inFlightLocked(r.creditFloor(since), pos) >= limit {
@@ -642,6 +644,11 @@ func (r *outputRing) waitForCredit(ctx context.Context, since, pos, limit uint64
 
 		select {
 		case <-ctx.Done():
+			r.mu.Lock()
+			closed = r.closed
+			r.mu.Unlock()
+			return closed
+		case <-wake:
 			r.mu.Lock()
 			closed = r.closed
 			r.mu.Unlock()
@@ -702,6 +709,31 @@ func (r *outputRing) waitForData(ctx context.Context, pos uint64) (closed bool) 
 		}
 	}
 
+	closed = r.closed
+	r.mu.Unlock()
+	return closed
+}
+
+// waitForDataOrWake waits for new bytes, closure, cancellation, or a delivery
+// signal. Its closed generation broadcasts to all pumps, so a displaced pump
+// cannot consume the wake needed by the current subscriber.
+func (r *outputRing) waitForDataOrWake(ctx context.Context, pos uint64, wake <-chan struct{}) (closed bool) {
+	r.mu.Lock()
+	for !r.closed && r.written() <= pos {
+		ch := r.changed
+		r.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			r.mu.Lock()
+			closed = r.closed
+			r.mu.Unlock()
+			return closed
+		case <-wake:
+			return false
+		case <-ch:
+			r.mu.Lock()
+		}
+	}
 	closed = r.closed
 	r.mu.Unlock()
 	return closed

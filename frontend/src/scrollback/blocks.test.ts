@@ -28,7 +28,6 @@ import { clampMenuPosition } from '../ui/menu-geometry'
 import { shellHighlightReady } from '../shell-highlight'
 import { applyReasoningExpanded } from '../reasoning-expanded'
 import { clearToasts, toasts } from '../ui/toast'
-import { BufferLine } from './test-helpers'
 import { _resetThemeState } from '../renderers/theme-adapter'
 import { CommandSnapshotStore } from '../command-snapshot'
 import { mintDomain, type IntegrationDomain } from '../lifecycle/domains'
@@ -725,17 +724,17 @@ describe('block selection model (P1-7, P1-8)', () => {
 describe('BlockManager', () => {
   let manager: BlockManager
   let inner: HTMLElement
-  let xtermContainer: HTMLElement
+  let liveContainer: HTMLElement
   let fixedNow: number
 
   beforeEach(() => {
     _resetThemeState()
     inner = document.createElement('div')
-    xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
+    liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
     document.body.appendChild(inner)
     fixedNow = 1000
-    manager = new BlockManager(inner, xtermContainer, {
+    manager = new BlockManager(inner, liveContainer, {
       now: () => fixedNow,
       snapshotStore: freshStore(),
     })
@@ -786,10 +785,10 @@ describe('BlockManager', () => {
         destroy: () => {},
       }
       localInner = document.createElement('div')
-      const localXterm = document.createElement('div')
-      localInner.appendChild(localXterm)
+      const localLive = document.createElement('div')
+      localInner.appendChild(localLive)
       document.body.appendChild(localInner)
-      localManager = new BlockManager(localInner, localXterm, {
+      localManager = new BlockManager(localInner, localLive, {
         now: () => fixedNow,
         snapshotStore: freshStore(),
         appVisibility,
@@ -847,15 +846,15 @@ describe('BlockManager', () => {
     expect(rec.command).toBe('ls -la')
     expect(rec.status).toBe('running')
     expect(rec.id).toBe(1)
-    expect(inner.children.length).toBe(2) // running block + xterm container
+    expect(inner.children.length).toBe(2) // running block + live container
     expect(inner.children[0].classList.contains('cmd-block-running')).toBe(true)
     expect(manager.runningBlock).toBe(rec)
   })
 
-  it('inserts the running block before the xterm container', () => {
+  it('inserts the running block before the live container', () => {
     manager.startBlock('cmd', '~', 5)
     expect(inner.children[0]).toBe(manager.blocks[0]?.el)
-    expect(inner.children[1]).toBe(xtermContainer)
+    expect(inner.children[1]).toBe(liveContainer)
   })
 
   it('finalizes orphaned running block on next start', () => {
@@ -873,13 +872,13 @@ describe('BlockManager', () => {
     // between the start and the next focus call was lost (CI run
     // 36105113564: `read x` got an empty line for a typed `hello`).
     const gridInput = document.createElement('textarea')
-    xtermContainer.appendChild(gridInput)
+    liveContainer.appendChild(gridInput)
     gridInput.focus()
     expect(document.activeElement).toBe(gridInput)
 
     manager.startBlock('read x', '~', 0)
 
-    expect(xtermContainer.previousElementSibling).toBe(manager.runningBlock?.el)
+    expect(liveContainer.previousElementSibling).toBe(manager.runningBlock?.el)
     expect(document.activeElement).toBe(gridInput)
   })
 
@@ -887,7 +886,7 @@ describe('BlockManager', () => {
     // The other half: the region is re-seated without claiming a focus it
     // never had — the editor, a menu, anything outside it keeps the keys.
     const gridInput = document.createElement('textarea')
-    xtermContainer.appendChild(gridInput)
+    liveContainer.appendChild(gridInput)
     const elsewhere = document.createElement('input')
     document.body.appendChild(elsewhere)
     elsewhere.focus()
@@ -931,7 +930,7 @@ describe('BlockManager', () => {
 
     expect(inner.querySelectorAll('.cmd-block').length).toBe(0)
     expect(inner.querySelector('.scrollback-restore-boundary')).toBeNull()
-    expect(inner.children.length).toBe(1) // only the xterm container remains
+    expect(inner.children.length).toBe(1) // only the live container remains
   })
 
   it('restorePast with nothing to draw adds no boundary — an empty past is not a past', () => {
@@ -1031,7 +1030,7 @@ describe('BlockManager', () => {
     manager.startBlock('test', '~', 0)
     expect(inner.children.length).toBe(2)
     manager.clearAll()
-    expect(inner.children.length).toBe(1) // only xterm container remains
+    expect(inner.children.length).toBe(1) // only live container remains
     expect(manager.blocks.length).toBe(0)
     expect(manager.runningBlock).toBeNull()
   })
@@ -1042,7 +1041,7 @@ describe('BlockManager', () => {
   })
 
   it('the author mark survives the running → frozen replacement (nocx-iadtt)', () => {
-    const rec = manager.startBlock('ls', '~', 0, undefined, 'agent')
+    const rec = manager.startBlock('ls', '~', 0, 'agent')
     expect(rec.author).toBe('agent')
     expect(rec.el.querySelector('.ui-badge[data-author="agent"]')).not.toBeNull()
     closeRunningBlock(manager)
@@ -1339,7 +1338,7 @@ describe('frozen block header highlighting', () => {
   })
 })
 
-// ── Frozen headers carry command-existence verdicts (OSC 636) ──────────────
+// ── Frozen headers carry backend command-existence verdicts ───────────────
 // The verdict is read at freeze time from the session snapshot: a header
 // frozen before the snapshot arrives keeps no verdict (the one-shot snapshot
 // never changes, so a frozen verdict can never go stale).
@@ -1350,21 +1349,13 @@ describe('frozen headers and the command snapshot', () => {
   })
 
   const c = (): HTMLElement => document.createElement('div')
-  const SEED_NONCE = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
   /** A fresh tab store seeded with the given names (or left empty). */
   const makeStore = (names?: string[]): CommandSnapshotStore => {
     const store = freshStore()
     if (names) {
-      store.ingest(`H;${SEED_NONCE}`)
-      store.ingest(`S;${SEED_NONCE};${names.join(';')}`)
-      // Existence needs BOTH halves of command discovery: the shell's own
-      // tables (OSC 636, above) and the target's PATH set, which the backend
-      // computes once per host and hands over shell.commandNames. A store
-      // holding only one of them answers `unavailable` on purpose — with the
-      // PATH half missing, calling a name nonexistent would strike through
-      // every real command on the machine. These fixtures supply an EMPTY
-      // shared set: present, so the store can judge, and empty, so a name that
-      // is not in the seeded tables is genuinely absent.
+      store.applyBackendSnapshot(names)
+      // The shared PATH half is present and empty, so the store can judge
+      // names absent from the backend's session-local snapshot.
       store.applySharedNames({ state: 'ready', names: [], ageMs: 0, reason: '', truncated: false })
     }
     return store
@@ -1571,15 +1562,15 @@ describe('freezeBlock entered presentation (N6, nocx-y5v5)', () => {
 describe('BlockManager entered freeze (N6, nocx-y5v5)', () => {
   let manager: BlockManager
   let inner: HTMLElement
-  let xtermContainer: HTMLElement
+  let liveContainer: HTMLElement
 
   beforeEach(() => {
     _resetThemeState()
     inner = document.createElement('div')
-    xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
+    liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
     document.body.appendChild(inner)
-    manager = new BlockManager(inner, xtermContainer, {
+    manager = new BlockManager(inner, liveContainer, {
       now: () => 1000,
       snapshotStore: freshStore(),
     })
@@ -1587,7 +1578,7 @@ describe('BlockManager entered freeze (N6, nocx-y5v5)', () => {
 
   it('freezeEntered freezes the running block as entered with no exit code', () => {
     const rec = manager.startBlock('ssh pi@192.168.0.93', '~', 0)
-    const entered = manager.freezeEntered(() => undefined, 3)
+    const entered = manager.freezeEntered(3)
     expect(entered).not.toBeNull()
     expect(entered!.id).toBe(rec.id)
     expect(entered!.status).toBe('entered')
@@ -1604,12 +1595,12 @@ describe('BlockManager entered freeze (N6, nocx-y5v5)', () => {
   })
 
   it('freezeEntered returns null when no block is running', () => {
-    expect(manager.freezeEntered(() => undefined, 0)).toBeNull()
+    expect(manager.freezeEntered(0)).toBeNull()
   })
 
   it('after freezeEntered the next startBlock creates a new running block and leaves the entered one untouched', () => {
     manager.startBlock('ssh pi@192.168.0.93', '~', 0)
-    const entered = manager.freezeEntered(() => undefined, 3)
+    const entered = manager.freezeEntered(3)
     expect(manager.runningBlock).toBeNull()
 
     const remote = manager.startBlock('pwd', '~', 5)
@@ -1624,7 +1615,7 @@ describe('BlockManager entered freeze (N6, nocx-y5v5)', () => {
 
   it('a normal D freeze after an entered block still renders success/failure from the real code', () => {
     manager.startBlock('ssh pi@192.168.0.93', '~', 0)
-    manager.freezeEntered(() => undefined, 3)
+    manager.freezeEntered(3)
     manager.startBlock('pwd', '~', 5)
     const done = closeRunningBlock(manager)
     expect(done!.status).toBe('success')
@@ -1637,15 +1628,15 @@ describe('BlockManager entered freeze (N6, nocx-y5v5)', () => {
 describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh.7)', () => {
   let manager: BlockManager
   let inner: HTMLElement
-  let xtermContainer: HTMLElement
+  let liveContainer: HTMLElement
 
   beforeEach(() => {
     _resetThemeState()
     inner = document.createElement('div')
-    xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
+    liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
     document.body.appendChild(inner)
-    manager = new BlockManager(inner, xtermContainer, {
+    manager = new BlockManager(inner, liveContainer, {
       now: () => 1000,
       snapshotStore: freshStore(),
     })
@@ -1667,8 +1658,18 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
     ...over,
   })
 
+  const screenAnchor = (
+    row: number,
+    screenRevision: number,
+    bufferKind: 'normal' | 'alternate' = 'normal',
+    bufferInstance = '1',
+    cols = 80,
+    rows = 24,
+  ) => ({ row, screenRevision, bufferKind, bufferInstance, cols, rows })
+
   it('bindAttempt ties the running block to the attempt; freezeFromAttempt freezes it with the authenticated status', () => {
-    const rec = manager.startBlock('make', '~', 0)
+    const start = screenAnchor(3, 1)
+    const rec = manager.startBlock('make', '~', 3, 'shell', start)
     manager.bindAttempt('att-1')
     expect(rec.attemptId).toBe('att-1')
     expect(rec.el.dataset.entryId).toBe('att-1')
@@ -1678,16 +1679,70 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
 
     // The backend's block.closed landed before the completion: the block
     // closes the moment the completion arrives.
-    manager.blockClosed('att-1')
-    const frozen = manager.freezeFromAttempt(attempt({ exitCode: 0 }), () => undefined, 8)
+    manager.blockClosed('att-1', screenAnchor(11, 2))
+    const frozen = manager.freezeFromAttempt(attempt({ exitCode: 0 }), 8)
     expect(frozen).not.toBeNull()
     expect(frozen!.status).toBe('success')
+    expect(frozen!.endLine).toBe(11)
     expect(frozen!.exitCode).toBe(0)
     expect(frozen!.attemptId).toBe('att-1')
     expect(manager.runningBlock).toBeNull()
     expect(manager.blockForAttempt('att-1')).toBe(frozen)
     expect(frozen!.el.dataset.entryId).toBe('att-1')
     expect(frozen!.el.dataset.blockId).toBeUndefined()
+  })
+
+  it('uses the accepted close-frame row when block.closed follows completion', () => {
+    const rec = manager.startBlock('make', '~', 3, 'shell', screenAnchor(3, 1))
+    manager.bindAttempt('att-1')
+    expect(manager.freezeFromAttempt(attempt(), 8)).toBeNull()
+
+    // The output can advance between the authenticated completion and the
+    // backend's accepted block.closed notification. The close event's frame
+    // row, not the earlier lifecycle cursor, owns the final boundary.
+    manager.blockClosed('att-1', screenAnchor(23, 2))
+    expect(rec.endLine).toBe(23)
+    expect(rec.status).toBe('success')
+  })
+
+  it('uses the completion fallback when block.closed has no screen anchor', () => {
+    const rec = manager.startBlock('make', '~', 3, 'shell', screenAnchor(3, 1))
+    manager.bindAttempt('att-1')
+    expect(manager.freezeFromAttempt(attempt(), 8)).toBeNull()
+
+    manager.blockClosed('att-1', null)
+
+    expect(rec.endLine).toBe(8)
+  })
+
+  it('uses the completion fallback when close-anchor geometry differs', () => {
+    const rec = manager.startBlock('make', '~', 3, 'shell', screenAnchor(3, 1))
+    manager.bindAttempt('att-1')
+    expect(manager.freezeFromAttempt(attempt(), 8)).toBeNull()
+
+    manager.blockClosed('att-1', screenAnchor(20, 2, 'normal', '1', 100, 30))
+
+    expect(rec.endLine).toBe(8)
+  })
+
+  it('rejects a close anchor older than the block start revision', () => {
+    const rec = manager.startBlock('make', '~', 3, 'shell', screenAnchor(3, 5))
+    manager.bindAttempt('att-1')
+    expect(manager.freezeFromAttempt(attempt(), 8)).toBeNull()
+
+    manager.blockClosed('att-1', screenAnchor(20, 4))
+
+    expect(rec.endLine).toBe(8)
+  })
+
+  it('never compares row numbers across normal and alternate buffer identities', () => {
+    const rec = manager.startBlock('make', '~', 3, 'shell', screenAnchor(3, 1, 'normal', '40'))
+    manager.bindAttempt('att-1')
+    expect(manager.freezeFromAttempt(attempt(), 8)).toBeNull()
+
+    manager.blockClosed('att-1', screenAnchor(4, 2, 'alternate', '41'))
+
+    expect(rec.endLine).toBe(8)
   })
 
   it('a block whose outcome nothing recorded says so, and says it once (nocx-2vb9y)', () => {
@@ -1700,7 +1755,7 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
     const rec = manager.startBlock('make deploy', '~', 0)
     manager.bindAttempt('att-1')
     manager.blockClosed('att-1')
-    const frozen = manager.freezeFromAttempt(attempt({ exitCode: 1 }), () => undefined, 8)
+    const frozen = manager.freezeFromAttempt(attempt({ exitCode: 1 }), 8)
     expect(frozen).toBe(rec)
     expect(rec.el.dataset.recorded).toBeUndefined()
 
@@ -1736,7 +1791,7 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
     manager.bindAttempt('att-1')
     rec.stopRequested = true
     manager.blockClosed('att-1')
-    const frozen = manager.freezeFromAttempt(attempt({ exitCode: 130 }), () => undefined, 8)
+    const frozen = manager.freezeFromAttempt(attempt({ exitCode: 130 }), 8)
     expect(frozen).not.toBeNull()
     expect(frozen!.status).toBe('cancelled')
     expect(frozen!.exitCode).toBe(130)
@@ -1754,7 +1809,7 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
     manager.bindAttempt('att-1')
     expect(rec.stopRequested).toBe(false)
     manager.blockClosed('att-1')
-    const frozen = manager.freezeFromAttempt(attempt({ exitCode: 130 }), () => undefined, 8)
+    const frozen = manager.freezeFromAttempt(attempt({ exitCode: 130 }), 8)
     expect(frozen).not.toBeNull()
     expect(frozen!.status).toBe('failure')
     expect(frozen!.el.dataset.outcome).toBe('failure')
@@ -1768,14 +1823,14 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
   it('freezeFromAttempt refuses a non-completed attempt — an open attempt cannot freeze a block', () => {
     manager.startBlock('make', '~', 0)
     manager.bindAttempt('att-1')
-    expect(manager.freezeFromAttempt(attempt({ state: 'open' }), () => undefined, 8)).toBeNull()
+    expect(manager.freezeFromAttempt(attempt({ state: 'open' }), 8)).toBeNull()
     expect(manager.runningBlock?.status).toBe('running')
   })
 
   it('freezeFromAttempt refuses when the running block is bound to a different attempt', () => {
     manager.startBlock('make', '~', 0)
     manager.bindAttempt('att-1')
-    expect(manager.freezeFromAttempt(attempt({ id: 'att-other' }), () => undefined, 8)).toBeNull()
+    expect(manager.freezeFromAttempt(attempt({ id: 'att-other' }), 8)).toBeNull()
     expect(manager.runningBlock?.status).toBe('running')
   })
 
@@ -1783,7 +1838,7 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
     const rec = manager.startBlock('sleep 100', '~', 0)
     manager.bindAttempt('att-1')
     manager.blockClosed('att-1')
-    const frozen = manager.abandonAttempt(attempt({ state: 'unknown' }), () => undefined, 6)
+    const frozen = manager.abandonAttempt(attempt({ state: 'unknown' }), 6)
     expect(frozen).not.toBeNull()
     expect(frozen!.status).toBe('unknown')
     expect(frozen!.exitCode).toBeNull()
@@ -1804,7 +1859,7 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
     manager.bindAttempt('att-1')
     rec.stopRequested = true
     manager.blockClosed('att-1')
-    const frozen = manager.abandonAttempt(attempt({ state: 'unknown' }), () => undefined, 6)
+    const frozen = manager.abandonAttempt(attempt({ state: 'unknown' }), 6)
     expect(frozen).not.toBeNull()
     expect(frozen!.status).toBe('unknown')
     expect(frozen!.el.dataset.outcome).toBeUndefined()
@@ -1813,10 +1868,8 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
   it('abandonAttempt refuses a completed attempt and a foreign binding', () => {
     manager.startBlock('make', '~', 0)
     manager.bindAttempt('att-1')
-    expect(manager.abandonAttempt(attempt(), () => undefined, 6)).toBeNull()
-    expect(
-      manager.abandonAttempt(attempt({ id: 'att-other', state: 'unknown' }), () => undefined, 6),
-    ).toBeNull()
+    expect(manager.abandonAttempt(attempt(), 6)).toBeNull()
+    expect(manager.abandonAttempt(attempt({ id: 'att-other', state: 'unknown' }), 6)).toBeNull()
     expect(manager.runningBlock?.status).toBe('running')
   })
 
@@ -1831,15 +1884,15 @@ describe('BlockManager attempt projections (ADR-0024 §5, §7 — bead nocx-u7uh
 describe("the block's close: the completion and the backend's block.closed (nocx-2v80t.3.27)", () => {
   let manager: BlockManager
   let inner: HTMLElement
-  let xtermContainer: HTMLElement
+  let liveContainer: HTMLElement
 
   beforeEach(() => {
     _resetThemeState()
     inner = document.createElement('div')
-    xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
+    liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
     document.body.appendChild(inner)
-    manager = new BlockManager(inner, xtermContainer, {
+    manager = new BlockManager(inner, liveContainer, {
       now: () => 1000,
       snapshotStore: freshStore(),
     })
@@ -1869,7 +1922,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
     // The completion: the LOGICAL freeze lands now — status, exit code, the
     // running slot freed. The deferred return tells the caller the close is
     // still to come.
-    expect(manager.freezeFromAttempt(attempt(), () => undefined, 1)).toBeNull()
+    expect(manager.freezeFromAttempt(attempt(), 1)).toBeNull()
     expect(manager.runningBlock).toBeNull()
     const block = manager.blockForAttempt('att-1')!
     expect(block.status).toBe('success')
@@ -1891,7 +1944,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
     // how it ended.
     expect(manager.runningBlock?.status).toBe('running')
 
-    const frozen = manager.freezeFromAttempt(attempt(), () => undefined, 4)
+    const frozen = manager.freezeFromAttempt(attempt(), 4)
     expect(frozen).not.toBeNull()
     expect(closedOnScreen('att-1')).toBe(true)
   })
@@ -1902,7 +1955,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
 
     manager.startBlock('cmd', '~', 0)
     manager.bindAttempt('att-1')
-    manager.freezeFromAttempt(attempt(), () => undefined, 0)
+    manager.freezeFromAttempt(attempt(), 0)
     manager.blockClosed('att-1')
     const closedEl = manager.blockForAttempt('att-1')!.el
     manager.blockClosed('att-1')
@@ -1915,7 +1968,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
     try {
       manager.startBlock('cmd', '~', 0)
       manager.bindAttempt('att-1')
-      manager.freezeFromAttempt(attempt(), () => undefined, 0)
+      manager.freezeFromAttempt(attempt(), 0)
       vi.advanceTimersByTime(60_000)
       expect(closedOnScreen('att-1')).toBe(false)
       manager.blockClosed('att-1')
@@ -1928,16 +1981,10 @@ describe("the block's close: the completion and the backend's block.closed (nocx
   it('two completed blocks each close on their own block.closed', () => {
     manager.startBlock('first', '~', 0)
     manager.bindAttempt('att-1')
-    expect(manager.freezeFromAttempt(attempt({ id: 'att-1' }), () => undefined, 0)).toBeNull()
+    expect(manager.freezeFromAttempt(attempt({ id: 'att-1' }), 0)).toBeNull()
     manager.startBlock('second', '~', 3)
     manager.bindAttempt('att-2')
-    expect(
-      manager.freezeFromAttempt(
-        attempt({ id: 'att-2', fence: 'b'.repeat(64) }),
-        () => undefined,
-        3,
-      ),
-    ).toBeNull()
+    expect(manager.freezeFromAttempt(attempt({ id: 'att-2', fence: 'b'.repeat(64) }), 3)).toBeNull()
 
     manager.blockClosed('att-2')
     expect(closedOnScreen('att-2')).toBe(true)
@@ -1952,7 +1999,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
     // (nocx-2v80t.3.29). There is no exception for the pane to take.
     manager.startBlock('cmd', '~', 0)
     manager.bindAttempt('att-1')
-    expect(manager.freezeFromAttempt(attempt({ fence: undefined }), () => undefined, 0)).toBeNull()
+    expect(manager.freezeFromAttempt(attempt({ fence: undefined }), 0)).toBeNull()
     expect(manager.blockForAttempt('att-1')!.status).toBe('success')
     expect(closedOnScreen('att-1')).toBe(false)
     manager.blockClosed('att-1')
@@ -1964,7 +2011,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
   it('an environment entry frees the running slot now, and the block closes on screen only on block.closed', () => {
     manager.startBlock('ssh host', '~', 0)
     manager.bindAttempt('att-ssh')
-    expect(manager.freezeEntered(() => undefined, 3)).toBeNull()
+    expect(manager.freezeEntered(3)).toBeNull()
     expect(manager.runningBlock).toBeNull()
     expect(manager.blockForAttempt('att-ssh')!.status).toBe('entered')
     expect(closedOnScreen('att-ssh')).toBe(false)
@@ -1976,7 +2023,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
   it('an entered block is labelled where it ran, not where the pane stands by its block.closed', () => {
     manager.startBlock('ssh far', '~', 0)
     manager.bindAttempt('att-ssh')
-    manager.freezeEntered(() => undefined, 3)
+    manager.freezeEntered(3)
     // The far session begins before the local block's close arrives.
     manager.setLocation('dev@far-host')
     manager.blockClosed('att-ssh')
@@ -1988,14 +2035,14 @@ describe("the block's close: the completion and the backend's block.closed (nocx
     manager.startBlock('ssh host', '~', 0)
     manager.bindAttempt('att-ssh')
     manager.blockClosed('att-ssh')
-    expect(manager.freezeEntered(() => undefined, 3)).not.toBeNull()
+    expect(manager.freezeEntered(3)).not.toBeNull()
     expect(closedOnScreen('att-ssh')).toBe(true)
   })
 
   it('an attempt gone unknown is never successful at once, and closes on screen only on block.closed', () => {
     manager.startBlock('sleep 100', '~', 0)
     manager.bindAttempt('att-1')
-    expect(manager.abandonAttempt(attempt({ state: 'unknown' }), () => undefined, 6)).toBeNull()
+    expect(manager.abandonAttempt(attempt({ state: 'unknown' }), 6)).toBeNull()
     expect(manager.runningBlock).toBeNull()
     expect(manager.blockForAttempt('att-1')!.status).toBe('unknown')
     expect(closedOnScreen('att-1')).toBe(false)
@@ -2007,14 +2054,14 @@ describe("the block's close: the completion and the backend's block.closed (nocx
   it('an attempt the pane abandons because it let its session go closes at once — nobody is left to say block.closed', () => {
     manager.startBlock('sleep 100', '~', 0)
     manager.bindAttempt('att-1')
-    const frozen = manager.abandonAttempt(attempt({ state: 'unknown' }), () => undefined, 6, true)
+    const frozen = manager.abandonAttempt(attempt({ state: 'unknown' }), 6, true)
     expect(frozen).not.toBeNull()
     expect(closedOnScreen('att-1')).toBe(true)
   })
 
   it('a block never bound to an attempt closes at once — the backend has no entry to name it by', () => {
     manager.startBlock('exit', '~', 0)
-    const frozen = manager.abandonUnbound(() => undefined, 2)
+    const frozen = manager.abandonUnbound(2)
     expect(frozen).not.toBeNull()
     expect(frozen!.el.classList.contains('cmd-block-running')).toBe(false)
   })
@@ -2022,7 +2069,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
   it('a session let go settles every block still waiting for its block.closed', () => {
     manager.startBlock('cmd', '~', 0)
     manager.bindAttempt('att-1')
-    manager.freezeFromAttempt(attempt(), () => undefined, 0)
+    manager.freezeFromAttempt(attempt(), 0)
     expect(closedOnScreen('att-1')).toBe(false)
     manager.settleWithoutBackend()
     expect(closedOnScreen('att-1')).toBe(true)
@@ -2030,14 +2077,14 @@ describe("the block's close: the completion and the backend's block.closed (nocx
 
   it('onDeferredFreeze fires when block.closed closes a block whose completion was waiting', () => {
     const onDeferredFreeze = vi.fn()
-    manager = new BlockManager(inner, xtermContainer, {
+    manager = new BlockManager(inner, liveContainer, {
       now: () => 1000,
       snapshotStore: freshStore(),
       onDeferredFreeze,
     })
     manager.startBlock('cmd', '~', 0)
     manager.bindAttempt('att-1')
-    manager.freezeFromAttempt(attempt(), () => undefined, 0)
+    manager.freezeFromAttempt(attempt(), 0)
     expect(onDeferredFreeze).not.toHaveBeenCalled()
     manager.blockClosed('att-1')
     expect(onDeferredFreeze).toHaveBeenCalledTimes(1)
@@ -2046,7 +2093,7 @@ describe("the block's close: the completion and the backend's block.closed (nocx
   it('clearAll drops a block awaiting its close — a later block.closed closes nothing', () => {
     manager.startBlock('cmd', '~', 0)
     manager.bindAttempt('att-1')
-    manager.freezeFromAttempt(attempt(), () => undefined, 0)
+    manager.freezeFromAttempt(attempt(), 0)
     manager.clearAll()
     manager.blockClosed('att-1')
     expect(manager.blocks).toHaveLength(0)
@@ -2102,17 +2149,17 @@ function newManager(
   // applier that opens the thinking notes already on screen walks the
   // document, and a detached tree is not on screen.
   document.body.appendChild(inner)
-  const xtermContainer = document.createElement('div')
-  // The manager inserts blocks BEFORE the xterm container, so the
+  const liveContainer = document.createElement('div')
+  // The manager inserts blocks BEFORE the live container, so the
   // container must already be a child (the mount path attaches both).
-  inner.appendChild(xtermContainer)
-  const manager = new BlockManager(inner, xtermContainer, {
+  inner.appendChild(liveContainer)
+  const manager = new BlockManager(inner, liveContainer, {
     snapshotStore: freshStore(),
     sessionName,
     answerText,
     toolResult,
   })
-  return { inner, xtermContainer, manager }
+  return { inner, liveContainer, manager }
 }
 
 describe('BlockManager.addAnswerBlock', () => {
@@ -2482,22 +2529,22 @@ describe('BlockManager.addAnswerBlock', () => {
 // одинаковое" — the behavior should be the same.
 describe('the working stand-in (nocx-vnirv.1)', () => {
   it('shows a running command indicator immediately', () => {
-    const { xtermContainer, inner, manager } = newManager()
+    const { liveContainer, inner, manager } = newManager()
     manager.startBlock('make', '~', 0)
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
     manager.dispose()
     inner.remove()
   })
 
   it('the turn and the running command wear the SAME indicator — one class, one owner', () => {
-    const { inner, xtermContainer, manager } = newManager()
+    const { inner, liveContainer, manager } = newManager()
     const h = manager.addAnswerBlock('q', '/')
     manager.startBlock('make', '~', 0)
     expect(h.el.querySelector('.cmd-answer-typing')).not.toBeNull()
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
 
     const turn = h.el.querySelector('.cmd-answer-typing')
-    const command = xtermContainer.querySelector('.cmd-answer-typing')
+    const command = liveContainer.querySelector('.cmd-answer-typing')
     expect(command).not.toBeNull()
     // AD-8: NOT two indicators that merely look alike — the same class.
     expect(command!.className).toBe(turn!.className)
@@ -2506,72 +2553,68 @@ describe('the working stand-in (nocx-vnirv.1)', () => {
   })
 
   it('a running command shows the stand-in immediately until the first byte', () => {
-    const { xtermContainer, inner, manager } = newManager()
+    const { liveContainer, inner, manager } = newManager()
     manager.startBlock('sleep 5', '~', 0)
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
 
     // The seam: the first parsed output byte stands it down. Idempotent —
     // every later chunk calls the seam again and nothing changes.
     manager.noteCommandOutput()
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).toBeNull()
     manager.noteCommandOutput()
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).toBeNull()
     manager.dispose()
     inner.remove()
   })
 
   it('a command that completes with no output leaves no dots behind', () => {
-    const { xtermContainer, inner, manager } = newManager()
+    const { liveContainer, inner, manager } = newManager()
     manager.startBlock('true', '~', 0)
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
     closeRunningBlock(manager)
 
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).toBeNull()
     manager.dispose()
     inner.remove()
   })
 
   it('a terminal freeze removes an indicator after output has started', () => {
-    const { xtermContainer, inner, manager } = newManager()
+    const { liveContainer, inner, manager } = newManager()
     manager.startBlock('sleep 5', '~', 0)
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
     closeRunningBlock(manager)
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).toBeNull()
     manager.dispose()
     inner.remove()
   })
 
   it('an abandoned command removes the stand-in too — cancellation is a close', () => {
-    const { xtermContainer, inner, manager } = newManager()
+    const { liveContainer, inner, manager } = newManager()
     manager.startBlock('ssh host', '~', 0)
     manager.bindAttempt('att-1')
-    manager.abandonAttempt(
-      { id: 'att-1', state: 'unknown' } as ExecutionAttempt,
-      () => undefined,
-      6,
-    )
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
+    manager.abandonAttempt({ id: 'att-1', state: 'unknown' } as ExecutionAttempt, 6)
+    expect(liveContainer.querySelector('.cmd-answer-typing')).toBeNull()
     manager.dispose()
     inner.remove()
   })
 
   it('clearAll removes the stand-in with everything else', () => {
-    const { xtermContainer, inner, manager } = newManager()
+    const { liveContainer, inner, manager } = newManager()
     manager.startBlock('make', '~', 0)
     manager.clearAll()
-    expect(xtermContainer.querySelector('.cmd-answer-typing')).toBeNull()
+    expect(liveContainer.querySelector('.cmd-answer-typing')).toBeNull()
     manager.dispose()
     inner.remove()
   })
 
   it('a second command replaces the first stand-in rather than reviving it', () => {
-    const { xtermContainer, inner, manager } = newManager()
+    const { liveContainer, inner, manager } = newManager()
     manager.startBlock('one', '~', 0)
     manager.startBlock('two', '~', 1)
 
-    expect(xtermContainer.querySelectorAll('.cmd-answer-typing').length).toBe(1)
+    expect(liveContainer.querySelectorAll('.cmd-answer-typing').length).toBe(1)
     manager.dispose()
     inner.remove()
   })
@@ -2601,7 +2644,7 @@ describe('the working stand-in (nocx-vnirv.1)', () => {
     const { inner, manager } = newManager()
     const h = manager.addAnswerBlock('q', '/')
     h.toolCall({ callId: 'c1', tool: 'run', effect: 'mutate-destructive', opensBlock: true })
-    manager.startBlock('make', '/repo', 0, 0, 'agent')
+    manager.startBlock('make', '/repo', 0, 'agent')
     const children = h.el.querySelector(':scope > .cmd-children')!
     // The stand-in marks where the answer will continue: after the block
     // the call opened, never pushed aside by it.
@@ -2639,11 +2682,11 @@ describe('the working stand-in (nocx-vnirv.1)', () => {
     // controller measures and sizes, and that box is exactly the frozen
     // body that replaces the region. Nothing moves at the swap.
     const css = readFileSync(resolve(import.meta.dirname ?? '.', '..', 'style.css'), 'utf8')
-    const container = css.match(/\.xterm-live-container\.live-running\s*\{([^}]*)\}/)
+    const container = css.match(/\.terminal-live-container\.live-running\s*\{([^}]*)\}/)
     expect(container).not.toBeNull()
     expect(container![1]).toContain('position: relative')
     const standIn = css.match(
-      /\.xterm-live-container\.live-running > \.cmd-answer-typing\s*\{([^}]*)\}/,
+      /\.terminal-live-container\.live-running > \.cmd-answer-typing\s*\{([^}]*)\}/,
     )
     expect(standIn).not.toBeNull()
     expect(standIn![1]).toContain('position: absolute')
@@ -2749,12 +2792,12 @@ describe('the block kind owns the grammar (nocx-ex636)', () => {
     answerText?: (entryId: string) => Promise<string | null>,
   ) {
     const inner = document.createElement('div')
-    const xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
+    const liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
     // Attached to the document like the real scrollback: the ⋮ menu renders
     // at body level and is found from there.
     document.body.appendChild(inner)
-    const manager = new BlockManager(inner, xtermContainer, {
+    const manager = new BlockManager(inner, liveContainer, {
       snapshotStore: freshStore(),
       sessionName,
       answerText,
@@ -3198,9 +3241,9 @@ describe('no finished block renders an ask control (nocx-4wtlh)', () => {
     expect(running.querySelector('.cmd-ask-btn')).toBeNull()
 
     const inner = document.createElement('div')
-    const xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
-    const manager = new BlockManager(inner, xtermContainer, { snapshotStore: freshStore() })
+    const liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
+    const manager = new BlockManager(inner, liveContainer, { snapshotStore: freshStore() })
     manager.startBlock('ls', '~', 0)
     const frozen = closeRunningBlock(manager)
     expect(frozen).not.toBeNull()
@@ -3212,10 +3255,10 @@ describe('no finished block renders an ask control (nocx-4wtlh)', () => {
 
 it('closes every body-level overflow menu when its pane is hidden', () => {
   const inner = document.createElement('div')
-  const xtermContainer = document.createElement('div')
-  inner.appendChild(xtermContainer)
+  const liveContainer = document.createElement('div')
+  inner.appendChild(liveContainer)
   document.body.appendChild(inner)
-  const manager = new BlockManager(inner, xtermContainer, { snapshotStore: freshStore() })
+  const manager = new BlockManager(inner, liveContainer, { snapshotStore: freshStore() })
   try {
     manager.startBlock('ls', '~', 0)
     const frozen = closeRunningBlock(manager)
@@ -3260,9 +3303,9 @@ it('blockCommandText reads the header, and the recorded command when the ack lan
 
 it('selectBlock is a non-toggle single-select: the id and the class move together', () => {
   const inner = document.createElement('div')
-  const xtermContainer = document.createElement('div')
-  inner.appendChild(xtermContainer)
-  const manager = new BlockManager(inner, xtermContainer, { snapshotStore: freshStore() })
+  const liveContainer = document.createElement('div')
+  inner.appendChild(liveContainer)
+  const manager = new BlockManager(inner, liveContainer, { snapshotStore: freshStore() })
   manager.startBlock('a', '~', 0)
   const a = closeRunningBlock(manager)!.el
   manager.startBlock('b', '~', 0)
@@ -3407,10 +3450,10 @@ describe('the header states an outcome only when it is news (nocx-9bpeq.6, nocx-
    *  test chose rather than however long jsdom took. */
   function newManager(now: () => number = () => 0) {
     const inner = document.createElement('div')
-    const xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
+    const liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
     document.body.appendChild(inner)
-    const manager = new BlockManager(inner, xtermContainer, {
+    const manager = new BlockManager(inner, liveContainer, {
       snapshotStore: freshStore(),
       now,
     })
@@ -4406,10 +4449,10 @@ describe('backend-owned block rows', () => {
 
   function newManager() {
     const inner = document.createElement('div')
-    const xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
+    const liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
     document.body.appendChild(inner)
-    const manager = new BlockManager(inner, xtermContainer, {
+    const manager = new BlockManager(inner, liveContainer, {
       snapshotStore: freshStore(),
       paintStoredRows: (block, rows) =>
         paintStoredRows(block, rows, { metric: null, palette: DEFAULT_SNAPSHOT }),
@@ -4543,9 +4586,7 @@ describe('backend-owned block rows', () => {
   it('does not paint terminal-buffer text when backend history is absent', () => {
     const { manager } = newManager()
     manager.startBlock('echo local', '/repo', 0)
-    const frozen = closeRunningBlock(manager, 0, (line) =>
-      line === 0 ? new BufferLine('local') : undefined,
-    )!
+    const frozen = closeRunningBlock(manager)!
     expect(frozen.el.querySelector('.cmd-output')).toBeNull()
   })
 })

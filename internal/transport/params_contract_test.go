@@ -456,9 +456,6 @@ func TestParamsContractsAgreeWithRegisteredValidators(t *testing.T) {
 		"agent.laneInteractivity": {
 			[]byte(`{"sessionId":"session-1","bufferKind":"normal"}`),
 		},
-		"agent.readScreenResolved": {
-			[]byte(`{"requestId":"request-1","outcome":"failed","error":"capture failed"}`),
-		},
 		"agent.runResolved": {
 			[]byte(`{"requestId":"request-1","outcome":"failed","error":"run failed"}`),
 		},
@@ -760,14 +757,7 @@ func TestParamsContractsAgreeWithRegisteredValidators(t *testing.T) {
 			[]byte(`{}`),
 			[]byte(`null`),
 		},
-		// The id alone is enough to read; instanceId and sessionEpoch are the
-		// claim a RECLAIMING client makes about which incarnation it means,
-		// and a client that was never told either still reads (nocx-22k1c.2).
-		"session.output": {
-			[]byte(`{"sessionId":"0123456789abcdef0123456789abcdef"}`),
-			[]byte(`{"sessionId":"0123456789abcdef0123456789abcdef","from":4096}`),
-			[]byte(`{"sessionId":"0123456789abcdef0123456789abcdef","instanceId":"fedcba9876543210fedcba9876543210","sessionEpoch":1,"from":0}`),
-		},
+
 		// One probe per outcome, because the outcome is what decides which
 		// other field may appear at all (nocx-uo1k6).
 		"host.resolved": {

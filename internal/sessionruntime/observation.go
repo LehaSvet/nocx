@@ -37,6 +37,9 @@ type ObservationScreen struct {
 	AltScreen bool
 	Cursor    emulator.Cursor
 	Lines     []emulator.Row
+	// Anchor names the cursor and active-buffer identity from this exact
+	// screen read. Nil means no exact absolute screen anchor was available.
+	Anchor *ScreenRowAnchor
 	// Reported is how many of Lines, from the top, the row stream had
 	// already carried when the screen was read: rows a growing pane pulled
 	// back out of the history (emulator.Terminal.ReportedRowsOnScreen,
@@ -116,6 +119,9 @@ type observationOpen struct {
 	// prior interval's boundary screen is suppressed and must therefore be
 	// carried independently from the screen-cut position above.
 	OutputStartStreamRow uint64
+	// OutputScreenAnchor is the same marker's backend-owned screen coordinate
+	// and buffer identity. It is separate from OutputStartStreamRow.
+	OutputScreenAnchor *ScreenRowAnchor
 	// OutputStartTrack pins the row OutputStartRow names, so the closing
 	// screen's cut is read from where that row is NOW, whatever a geometry
 	// commit re-laid (outputStartSkipLocked, nocx-2v80t.5). The interval owns
@@ -175,6 +181,9 @@ func (s *Session) takeObservationScreenLocked() (ObservationScreen, bool) {
 		grid[y] = row
 	}
 	screen.Lines = grid
+	if anchor, err := s.screenRowAnchorLocked(); err == nil {
+		screen.Anchor = &anchor
+	}
 	return screen, true
 }
 
@@ -548,7 +557,7 @@ func (s *Session) sealObservationLocked(nonce FenceNonce) {
 	skip := s.outputStartSkipLocked(o.OutputStartTrack, o.OutputPrefix, o.OutputStartRow, o.OutputMarkDeparted, closing)
 	releaseTrack(o.OutputStartTrack)
 	s.expectBoundaryScreenLocked(closing)
-	s.emitIntervalEndLocked(nonce, s.departedRows, closingRowsForStream(closing, skip), false)
+	s.emitIntervalEndLocked(nonce, s.departedRows, closingRowsForStream(closing, skip), false, closing.Anchor)
 	// The interval that follows opens at the boundary revision.
 	s.observation = &observationOpen{}
 }
@@ -585,13 +594,15 @@ func (s *Session) parkObservationLocked(nonce FenceNonce) {
 		return
 	}
 	s.observation = &observationOpen{
-		Nonce:              nonce,
-		EndRow:             s.departedRows,
-		OutputMarked:       o.OutputMarked,
-		OutputStartRow:     o.OutputStartRow,
-		OutputMarkDeparted: o.OutputMarkDeparted,
-		OutputStartTrack:   o.OutputStartTrack,
-		OutputPrefix:       o.OutputPrefix,
+		Nonce:                nonce,
+		EndRow:               s.departedRows,
+		OutputMarked:         o.OutputMarked,
+		OutputStartRow:       o.OutputStartRow,
+		OutputMarkDeparted:   o.OutputMarkDeparted,
+		OutputStartStreamRow: o.OutputStartStreamRow,
+		OutputScreenAnchor:   o.OutputScreenAnchor,
+		OutputStartTrack:     o.OutputStartTrack,
+		OutputPrefix:         o.OutputPrefix,
 	}
 }
 
@@ -962,12 +973,17 @@ func (s *Session) sightOutputMarkLocked() {
 	if o == nil || o.OutputMarked {
 		return
 	}
-	o.OutputMarked = true
-	// The mark shares the ordered rows carrier. Use the stream's row index,
-	// not the separate feed/departure counter or a wall-clock estimate.
-	if marker, ok := s.rowStream.(OutputStartMarker); ok {
-		marker.OutputStartRow(s.departedRows)
+	anchor, anchorErr := s.screenRowAnchorLocked()
+	if anchorErr == nil {
+		o.OutputScreenAnchor = &anchor
+	} else {
+		o.OutputScreenAnchor = nil
 	}
+	o.OutputMarked = true
+	// Keep the helper's row-stream position and the backend's absolute screen
+	// position distinct, but emit them together on the ordered row carrier.
+	o.OutputStartStreamRow = s.departedRows
+	s.emitOutputStartLocked(o.OutputStartStreamRow, o.OutputScreenAnchor)
 	scr, ok := s.takeObservationScreenLocked()
 	if !ok {
 		return
@@ -1291,8 +1307,16 @@ func outputMarkSkipLocked(startRow int, markDeparted, departed uint64) int {
 // nonce, the absolute row index one past the interval's last departed row,
 // and the closing screen's rows. It is called with the session lock held,
 // after the rows — the emission order is the stream's order (rowstream.go).
-func (s *Session) emitIntervalEndLocked(nonce FenceNonce, endRow uint64, closing []emulator.Row, settledWithoutFence bool) {
+func (s *Session) emitIntervalEndLocked(nonce FenceNonce, endRow uint64, closing []emulator.Row, settledWithoutFence bool, anchors ...*ScreenRowAnchor) {
 	if rs := s.rowStream; rs != nil {
+		if anchored, ok := rs.(IntervalEndAnchorMarker); ok {
+			var anchor *ScreenRowAnchor
+			if len(anchors) > 0 {
+				anchor = anchors[0]
+			}
+			anchored.IntervalEndWithAnchor(nonce, endRow, closing, anchor, settledWithoutFence)
+			return
+		}
 		rs.IntervalEnd(nonce, endRow, closing, settledWithoutFence)
 	}
 }
@@ -1322,8 +1346,10 @@ type observationCapture struct {
 	// and an undone split must hand them back
 	// rather than leave the rebased interval's zero values standing in for a
 	// mark it may already have sighted.
-	OutputStartRow     int
-	OutputMarkDeparted uint64
+	OutputStartRow       int
+	OutputMarkDeparted   uint64
+	OutputStartStreamRow uint64
+	OutputScreenAnchor   *ScreenRowAnchor
 	// OutputStartTrack is the split interval's own pin, handed over with the
 	// fields above so an undone split restores the interval's pin rather than
 	// the rebased one's; released when the capture seals.
@@ -1367,12 +1393,14 @@ func (s *Session) splitObservationAtFenceLocked(rebase FenceNonce) *observationC
 		o = &observationOpen{}
 	}
 	cap := &observationCapture{
-		EndRow:             s.departedRows,
-		OutputMarked:       o.OutputMarked,
-		OutputStartRow:     o.OutputStartRow,
-		OutputMarkDeparted: o.OutputMarkDeparted,
-		OutputStartTrack:   o.OutputStartTrack,
-		OutputPrefix:       o.OutputPrefix,
+		EndRow:               s.departedRows,
+		OutputMarked:         o.OutputMarked,
+		OutputStartRow:       o.OutputStartRow,
+		OutputMarkDeparted:   o.OutputMarkDeparted,
+		OutputStartStreamRow: o.OutputStartStreamRow,
+		OutputScreenAnchor:   o.OutputScreenAnchor,
+		OutputStartTrack:     o.OutputStartTrack,
+		OutputPrefix:         o.OutputPrefix,
 	}
 	if scr, ok := s.takeObservationScreenLocked(); ok {
 		cap.Closing = scr
@@ -1422,7 +1450,7 @@ func (s *Session) sealObservationFromCaptureLocked(nonce FenceNonce, cap *observ
 	// rows that may already have left, and pin whatever row now sits where
 	// they were. Authenticated, it simply stops being provisional.
 	s.confirmCaptureWindowLocked(cap)
-	s.emitIntervalEndLocked(nonce, cap.EndRow, closingRowsForStream(cap.Closing, skip), false)
+	s.emitIntervalEndLocked(nonce, cap.EndRow, closingRowsForStream(cap.Closing, skip), false, cap.Closing.Anchor)
 }
 
 // confirmCaptureWindowLocked settles a capture's window as the boundary's:
@@ -1517,11 +1545,13 @@ func (s *Session) returnObservationCaptureLocked(cap *observationCapture) {
 	o := s.observation
 	if o == nil {
 		s.observation = &observationOpen{
-			OutputMarked:       cap.OutputMarked,
-			OutputStartRow:     cap.OutputStartRow,
-			OutputMarkDeparted: cap.OutputMarkDeparted,
-			OutputStartTrack:   cap.OutputStartTrack,
-			OutputPrefix:       cap.OutputPrefix,
+			OutputMarked:         cap.OutputMarked,
+			OutputStartRow:       cap.OutputStartRow,
+			OutputMarkDeparted:   cap.OutputMarkDeparted,
+			OutputStartStreamRow: cap.OutputStartStreamRow,
+			OutputScreenAnchor:   cap.OutputScreenAnchor,
+			OutputStartTrack:     cap.OutputStartTrack,
+			OutputPrefix:         cap.OutputPrefix,
 		}
 		return
 	}
@@ -1533,6 +1563,8 @@ func (s *Session) returnObservationCaptureLocked(cap *observationCapture) {
 	o.OutputMarked = cap.OutputMarked
 	o.OutputStartRow = cap.OutputStartRow
 	o.OutputMarkDeparted = cap.OutputMarkDeparted
+	o.OutputStartStreamRow = cap.OutputStartStreamRow
+	o.OutputScreenAnchor = cap.OutputScreenAnchor
 	// The rebased tail's own pin, if it sighted a C of its own, goes with it.
 	releaseTrack(o.OutputStartTrack)
 	o.OutputStartTrack = cap.OutputStartTrack

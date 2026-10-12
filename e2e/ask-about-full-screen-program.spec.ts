@@ -46,7 +46,7 @@ const serverBin = () => readStand().server
 
 const TITLE = '.nocx-tab-title'
 const INPUT = '.pane.active .nocx-editor-input'
-const GRID = '.pane.active .xterm-live-container'
+const GRID = '.pane.active .terminal-live-container'
 const FREEZE = '.pane.active .nocx-freeze-frame'
 const RUNNING_BLOCK = '.pane.active .cmd-block.cmd-block-running'
 const SETTINGS_AI_NAV = '.ui-grouped-nav__item[data-item="endpoints"]'
@@ -191,16 +191,6 @@ test.afterAll(async () => {
   await fake?.stop()
 })
 
-interface ResolvedRow {
-  kind?: string
-  text?: string
-}
-interface ResolvedFrame {
-  requestId?: string
-  outcome?: string
-  error?: string
-  rows?: ResolvedRow[]
-}
 interface LifecycleTrace {
   sessionId?: string
   lifecycle?: string
@@ -217,7 +207,6 @@ interface SignalTrace {
 interface SpecRecord {
   asks: string[]
   raised: string[]
-  resolved: ResolvedFrame[]
   lifecycles: LifecycleTrace[]
   signalRequests: SignalTrace[]
   signalResults: SignalTrace[]
@@ -235,7 +224,6 @@ async function recordFrames(page: Page): Promise<void> {
     window.__nocxFullScreenAskSpec = {
       asks: [],
       raised: [],
-      resolved: [],
       lifecycles: [],
       signalRequests: [],
       signalResults: [],
@@ -299,9 +287,6 @@ async function recordFrames(page: Page): Promise<void> {
           if (msg.method === 'notify.raise' && typeof msg.params?.body === 'string') {
             rec.raised.push(msg.params.body)
           }
-          if (msg.method === 'agent.readScreenResolved' && msg.params) {
-            rec.resolved.push(msg.params as ResolvedFrame)
-          }
           if (
             msg.method === 'session.signal' &&
             (typeof msg.id === 'string' || typeof msg.id === 'number')
@@ -328,16 +313,11 @@ async function recorded(page: Page): Promise<SpecRecord> {
       window.__nocxFullScreenAskSpec ?? {
         asks: [],
         raised: [],
-        resolved: [],
         lifecycles: [],
         signalRequests: [],
         signalResults: [],
       },
   )
-}
-
-function frameText(frame: ResolvedFrame): string {
-  return (frame.rows ?? []).map((row) => row.text ?? '').join('\n')
 }
 
 async function openApp(page: Page): Promise<void> {
@@ -589,16 +569,16 @@ test.describe('asking about a full-screen program without leaving it (nocx-7l4ex
       })
       .toBe(true)
 
-    // The answer is still under the frozen view, and its model input proves
-    // the session.read result was the initial frame rather than live output.
+    // The visible tool block proves session.read ran. Its answer and the
+    // model's second request prove the answer is grounded in the frozen screen:
+    // INITIAL is present, while later output is absent.
+    const readCall = answer.locator(':scope > .cmd-children > .cmd-block[data-block-kind="tool"]')
+    await expect(readCall).toHaveCount(1)
+    await expect(readCall).toHaveAttribute('data-tool', 'session.read')
+    await expect(readCall.locator('.cmd-header-text')).toContainText('session.read')
     await expect(page.locator(FREEZE)).toContainText(INITIAL)
     await expect(page.locator(FREEZE)).not.toContainText(DURING)
     await expect(answerBody).not.toContainText(DURING)
-    const { resolved } = await recorded(page)
-    expect(resolved).toHaveLength(1)
-    expect(resolved[0].outcome, resolved[0].error ?? 'renderer read failed').toBe('frame')
-    expect(frameText(resolved[0])).toContain(INITIAL)
-    expect(frameText(resolved[0])).not.toContain(DURING)
     expect(chatRequests[0].body).not.toContain(INITIAL)
     expect(chatRequests[1].body).toContain(INITIAL)
     expect(chatRequests[1].body).not.toContain(DURING)
@@ -746,7 +726,7 @@ test.describe('asking about a full-screen program without leaving it (nocx-7l4ex
     // rides with the block it belongs to, and the freeze empties it in place
     // rather than moving it (nocx-hp8p2.8).
     expect(seating!.first).toBeGreaterThan(seating!.command)
-    for (const cls of seating!.between) expect(cls).toContain('xterm-live-container')
+    for (const cls of seating!.between) expect(cls).toContain('terminal-live-container')
     expect(seating!.second).toBe(seating!.first + 1)
 
     await expect

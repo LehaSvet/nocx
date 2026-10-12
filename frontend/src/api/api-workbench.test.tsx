@@ -18,7 +18,7 @@ import { createSignal } from 'solid-js'
 import { cleanup, fireEvent, render } from '@solidjs/testing-library'
 import { mountSidebar, type SidebarHandle } from '../sidebar'
 import { SurfaceRegistry, SURFACE_ID_API } from '../surface-registry'
-import { createRendererMock, makeClient, mountPaneManager } from '../test-support/panes-fixtures'
+import { makeClient, mountPaneManager } from '../test-support/panes-fixtures'
 import { API_PANE_TITLE, ApiContent, SINGLETON_API } from './api-content'
 import { ArrowRightIcon, ArrowRightLeftIcon } from '../ui/icons'
 import { apiSidebarAction, openApiWorkbench, registerApiSurface } from './index'
@@ -68,10 +68,6 @@ import {
   pressLock,
   takePanelRow,
 } from '../secret-field-test-helpers'
-
-vi.mock('../renderers/xterm', () => ({
-  XtermRenderer: vi.fn(createRendererMock),
-}))
 
 // The pane makes its own clipboard through `createClipboardAccess` (no
 // composition-root seam exists for the workbench yet), so the Copy Path

@@ -75,7 +75,7 @@ test.describe('command editor (nocx-4ff)', () => {
   // This comment used to say "the editor sits at z-index:20 above every xterm
   // layer". It does not, and never did in this era: .nocx-editor has no z-index
   // at all, and nothing in the project sets 20. What actually keeps the two
-  // apart is geometry — the link canvas lives inside .xterm-live-container, a
+  // apart is geometry — the link canvas lives inside .terminal-live-container, a
   // separate flex row with overflow:hidden that is zero pixels tall when idle,
   // so the two never overlap (nocx-0oc, and
   // .internal/reports/2026-08-01-editor-stacking-and-test-surface.md).
@@ -224,6 +224,10 @@ test.describe('command editor (nocx-4ff)', () => {
           blockTop: block ? Math.round(block.getBoundingClientRect().top - areaRect.top) : -1,
           display: editor.style.display,
           visibility: editor.style.visibility,
+          settling: area.classList.contains('is-settling'),
+          runningAnimations: inner
+            .getAnimations()
+            .filter((animation) => animation.playState === 'running').length,
           // The grid's row pitch, published by scrollback/cell-metric.ts. The
           // tolerance below is stated in ROWS, so it must come from the same
           // number the layout is built on rather than from a literal.
@@ -247,16 +251,20 @@ test.describe('command editor (nocx-4ff)', () => {
     await page.waitForFunction(() => {
       const clip =
         document
-          .querySelector<HTMLElement>('.pane.active .xterm-live-viewport')
+          .querySelector<HTMLElement>('.pane.active .terminal-live-viewport')
           ?.getBoundingClientRect().height ?? 0
       const live =
         document
-          .querySelector<HTMLElement>('.pane.active .xterm-live-container')
+          .querySelector<HTMLElement>('.pane.active .terminal-live-container')
           ?.getBoundingClientRect().height ?? 0
       // The flow box is the clip plus the body padding both halves share, so
       // it is never smaller — and the rows are in by the time it passes 50px.
       return clip >= 50 && live >= clip
     })
+    // The submit mutation animates the scrollback stack while the live
+    // region opens. Measure the command only after that observable glide ends;
+    // the transform is not its final layout position.
+    await expect(page.locator('.pane.active .scrollback-area')).not.toHaveClass(/is-settling/)
     const running = await geometry()
 
     // The composer is gone and its height has gone to the scroller — the
@@ -270,6 +278,9 @@ test.describe('command editor (nocx-4ff)', () => {
       ),
     ).toBeLessThanOrEqual(1)
     // A short command starts where the prompt was, not at the top of the pane.
+    if (running.blockTop <= running.areaHeight / 2) {
+      console.error('running command geometry at failure:', JSON.stringify(running))
+    }
     expect(running.blockTop).toBeGreaterThan(running.areaHeight / 2)
 
     // Release the shell-side hold only after observing the running geometry.

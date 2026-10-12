@@ -176,6 +176,14 @@ type Session struct {
 	geom     GeometryCommit
 	reported Geometry
 
+	// title and cwd are the latest validated terminal metadata reports. They
+	// are state for a full frame, not replayable effect deliveries.
+	title *string
+	cwd   *CwdReport
+	// commandNames is the latest session-local shell snapshot. It is copied to
+	// a newly attached consumer as current state, never replayed from output.
+	commandNames []string
+
 	// The rendezvous is a SET of meetings keyed by nonce, not one slot. The
 	// authenticated channel and the PTY are ordered independently (ADR-0024
 	// decision 7, design §6.4), so two commands can legitimately be pending
@@ -596,7 +604,24 @@ func (s *Session) Snapshot() Snapshot {
 // holds s.mu when it runs the caller's check, and Snapshot would deadlock
 // taken from inside it.
 func (s *Session) snapshotLocked() Snapshot {
-	rows, cur, identity := s.screenStateLocked()
+	rows, cur, identity, modes := s.screenStateLocked()
+	baseRow, err := s.activeBaseRowLocked(identity.AltScreen)
+	if err != nil {
+		// A failed boundary read cannot establish a truthful absolute row.
+		// Refuse this frame rather than publish a plausible but wrong base.
+		rows = nil
+		baseRow = 0
+	}
+	var title *string
+	if s.title != nil {
+		value := *s.title
+		title = &value
+	}
+	var cwd *CwdReport
+	if s.cwd != nil {
+		value := *s.cwd
+		cwd = &value
+	}
 	return Snapshot{
 		Revision:          s.rev,
 		At:                s.inc,
@@ -607,8 +632,12 @@ func (s *Session) snapshotLocked() Snapshot {
 		PendingRendezvous: s.pendingRendezvousLocked(),
 		Completeness:      s.completeness,
 		Rows:              rows,
+		BaseRow:           baseRow,
 		Cursor:            cur,
 		Identity:          identity,
+		Modes:             modes,
+		Title:             title,
+		Cwd:               cwd,
 	}
 }
 
@@ -623,16 +652,16 @@ func (s *Session) snapshotLocked() Snapshot {
 // a closed emulator: a caller comparing Cols/Rows against a token's would see
 // 0x0 and refuse `incomparable` rather than being handed a screen nobody
 // read.
-func (s *Session) screenStateLocked() ([]emulator.Row, emulator.Cursor, ScreenIdentity) {
+func (s *Session) screenStateLocked() ([]emulator.Row, emulator.Cursor, ScreenIdentity, emulator.Modes) {
 	geom, err := s.emulator.Geometry()
 	if err != nil {
-		return nil, emulator.Cursor{}, ScreenIdentity{At: s.inc}
+		return nil, emulator.Cursor{}, ScreenIdentity{At: s.inc}, emulator.Modes{}
 	}
 	rows := make([]emulator.Row, 0, geom.Rows)
 	for y := range geom.Rows {
 		row, rowErr := s.emulator.Row(y)
 		if rowErr != nil {
-			return nil, emulator.Cursor{}, ScreenIdentity{At: s.inc}
+			return nil, emulator.Cursor{}, ScreenIdentity{At: s.inc}, emulator.Modes{}
 		}
 		rows = append(rows, row)
 	}
@@ -643,13 +672,17 @@ func (s *Session) screenStateLocked() ([]emulator.Row, emulator.Cursor, ScreenId
 	scr, err := s.emulator.Screen()
 	alt := err == nil && scr == emulator.ScreenAlternate
 	s.observeBufferLocked(alt)
+	modes, err := s.emulator.Modes()
+	if err != nil {
+		return nil, emulator.Cursor{}, ScreenIdentity{At: s.inc}, emulator.Modes{}
+	}
 	return rows, cur, ScreenIdentity{
 		At:             s.inc,
 		AltScreen:      alt,
 		BufferInstance: s.bufferInstance,
 		Cols:           geom.Cols,
 		Rows:           geom.Rows,
-	}
+	}, modes
 }
 
 // observeBufferLocked advances bufferInstance the moment the active buffer
@@ -1284,6 +1317,20 @@ func (s *Session) Ingest(b []byte) error {
 				s.sightClearBoundaryLocked()
 				continue
 			}
+			// The emulator is the only VT parser. Its already-decoded effect
+			// payload becomes latest-value state so a later full frame can
+			// restore title and cwd without replaying session.effect.
+			switch e.Kind {
+			case emulator.EffectTitle:
+				title := string(e.Body)
+				s.title = &title
+			case emulator.EffectCwdReport:
+				if cwd, ok := decodeCwdReport(e.Body); ok {
+					s.cwd = &cwd
+				}
+			case emulator.EffectCommandSnapshot:
+				s.commandNames = append([]string(nil), e.CommandNames...)
+			}
 			s.nextEffect++
 			effect := Effect{
 				ID:           s.nextEffect,
@@ -1291,9 +1338,13 @@ func (s *Session) Ingest(b []byte) error {
 				Kind:         effectKindOf(e.Kind),
 				Title:        e.Title,
 				Body:         e.Body,
+				CommandNames: e.CommandNames,
 				StreamOffset: e.StreamOffset,
 			}
 			if effect.Kind == EffectPromptBoundary {
+				// The full frame published by this ingest follows exactly one revision tick.
+				// Carry that lower bound; it does not authorize lifecycle state.
+				effect.ScreenRevision = uint64(s.rev + 1)
 				if sink, ok := s.replies.(PromptBoundarySink); ok {
 					if err := sink.PromptBoundary(effect); err != nil {
 						replyErr = err
@@ -1334,6 +1385,8 @@ func effectKindOf(k emulator.EffectKind) EffectKind {
 		return EffectCwdReport
 	case emulator.EffectPromptBoundary:
 		return EffectPromptBoundary
+	case emulator.EffectCommandSnapshot:
+		return EffectCommandSnapshot
 	default:
 		return EffectNone
 	}
@@ -1913,7 +1966,16 @@ type queued struct {
 func effectDelivery(e Effect) queued {
 	e.Title = bytes.Clone(e.Title)
 	e.Body = bytes.Clone(e.Body)
+	e.CommandNames = append([]string(nil), e.CommandNames...)
 	return queued{class: deliveryClassOf(e.Kind), effect: e}
+}
+
+func commandNamesBytes(names []string) int {
+	total := 0
+	for _, name := range names {
+		total += len(name)
+	}
+	return total
 }
 
 // deliveryClassOf is the ONE place an effect's class is decided, exhaustively:
@@ -1921,7 +1983,7 @@ func effectDelivery(e Effect) queued {
 // [DeliveryUnclassified] and is REFUSED rather than delivered under a guess.
 func deliveryClassOf(k EffectKind) DeliveryClass {
 	switch k {
-	case EffectBell, EffectNotification, EffectClipboard, EffectTitle, EffectCwdReport, EffectPromptBoundary, EffectRecovery:
+	case EffectBell, EffectNotification, EffectClipboard, EffectTitle, EffectCwdReport, EffectPromptBoundary, EffectRecovery, EffectCommandSnapshot:
 		return DeliveryAtMostOnce
 	default:
 		return DeliveryUnclassified
@@ -1985,7 +2047,7 @@ func (c *subscriber) HeldBytes() int {
 func (c *subscriber) heldBytesLocked() int {
 	held := 0
 	for _, p := range c.queue {
-		held += len(p.bytes) + len(p.effect.Title) + len(p.effect.Body)
+		held += len(p.bytes) + len(p.effect.Title) + len(p.effect.Body) + commandNamesBytes(p.effect.CommandNames)
 	}
 	return held
 }
@@ -2020,6 +2082,7 @@ func (c *subscriber) Effects() []Effect {
 			e := p.effect
 			e.Title = bytes.Clone(e.Title)
 			e.Body = bytes.Clone(e.Body)
+			e.CommandNames = append([]string(nil), e.CommandNames...)
 			held = append(held, e)
 		}
 	}
@@ -2123,6 +2186,14 @@ func (s *Session) attachLocked() *subscriber {
 		// nothing is handed nothing — its first frame is the first
 		// revision.
 		s.enqueueLocked(c, queued{class: DeliveryCoalescable, rev: s.latest.rev, bytes: s.latest.bytes})
+	}
+	if len(s.commandNames) > 0 {
+		// This is a fresh current-state event for this attachment, not the old
+		// shell effect replayed from a ring. A new effect identity lets the
+		// renderer recover its local snapshot after reconnect.
+		s.nextEffect++
+		effect := Effect{ID: s.nextEffect, At: s.inc, Kind: EffectCommandSnapshot, CommandNames: s.commandNames}
+		s.enqueueLocked(c, effectDelivery(effect))
 	}
 	return c
 }

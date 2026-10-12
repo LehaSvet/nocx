@@ -85,6 +85,10 @@ interface InstalledPage {
    *  session.historyPage result named it. */
   start: number
   readonly end: number
+  /** Identity from the same backend read as this page. Absolute row numbers
+   *  from different buffer instances are never joined. */
+  readonly bufferKind: SessionHistoryPage['bufferKind']
+  readonly bufferInstance: string
   /** The page's rows as the cell model decoded them, oldest first —
    *  `rows[i]` is absolute row `start + i`. Kept so a floor that lands
    *  inside the page can trim what the emulator no longer holds without a
@@ -186,21 +190,36 @@ export class LiveHistorySurface {
     const onKeyDown = (ev: KeyboardEvent): void => this._holdThroughTyping(ev)
     opts.scroller.addEventListener('keydown', onKeyDown, true)
     // THE WHEEL, TRANSLATED BY THE SCROLLER'S OWN OWNER (nocx-zg3k3.10.4).
-    // The input surface is still xterm's (until nocx-zg3k3.3), and xterm
+    // The terminal input is a separate surface; the painter receives the accepted frame, and the
     // consumes a wheel over the live screen into its OWN viewport — which
     // is empty now that the emulator is the backend's (ADR-0078): the
     // gesture died there and the person's first wheels after output moved
     // nothing. A preventDefault cancels the default action, never the
     // propagation, so this bubble-phase listener on the scroller still
     // sees every wheel and applies the delta itself — in the unstructured
-    // mode alone. The alternate screen keeps xterm's wheel (mouse
+    // mode alone. The alternate screen keeps the terminal's wheel (mouse
     // reporting, the program's own mode), and keys are untouched.
     const onWheel = (ev: WheelEvent): void => this._translateWheel(ev)
     opts.scroller.addEventListener('wheel', onWheel, { passive: false })
+    // A pointer press on the live output surface can run the browser's
+    // native focus action after the pane's mousedown handler focused its hidden
+    // keyboard input. Restore that single input owner after the click, without
+    // cancelling the press (which would also disable native text selection).
+    // Keyboard activation has detail=0 and leaves the grid's roving-tabindex
+    // focus available to assistive-technology users.
+    const onLiveOutputClick = (ev: MouseEvent): void => {
+      if (ev.detail === 0 || !(ev.target instanceof Element)) return
+      const liveSurface = ev.target.closest('[role="grid"], .terminal-live-container')
+      if (liveSurface === null || !opts.scroller.contains(liveSurface)) return
+      const pane = opts.scroller.closest('.pane')
+      pane?.querySelector<HTMLTextAreaElement>('.ui-terminal-input')?.focus({ preventScroll: true })
+    }
+    opts.scroller.addEventListener('click', onLiveOutputClick, true)
     this._offScroll = () => {
       opts.scroller.removeEventListener('scroll', onScroll)
       opts.scroller.removeEventListener('wheel', onWheel)
       opts.scroller.removeEventListener('keydown', onKeyDown, true)
+      opts.scroller.removeEventListener('click', onLiveOutputClick, true)
     }
   }
 
@@ -445,7 +464,7 @@ export class LiveHistorySurface {
    * carries NO scroll call at all — neither this surface's nor the
    * controller's. What moved the scroller is the ENGINE revealing the caret
    * of the focused control by scrolling its ancestors, and the grid's hidden
-   * input (xterm's helper textarea) sits at the cursor: inside this scroller,
+   * input element sits at the cursor: inside this scroller,
    * at the live end. The reader is at the live end afterwards, so this
    * class's own rule — a stale past is rebuilt under a reader who is there
    * (`_fireHeadRefresh`, `tailReengaged`) — takes the rows they were reading
@@ -462,7 +481,7 @@ export class LiveHistorySurface {
    * undo a scroll the reader makes afterwards.
    *
    * The reveal itself is not preventable from here: where that input sits is
-   * xterm's (`position: fixed`, or any containing block outside this
+   * the terminal input's (`position: fixed`, or any containing block outside this
    * scroller, would take the IME's candidate window out with it), so the
    * reader's place is kept on this side instead of the engine's scroll being
    * argued out of happening.
@@ -643,6 +662,41 @@ export class LiveHistorySurface {
     this._docs.delete(pageId)
     if (entry.epoch !== this._epoch) return
     const { page } = entry
+    if (
+      !Number.isSafeInteger(page.start) ||
+      !Number.isSafeInteger(page.end) ||
+      !Number.isSafeInteger(page.floor) ||
+      !Number.isSafeInteger(page.baseRow) ||
+      !Number.isSafeInteger(page.cols) ||
+      !Number.isSafeInteger(page.rows) ||
+      page.start < 0 ||
+      page.end < page.start ||
+      page.end > page.baseRow + page.rows ||
+      page.baseRow < 0 ||
+      page.rows < 1 ||
+      page.cols < 1 ||
+      page.baseRow + page.rows > Number.MAX_SAFE_INTEGER ||
+      page.end - page.start !== doc.rows.length ||
+      (page.bufferKind !== 'normal' && page.bufferKind !== 'alternate') ||
+      !/^[1-9][0-9]*$/.test(page.bufferInstance)
+    ) {
+      log.debug('nocx: history page refused by its row/identity contract', { page })
+      this._rearHeadRefresh()
+      return
+    }
+
+    // A buffer switch creates a new row address space even if its numbers
+    // happen to match. Never join pages from separate screen instances.
+    const newest = this._pages[this._pages.length - 1]
+    if (
+      newest !== undefined &&
+      (newest.bufferKind !== page.bufferKind || newest.bufferInstance !== page.bufferInstance)
+    ) {
+      for (const installed of this._pages) installed.el.remove()
+      this._pages = []
+      this._dirty = false
+      this._rebuildTailGap = null
+    }
 
     // The floor is the emulator's own word on how far its history still
     // reaches. Painted pages at or below it are rows the library no longer
@@ -652,14 +706,10 @@ export class LiveHistorySurface {
     // caught: the floor is the head, everything painted is below it, and
     // the surface empties instead of inventing a boundary.
     this._pruneBelow(page.floor)
-    this._cursor = page.start
+    this._cursor = Math.min(page.start, page.baseRow)
     // "Nothing remains below the cursor" is the READ's verdict, and it
     // stands only if nothing has departed since the read began.
     this._exhausted = !page.more && entry.readSeq === this._outputSeq
-    if (doc.rows.length === 0) {
-      this._rearHeadRefresh()
-      return
-    }
     if (entry.readSeq !== this._outputSeq) {
       // The page was read BEFORE output departed during its flight: its
       // coverage already ends below the head the emulator holds now, and
@@ -673,6 +723,15 @@ export class LiveHistorySurface {
       // The refresh intent was FOR this page: the wheel has somewhere to
       // go, and the coverage is current.
       this._refreshPending = false
+    }
+    const historicalCount = Math.max(0, Math.min(doc.rows.length, page.baseRow - page.start))
+    if (historicalCount === 0) {
+      // A head page may consist only of the active screen. It contributes
+      // no scrollback rows; a page with older retained rows is followed at
+      // baseRow, while an empty/changed head waits for the scheduled refresh.
+      if (page.more && !this._dirty) this._pump()
+      this._rearHeadRefresh()
+      return
     }
     this._paint(page, doc)
     this._pump()
@@ -711,19 +770,37 @@ export class LiveHistorySurface {
     // Ours, not the engine's: a reveal has nothing left to undo here.
     this._releaseHold()
     if (removed > 0) this._scroller.scrollTop = Math.max(0, this._scroller.scrollTop - removed)
-    this._pages[0] = { el, start: floor, end: oldest.end, rows: keep }
+    this._pages[0] = {
+      el,
+      start: floor,
+      end: oldest.end,
+      bufferKind: oldest.bufferKind,
+      bufferInstance: oldest.bufferInstance,
+      rows: keep,
+    }
   }
 
   /** Decode one page through the pane's cell model and paint it with the
    *  live painter's own row primitive, above everything painted so far. */
   private _paint(page: SessionHistoryPage, doc: SessionHistoryPageRows): void {
-    const cols = this._columns()
-    if (cols === null || cols === 0) return
+    const cols = page.cols
+    const historyCount = Math.max(0, Math.min(doc.rows.length, page.baseRow - page.start))
+    const historyRows = doc.rows.slice(0, historyCount)
+    if (cols < 1 || historyRows.length === 0) return
     const frame = {
       revision: 1,
-      geometry: { cols, rows: doc.rows.length, cellWidthPx: 1, cellHeightPx: 1, revision: 1 },
+      geometry: { cols, rows: historyRows.length, cellWidthPx: 1, cellHeightPx: 1, revision: 1 },
       cursor: { x: 0, y: 0, visible: false },
-      rows: doc.rows,
+      state: {
+        bufferKind: page.bufferKind,
+        bufferInstance: page.bufferInstance,
+        baseRow: page.start,
+        bracketedPaste: false,
+        mouseTracking: false,
+        title: null,
+        cwd: null,
+      },
+      rows: historyRows,
     }
     const result = createCellModel().apply(frame)
     if (!result.ok) {
@@ -737,8 +814,9 @@ export class LiveHistorySurface {
     this._warm?.(fitCandidatesOf(result.snapshot.rows))
     const pageEl = document.createElement('div')
     pageEl.className = 'live-history-page'
+    const historyEnd = page.start + historyRows.length
     pageEl.dataset.start = String(page.start)
-    pageEl.dataset.end = String(page.end)
+    pageEl.dataset.end = String(historyEnd)
     for (const row of result.snapshot.rows) {
       pageEl.appendChild(paintRow(row, { metric, palette: this._palette }))
     }
@@ -769,7 +847,9 @@ export class LiveHistorySurface {
     this._pages.unshift({
       el: pageEl,
       start: page.start,
-      end: page.end,
+      end: historyEnd,
+      bufferKind: page.bufferKind,
+      bufferInstance: page.bufferInstance,
       rows: result.snapshot.rows,
     })
   }

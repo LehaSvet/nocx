@@ -20,11 +20,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/shady2k/nocx/internal/emulator"
 	"github.com/shady2k/nocx/internal/helper/proto"
 	"github.com/shady2k/nocx/internal/sessionruntime"
 )
+
+type ScreenAnchor = proto.OutputStartScreenAnchor
 
 // OutputRows is one batch of the rows that left a session's screen, oldest
 // first, exactly as the helper handed them over. FromRow is the absolute
@@ -62,9 +65,10 @@ type OutputRows struct {
 // the boundary sat on it, and nil when the screen could not be read: a
 // screen nobody read is not a screen nobody may be told about.
 type IntervalEnd struct {
-	Nonce   sessionruntime.FenceNonce
-	EndRow  uint64
-	Closing []emulator.Row
+	Nonce        sessionruntime.FenceNonce
+	EndRow       uint64
+	Closing      []emulator.Row
+	ScreenAnchor *ScreenAnchor
 	// NoFence says the helper settled the interval without its fence ever
 	// being sighted (ADR-0074 decision 3): the block it closes may be missing
 	// output (nocx-2v80t.3.29).
@@ -152,7 +156,10 @@ func (a *AttachedSession) deliverClearBoundary() {
 }
 
 // OutputStartRow is the absolute row position where command output begins.
-type OutputStartRow struct{ FromRow uint64 }
+type OutputStartRow struct {
+	FromRow uint64
+	Anchor  *ScreenAnchor
+}
 
 // OnOutputStartRow registers the ordered output-position marker consumer.
 func (a *AttachedSession) OnOutputStartRow(f func(OutputStartRow)) {
@@ -183,7 +190,7 @@ func (c *Client) outputStartRow(payload []byte) {
 		c.log.Warn("output-start-row frame dropped: no matching attachment", "fromRow", f.FromRow)
 		return
 	}
-	a.deliverOutputStartRow(OutputStartRow{FromRow: f.FromRow})
+	a.deliverOutputStartRow(OutputStartRow{FromRow: f.FromRow, Anchor: f.Anchor})
 }
 
 // outputRows is one TypeOutputRows frame arriving: decode, find the
@@ -242,6 +249,11 @@ func (c *Client) intervalEnd(payload []byte) {
 			"session", fmt.Sprintf("%x", f.Session), "subscriber", fmt.Sprintf("%x", f.Subscriber))
 		return
 	}
+	if doc.ScreenAnchor != nil && !validScreenAnchor(doc.ScreenAnchor) {
+		c.log.Warn("malformed screen anchor in an interval end document",
+			"session", fmt.Sprintf("%x", f.Session), "subscriber", fmt.Sprintf("%x", f.Subscriber))
+		return
+	}
 	var nonce sessionruntime.FenceNonce
 	raw, err := hex.DecodeString(doc.Nonce)
 	if err != nil || len(raw) != len(nonce) {
@@ -267,7 +279,7 @@ func (c *Client) intervalEnd(payload []byte) {
 			"session", fmt.Sprintf("%x", f.Session), "subscriber", fmt.Sprintf("%x", f.Subscriber))
 		return
 	}
-	a.deliverIntervalEnd(IntervalEnd{Nonce: nonce, EndRow: doc.EndRow, Closing: closing, NoFence: doc.NoFence})
+	a.deliverIntervalEnd(IntervalEnd{Nonce: nonce, EndRow: doc.EndRow, Closing: closing, ScreenAnchor: doc.ScreenAnchor, NoFence: doc.NoFence})
 }
 
 // clearBoundary is one TypeClearBoundary frame arriving, on the same terms
@@ -288,6 +300,17 @@ func (c *Client) clearBoundary(payload []byte) {
 		return
 	}
 	a.deliverClearBoundary()
+}
+
+func validScreenAnchor(anchor *ScreenAnchor) bool {
+	if anchor.Row > sessionruntime.MaxScreenRowOffset || anchor.ScreenRevision > sessionruntime.MaxScreenRowOffset || anchor.BufferInstance == "" || anchor.Cols == 0 || anchor.Rows == 0 {
+		return false
+	}
+	if anchor.BufferKind != "normal" && anchor.BufferKind != "alternate" {
+		return false
+	}
+	instance, err := strconv.ParseUint(anchor.BufferInstance, 10, 64)
+	return err == nil && instance > 0 && strconv.FormatUint(instance, 10) == anchor.BufferInstance
 }
 
 // ErrShortNonce names a nonce that does not spell 32 bytes. It exists so the

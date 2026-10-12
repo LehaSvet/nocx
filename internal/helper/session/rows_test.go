@@ -333,6 +333,7 @@ func TestTheBridgeCarriesRowsInOrderAndTheEndAfterThem(t *testing.T) {
 		Closing []struct {
 			Text string `json:"text"`
 		} `json:"closing"`
+		ScreenAnchor *proto.OutputStartScreenAnchor `json:"screenAnchor"`
 	}
 	if err := json.Unmarshal(ends[0].Payload, &closing); err != nil {
 		t.Fatalf("decode the end marker's own payload: %v", err)
@@ -343,6 +344,12 @@ func TestTheBridgeCarriesRowsInOrderAndTheEndAfterThem(t *testing.T) {
 	if last := closing.Closing[len(closing.Closing)-1].Text; last != "prompt" {
 		t.Fatalf(`the closing screen's last row reads %q, want "prompt": `+
 			`"tail", written after the fence in the same feed, leaked into this interval's own closing screen`, last)
+	}
+	if closing.ScreenAnchor == nil {
+		t.Fatal("interval end omitted its exact closing screen anchor")
+	}
+	if closing.ScreenAnchor.BufferKind != "normal" || closing.ScreenAnchor.BufferInstance == "" || closing.ScreenAnchor.ScreenRevision == 0 {
+		t.Fatalf("interval end anchor lacks frame identity/revision: %+v", closing.ScreenAnchor)
 	}
 
 	// The real payloads, against their contracts.
@@ -480,5 +487,19 @@ func TestTheRowsContractRefusesRowsOnAnIncompleteMarker(t *testing.T) {
 	}
 	if err := schema.Validate(doc); err == nil {
 		t.Fatal("the contract accepted an incomplete marker carrying rows")
+	}
+}
+
+func TestOutputStartRowWithAnchorKeepsScreenAndStreamCoordinatesSeparate(t *testing.T) {
+	hs, _, sink := rowsBridgeSession(t, 80, 24)
+	anchor := sessionruntime.ScreenRowAnchor{
+		Row: 5, Revision: sessionruntime.Revision(9),
+		Identity: sessionruntime.ScreenIdentity{BufferInstance: 2, Cols: 120, Rows: 40, AltScreen: true},
+	}
+	(&rowBridge{hs: hs}).OutputStartRowWithAnchor(900, anchor)
+	sink.waitForOutputStarts(1)
+	got := sink.outputStarts[0]
+	if got.FromRow != 900 || got.Anchor == nil || got.Anchor.Row != 5 || got.Anchor.ScreenRevision != 9 || got.Anchor.BufferKind != "alternate" || got.Anchor.BufferInstance != "2" || got.Anchor.Cols != 120 || got.Anchor.Rows != 40 {
+		t.Fatalf("frame = %+v; want stream fromRow 900 and independent screen anchor %+v", got, anchor)
 	}
 }

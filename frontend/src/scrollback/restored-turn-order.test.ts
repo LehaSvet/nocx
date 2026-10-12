@@ -39,9 +39,9 @@ const S = DEFAULT_SNAPSHOT
 function newManager() {
   const inner = document.createElement('div')
   document.body.appendChild(inner)
-  const xtermContainer = document.createElement('div')
-  inner.appendChild(xtermContainer)
-  const manager = new BlockManager(inner, xtermContainer, {
+  const liveContainer = document.createElement('div')
+  inner.appendChild(liveContainer)
+  const manager = new BlockManager(inner, liveContainer, {
     snapshotStore: new CommandSnapshotStore(),
   })
   return { inner, manager }
@@ -125,7 +125,7 @@ describe('a restored turn reads the same as the live turn it came from', () => {
     })
     live.append(BEFORE)
     live.toolCall({ callId: 'c1', tool: 'run', effect: 'mutate-destructive', opensBlock: true })
-    manager.startBlock(COMMAND, '/repo', 0, 0, 'agent')
+    manager.startBlock(COMMAND, '/repo', 0, 'agent')
     live.append(AFTER)
     live.close('success')
     return inner

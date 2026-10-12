@@ -22,6 +22,10 @@
   align-items: start;
 
   padding: var(--space-3) 0 var(--space-2);
+  /* Keep the header controls above the later live-grid sibling so their
+     visible hit targets remain clickable while a command is running. */
+  position: relative;
+  z-index: 1;
   pointer-events: auto;
   -webkit-user-select: none;
   user-select: none;

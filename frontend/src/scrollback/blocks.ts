@@ -4,7 +4,9 @@
 // subtle background tint on hover/select.
 
 import type { CommandSnapshotStore } from '../command-snapshot'
-import type { IBufferLine } from '@xterm/xterm'
+import type { BlockOutputStart } from '../generated/block.outputStart'
+import type { ScreenSnapshot } from '../cell-model'
+import type { BlockClosed } from '../generated/block.closed'
 import { paintUnreadableRows, type StoredBlockRows } from './block-rows'
 import { wordRangeIn } from '../word-selection'
 import { createSecretChipUnresolved } from '../ui/secret-chip'
@@ -425,7 +427,7 @@ export function blockKindRules(kind: BlockKind): BlockKindRules {
 // ── Block model ────────────────────────────────────────────────────────────
 
 /** The handle the ask surface drives one answer block with (nocx-x8s2.2).
- *  The answer is NOT xterm output — it arrives as plain text over the
+ *  The answer is NOT terminal screen output — it arrives as plain text over the
  *  control plane — so the body is rendered as escaped term-lines (the
  *  flow's one text vocabulary). The handle is the ONLY way the block's
  *  body and status change; the ask surface never touches the block DOM
@@ -588,12 +590,56 @@ export function toolCallExpansion(
 export type ToolResultSource = (actionEntryId: string) => Promise<string | null>
 
 /** One answer block's bookkeeping (nocx-x8s2.2): the question it answers
- *  and its DOM element. Deliberately NOT a BlockRecord — no xterm lines,
+ *  and its DOM element. Deliberately NOT a BlockRecord — no live-cell range,
  *  no freeze lifecycle; the command paths must never see it. */
 interface AnswerBlockRecord {
   id: number
   question: string
   el: HTMLElement
+}
+
+export type BlockScreenAnchor = NonNullable<BlockClosed['screenAnchor']>
+
+/** Build a revision- and buffer-qualified absolute cursor anchor from one
+ * accepted backend frame. Never reconstruct its identity from a later frame. */
+export function blockScreenAnchor(snapshot: ScreenSnapshot): BlockScreenAnchor | null {
+  const row = snapshot.state.baseRow + snapshot.cursor.y
+  if (
+    !Number.isSafeInteger(row) ||
+    row < 0 ||
+    !Number.isSafeInteger(snapshot.revision) ||
+    snapshot.revision < 0 ||
+    !Number.isSafeInteger(snapshot.geometry.cols) ||
+    snapshot.geometry.cols < 1 ||
+    !Number.isSafeInteger(snapshot.geometry.rows) ||
+    snapshot.geometry.rows < 1
+  )
+    return null
+  return {
+    row,
+    screenRevision: snapshot.revision,
+    bufferKind: snapshot.state.bufferKind,
+    bufferInstance: snapshot.state.bufferInstance,
+    cols: snapshot.geometry.cols,
+    rows: snapshot.geometry.rows,
+  }
+}
+
+function comparableCloseRow(
+  start: BlockScreenAnchor | undefined,
+  end: BlockScreenAnchor | null | undefined,
+): number | null {
+  if (
+    !start ||
+    !end ||
+    end.screenRevision < start.screenRevision ||
+    end.bufferKind !== start.bufferKind ||
+    end.bufferInstance !== start.bufferInstance ||
+    end.cols !== start.cols ||
+    end.rows !== start.rows
+  )
+    return null
+  return end.row
 }
 
 export interface BlockRecord {
@@ -670,12 +716,14 @@ export interface BlockRecord {
    *  attempt, kept when the block freezes. Absent only for a block that
    *  never bound (cleared scrollback, never seen running). */
   attemptId?: string
-  /** IMarker line for C boundary — the absolute buffer line where the
-   *  block was CREATED: the prompt line at app-owned submit, or the cursor
-   *  line when a shell-originated attempt's running fact landed. The
-   *  published running fact binds to the block by this line's lifetime,
-   *  never by its value (ADR-0024 §5 attachment semantics). */
+  /** Absolute active-buffer row from the accepted backend frame when the
+   *  block was created: the prompt line at app-owned submit, or the cursor
+   *  row when a shell-originated attempt's running fact landed. The running
+   *  fact binds to the block by its lifetime, never by this row value
+   *  (ADR-0024 §5 attachment semantics). */
   startLine: number
+  /** Identity and revision of the accepted screen frame that supplied startLine. */
+  startAnchor?: BlockScreenAnchor
   /** The absolute buffer line where the block's OUTPUT begins — the first
    *  row serialized at freeze. Differs from `startLine` exactly when the
    *  creation line carries the shell's echo of the command: the app-owned
@@ -684,17 +732,21 @@ export interface BlockRecord {
    *  The range and the creation time are two different things, and this
    *  is the record of that; a shell-originated block opens after its echo
    *  and defaults to `startLine`. */
-  outputStart: number
-  /** IMarker line for D boundary (approx). */
+  outputStart?: number
+  /** Backend-owned screen anchor; cursor position is never a substitute. */
+  outputAnchor?: BlockOutputStart
+  /** Offset from the accepted frame base row when its identity matches the anchor. */
+  outputAnchorOffset?: number
+  /** Text of the anchor row from the accepted backend frame. */
+  outputAnchorText?: string
+  /** Absolute active-buffer cursor row from the accepted backend frame when
+   *  the block closes. */
   endLine: number
   /** Whether OSC 133 C was received for this command. False when the
    *  block was started from the app-owned submit (nocx-atyf.4). */
   cReceived: boolean
   el: HTMLElement
 }
-
-/** Line accessor function — matches xterm's IBufferLine.getLine(). */
-export type GetLineFn = (y: number) => IBufferLine | undefined
 
 // ── DOM helpers ────────────────────────────────────────────────────────────
 
@@ -1568,7 +1620,7 @@ export function createCommandBlock(
     // fixed from this moment and never re-serialized, so a pass per block
     // beats a pass per click. The gesture itself is attached once per tab
     // (terminal-links/surface.ts); this only puts the elements in reach of
-    // it. The grammar is shared with the live xterm surface rather than
+    // it. The grammar is shared with the live terminal grid rather than
     // spelled twice — see terminal-links/detect.ts for why that matters.
     decorateLinks(outputEl)
   }
@@ -1946,7 +1998,7 @@ export interface BlockManagerOpts {
 export class BlockManager {
   private _blocks: BlockRecord[] = []
   /** Answer blocks (nocx-x8s2.2): the assistant's streamed replies, kept
-   *  OUT of _blocks because they have no xterm line range — the freeze,
+   *  OUT of _blocks because they have no accepted screen range — the freeze,
    *  serialize and reconstruction paths iterate _blocks and must never see
    *  a record with sentinel lines. They share the id space and the DOM
    *  selection API; the ask surface drives them through AnswerBlockHandle
@@ -1969,7 +2021,7 @@ export class BlockManager {
   private _now: () => number
   private _onBlockFrozen?: (rec: BlockRecord) => void
   private _scrollbackInner: HTMLElement
-  private _xtermContainer: HTMLElement
+  private _liveContainer: HTMLElement
   private _runningBlock: BlockRecord | null = null
   private _cmdStartTime: number | null = null
   /** Currently selected block id, or null if none selected (P1-8). */
@@ -2025,7 +2077,6 @@ export class BlockManager {
       /** The terminal status the logical freeze applied — handed to the
        *  DOM exactly as the event decided. */
       status: FrozenStatus
-      getLine: GetLineFn
       endLine: number
       /** Where the block ran, as the pane stood when it ENDED: by its
        *  block.closed an environment entry has moved the pane to the far
@@ -2036,7 +2087,7 @@ export class BlockManager {
   /** block.closed notifications that arrived BEFORE their completion — the
    *  two cross the socket in either order. Consumed by the completion that
    *  names the entry; bounded by MAX_CLOSED_EARLY. */
-  private _closedEarly = new Set<string>()
+  private _closedEarly = new Map<string, BlockScreenAnchor | null | undefined>()
   /** WHERE THE NEXT BLOCK THIS MANAGER OPENS BELONGS (ADR-0040).
    *
    *  A turn's `run` call is announced BEFORE the command is submitted, and
@@ -2051,9 +2102,9 @@ export class BlockManager {
    *  that never reached a command cannot adopt an unrelated block later. */
   private _claimedBy: HTMLElement | null = null
 
-  constructor(scrollbackInner: HTMLElement, xtermContainer: HTMLElement, opts: BlockManagerOpts) {
+  constructor(scrollbackInner: HTMLElement, liveContainer: HTMLElement, opts: BlockManagerOpts) {
     this._scrollbackInner = scrollbackInner
-    this._xtermContainer = xtermContainer
+    this._liveContainer = liveContainer
     this._now = opts.now ?? (() => performance.now())
     this._snapshotStore = opts.snapshotStore
     this._onDeferredFreeze = opts.onDeferredFreeze
@@ -2105,7 +2156,7 @@ export class BlockManager {
    *
    *  A running command's output is not inside its block: the block holds
    *  its header until the freeze, and the bytes are in
-   *  `.xterm-live-container`. So the live region sits immediately AFTER the
+   *  `.terminal-live-container`. So the live region sits immediately AFTER the
    *  block whose output it is, and everything opened afterwards goes at the
    *  TAIL of the scrollback, below it.
    *
@@ -2137,8 +2188,8 @@ export class BlockManager {
     // lost (nocx-askcb). The focus goes back where it was, in the same task,
     // and only if the region held it.
     const focused = document.activeElement
-    const heldFocus = focused instanceof HTMLElement && this._xtermContainer.contains(focused)
-    this._scrollbackInner.insertBefore(this._xtermContainer, seat.nextSibling)
+    const heldFocus = focused instanceof HTMLElement && this._liveContainer.contains(focused)
+    this._scrollbackInner.insertBefore(this._liveContainer, seat.nextSibling)
     if (heldFocus && document.activeElement !== focused) focused.focus({ preventScroll: true })
   }
 
@@ -2147,7 +2198,7 @@ export class BlockManager {
    *  seated after a block anchors on — the other half of `_liveFollows`,
    *  read from the seating side (nocx-hp8p2.8). */
   tailOf(el: HTMLElement): ChildNode {
-    return el.nextSibling === this._xtermContainer ? this._xtermContainer : el
+    return el.nextSibling === this._liveContainer ? this._liveContainer : el
   }
 
   /** Put a COMMAND block in the next seat: inside the turn that claimed it
@@ -2197,20 +2248,16 @@ export class BlockManager {
    *  replaces the previous command's stand-in. */
   private _showCommandIndicator(): void {
     this._clearCommandIndicator()
-    this._xtermContainer.appendChild(createWorkingIndicator())
+    this._liveContainer.appendChild(createWorkingIndicator())
   }
 
   private _clearCommandIndicator(): void {
-    this._xtermContainer.querySelector(':scope > .cmd-answer-typing')?.remove()
+    this._liveContainer.querySelector(':scope > .cmd-answer-typing')?.remove()
   }
 
-  /** THE SEAM for "the first byte of the command's output arrived"
-   *  (nocx-vnirv.1): the renderer's writeParsed path calls this on the
-   *  first parsed write after the block opens, and the stand-in stands
-   *  down. Idempotent — every later chunk calls it again and nothing
-   *  changes. The call site lives in terminal-content.ts (renderer
-   *  onWriteParsed, beside scheduleLiveResize), which another worker owns;
-   *  this is the seam the coordinator wires. */
+  /** The first accepted backend frame proves command output arrived
+   *  (nocx-vnirv.1). TerminalContent calls this for each accepted frame; the
+   *  first call removes the stand-in and later calls are harmless. */
   noteCommandOutput(): void {
     this._clearCommandIndicator()
   }
@@ -2323,6 +2370,13 @@ export class BlockManager {
     return this._blocks
   }
 
+  /** Durable row ids for blocks mounted in this manager. A reconnect can
+   *  miss block.grew/block.closed while the socket is down, so the mounted
+   *  command transcript reconciles these entries from the store afterward. */
+  storedRowEntryIds(): string[] {
+    return [...new Set(this._blocks.flatMap((block) => (block.attemptId ? [block.attemptId] : [])))]
+  }
+
   get runningBlock(): BlockRecord | null {
     return this._runningBlock
   }
@@ -2409,6 +2463,11 @@ export class BlockManager {
     this._attemptId = attemptId
     if (this._runningBlock) {
       this._runningBlock.attemptId = attemptId
+      const anchor = this._pendingOutputAnchors.get(attemptId)
+      if (anchor) {
+        this._pendingOutputAnchors.delete(attemptId)
+        this.setOutputStartAnchor(attemptId, anchor)
+      }
       this._runningBlock.el.dataset.entryId = attemptId
       const pending = this._pendingStoredRows.get(attemptId)
       if (pending) {
@@ -2416,6 +2475,65 @@ export class BlockManager {
         this._pendingStoredRows.delete(attemptId)
         this._paintStoredRows?.(this._runningBlock.el, pending)
       }
+    }
+  }
+
+  /** Attach a backend screen anchor, parking it if lifecycle binding has not arrived yet. */
+  setOutputStartAnchor(entryId: string, anchor: BlockOutputStart): void {
+    const rec = this.blockForAttempt(entryId)
+    if (!rec) {
+      if (this._pendingOutputAnchors.size >= MAX_PENDING_STORED_ROWS) {
+        const first = this._pendingOutputAnchors.keys().next().value
+        if (first !== undefined) this._pendingOutputAnchors.delete(first)
+      }
+      this._pendingOutputAnchors.set(entryId, anchor)
+      return
+    }
+    rec.outputAnchor = Object.freeze({ ...anchor })
+    rec.outputStart = undefined
+    rec.outputAnchorOffset = undefined
+    rec.outputAnchorText = undefined
+  }
+
+  /** Consume only a frame accepted by the pane CellModel and matching every anchor identity field. */
+  acceptOutputStartFrame(snapshot: ScreenSnapshot): void {
+    for (const rec of this._blocks) {
+      const anchor = rec.outputAnchor
+      if (!anchor) continue
+      // A frame for another buffer or geometry is not evidence about this
+      // anchor. Keep the last matching row, so a transient mismatch cannot
+      // release the echo shift.
+      if (
+        snapshot.revision < anchor.screenRevision ||
+        snapshot.state.bufferKind !== anchor.bufferKind ||
+        snapshot.state.bufferInstance !== anchor.bufferInstance ||
+        snapshot.geometry.cols !== anchor.cols ||
+        snapshot.geometry.rows !== anchor.rows ||
+        anchor.bufferKind !== 'normal'
+      )
+        continue
+      rec.outputStart = anchor.row
+      const index = anchor.row - snapshot.state.baseRow
+      if (index <= 0) {
+        // The anchor names the first output row. Its preceding echo row is
+        // already above the visible screen (or absent), so there is no shift.
+        rec.outputAnchorOffset = 0
+        rec.outputAnchorText = ''
+        continue
+      }
+      if (index >= snapshot.geometry.rows) {
+        rec.outputAnchorOffset = undefined
+        rec.outputAnchorText = undefined
+        continue
+      }
+      const echoRow = snapshot.rowAt(index - 1)
+      if (!echoRow) continue
+      rec.outputAnchorOffset = index
+      rec.outputAnchorText = echoRow.cells
+        .filter((cell) => cell.hasText)
+        .map((cell) => cell.grapheme)
+        .join('')
+        .trimEnd()
     }
   }
 
@@ -2502,6 +2620,7 @@ export class BlockManager {
    */
   /** Where this session is — `user@host`, or empty for a local shell. */
   private _location = ''
+  private readonly _pendingOutputAnchors = new Map<string, BlockOutputStart>()
 
   setLocation(location: string): void {
     this._location = location
@@ -2511,11 +2630,11 @@ export class BlockManager {
     command: string,
     cwd: string,
     startLine: number,
-    outputStart = startLine,
     /** Who submitted the command (design §3.1, nocx-iadtt): the app-owned
      *  submit passes the minted author; a shell-originated block is the
      *  human's shell and defaults to 'shell'. */
     author: CommandAuthor = 'shell',
+    startAnchor?: BlockScreenAnchor,
   ): BlockRecord {
     if (this._runningBlock) {
       this._finalizeRunningUnsafe()
@@ -2544,10 +2663,10 @@ export class BlockManager {
     // yet" stand-in stands THERE, where the first output line will be
     // written (nocx-vnirv.1). The height constraint holds by construction:
     // the stand-in is absolutely positioned inside the live container
-    // (style.css, .xterm-live-container.live-running > .cmd-answer-typing),
+    // (style.css, .terminal-live-container.live-running > .cmd-answer-typing),
     // so it takes no flow height, and the box the controller measures and
     // sizes is exactly the box the frozen body replaces — nothing moves at
-    // the swap. Removed by the first byte of output (noteCommandOutput) or
+    // the swap. Removed by the first accepted output frame (noteCommandOutput) or
     // by the block's terminal freeze.
     this._showCommandIndicator()
 
@@ -2560,13 +2679,8 @@ export class BlockManager {
       exitCode: null,
       status: 'running',
       startLine,
-      // The output range and the creation line are two different things
-      // (nocx-4yhi): the app-owned submit opens the block before the bytes
-      // and passes outputStart = startLine + 1, because the shell's echo
-      // of the command lands on the creation line and the block's body
-      // must not repeat the command its header already shows. A
-      // shell-originated block opens after its echo and keeps the default.
-      outputStart,
+      startAnchor,
+      // Output start is unknown until the backend publishes its screen anchor.
       endLine: startLine,
       cReceived: false,
       stopRequested: false,
@@ -2687,13 +2801,13 @@ export class BlockManager {
    * model-level completion arrives later from the authenticated lifecycle
    * transition — this only paints the block.
    */
-  freezeEntered(getLine: GetLineFn, endLine: number): BlockRecord | null {
+  freezeEntered(endLine: number): BlockRecord | null {
     const rec = this._runningBlock
     if (!rec) return null
     const status = this._logicalFreeze(rec, null, 'entered')
     // The backend seals the local interval at the entry and says
     // block.closed for it; the block closes on screen then.
-    return this._closeOnBackend(rec, getLine, endLine, status) ? rec : null
+    return this._closeOnBackend(rec, endLine, status) ? rec : null
   }
 
   /** The VISUAL half of every end the backend knows about: close the block
@@ -2701,18 +2815,20 @@ export class BlockManager {
    *  it until `blockClosed` names it. Answers whether it closed now. A block
    *  bound to no attempt has no entry the backend could name, so it closes
    *  at once — reached only through abandonUnbound's own case. */
-  private _closeOnBackend(
-    rec: BlockRecord,
-    getLine: GetLineFn,
-    endLine: number,
-    status: FrozenStatus,
-  ): boolean {
+  private _closeOnBackend(rec: BlockRecord, endLine: number, status: FrozenStatus): boolean {
     const id = rec.attemptId
-    if (id === undefined || this._closedEarly.delete(id)) {
-      this._freezeCard(rec, getLine, endLine, status)
+    if (id === undefined) {
+      this._freezeCard(rec, endLine, status)
       return true
     }
-    this._awaitingClose.set(id, { rec, status, getLine, endLine, location: this._location })
+    if (this._closedEarly.has(id)) {
+      const closeAnchor = this._closedEarly.get(id)
+      this._closedEarly.delete(id)
+      const anchoredRow = comparableCloseRow(rec.startAnchor, closeAnchor)
+      this._freezeCard(rec, anchoredRow ?? endLine, status)
+      return true
+    }
+    this._awaitingClose.set(id, { rec, status, endLine, location: this._location })
     return false
   }
 
@@ -2725,13 +2841,7 @@ export class BlockManager {
     for (const [id, waiting] of [...this._awaitingClose]) {
       this._awaitingClose.delete(id)
       if (!this._blocks.includes(waiting.rec)) continue
-      this._freezeCard(
-        waiting.rec,
-        waiting.getLine,
-        waiting.endLine,
-        waiting.status,
-        waiting.location,
-      )
+      this._freezeCard(waiting.rec, waiting.endLine, waiting.status, waiting.location)
     }
     this._closedEarly.clear()
   }
@@ -2766,7 +2876,6 @@ export class BlockManager {
    *  command printed by reading its input buffer. */
   private _freezeCard(
     rec: BlockRecord,
-    _getLine: GetLineFn,
     endLine: number,
     status: FrozenStatus,
     location = this._location,
@@ -2828,11 +2937,7 @@ export class BlockManager {
    *  kernels refuse a completion without its fence, and an interval the
    *  helper settles without SIGHTING the fence still reaches the
    *  coordinator and ends in block.closed (nocx-2v80t.3.29). */
-  freezeFromAttempt(
-    attempt: ExecutionAttempt,
-    getLine: GetLineFn,
-    endLine: number,
-  ): BlockRecord | null {
+  freezeFromAttempt(attempt: ExecutionAttempt, endLine: number): BlockRecord | null {
     if (attempt.state !== 'completed') return null
     if (this._attemptId !== attempt.id) return null
     const code = attempt.exitCode ?? null
@@ -2866,7 +2971,7 @@ export class BlockManager {
     const terminal = this._logicalFreeze(rec, code, status)
     this._attemptId = null
 
-    return this._closeOnBackend(rec, getLine, endLine, terminal) ? rec : null
+    return this._closeOnBackend(rec, endLine, terminal) ? rec : null
   }
 
   /** The backend said this entry's block is closed (block.closed): its rows
@@ -2874,16 +2979,16 @@ export class BlockManager {
    *  now; one whose completion has not arrived yet is remembered, and closes
    *  the moment it does. A notification for a block already closed, or for
    *  one this pane does not hold, changes nothing on screen. */
-  blockClosed(entryId: string): void {
+  blockClosed(entryId: string, screenAnchor?: BlockScreenAnchor | null): void {
     const waiting = this._awaitingClose.get(entryId)
     if (waiting !== undefined) {
       this._awaitingClose.delete(entryId)
       // A block cleared since its completion has nothing left to close.
       if (!this._blocks.includes(waiting.rec)) return
+      const anchoredRow = comparableCloseRow(waiting.rec.startAnchor, screenAnchor)
       this._freezeCard(
         waiting.rec,
-        waiting.getLine,
-        waiting.endLine,
+        anchoredRow ?? waiting.endLine,
         waiting.status,
         waiting.location,
       )
@@ -2894,10 +2999,10 @@ export class BlockManager {
     const rec = this.blockForAttempt(entryId)
     if (rec !== null && rec.status !== 'running') return
     if (!this._closedEarly.has(entryId) && this._closedEarly.size >= MAX_CLOSED_EARLY) {
-      const oldest = this._closedEarly.values().next().value
+      const oldest = this._closedEarly.keys().next().value
       if (oldest !== undefined) this._closedEarly.delete(oldest)
     }
-    this._closedEarly.add(entryId)
+    this._closedEarly.set(entryId, screenAnchor)
   }
 
   /** Freeze the running block bound to the attempt as abandoned: the
@@ -2909,7 +3014,6 @@ export class BlockManager {
    *  session go has nobody left to say it, and closes at once. */
   abandonAttempt(
     attempt: ExecutionAttempt,
-    getLine: GetLineFn,
     endLine: number,
     sessionGone = false,
   ): BlockRecord | null {
@@ -2923,10 +3027,10 @@ export class BlockManager {
     const status = this._logicalFreeze(rec, null, 'unknown')
     this._attemptId = null
     if (sessionGone) {
-      this._freezeCard(rec, getLine, endLine, status)
+      this._freezeCard(rec, endLine, status)
       return rec
     }
-    return this._closeOnBackend(rec, getLine, endLine, status) ? rec : null
+    return this._closeOnBackend(rec, endLine, status) ? rec : null
   }
 
   /** Freeze a running block that never bound to an attempt at all. The
@@ -2940,12 +3044,12 @@ export class BlockManager {
    *  It closes at once, on the pane's own word, and that is deliberate
    *  (nocx-2v80t.3.30): the backend names a block by its attempt, and this
    *  block never had one, so no block.closed could ever name it. */
-  abandonUnbound(getLine: GetLineFn, endLine: number): BlockRecord | null {
+  abandonUnbound(endLine: number): BlockRecord | null {
     if (this._attemptId !== null) return null
     const rec = this._runningBlock
     if (!rec) return null
     const status = this._logicalFreeze(rec, null, 'unknown')
-    this._freezeCard(rec, getLine, endLine, status)
+    this._freezeCard(rec, endLine, status)
     return rec
   }
 
@@ -3308,6 +3412,7 @@ export class BlockManager {
     this._awaitingClose.clear()
     this._closedEarly.clear()
     this._pendingStoredRows.clear()
+    this._pendingOutputAnchors.clear()
     this._storedRowsCursor.clear()
     this._clearCommandIndicator()
     // ONE list, because there is one owner: whatever this manager put in

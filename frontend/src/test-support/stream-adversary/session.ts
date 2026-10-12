@@ -19,7 +19,8 @@
 // rerun.
 import { CommandLedger } from '../../command-ledger'
 import { LifecycleKernel } from '../../lifecycle/state'
-import { parseOsc133, parseOsc7 } from '../../renderers/xterm'
+import { parseOsc133 } from '../../command-marker'
+import { parseOsc7Fixture } from './osc7'
 import type { CorpusFrame } from './corpus'
 
 /** The nine security-sensitive projections, captured before and after each
@@ -87,7 +88,7 @@ export function assembleTodaySession(): SessionAssembly {
       case 'app': {
         if (frame.payload.startsWith('submit:')) {
           const command = frame.payload.slice('submit:'.length)
-          ledger.open(command, '/tmp', '', () => undefined, 'shell')
+          ledger.open(command, '/tmp', '', 'shell')
           events.push(`app:submit:${command}`)
         } else {
           events.push(`app:unknown:${frame.payload}`)
@@ -107,7 +108,7 @@ export function assembleTodaySession(): SessionAssembly {
         return
       }
       case 'osc7': {
-        const parsed = parseOsc7(frame.payload)
+        const parsed = parseOsc7Fixture(frame.payload)
         if (parsed !== null) {
           cwd = parsed.path
           events.push('cwd')

@@ -309,4 +309,12 @@ package proto
 // episode ID for a nonce-free recovery sighting alongside that byte offset
 // (nocx-zg3k3.14.3). An 18-helper would misread the changed header, so the
 // peers must be fenced.
-const Version = "19"
+// This is 20 rather than 19 because TypeSessionEffect now carries a full-frame
+// revision lower bound for promptBoundary, used to order the effect after an
+// offered same-session screen snapshot. A 19-helper cannot decode this header.
+// This is 21 rather than 20 because TypeSessionEffect gained the
+// commandSnapshot kind. A 20-helper rejects its kind value, so both peers must
+// fence the new typed session-local command state at hello.
+const Version = "22"
+
+// Version 22 adds the optional screen-row anchor document to TypeOutputStartRow.

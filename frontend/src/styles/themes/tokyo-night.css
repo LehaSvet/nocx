@@ -94,7 +94,7 @@
 
   /* ── Terminal palette (§2.3) ─────────────────────────────────────────
      Lifted verbatim from the literal object that lived in
-     renderers/xterm.ts, which was the only definition of these colours
+     the theme's terminal palette, which is declared by these variables
      until now. The adapter in nocx-xrrl.5 reads them from here, so this
      file is the single source of terminal colour as well as UI colour —
      which is the point of the token layer.

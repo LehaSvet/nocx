@@ -20,7 +20,7 @@ const INPUT = '.pane.active .nocx-editor-input'
 const SETTLED = '.pane.active .cmd-block:not(.cmd-block-running)'
 const COMPOSER = '.pane.active .nocx-editor'
 const COMPOSER_CHROME = '.pane.active .nocx-editor-chrome'
-const LIVE = '.pane.active .xterm-live-container'
+const LIVE = '.pane.active .terminal-live-container'
 const THEME_SELECT = '.ui-settings-row[data-key="ui.theme"] select'
 // The names later tasks produce (spec §3.1, §3.3). One line each, so a rename is one edit.
 const FAILED_ROW = '.cmd-block[data-outcome="failure"]'

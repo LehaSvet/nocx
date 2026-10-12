@@ -905,6 +905,13 @@ func (o *localHelperOpener) openSSH(ctx context.Context, spawn hostedSpawn, cfg 
 		// facts are written by different statements in different files.
 		return hostedSpawnResult{}, errors.New("open an ssh pane on this machine's helper: the config carries no destination")
 	}
+	// A raw shell is deliberately launched without the integration script, so
+	// it cannot authenticate the lifecycle channel. Use the mode axis' owner
+	// before hostedSpawn creates an adapter or launch; local sessions retain
+	// their existing default and never pass through this route.
+	if !profile.DesiredMode(cfg.Remote.DesiredMode).DeliversScripts() {
+		spawn.lifecycle = nil
+	}
 	target, err := o.resolveTarget(ctx, cfg.Host, session.SSHOptionsFromConfig(cfg.Remote))
 	if err != nil {
 		return hostedSpawnResult{}, fmt.Errorf("resolve the ssh pane's destination: %w", err)

@@ -7,7 +7,7 @@
  *
  * A native modal `<dialog>` is exempt from the portal-root and z-index
  * clauses (it renders in the browser top layer, above every stacking context).
- * It is NOT exempt from the drag-region, focus-return, and xterm-textarea
+ * It is NOT exempt from the drag-region, focus-return, and terminal-input-element
  * clauses. That distinction is explicit in the Dialog component.
  *
  * ADR-0014 estimate: 300–500 lines for the overlay core (all modules combined).
@@ -184,7 +184,7 @@ export function restoreFocus(entry: OverlayEntry): void {
   const closingDialog = entry.element instanceof HTMLDialogElement
   if (closingDialog && (el instanceof HTMLDialogElement || el.closest?.('dialog[open]'))) return
 
-  // xterm stores focus in a hidden textarea that is not a normal focusable
+  // the terminal input element stores focus in a hidden textarea that is not a normal focusable
   // element. A standard .focus() call does not work on it in some webview
   // environments — see ADR-0014 "Consequences / Negative".
   if (el instanceof HTMLElement) {

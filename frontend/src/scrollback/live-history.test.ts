@@ -97,12 +97,25 @@ function pageOf(
   count: number,
   floor: number,
   more: boolean,
+  baseRow = start + count,
 ): ScriptedPage {
   const rows: SessionHistoryPageRows['rows'] = []
   for (let i = 0; i < count; i++) rows.push(textRow(`L${String(start + i).padStart(6, '0')}`))
   return {
     pageId: id,
-    result: { pageId: id, start, end: start + count, floor, more, durableThrough: null },
+    result: {
+      pageId: id,
+      start,
+      end: start + count,
+      floor,
+      more,
+      durableThrough: null,
+      bufferKind: 'normal',
+      bufferInstance: '1',
+      baseRow,
+      cols: 80,
+      rows: 24,
+    },
     rows,
   }
 }
@@ -115,7 +128,7 @@ function mount(): {
 } {
   const stack = document.createElement('div')
   const live = document.createElement('div')
-  live.className = 'xterm-live-container'
+  live.className = 'terminal-live-container'
   stack.appendChild(live)
   const scroller = document.createElement('div')
   scroller.appendChild(stack)
@@ -166,6 +179,52 @@ async function settle(): Promise<void> {
 }
 
 describe('live-history', () => {
+  it('returns pointer focus to the terminal input after an accessible grid-row click', () => {
+    const { surface, scroller } = mount()
+    const pane = document.createElement('div')
+    pane.className = 'pane'
+    document.body.append(pane)
+    pane.append(scroller)
+    const input = document.createElement('textarea')
+    input.className = 'ui-terminal-input'
+    pane.append(input)
+    const grid = document.createElement('div')
+    grid.setAttribute('role', 'grid')
+    const row = document.createElement('div')
+    row.className = 'term-grid-row'
+    row.tabIndex = 0
+    grid.append(row)
+    scroller.querySelector('.terminal-live-container')!.append(grid)
+
+    // A native pointer press focuses the row before click. The delegated
+    // handler restores the pane's keyboard input, but leaves the row's
+    // accessibility and tab-stop contract untouched.
+    row.focus()
+    row.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }))
+    expect(document.activeElement).toBe(input)
+    expect(row.tabIndex).toBe(0)
+
+    // The live grid also has blank cells and cursor/selection overlays; a
+    // click on the grid surface itself must keep the same input ownership.
+    row.focus()
+    grid.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }))
+    expect(document.activeElement).toBe(input)
+    row.focus()
+    scroller
+      .querySelector('.terminal-live-container')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }))
+    expect(document.activeElement).toBe(input)
+
+    // Keyboard activation of the row is not mistaken for a pointer click.
+    row.focus()
+    row.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }))
+    expect(document.activeElement).toBe(row)
+    expect(row.tabIndex).toBe(0)
+
+    surface.dispose()
+    pane.remove()
+  })
+
   it('pages the emulator to the floor: every row that left the screen is found, oldest painted first', async () => {
     const { surface, scroller } = mount()
     atBottom(scroller)
@@ -194,6 +253,45 @@ describe('live-history', () => {
     scrollNearTop(scroller, 0)
     await settle()
     expect(surface.el.querySelectorAll('.term-grid-row').length).toBe(96)
+  })
+
+  it('never joins pages whose absolute rows belong to another buffer instance', async () => {
+    const { surface, scroller } = mount()
+    atBottom(scroller)
+    const second = pageOf('B'.repeat(32), 22, 10, 0, false)
+    second.result.bufferInstance = '2'
+    const source = scriptedSource([pageOf('A'.repeat(32), 32, 10, 0, true), second])
+    surface.setMode('unstructured')
+    surface.bind(source)
+    await settle()
+    expect(surface.el.querySelectorAll('.term-grid-row').length).toBe(10)
+
+    scrollNearTop(scroller, 0)
+    await settle()
+    const rows = surface.el.querySelectorAll('.term-grid-row')
+    expect(rows.length).toBe(10)
+    expect(rows[0].textContent).toContain('L000022')
+    expect(Array.from(rows, (row) => row.textContent).join('\n')).not.toContain('L000032')
+    expect(source.requested).toEqual([null, 32])
+  })
+
+  it('keeps active-screen rows out of scrollback and preserves the page buffer identity', async () => {
+    const { surface, scroller } = mount()
+    atBottom(scroller)
+    const page = pageOf('a'.repeat(32), 10, 5, 0, false, 13)
+    page.result.bufferKind = 'alternate'
+    page.result.bufferInstance = '2'
+    surface.setMode('unstructured')
+    surface.bind(scriptedSource([page]))
+    await settle()
+
+    const rows = surface.el.querySelectorAll('.term-grid-row')
+    expect(rows.length).toBe(3)
+    expect(rows[0].textContent).toContain('L000010')
+    expect(rows[2].textContent).toContain('L000012')
+    expect(Array.from(rows, (row) => row.textContent).join('\n')).not.toContain('L000013')
+    expect(surface.el.firstElementChild?.getAttribute('data-start')).toBe('10')
+    expect(surface.el.firstElementChild?.getAttribute('data-end')).toBe('13')
   })
 
   it('keeps the reader anchored: a page installed above adds its height to scrollTop', async () => {
@@ -765,7 +863,7 @@ describe('live-history', () => {
     await settle()
     expect(scroller.scrollTop).toBe(40 * ROW_PX)
 
-    // xterm's layer above the live screen consumes the gesture's default
+    // the terminal input layer above the live screen consumes the gesture's default
     // action; the scroller's own owner still sees the event (a
     // preventDefault cancels the default, never the propagation) and
     // applies the delta itself — the person's wheel moves the history.

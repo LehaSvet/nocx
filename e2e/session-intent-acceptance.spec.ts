@@ -14,7 +14,7 @@ declare global {
   }
 }
 
-const GRID = '.pane.active .xterm-live-container'
+const GRID = '.pane.active .terminal-live-container'
 const INTENT_INPUT = '.pane.active .ui-terminal-input'
 
 async function command(page: import('./harness').Page, source: string): Promise<void> {

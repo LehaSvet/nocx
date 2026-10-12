@@ -32,6 +32,7 @@ import {
   captureLiveSelection,
   columnSpan,
   createCellModel,
+  snapshotRowText,
   type ApplyResult,
   type CellModel,
   type FrameRefusal,
@@ -51,6 +52,18 @@ const PLAIN = style(7)
 /** frameOf here additionally accepts a rowsCount override, the way the old
  *  local helper did (a malformed row-count fixture needs a geometry that
  *  disagrees with the rows array it is handed). */
+function defaultFrameState(): SessionFrame['state'] {
+  return {
+    bufferKind: 'normal',
+    bufferInstance: '1',
+    baseRow: 0,
+    bracketedPaste: false,
+    mouseTracking: false,
+    title: null,
+    cwd: null,
+  }
+}
+
 function frame(
   revision: number,
   rows: CellSpec[][],
@@ -116,6 +129,70 @@ const ZOOMS = [1, 2]
 const DPRS = [1, 2]
 
 // --- columns come only from what the backend declared ------------------------
+
+describe('backend terminal state', () => {
+  it('installs buffer identity and input-routing modes with the same accepted revision', () => {
+    const frame = fixtureFrameOf(
+      7,
+      [[['x', 1, true]]],
+      { x: 0, y: 0, visible: true },
+      {},
+      {
+        bufferKind: 'alternate',
+        bufferInstance: '18446744073709551615',
+        baseRow: 0,
+        bracketedPaste: true,
+        mouseTracking: true,
+        title: null,
+        cwd: null,
+      },
+    )
+    const model = createCellModel()
+    const result = model.apply(frame)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.snapshot.state).toEqual({
+      bufferKind: 'alternate',
+      bufferInstance: '18446744073709551615',
+      baseRow: 0,
+      bracketedPaste: true,
+      mouseTracking: true,
+      title: null,
+      cwd: null,
+    })
+    expect(Object.isFrozen(result.snapshot.state)).toBe(true)
+  })
+
+  it('refuses an absolute row range outside JSON-safe coordinates without replacing the prior revision', () => {
+    const model = createCellModel()
+    const first = model.apply(fixtureFrameOf(1, [[['a', 1, true]]]))
+    expect(first.ok).toBe(true)
+    const malformed = fixtureFrameOf(2, [[['b', 1, true]]])
+    malformed.state.baseRow = Number.MAX_SAFE_INTEGER
+    const second = model.apply(malformed)
+    expect(second).toEqual({ ok: false, refusal: { reason: 'malformed-state' } })
+    expect(model.current()?.revision).toBe(1)
+  })
+
+  it('refuses malformed mode or buffer identity without replacing the prior revision', () => {
+    const model = createCellModel()
+    const firstFrame = fixtureFrameOf(1, [[['a', 1, true]]])
+    const first = model.apply(firstFrame)
+    expect(first.ok).toBe(true)
+    const malformed = fixtureFrameOf(2, [[['b', 1, true]]], undefined, undefined, {
+      bufferKind: 'normal',
+      bufferInstance: '0',
+      baseRow: 0,
+      bracketedPaste: false,
+      mouseTracking: false,
+      title: null,
+      cwd: null,
+    })
+    const second = model.apply(malformed)
+    expect(second).toEqual({ ok: false, refusal: { reason: 'malformed-state' } })
+    expect(model.current()?.revision).toBe(1)
+  })
+})
 
 describe('declared columns, contradicting measurement', () => {
   it('keeps the declared accounting when the browser measurement disagrees', () => {
@@ -302,6 +379,7 @@ describe('cell facts', () => {
       revision: 1,
       geometry: { cols: 1, rows: 3, cellWidthPx: 8, cellHeightPx: 20, revision: 1 },
       cursor: { x: 0, y: 0, visible: false },
+      state: defaultFrameState(),
       rows: [
         wireRowOf([one], true, false),
         wireRowOf([one], true, true),
@@ -338,6 +416,7 @@ describe('the row a shorter wire message implies', () => {
       revision: 1,
       geometry: { cols: 5, rows: 1, cellWidthPx: 8, cellHeightPx: 20, revision: 1 },
       cursor: { x: 0, y: 0, visible: false },
+      state: defaultFrameState(),
       rows: [{ text: 'ab' }],
     }
     const model = createCellModel()
@@ -362,6 +441,7 @@ describe('the row a shorter wire message implies', () => {
       revision: 1,
       geometry: { cols: 3, rows: 1, cellWidthPx: 8, cellHeightPx: 20, revision: 1 },
       cursor: { x: 0, y: 0, visible: false },
+      state: defaultFrameState(),
       rows: [{ text: 'abc' }],
     }
     const model = createCellModel()
@@ -377,6 +457,7 @@ describe('the row a shorter wire message implies', () => {
       revision: 1,
       geometry: { cols: 3, rows: 1, cellWidthPx: 8, cellHeightPx: 20, revision: 1 },
       cursor: { x: 0, y: 0, visible: false },
+      state: defaultFrameState(),
       rows: [{ text: 'xyz' }],
     }
     const model = createCellModel()
@@ -535,12 +616,14 @@ describe('atomic per-revision replacement', () => {
       revision: 7,
       geometry: { cols: 1, rows: 1, cellWidthPx: 8, cellHeightPx: 20, revision: 7 },
       cursor: { x: 0, y: 0, visible: false },
+      state: defaultFrameState(),
       rows: [{ text: 'a', runs: [[0, 2]] }],
     }
     const tooWide: SessionFrame = {
       revision: 8,
       geometry: { cols: 1, rows: 1, cellWidthPx: 8, cellHeightPx: 20, revision: 8 },
       cursor: { x: 0, y: 0, visible: false },
+      state: defaultFrameState(),
       rows: [{ text: 'ab' }],
     }
 
@@ -620,6 +703,7 @@ describe('atomic per-revision replacement', () => {
       revision: 2,
       geometry: { cols: 3, rows: 1, cellWidthPx: 8, cellHeightPx: 20, revision: 2 },
       cursor: { x: 0, y: 0, visible: false },
+      state: defaultFrameState(),
       rows: [
         {
           text: 'abc',
@@ -654,6 +738,7 @@ describe('atomic per-revision replacement', () => {
       revision: 2,
       geometry: { cols: 2, rows: 1, cellWidthPx: 8, cellHeightPx: 20, revision: 2 },
       cursor: { x: 0, y: 0, visible: false },
+      state: defaultFrameState(),
       rows: [{ text: 'a', marks: [[10, 1, 2]] }],
     }
     const refusal = refused(model, markPastRow)
@@ -675,6 +760,7 @@ describe('atomic per-revision replacement', () => {
       revision: 2,
       geometry: { cols: 4, rows: 1, cellWidthPx: 8, cellHeightPx: 20, revision: 2 },
       cursor: { x: 0, y: 0, visible: false },
+      state: defaultFrameState(),
       rows: [{ text: 'ab', marks: [[0.5, 1, 2]] }],
     }
     expect(refused(model, fractional).reason).toBe('malformed-row')
@@ -696,6 +782,7 @@ describe('atomic per-revision replacement', () => {
       revision: 2,
       geometry: { cols: 2, rows: 1, cellWidthPx: 8, cellHeightPx: 20, revision: 2 },
       cursor: { x: 0, y: 0, visible: false },
+      state: defaultFrameState(),
       rows: [{ text: 'ab', marks: [[0, 3, 1]] }],
     }
     const refusal = refused(model, markOverclaims)
@@ -834,5 +921,29 @@ describe('live selection snapshots', () => {
     expect(
       captureLiveSelection('pane', hard, { row: 0, offset: 1 }, { row: 1, offset: 2 }).copy(),
     ).toBe('BC\nDE')
+  })
+})
+
+describe('snapshot row text', () => {
+  it('uses backend-declared graphemes and omits non-text spacer cells', () => {
+    const snapshot = applied(
+      createCellModel(),
+      frame(
+        1,
+        [
+          [
+            [' ', 1, true],
+            ['A', 1, true],
+            ['界', 2, true],
+            ['', 3, false],
+            ['B', 1, true],
+          ],
+        ],
+        5,
+      ),
+    )
+
+    expect(snapshotRowText(snapshot, 0)).toBe('A界B')
+    expect(snapshotRowText(snapshot, 1)).toBeNull()
   })
 })

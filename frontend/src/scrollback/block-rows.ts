@@ -130,6 +130,15 @@ export function snapshotForRows(lines: readonly LedgerBlockRowsLine[]) {
       revision: 1,
     },
     cursor: { x: 0, y: 0, visible: false },
+    state: {
+      bufferKind: 'normal',
+      bufferInstance: '1',
+      baseRow: 0,
+      bracketedPaste: false,
+      mouseTracking: false,
+      title: null,
+      cwd: null,
+    },
     rows: lines.map((line) => line.row),
   }
   const result = createCellModel().apply(frame)

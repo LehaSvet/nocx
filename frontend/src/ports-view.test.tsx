@@ -21,20 +21,11 @@ import {
 import { mountSidebar, type SidebarHandle, type SidebarViewDescriptor } from './sidebar'
 import { IconButton } from './ui/icon-button'
 import { PlugIcon, RefreshIcon } from './ui/icons'
-import {
-  createRendererMock,
-  makeClient,
-  makeSession,
-  mountPaneManager,
-} from './test-support/panes-fixtures'
+import { makeClient, makeSession, mountPaneManager } from './test-support/panes-fixtures'
 import type { PortsStatusResult } from './generated/ports.status'
 import type { TunnelOpenResult } from './generated/tunnel.open'
 import { LOCAL_TARGET_ID } from './ports-client'
 import { setDocumentHidden } from './test-support/document-visibility'
-
-vi.mock('./renderers/xterm', () => ({
-  XtermRenderer: vi.fn(createRendererMock),
-}))
 
 const PORTS_VIEW_ID = 'ports'
 

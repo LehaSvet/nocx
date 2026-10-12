@@ -93,7 +93,7 @@ func TestSessionHistoryPage_DTOConformsToContract(t *testing.T) {
 	raw, err := json.Marshal(sessionHistoryPage{
 		PageID: "0123456789abcdef0123456789abcdef",
 		Start:  10, End: 40, Floor: 0, More: true,
-		DurableThrough: nil,
+		DurableThrough: nil, BufferKind: "normal", BufferInstance: "1", BaseRow: 20, Cols: 80, GeometryRows: 24,
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -101,7 +101,8 @@ func TestSessionHistoryPage_DTOConformsToContract(t *testing.T) {
 	validateJSON(t, schema, raw, "session.historyPage DTO")
 
 	rawEmpty, err := json.Marshal(sessionHistoryPage{
-		PageID: "0123456789abcdef0123456789abcdef",
+		PageID:     "0123456789abcdef0123456789abcdef",
+		BufferKind: "normal", BufferInstance: "1", Cols: 80, GeometryRows: 24,
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -166,7 +167,7 @@ func (p *scriptedHistoryPager) HistoryPage(_ context.Context, sessionID string, 
 	if err != nil {
 		return HistoryPage{}, err
 	}
-	return HistoryPage{Start: start, End: end, Floor: 0, More: start > 0, Rows: encoded}, nil
+	return HistoryPage{Start: start, End: end, Floor: 0, More: start > 0, BufferKind: "normal", BufferInstance: "1", BaseRow: 0, Cols: 80, GeometryRows: 24, Rows: encoded}, nil
 }
 
 // historyPageExchange writes one request and reads BOTH answers off the
@@ -271,6 +272,9 @@ func TestSessionHistoryPage_OverTheWireConformsToContract(t *testing.T) {
 	}
 	if doc.PageID != first.PageID {
 		t.Fatalf("the carrier names page %q, the result names %q — the id is the correlation", doc.PageID, first.PageID)
+	}
+	if first.BufferKind != "normal" || first.BufferInstance != "1" || first.BaseRow != 0 || first.Cols != 80 || first.GeometryRows != 24 {
+		t.Fatalf("history screen identity = %+v", first)
 	}
 	if first.Start != 10 || first.End != 40 {
 		t.Fatalf("the head page is [%d,%d), want [10,40)", first.Start, first.End)

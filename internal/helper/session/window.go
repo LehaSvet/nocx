@@ -159,6 +159,7 @@ func (w *window) markPromptBoundary(effect sessionruntime.Effect) (bool, error) 
 	copyEffect := effect
 	copyEffect.Title = append([]byte(nil), effect.Title...)
 	copyEffect.Body = append([]byte(nil), effect.Body...)
+	copyEffect.CommandNames = append([]string(nil), effect.CommandNames...)
 	w.promptBoundaries = append(w.promptBoundaries, orderedPromptBoundary{effect: copyEffect})
 	w.signal()
 	return dropped, nil
@@ -197,6 +198,7 @@ func (w *window) readOrdered(offset, lastBoundary proto.StreamOffset) ([]byte, p
 			copyEffect := *effect
 			copyEffect.Title = append([]byte(nil), effect.Title...)
 			copyEffect.Body = append([]byte(nil), effect.Body...)
+			copyEffect.CommandNames = append([]string(nil), effect.CommandNames...)
 			return nil, r, &copyEffect
 		}
 		limit = effectOffset - r.From

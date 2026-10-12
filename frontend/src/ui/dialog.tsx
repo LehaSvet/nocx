@@ -3,7 +3,7 @@
  *
  * A native modal `<dialog>` renders in the browser top layer, above every
  * stacking context. It is exempt from the portal-root and z-index clauses.
- * It is NOT exempt from the drag-region, focus-return, and xterm-textarea
+ * It is NOT exempt from the drag-region, focus-return, and terminal-input-element
  * clauses. That distinction is explicit below.
  *
  * Available at both declared floors (WebKitGTK 2.40, Safari 16.2), which is
@@ -20,7 +20,7 @@
  * - Nesting policy (overlay stack — only topmost is interactive)
  * - `::backdrop` theming via token variables (in overlay.css)
  * - Wails drag-region guard (--wails-draggable: no-drag on the dialog)
- * - Focus return to invoker on close (incl. xterm hidden textarea)
+ * - Focus return to invoker on close (incl. terminal input element)
  *
  * @example
  * ```tsx

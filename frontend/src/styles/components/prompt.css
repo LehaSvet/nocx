@@ -1,4 +1,4 @@
-/* The modal overlay must paint above app content: xterm's own layers run
+/* The modal overlay must paint above app content: the live terminal layers run
    up to z-index 10, and a top-sheet prompt floats over the terminal (the
    vault unlock and the connection-password ask both do). A modal that the
    terminal's canvas can intercept clicks on is not a modal. */

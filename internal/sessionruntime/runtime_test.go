@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -321,6 +322,37 @@ func TestNonPromptEffectDoesNotCarryStreamOffset(t *testing.T) {
 	}
 }
 
+func TestCommandSnapshotIsTypedAndResentAsCurrentStateOnAttach(t *testing.T) {
+	s, _, _ := realRuntime(t)
+	first := s.Consumers().Attach()
+	const nonce = "0123456789abcdef0123456789abcdef"
+	stream := "\x1b]636;H;" + nonce + "\a" + "\x1b]636;S;" + nonce + ";alias;function\a"
+	if err := s.Ingest([]byte(stream)); err != nil {
+		t.Fatalf("ingest shell snapshot: %v", err)
+	}
+	want := []string{"alias", "function"}
+	initial := first.Effects()
+	if len(initial) != 1 || initial[0].Kind != EffectCommandSnapshot || !reflect.DeepEqual(initial[0].CommandNames, want) {
+		t.Fatalf("initial command snapshot = %#v, want names %v", initial, want)
+	}
+
+	// A new consumer receives the current names under a fresh event identity,
+	// not the historical OSC effect identity from the old attachment.
+	second := s.Consumers().Attach()
+	reattach := second.Effects()
+	if len(reattach) != 1 || reattach[0].Kind != EffectCommandSnapshot || !reflect.DeepEqual(reattach[0].CommandNames, want) || reattach[0].ID == initial[0].ID {
+		t.Fatalf("reattached command snapshot = %#v, first identity %d", reattach, initial[0].ID)
+	}
+
+	// The consumer cannot mutate the retained state that a later attachment
+	// receives.
+	reattach[0].CommandNames[0] = "forged"
+	third := s.Consumers().Attach()
+	if got := third.Effects(); len(got) != 1 || !reflect.DeepEqual(got[0].CommandNames, want) {
+		t.Fatalf("later attach observed mutated names: %#v", got)
+	}
+}
+
 func TestPromptBoundaryIsDeliveredAsAnEmptyAtMostOnceObservation(t *testing.T) {
 	s, _, _ := realRuntime(t)
 	c := s.Consumers().Attach()
@@ -332,8 +364,9 @@ func TestPromptBoundaryIsDeliveredAsAnEmptyAtMostOnceObservation(t *testing.T) {
 	}
 	effects := c.Effects()
 	wantOffset := uint64(len("before\x1b]133;B\x07"))
-	if len(effects) != 1 || effects[0].Kind != EffectPromptBoundary || effects[0].ID == 0 || effects[0].At != s.Incarnation() || len(effects[0].Title) != 0 || len(effects[0].Body) != 0 || effects[0].StreamOffset != wantOffset {
-		t.Fatalf("prompt boundary delivery = %#v", effects)
+	wantRevision := s.Snapshot().Revision
+	if len(effects) != 1 || effects[0].Kind != EffectPromptBoundary || effects[0].ID == 0 || effects[0].At != s.Incarnation() || len(effects[0].Title) != 0 || len(effects[0].Body) != 0 || effects[0].StreamOffset != wantOffset || effects[0].ScreenRevision != uint64(wantRevision) {
+		t.Fatalf("prompt boundary delivery = %#v, want screen revision %d", effects, wantRevision)
 	}
 	if again := c.Effects(); len(again) != 1 || again[0].ID != effects[0].ID {
 		t.Fatalf("consumer queue changed across passive reads: %#v", again)

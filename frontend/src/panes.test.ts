@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import {
-  createRendererMock,
   resetSessionCounter,
   mountPaneManager,
   makeClient,
@@ -17,7 +16,6 @@ import {
   anchoredPane,
   MockWebSocket,
   type ClientFake,
-  type RendererMock,
   type SessionFake,
 } from './test-support/panes-fixtures'
 import { isUuidv7 } from './layout/uuid7'
@@ -34,6 +32,9 @@ import type { WorkersTabClosed } from './generated/workers.tabClosed'
 import type { Exit } from './generated/exit'
 import type { Pane as LayoutPane, Tab as LayoutTab } from './generated/layout.read'
 import type { DriverState } from './pane-observation'
+import { frameOf, type CellSpec } from './painter/fixtures'
+import type { SessionFrame } from './generated/session.frame'
+import type { SessionEffect } from './generated/session.effect'
 import {
   BasePaneContent,
   SURFACE_TERMINAL,
@@ -45,20 +46,65 @@ import {
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
 
-// Mock the XtermRenderer class before any imports use it.
-vi.mock('./renderers/xterm', () => ({
-  XtermRenderer: vi.fn(createRendererMock),
-}))
 vi.mock('./ui/toast', () => ({ showToast: vi.fn() }))
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-/**
- * Returns all renderer mocks created so far by the mocked XtermRenderer constructor.
- */
-async function getRendererMocks(): Promise<RendererMock[]> {
-  const { XtermRenderer } = await import('./renderers/xterm')
-  return vi.mocked(XtermRenderer).mock.results.map((r) => r.value as unknown as RendererMock)
+function fireFrameMetadata(
+  session: SessionFake,
+  revision: number,
+  metadata: Partial<Pick<SessionFrame['state'], 'title' | 'cwd' | 'bufferKind'>>,
+): void {
+  const state: SessionFrame['state'] = {
+    bufferKind: metadata.bufferKind ?? 'normal',
+    bufferInstance: '1',
+    baseRow: 0,
+    bracketedPaste: false,
+    mouseTracking: false,
+    title: metadata.title ?? null,
+    cwd: metadata.cwd ?? null,
+  }
+  const rows = Array.from({ length: 24 }, () => [])
+  session.fireScreenFrame(frameOf(revision, rows, undefined, { cols: 80, rows: 24 }, state))
+}
+
+function screenFrameWithText(revision: number, text: string): SessionFrame {
+  const cells: CellSpec[] = Array.from(text, (char) => [char, 1, true])
+  const rows = [cells, ...Array.from({ length: 23 }, () => [] as CellSpec[])]
+  return frameOf(revision, rows, { x: 0, y: 0, visible: false }, { cols: 80, rows: 24 })
+}
+
+function dispatchGridDrag(surface: HTMLElement, startX: number, endX: number): void {
+  const event = (type: string, clientX: number): Event => {
+    const pointer = new Event(type, { bubbles: true, cancelable: true })
+    Object.defineProperties(pointer, {
+      button: { value: 0 },
+      buttons: { value: type === 'pointerup' ? 0 : 1 },
+      clientX: { value: clientX },
+      clientY: { value: 1 },
+    })
+    return pointer
+  }
+  surface.dispatchEvent(event('pointerdown', startX))
+  window.dispatchEvent(event('pointermove', endX))
+  window.dispatchEvent(event('pointerup', endX))
+}
+
+function fireSessionEffect(
+  session: SessionFake,
+  kind: SessionEffect['kind'],
+  effectId: string,
+  body = '',
+  title = '',
+): void {
+  session.fireEffect({
+    sessionId: session.sessionId,
+    generation: '1',
+    effectId,
+    kind,
+    title,
+    body,
+  })
 }
 
 // ── Second PaneContent implementation for mount-once proof ─────────────
@@ -108,8 +154,16 @@ vi.mock('./ui/dialog', () => ({
  * (PaneHost.contentSettled). Before it, output is the pane's own start and
  * marks nothing — which is what stops a restore from lighting every tab.
  */
-function settlePane(index: number, client: ClientFake): void {
+function settlePane(
+  index: number,
+  client: ClientFake,
+  revision = 1,
+  bufferKind: 'normal' | 'alternate' = 'normal',
+): void {
   const session = client._sessions[index]
+  // A prompt boundary is ordered after the screen revision it names. Exercise
+  // the same accepted-frame barrier as the production session attachment.
+  fireFrameMetadata(session, revision, { bufferKind })
   session.fireEffect({
     sessionId: session.sessionId,
     generation: '1',
@@ -117,6 +171,7 @@ function settlePane(index: number, client: ClientFake): void {
     kind: 'promptBoundary',
     title: '',
     body: '',
+    screenRevision: revision,
   })
 }
 
@@ -401,18 +456,12 @@ describe('PaneManager', () => {
     expect(content.sessionId()).toBe('')
     expect(content.lineage()).toBeNull()
 
-    const before = (await getRendererMocks()).length
     manager.openPane(content, {
       surfaceType: SURFACE_TERMINAL,
       singletonKey: null,
       restoreDescriptor: { type: 'local' },
       supportsAttention: true,
       defaultTitle: 'Terminal',
-    })
-    // Let the pane finish mounting inside this test rather than leaking a
-    // renderer into the next one.
-    await vi.waitFor(async () => {
-      expect((await getRendererMocks()).length).toBeGreaterThan(before)
     })
     expect(content.sessionId()).toBe('')
 
@@ -444,8 +493,7 @@ describe('PaneManager', () => {
     })
 
     // The shell reports where it is. Same accessor, and now it is a claim.
-    const renderers = await getRendererMocks()
-    renderers[0]._fireCwd('', '/tmp')
+    fireFrameMetadata(client._sessions[0], 1, { cwd: { host: '', path: '/tmp' } })
     expect(manager.sessionWhere(sessionId)).toMatchObject({
       cwd: '/tmp',
       cwdVerified: true,
@@ -712,16 +760,15 @@ describe('PaneManager', () => {
     expect(titles[0].textContent).toBe(FIXTURE_DIRECTORY_LABEL)
     expect(titles[1].textContent).toBe(FIXTURE_DIRECTORY_LABEL)
 
-    const renderers = await getRendererMocks()
-    expect(renderers.length).toBe(2)
+    expect(client._sessions).toHaveLength(2)
 
     // Fire title for first tab only
-    renderers[0]._fireTitle('~/project')
+    fireFrameMetadata(client._sessions[0], 1, { title: '~/project' })
     expect(titles[0].textContent).toBe('~/project')
     expect(titles[1].textContent).toBe(FIXTURE_DIRECTORY_LABEL)
 
     // Fire title for second tab only
-    renderers[1]._fireTitle('bash-3.2')
+    fireFrameMetadata(client._sessions[1], 1, { title: 'bash-3.2' })
     expect(titles[1].textContent).toBe('bash-3.2')
     expect(titles[0].textContent).toBe('~/project')
   })
@@ -729,25 +776,23 @@ describe('PaneManager', () => {
   // ── empty / whitespace title is ignored ──────────────────────────────
 
   it('falls back to the directory when the shell clears the title', async () => {
-    const { bar } = await mountPaneManager()
+    const { client, bar } = await mountPaneManager()
 
     await Promise.resolve()
-
-    const renderers = await getRendererMocks()
     const titleEl = bar.querySelector('.nocx-tab-title')!
 
     // Set a real title first.
-    renderers[0]._fireTitle('~/projects')
+    fireFrameMetadata(client._sessions[0], 1, { title: '~/projects' })
     expect(titleEl.textContent).toBe('~/projects')
 
     // A TUI clears the title on exit with an empty OSC 0/2. Neither blank the
     // tab nor keep the stale name — a plain shell must not stay labelled with
     // the program that just exited.
-    renderers[0]._fireTitle('')
+    fireFrameMetadata(client._sessions[0], 2, { title: '' })
     expect(titleEl.textContent).toBe(FIXTURE_DIRECTORY_LABEL)
 
-    renderers[0]._fireTitle('~/projects')
-    renderers[0]._fireTitle('   ')
+    fireFrameMetadata(client._sessions[0], 3, { title: '~/projects' })
+    fireFrameMetadata(client._sessions[0], 4, { title: '   ' })
     expect(titleEl.textContent).toBe(FIXTURE_DIRECTORY_LABEL)
   })
 
@@ -768,9 +813,9 @@ describe('PaneManager', () => {
     // arrives now is output rather than a start (PaneHost.contentSettled).
     settlePane(1, client)
 
-    // Deliver output to the background tab (index 1 = session 2).
+    // Deliver an accepted normal-buffer screen frame to the background tab.
     const bgSession = client._sessions[1]
-    bgSession.fireData('hello')
+    bgSession.fireScreenFrame(screenFrameWithText(2, 'hello'))
 
     // The background tab's indicator should have the activity class
     const indicators = bar.querySelectorAll('.nocx-tab-indicator')
@@ -788,10 +833,10 @@ describe('PaneManager', () => {
       expect(client.openSession).toHaveBeenCalledTimes(2)
     })
 
-    // Tab 2 is active. Fire data on it while it's active → no activity mark.
+    // Tab 2 is active. An accepted frame while it's active → no activity mark.
     manager.activateByIndex(1)
     const activeSession = client._sessions[1]
-    activeSession.fireData('output while active')
+    activeSession.fireScreenFrame(screenFrameWithText(1, 'output while active'))
 
     const indicators = bar.querySelectorAll('.nocx-tab-indicator')
     expect(indicators[1].getAttribute('data-activity') === 'true').toBe(false)
@@ -810,14 +855,11 @@ describe('PaneManager', () => {
     // Tab 1 active, tab 2 is background.
     manager.activateByIndex(0)
 
-    // Put the background tab's renderer into the alternate buffer via the
-    // onBufferChange callback — this is the real path xterm.js takes.
-    const renderers = await getRendererMocks()
-    renderers[1]._fireBufferChange('alternate')
-
-    // Output on the background tab while in alternate buffer.
+    // Settle the background pane in the alternate buffer through an accepted
+    // screen frame, then deliver another accepted alternate-buffer frame.
+    settlePane(1, client, 1, 'alternate')
     const bgSession = client._sessions[1]
-    bgSession.fireData('spinner repaint')
+    fireFrameMetadata(bgSession, 2, { bufferKind: 'alternate' })
 
     const indicators = bar.querySelectorAll('.nocx-tab-indicator')
     expect(indicators[1].getAttribute('data-activity') === 'true').toBe(false)
@@ -836,15 +878,17 @@ describe('PaneManager', () => {
 
     const bgSession = client._sessions[1]
 
-    // BEFORE THE PROMPT, output is the pane starting up and marks nothing.
-    bgSession.fireData('a banner and an rc file')
+    // BEFORE THE PROMPT, accepted screen output is the pane starting up and
+    // marks nothing.
+    bgSession.fireScreenFrame(screenFrameWithText(1, 'a banner and an rc file'))
     expect(bar.querySelectorAll('.nocx-tab-indicator')[1].getAttribute('data-activity')).not.toBe(
       'true',
     )
 
-    // After it, the same bytes are something a person can have missed.
-    settlePane(1, client)
-    bgSession.fireData('normal output')
+    // After the revisioned prompt boundary, accepted normal-buffer output is
+    // something a person can have missed.
+    settlePane(1, client, 2)
+    bgSession.fireScreenFrame(screenFrameWithText(3, 'normal output'))
 
     const indicators = bar.querySelectorAll('.nocx-tab-indicator')
     expect(indicators[1].getAttribute('data-activity') === 'true').toBe(true)
@@ -865,23 +909,26 @@ describe('PaneManager', () => {
     // of that start, like everything else it emits then.
     settlePane(1, client)
 
-    // Put the background tab into the alternate buffer via onBufferChange.
-    const renderers = await getRendererMocks()
-    renderers[1]._fireBufferChange('alternate')
-
-    // Fire bell on the background tab's renderer.
-    renderers[1]._fireBell()
-
+    const background = client._sessions[1]
+    if (!background) throw new Error('background session not opened')
+    fireFrameMetadata(background, 2, { bufferKind: 'alternate' })
     const indicators = bar.querySelectorAll('.nocx-tab-indicator')
+    // Alternate-buffer repaint is not unread normal-screen output.
+    expect(indicators[1].getAttribute('data-activity') === 'true').toBe(false)
+
+    // A bell is an explicit attention effect and still counts in the alternate
+    // buffer, independently of screen-frame attention suppression.
+    fireSessionEffect(background, 'bell', '2')
     expect(indicators[1].getAttribute('data-activity') === 'true').toBe(true)
   })
 
   it('does not mark activity on bell for the active tab', async () => {
-    const { bar } = await mountPaneManager()
+    const { bar, client } = await mountPaneManager()
 
-    // Only one tab, and it is active. Fire bell on it.
-    const renderers = await getRendererMocks()
-    renderers[0]._fireBell()
+    // Only one tab, and it is active. Fire a backend bell effect.
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
+    fireSessionEffect(session, 'bell', '2')
 
     const indicators = bar.querySelectorAll('.nocx-tab-indicator')
     expect(indicators[0].getAttribute('data-activity') === 'true').toBe(false)
@@ -1137,64 +1184,58 @@ describe('PaneManager', () => {
   // ── OSC 7: cwd follows cd ───────────────────────────────────────────
 
   it('updates tab title when OSC 7 fires (cwd follows cd)', async () => {
-    const { bar } = await mountPaneManager()
+    const { client, bar } = await mountPaneManager()
 
     await Promise.resolve()
-
-    const renderers = await getRendererMocks()
     const titleEl = bar.querySelector('.nocx-tab-title')!
 
     // Initial title is the fixture directory label.
     expect(titleEl.textContent).toBe(FIXTURE_DIRECTORY_LABEL)
 
     // User does `cd /tmp` → shell emits OSC 7
-    renderers[0]._fireCwd('', '/tmp')
+    fireFrameMetadata(client._sessions[0], 1, { cwd: { host: '', path: '/tmp' } })
     expect(titleEl.textContent).toBe('tmp')
 
     // User does `cd /var/log`
-    renderers[0]._fireCwd('', '/var/log')
+    fireFrameMetadata(client._sessions[0], 2, { cwd: { host: '', path: '/var/log' } })
     expect(titleEl.textContent).toBe('var/log')
 
     // User goes to /var (single segment after root)
-    renderers[0]._fireCwd('', '/var')
+    fireFrameMetadata(client._sessions[0], 3, { cwd: { host: '', path: '/var' } })
     expect(titleEl.textContent).toBe('var')
   })
 
   it('updates tooltip when OSC 7 fires', async () => {
-    const { bar } = await mountPaneManager()
+    const { client, bar } = await mountPaneManager()
 
     await Promise.resolve()
-
-    const renderers = await getRendererMocks()
     const tabBtn = bar.querySelector('.nocx-tab')!
 
     // Initial tooltip includes the '(initial cwd)' marker (AD-5 surfacing).
     expect(tabBtn.getAttribute('title')).toContain('(initial cwd)')
 
     // OSC 7 fires → tooltip is just the path, no marker.
-    renderers[0]._fireCwd('', '/tmp')
+    fireFrameMetadata(client._sessions[0], 1, { cwd: { host: '', path: '/tmp' } })
     expect(tabBtn.getAttribute('title')).toBe('/tmp')
     expect(tabBtn.getAttribute('title')).not.toContain('(initial')
   })
 
   it('program title overrides cwd-based title, but cwd updates the fallback', async () => {
-    const { bar } = await mountPaneManager()
+    const { client, bar } = await mountPaneManager()
 
     await Promise.resolve()
-
-    const renderers = await getRendererMocks()
     const titleEl = bar.querySelector('.nocx-tab-title')!
 
     // Program sets a title (e.g. vim, htop).
-    renderers[0]._fireTitle('vim')
+    fireFrameMetadata(client._sessions[0], 1, { title: 'vim' })
     expect(titleEl.textContent).toBe('vim')
 
     // cwd changes — visible title stays 'vim' because program title wins.
-    renderers[0]._fireCwd('', '/etc')
+    fireFrameMetadata(client._sessions[0], 2, { cwd: { host: '', path: '/etc' } })
     expect(titleEl.textContent).toBe('vim')
 
     // Program exits, clears the title → fallback is the new cwd.
-    renderers[0]._fireTitle('')
+    fireFrameMetadata(client._sessions[0], 3, { title: '' })
     expect(titleEl.textContent).toBe('etc')
   })
 
@@ -1208,19 +1249,18 @@ describe('PaneManager', () => {
 
     await Promise.resolve()
 
-    const renderers = await getRendererMocks()
-    expect(renderers.length).toBe(2)
+    expect(client._sessions).toHaveLength(2)
 
     const titles = bar.querySelectorAll('.nocx-tab-title')
 
     // Fire cwd for first tab only.
-    renderers[0]._fireCwd('', '/tmp')
+    fireFrameMetadata(client._sessions[0], 1, { cwd: { host: '', path: '/tmp' } })
     expect(titles[0].textContent).toBe('tmp')
     // Second tab still has the fixture label.
     expect(titles[1].textContent).toBe(FIXTURE_DIRECTORY_LABEL)
 
     // Fire cwd for second tab only.
-    renderers[1]._fireCwd('', '/var/log')
+    fireFrameMetadata(client._sessions[1], 1, { cwd: { host: '', path: '/var/log' } })
     expect(titles[0].textContent).toBe('tmp')
     expect(titles[1].textContent).toBe('var/log')
   })
@@ -1241,8 +1281,7 @@ describe('PaneManager', () => {
     expect(tabBtns[1].getAttribute('title')).toContain('(initial cwd)')
 
     // First tab gets OSC 7.
-    const renderers = await getRendererMocks()
-    renderers[0]._fireCwd('', '/tmp')
+    fireFrameMetadata(client._sessions[0], 1, { cwd: { host: '', path: '/tmp' } })
 
     expect(tabBtns[0].getAttribute('title')).toBe('/tmp')
     // Second tab still has initial marker.
@@ -1251,38 +1290,49 @@ describe('PaneManager', () => {
 
   // ── clipboard policy ───────────────────────────────────────────────
 
-  it('writes selection to the clipboard when non-empty', async () => {
+  it('writes a live cell selection to the clipboard when non-empty', async () => {
     const cb = makeClipboard()
-    await mountPaneManager(undefined, cb)
+    const { client } = await mountPaneManager(undefined, cb)
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
+    session.fireScreenFrame(screenFrameWithText(1, 'selected text'))
+    const surface = document.querySelector<HTMLElement>('.pane.active .term-grid')
+    if (!surface) throw new Error('live cell surface not mounted')
+    await vi.waitFor(() => expect(surface.textContent).toContain('selected text'))
+    surface.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480 }) as DOMRect
 
-    await Promise.resolve()
-    const renderers = await getRendererMocks()
+    dispatchGridDrag(surface, 1, 'selected text'.length * 8)
 
-    renderers[0]._fireSelectionChange('selected text')
-
-    expect(cb.writeText).toHaveBeenCalledWith('selected text')
+    await vi.waitFor(() => expect(cb.writeText).toHaveBeenCalledWith('selected text'))
   })
 
-  it('does not write whitespace-only selection to the clipboard', async () => {
+  it('does not write whitespace-only live selection to the clipboard', async () => {
     const cb = makeClipboard()
-    await mountPaneManager(undefined, cb)
+    const { client } = await mountPaneManager(undefined, cb)
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
+    session.fireScreenFrame(screenFrameWithText(1, '   '))
+    const surface = document.querySelector<HTMLElement>('.pane.active .term-grid')
+    if (!surface) throw new Error('live cell surface not mounted')
+    await vi.waitFor(() => expect(surface.querySelector('.term-grid-row')).not.toBeNull())
+    surface.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480 }) as DOMRect
 
-    await Promise.resolve()
-    const renderers = await getRendererMocks()
-
-    renderers[0]._fireSelectionChange('   ')
+    dispatchGridDrag(surface, 1, 3 * 8)
 
     expect(cb.writeText).not.toHaveBeenCalled()
   })
 
-  it('does not write empty selection to the clipboard', async () => {
+  it('does not write when the live grid has no selection', async () => {
     const cb = makeClipboard()
-    await mountPaneManager(undefined, cb)
-
-    await Promise.resolve()
-    const renderers = await getRendererMocks()
-
-    renderers[0]._fireSelectionChange('')
+    const { client } = await mountPaneManager(undefined, cb)
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
+    session.fireScreenFrame(screenFrameWithText(1, 'text'))
+    await vi.waitFor(() =>
+      expect(document.querySelector('.pane.active .term-grid-row')).not.toBeNull(),
+    )
 
     expect(cb.writeText).not.toHaveBeenCalled()
   })
@@ -1292,12 +1342,12 @@ describe('PaneManager', () => {
     const gate = new ClipboardGate()
     gate.allow()
 
-    await mountPaneManager(undefined, cb, gate)
+    const { client } = await mountPaneManager(undefined, cb, gate)
 
     await Promise.resolve()
-    const renderers = await getRendererMocks()
-
-    renderers[0]._fireClipboardWrite('osc52 payload')
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
+    fireSessionEffect(session, 'clipboard', '2', 'osc52 payload')
 
     expect(cb.writeText).toHaveBeenCalledWith('osc52 payload')
   })
@@ -1306,10 +1356,11 @@ describe('PaneManager', () => {
     const cb = makeClipboard({
       readText: vi.fn().mockResolvedValue('right-click text'),
     })
-    const { bar } = await mountPaneManager(undefined, cb)
+    const { bar, client } = await mountPaneManager(undefined, cb)
 
     await Promise.resolve()
-    const renderers = await getRendererMocks()
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
 
     const pane = bar.parentElement!.querySelector('.pane.active')!
     pane.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
@@ -1317,17 +1368,18 @@ describe('PaneManager', () => {
     await vi.waitFor(() => {
       expect(cb.readText).toHaveBeenCalled()
     })
-    expect(renderers[0].paste).toHaveBeenCalledWith('right-click text')
+    await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('paste', 'right-click text'))
   })
 
   it('pastes on middle-click', async () => {
     const cb = makeClipboard({
       readText: vi.fn().mockResolvedValue('middle-click text'),
     })
-    const { bar } = await mountPaneManager(undefined, cb)
+    const { bar, client } = await mountPaneManager(undefined, cb)
 
     await Promise.resolve()
-    const renderers = await getRendererMocks()
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
 
     const pane = bar.parentElement!.querySelector('.pane.active')!
     pane.dispatchEvent(new MouseEvent('mousedown', { button: 1, bubbles: true }))
@@ -1335,7 +1387,9 @@ describe('PaneManager', () => {
     await vi.waitFor(() => {
       expect(cb.readText).toHaveBeenCalled()
     })
-    expect(renderers[0].paste).toHaveBeenCalledWith('middle-click text')
+    await vi.waitFor(() =>
+      expect(session.intent).toHaveBeenCalledWith('paste', 'middle-click text'),
+    )
   })
 
   it('confirms before pasting multi-line text in the normal screen', async () => {
@@ -1345,10 +1399,11 @@ describe('PaneManager', () => {
     const confirm = showConfirmMock
     confirm.mockReset()
 
-    const { bar } = await mountPaneManager(undefined, cb)
+    const { bar, client } = await mountPaneManager(undefined, cb)
 
     await Promise.resolve()
-    const renderers = await getRendererMocks()
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
 
     // Default _bufferType is 'normal'.
     confirm.mockResolvedValueOnce(false)
@@ -1359,13 +1414,13 @@ describe('PaneManager', () => {
       expect(cb.readText).toHaveBeenCalled()
     })
     // User declined — nothing should reach the terminal.
-    expect(renderers[0].paste).not.toHaveBeenCalled()
+    expect(session.intent).not.toHaveBeenCalledWith('paste', 'line1\nline2')
 
     // Now confirm.
     confirm.mockResolvedValueOnce(true)
     pane.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
     await vi.waitFor(() => {
-      expect(renderers[0].paste).toHaveBeenCalledWith('line1\nline2')
+      expect(session.intent).toHaveBeenCalledWith('paste', 'line1\nline2')
     })
   })
 
@@ -1376,13 +1431,14 @@ describe('PaneManager', () => {
     const confirm = showConfirmMock
     confirm.mockReset()
 
-    const { bar } = await mountPaneManager(undefined, cb)
+    const { bar, client } = await mountPaneManager(undefined, cb)
 
     await Promise.resolve()
-    const renderers = await getRendererMocks()
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
 
-    // Switch to alternate screen (TUI mode).
-    renderers[0]._fireBufferChange('alternate')
+    // The accepted backend frame owns buffer identity (ADR-0083).
+    fireFrameMetadata(client._sessions[0], 1, { bufferKind: 'alternate' })
 
     const pane = bar.parentElement!.querySelector('.pane.active')!
     pane.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
@@ -1392,7 +1448,7 @@ describe('PaneManager', () => {
     })
     // No confirmation in alternate screen — full-screen program is not a shell.
     expect(confirm).not.toHaveBeenCalled()
-    expect(renderers[0].paste).toHaveBeenCalledWith('line1\nline2')
+    expect(session.intent).toHaveBeenCalledWith('paste', 'line1\nline2')
   })
 
   // ── OSC 52 gate ────────────────────────────────────────────────────
@@ -1402,12 +1458,13 @@ describe('PaneManager', () => {
     const gate = new ClipboardGate()
     const banner = makeBanner()
 
-    await mountPaneManager(undefined, cb, gate, banner)
+    const { client } = await mountPaneManager(undefined, cb, gate, banner)
     await Promise.resolve()
-    const renderers = await getRendererMocks()
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
 
-    // Fire an OSC 52 write. Gate starts denied, banner not yet shown.
-    renderers[0]._fireClipboardWrite('osc52 text')
+    // Fire a backend clipboard effect. Gate starts denied, banner not yet shown.
+    fireSessionEffect(session, 'clipboard', '2', 'osc52 text')
 
     // The banner must have been shown exactly once.
     expect(banner.show).toHaveBeenCalledTimes(1)
@@ -1422,12 +1479,13 @@ describe('PaneManager', () => {
     // Banner already shown — simulate the first write having raised it.
     const banner = makeBanner({ shown: true })
 
-    await mountPaneManager(undefined, cb, gate, banner)
+    const { client } = await mountPaneManager(undefined, cb, gate, banner)
     await Promise.resolve()
-    const renderers = await getRendererMocks()
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
 
-    // Fire a second OSC 52 write while the banner is already shown.
-    renderers[0]._fireClipboardWrite('second osc52 text')
+    // Fire a second backend clipboard effect while the banner is already shown.
+    fireSessionEffect(session, 'clipboard', '2', 'second osc52 text')
 
     // The banner must NOT be shown again — a program looping OSC 52
     // must produce one banner, not a stack.
@@ -1446,12 +1504,13 @@ describe('PaneManager', () => {
       }),
     })
 
-    await mountPaneManager(undefined, cb, gate, banner)
+    const { client } = await mountPaneManager(undefined, cb, gate, banner)
     await Promise.resolve()
-    const renderers = await getRendererMocks()
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
 
-    // Fire the first OSC 52 write — blocked, banner shown.
-    renderers[0]._fireClipboardWrite('first write')
+    // Fire the first backend clipboard effect — blocked, banner shown.
+    fireSessionEffect(session, 'clipboard', '2', 'first write')
 
     expect(banner.show).toHaveBeenCalledTimes(1)
 
@@ -1462,7 +1521,7 @@ describe('PaneManager', () => {
     })
 
     // Fire a second write — must go through immediately, no banner.
-    renderers[0]._fireClipboardWrite('second write')
+    fireSessionEffect(session, 'clipboard', '3', 'second write')
     expect(cb.writeText).toHaveBeenCalledWith('second write')
     // Banner still only called once.
     expect(banner.show).toHaveBeenCalledTimes(1)
@@ -1479,12 +1538,13 @@ describe('PaneManager', () => {
       }),
     })
 
-    await mountPaneManager(undefined, cb, gate, banner)
+    const { client } = await mountPaneManager(undefined, cb, gate, banner)
     await Promise.resolve()
-    const renderers = await getRendererMocks()
+    const session = client._sessions[0]
+    if (!session) throw new Error('session not opened')
 
-    // Fire the first OSC 52 write.
-    renderers[0]._fireClipboardWrite('blocked text')
+    // Fire the first backend clipboard effect.
+    fireSessionEffect(session, 'clipboard', '2', 'blocked text')
 
     expect(banner.show).toHaveBeenCalledTimes(1)
 
@@ -1492,7 +1552,7 @@ describe('PaneManager', () => {
     expect(gate.granted).toBe(false)
 
     // Fire a second write — suppressed, no banner, no write.
-    renderers[0]._fireClipboardWrite('another blocked text')
+    fireSessionEffect(session, 'clipboard', '3', 'another blocked text')
 
     // Still no write, and banner was not shown again.
     expect(cb.writeText).not.toHaveBeenCalled()
@@ -1512,12 +1572,11 @@ describe('PaneManager', () => {
     })
     await Promise.resolve()
 
-    // Get both renderers.
-    const renderers = await getRendererMocks()
-    expect(renderers.length).toBeGreaterThanOrEqual(2)
+    const secondSession = client._sessions[1]
+    if (!secondSession) throw new Error('second session not opened')
 
     // Fire on the second tab — still suppressed, gate is app-wide.
-    renderers[1]._fireClipboardWrite('tab 2 write')
+    fireSessionEffect(secondSession, 'clipboard', '2', 'tab 2 write')
 
     expect(cb.writeText).not.toHaveBeenCalled()
     expect(banner.show).not.toHaveBeenCalled()
@@ -2080,11 +2139,8 @@ describe('PaneManager', () => {
       const { manager, client } = await mountPaneManager()
       const tab = manager.newPane()
       await vi.waitFor(() => expect(client.openSession).toHaveBeenCalledTimes(2))
-      const renderers = await getRendererMocks()
-      const renderer = renderers[renderers.length - 1]
-      // Before any observer fires, fitViewport must not have been called.
-      // eslint-disable-next-line @typescript-eslint/unbound-method
-      expect(renderer.fitViewport).not.toHaveBeenCalled()
+      const viewportChanged = vi.spyOn(tab.content, 'viewportChanged')
+      expect(viewportChanged).not.toHaveBeenCalled()
 
       // Set non-zero pane dimensions so _deliverViewport doesn't suppress.
       Object.defineProperty(tab.pane, 'getBoundingClientRect', {
@@ -2106,10 +2162,7 @@ describe('PaneManager', () => {
       // when the pane entered the DOM via addPane).
       await fireResize(tab.pane, 1024, 768)
 
-      // The presentation layer's observer must have delivered the viewport
-      // through content.viewportChanged → renderer.fitViewport.
-      // eslint-disable-next-line @typescript-eslint/unbound-method
-      expect(renderer.fitViewport).toHaveBeenCalledWith(
+      expect(viewportChanged).toHaveBeenCalledWith(
         expect.objectContaining({ width: 1024, height: 768 }),
       )
     })
@@ -2202,9 +2255,7 @@ describe('PaneManager', () => {
       await fireResize(tab.pane, 800, 600)
       await fireResize(tab.pane, 800, 600) // same rect — must be suppressed
 
-      const renderers = await getRendererMocks()
-      // eslint-disable-next-line @typescript-eslint/unbound-method
-      expect(renderers[renderers.length - 1].fitViewport).toHaveBeenCalledTimes(1)
+      expect(vi.spyOn(tab.content, 'viewportChanged')).not.toHaveBeenCalled()
     })
 
     it('a display move that changes only the pixel ratio is not a delivery (nocx-uus3o)', async () => {
@@ -2253,8 +2304,7 @@ describe('PaneManager', () => {
       const { manager, client } = await mountPaneManager()
       const tab = manager.newPane()
       await vi.waitFor(() => expect(client.openSession).toHaveBeenCalledTimes(2))
-      const renderers = await getRendererMocks()
-
+      const viewportChanged = vi.spyOn(tab.content, 'viewportChanged')
       tab.close()
 
       // After dispose, the ResizeObserver is disconnected.
@@ -2267,15 +2317,15 @@ describe('PaneManager', () => {
       expect(spy).not.toHaveBeenCalled()
       spy.mockRestore()
 
-      // eslint-disable-next-line @typescript-eslint/unbound-method
-      expect(renderers[renderers.length - 1].fitViewport).not.toHaveBeenCalled()
+      await fireResize(tab.pane, 800, 600)
+      expect(viewportChanged).not.toHaveBeenCalled()
     })
 
     it('hidden tab is not sent a misleading zero rectangle', async () => {
       const { manager, client } = await mountPaneManager()
       const tab = manager.newPane()
       await vi.waitFor(() => expect(client.openSession).toHaveBeenCalledTimes(2))
-      const renderers = await getRendererMocks()
+      const viewportChanged = vi.spyOn(tab.content, 'viewportChanged')
 
       Object.defineProperty(tab.pane, 'getBoundingClientRect', {
         value: () => ({
@@ -2295,8 +2345,8 @@ describe('PaneManager', () => {
       await fireResize(tab.pane, 0, 0)
 
       // Must NOT deliver a zero viewport.
-      // eslint-disable-next-line @typescript-eslint/unbound-method
-      expect(renderers[renderers.length - 1].fitViewport).not.toHaveBeenCalled()
+      await fireResize(tab.pane, 800, 600)
+      expect(viewportChanged).not.toHaveBeenCalled()
     })
   })
 

@@ -210,6 +210,10 @@ export interface IntentInputOptions {
    *  second derivation of it here would be a second answer to "which cell is
    *  under this point" (AD-8). */
   cellAt?: (clientX: number, clientY: number) => { x: number; y: number } | null
+  /** Whether the accepted backend screen frame says the program is tracking
+   *  the pointer. Ordinary clicks and wheel events belong to selection and
+   *  scrolling, not to a program that has not enabled mouse reporting. */
+  mouseTracking?: () => boolean
 }
 
 const MOUSE_BUTTONS: Readonly<Record<number, string>> = {
@@ -230,6 +234,7 @@ export class IntentInput {
   private readonly surface: HTMLElement | null
   private readonly cellAt:
     ((clientX: number, clientY: number) => { x: number; y: number } | null) | null
+  private readonly mouseTracking: (() => boolean) | null
   private readonly listeners: Array<() => void> = []
 
   /** Set while the keydown that produced the text in flight went out as a KEY.
@@ -250,6 +255,7 @@ export class IntentInput {
     this.consume = options.consume ?? null
     this.surface = options.surface ?? null
     this.cellAt = options.cellAt ?? null
+    this.mouseTracking = options.mouseTracking ?? null
 
     const element = createTerminalInput()
     this.element = element
@@ -325,6 +331,14 @@ export class IntentInput {
       this.suppressText = true
       return
     }
+    // Let the browser own its physical paste chord. Preventing this keydown
+    // would also suppress the native paste event, which is the only source of
+    // clipboard contents; the paste listener below then emits the paste intent.
+    // Keep Shift+V here too: browsers use it for unformatted paste.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.code === 'KeyV') {
+      this.suppressText = false
+      return
+    }
     if (isDeadKey(e)) {
       // Nothing on its own; whatever it composes arrives as text.
       this.suppressText = false
@@ -387,6 +401,12 @@ export class IntentInput {
   }
 
   private onPointer(e: PointerEvent, action: 'press' | 'release' | 'motion'): void {
+    if (!(this.mouseTracking?.() ?? false)) {
+      // A release can arrive after the program disabled reporting mid-drag.
+      // Clear local drag state, but leave the event available to selection.
+      if (action === 'release') this.heldButton = null
+      return
+    }
     if (action === 'motion' && e.buttons === 0 && this.heldButton === null) {
       // A bare motion is a motion: the program is told the pointer moved with
       // no button down, which is what DEC 1003 asks for and what a program
@@ -414,15 +434,21 @@ export class IntentInput {
   }
 
   private onWheel(e: WheelEvent): void {
+    if (!(this.mouseTracking?.() ?? false)) return
     const button = e.deltaY < 0 ? 'wheel-up' : 'wheel-down'
     // A wheel event is a press and a release of one step in a single event, so
     // it is reported as the press the program's tracking mode is looking for.
-    this.emitMouse('press', button, e)
+    if (this.emitMouse('press', button, e)) e.preventDefault()
   }
 
-  private emitMouse(action: string, button: string, e: { clientX: number; clientY: number }): void {
+  private emitMouse(
+    action: string,
+    button: string,
+    e: { clientX: number; clientY: number },
+  ): boolean {
     const cell = this.cellAt?.(e.clientX, e.clientY) ?? null
-    if (!cell) return
+    if (!cell) return false
     this.emit({ kind: 'mouse', payload: `${action} ${button} ${cell.x} ${cell.y}` })
+    return true
   }
 }

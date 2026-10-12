@@ -4,8 +4,8 @@
 // asymmetric title rule (remote carries the host, local never does), and the
 // per-endpoint key composition. A real PaneManager is used — the dedup lives
 // in PaneManager.openPane, and asserting it through a fake would test the fake.
-import { describe, expect, it, vi } from 'vitest'
-import { createRendererMock, mountPaneManager } from '../test-support/panes-fixtures'
+import { describe, expect, it } from 'vitest'
+import { mountPaneManager } from '../test-support/panes-fixtures'
 import type { FilesReadResult } from '../generated/files.read'
 import { SurfaceRegistry } from '../surface-registry'
 import {
@@ -14,10 +14,6 @@ import {
   type FileViewerDeps,
   type FileViewerTarget,
 } from './index'
-
-vi.mock('../renderers/xterm', () => ({
-  XtermRenderer: vi.fn(createRendererMock),
-}))
 
 // jsdom lacks matchMedia, which the terminal's mount path touches during
 // initial-tab startup (see renderers/xterm.test.ts for the same stub).

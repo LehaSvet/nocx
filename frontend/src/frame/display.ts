@@ -3,9 +3,9 @@ import './display.css'
 import type { CapturedFrame, FrameRow } from './types'
 
 /**
- * Build the static view used while the live xterm buffer continues parsing.
- * This consumes a captured frame only; it never reads the renderer or a live
- * buffer, so the display can remain pinned while new bytes keep arriving.
+ * Build the static view for one accepted backend screen frame. This consumes
+ * the captured frame only; it never reads the live cell model, so the display
+ * can remain pinned while new backend frames keep arriving.
  */
 export function createCapturedFrameView(frame: CapturedFrame): HTMLElement {
   const root = document.createElement('div')

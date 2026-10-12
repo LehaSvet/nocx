@@ -7,6 +7,7 @@ import (
 
 	"github.com/shady2k/nocx/internal/emulator"
 	"github.com/shady2k/nocx/internal/helper/client"
+	"github.com/shady2k/nocx/internal/helper/proto"
 	"github.com/shady2k/nocx/internal/session"
 	"github.com/shady2k/nocx/internal/sessionruntime"
 )
@@ -21,11 +22,12 @@ type fakeSink struct {
 	ends     []client.IntervalEnd
 	clears   []session.ID
 	// incomplete are the helper's overflow markers, by the row they name.
-	incomplete []uint64
-	lost       []lostBoundary
-	lostCh     chan struct{} // signalled on every BlockBoundaryLost, when set
-	ended      []session.ID  // sessions the helper reported ended
-	answer     func(fromRow uint64, n int) (uint64, bool)
+	incomplete         []uint64
+	outputStartAnchors []proto.OutputStartScreenAnchor
+	lost               []lostBoundary
+	lostCh             chan struct{} // signalled on every BlockBoundaryLost, when set
+	ended              []session.ID  // sessions the helper reported ended
+	answer             func(fromRow uint64, n int) (uint64, bool)
 }
 
 func (f *fakeSink) AttachBlockRows(sid session.ID) {
@@ -58,6 +60,16 @@ func (f *fakeSink) BlockIntervalEnded(_ session.ID, nonce [32]byte, endRow uint6
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ends = append(f.ends, client.IntervalEnd{Nonce: sessionruntime.FenceNonce(nonce), EndRow: endRow, Closing: closing, NoFence: noFence})
+}
+
+func (f *fakeSink) BlockIntervalEndedWithAnchor(sid session.ID, nonce [32]byte, endRow uint64, closing []emulator.Row, anchor *client.ScreenAnchor, noFence bool) {
+	f.BlockIntervalEnded(sid, nonce, endRow, closing, noFence)
+	if anchor == nil {
+		return
+	}
+	f.mu.Lock()
+	f.ends[len(f.ends)-1].ScreenAnchor = anchor
+	f.mu.Unlock()
 }
 
 func (f *fakeSink) BlockBoundaryLost(_ context.Context, sid session.ID, nonce [32]byte) {
@@ -171,6 +183,11 @@ func rowsN(n int) []emulator.Row { return make([]emulator.Row, n) }
 // newest one — the mark is a watermark, so the highest is all of them.
 func (f *fakeSink) BlockOutputStartPlaneAttached(session.ID) {}
 func (f *fakeSink) BlockOutputStartRow(session.ID, uint64)   {}
+func (f *fakeSink) BlockOutputStartRowWithAnchor(_ session.ID, _ uint64, anchor proto.OutputStartScreenAnchor) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.outputStartAnchors = append(f.outputStartAnchors, anchor)
+}
 
 func TestTheRowsReadLoopNeverWaitsOnAConfirmation(t *testing.T) {
 	// The exclusive mark: the helper's UpToRow is one past the last row it
@@ -244,7 +261,7 @@ func TestEndsReachTheTransportAndStopDetaches(t *testing.T) {
 
 	var nonce sessionruntime.FenceNonce
 	nonce[0] = 0xab
-	src.deliverEnd(client.IntervalEnd{Nonce: nonce, EndRow: 42, Closing: rowsN(3)})
+	src.deliverEnd(client.IntervalEnd{Nonce: nonce, EndRow: 42, Closing: rowsN(3), ScreenAnchor: &client.ScreenAnchor{Row: 91, ScreenRevision: 4, BufferKind: "normal", BufferInstance: "7", Cols: 80, Rows: 24}})
 	src.deliverClear()
 	stop()
 	stop() // idempotent
@@ -256,7 +273,7 @@ func TestEndsReachTheTransportAndStopDetaches(t *testing.T) {
 	if len(sink.attached) != 1 || len(sink.detached) != 1 {
 		t.Fatalf("attached %v, detached %v: want one of each", sink.attached, sink.detached)
 	}
-	if len(sink.ends) != 1 || sink.ends[0].EndRow != 42 || sink.ends[0].Nonce[0] != 0xab || len(sink.ends[0].Closing) != 3 {
+	if len(sink.ends) != 1 || sink.ends[0].EndRow != 42 || sink.ends[0].Nonce[0] != 0xab || len(sink.ends[0].Closing) != 3 || sink.ends[0].ScreenAnchor == nil || sink.ends[0].ScreenAnchor.Row != 91 {
 		t.Fatalf("the end reached the transport as %+v", sink.ends)
 	}
 	if len(sink.clears) != 1 || sink.clears[0] != "s1" {
@@ -296,5 +313,20 @@ func TestAnIncompleteMarkerIsNotARowDelivery(t *testing.T) {
 	}
 	if len(sink.incomplete) != 1 || sink.incomplete[0] != 2 {
 		t.Fatalf("the incomplete marker reached the transport as %v, want once at row 2", sink.incomplete)
+	}
+}
+
+func TestOutputStartAnchorReachesTransportSink(t *testing.T) {
+	sink := &fakeSink{}
+	src := &fakeSource{}
+	stop := bindBlockRowsTo(context.Background(), sink, "session-1", src, nil)
+	defer stop()
+	anchor := proto.OutputStartScreenAnchor{Row: 5, ScreenRevision: 9, BufferKind: "alternate", BufferInstance: "2", Cols: 120, Rows: 40}
+	src.mu.Lock()
+	callback := src.outputStartRow
+	src.mu.Unlock()
+	callback(client.OutputStartRow{FromRow: 900, Anchor: &anchor})
+	if len(sink.outputStartAnchors) != 1 || sink.outputStartAnchors[0] != anchor {
+		t.Fatalf("output start anchors = %+v, want %+v (separate from FromRow 900)", sink.outputStartAnchors, anchor)
 	}
 }

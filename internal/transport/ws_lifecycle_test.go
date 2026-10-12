@@ -922,9 +922,9 @@ func TestRecoverySightingResyncThenAckAfterReattach(t *testing.T) {
 	if sighted.Recovery.EpisodeID != episodeID {
 		t.Fatalf("sighted episode = %+v", sighted.Recovery)
 	}
-	_, raw, err := e.conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("read session.effect: %v", err)
+	_, raw, readErr := e.conn.ReadMessage()
+	if readErr != nil {
+		t.Fatalf("read session.effect: %v", readErr)
 	}
 	var msg struct {
 		Method string          `json:"method"`

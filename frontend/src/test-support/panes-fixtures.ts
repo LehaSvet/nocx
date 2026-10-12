@@ -11,16 +11,9 @@ import { vi, type Mock } from 'vitest'
 import type { SessionFrame } from '../generated/session.frame'
 import type { SessionEffect } from '../generated/session.effect'
 import type { SessionOutputGap } from '../generated/session.outputGap'
+import type { SessionRecovery, SessionSize } from '../ipc'
+import type { BlockOutputStart } from '../generated/block.outputStart'
 import type { SessionIntegrationChanged } from '../generated/session.integrationChanged'
-import type {
-  CommandMarkerCallback,
-  CwdCallback,
-  DataCallback,
-  ResizeCallback,
-  TitleCallback,
-  TerminalRenderer,
-} from '../renderers/types'
-import { CommandSnapshotStore } from '../command-snapshot'
 import { LayoutStore } from '../layout/layout-store'
 import { UIStateClient } from '../uistate-client'
 import type { UIState } from '../generated/uistate'
@@ -154,247 +147,8 @@ export class MockWebSocket {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-/** The renderer mock's live-content-height measurer: a spy the tests
- *  program to stand in for the real renderer measuring the grid (the
- *  TerminalRenderer interface types it as a plain function). */
+/** The live-content-height measurer used by scrollback controller tests. */
 export type LiveContentHeightSpy = Mock<() => number | null>
-export interface RendererMock extends TerminalRenderer {
-  /** This tab's OSC 636 store — XtermRenderer owns one, so the mock must too. */
-  snapshotStore: CommandSnapshotStore
-  /** The mock's paste is a spy: tests program it to refuse the write. */
-  paste: Mock<(text: string) => boolean>
-  /** The mock's bracketed-paste-mode answer is a spy: tests flip mode 2004
-   *  on and off. */
-  bracketedPasteActive: Mock<() => boolean>
-  awaitWriteBarrier: Mock<() => Promise<void>>
-  hasUnsettledWrite: Mock<() => boolean>
-  /** The snippet-palette chord handler — stored, so a test can fire it the
-   *  way xterm's custom key handler would. */
-  onSnippetChord: Mock<(cb: (() => void) | null) => void>
-  /** Fire the registered snippet chord handler (the xterm boundary's
-   *  delegation). */
-  _fireSnippetChord(): void
-  _cbs: {
-    onData?: DataCallback
-    onResize?: ResizeCallback
-    onTitle?: TitleCallback
-    onCwd?: CwdCallback
-    onCommandMarker?: CommandMarkerCallback
-    onBell?: () => void
-    // The real renderer fans out to a list; the mock mirrors it so a
-    // subscriber is never hidden by a later one.
-    onBufferChange?: Array<(type: 'normal' | 'alternate') => void>
-    onSelectionChange?: (text: string) => void
-    onClipboardWrite?: (text: string) => void
-    onWriteParsed?: () => void
-  }
-  _fireBufferChange(type: 'normal' | 'alternate'): void
-  _fireTitle(title: string): void
-  _fireCwd(host: string, path: string): void
-  _fireCommandMarker(marker: Parameters<CommandMarkerCallback>[0]): void
-  /** Fire a parse settle — xterm's onWriteParsed, the event the live region
-   *  measures the grid on. */
-  _fireWriteParsed(): void
-  /** Fire the registered resize callback (the xterm boundary's delegation).
-   *  The renderer's onResize fan-out is what TerminalContent debounces into
-   *  the PTY resize, so a test drives it exactly as a grid change does. */
-  _fireResize(cols: number, rows: number): void
-  /** Fire an OSC 1337 in-band READY (nocx-ynsx). */
-  _fireInBandReady(): void
-  _fireBell(): void
-  /** Fire a selection event — used by clipboard policy tests. */
-  _fireSelectionChange(text: string): void
-  /** Fire an OSC 52 write event — used by clipboard policy tests. */
-  _fireClipboardWrite(text: string): void
-  applySessionEffect(effect: SessionEffect): void
-  /** Fire a keystroke reaching the grid in raw mode (nocx-yb5y). */
-  _fireData(data: string): void
-}
-
-/**
- * Creates a single renderer mock with stored callbacks.
- * Used as the implementation of the mocked createRenderer() so each Tab
- * gets its own independent mock.
- */
-export function createRendererMock(): RendererMock {
-  const cbs: RendererMock['_cbs'] = {}
-  let snippetChordCb: (() => void) | null = null
-  let activeBuffer: 'normal' | 'alternate' = 'normal'
-  const mock: Record<string, unknown> = {
-    mount: vi.fn().mockResolvedValue(undefined),
-    write: vi.fn(),
-    reset: vi.fn(),
-    dispose: vi.fn(),
-    onData: vi.fn((cb: DataCallback) => {
-      cbs.onData = cb
-    }),
-    onResize: vi.fn((cb: ResizeCallback) => {
-      cbs.onResize = cb
-    }),
-    onTitle: vi.fn((cb: TitleCallback) => {
-      cbs.onTitle = cb
-    }),
-    onCwd: vi.fn((cb: CwdCallback) => {
-      cbs.onCwd = cb
-    }),
-    onCommandMarker: vi.fn((cb: CommandMarkerCallback) => {
-      cbs.onCommandMarker = cb
-    }),
-    onBell: vi.fn((cb: () => void) => {
-      cbs.onBell = cb
-    }),
-    // The real renderer fans out to a subscriber list; the mock must too
-    // (the lane interactivity report subscribes beside the presentation
-    // layer — a single-slot mock hides one of them).
-    onBufferChange: vi.fn((cb: (type: 'normal' | 'alternate') => void) => {
-      ;(cbs.onBufferChange ??= []).push(cb)
-    }),
-    // The current buffer kind, like the real renderer's (the report the
-    // lane interactivity path reads at session open — ADR-0020 decision 3).
-    activeBufferKind: vi.fn(() => activeBuffer),
-    onSelectionChange: vi.fn((cb: (text: string) => void) => {
-      cbs.onSelectionChange = cb
-    }),
-    onClipboardWrite: vi.fn((cb: (text: string) => void) => {
-      cbs.onClipboardWrite = cb
-    }),
-    applySessionEffect: vi.fn((effect: SessionEffect) => {
-      switch (effect.kind) {
-        case 'bell':
-          cbs.onBell?.()
-          break
-        case 'clipboard':
-          if (effect.body !== '') cbs.onClipboardWrite?.(effect.body)
-          break
-        case 'title':
-          cbs.onTitle?.(effect.body)
-          break
-        case 'cwd':
-          cbs.onCwd?.({ host: '', path: effect.body })
-          break
-        case 'notification':
-          break
-      }
-    }),
-    // A paste IS input: xterm's term.paste() writes the payload (bracketed
-    // when the program asked for it) through the same onData every keystroke
-    // takes — which is how a submitted command reaches the pty at all. A mock
-    // that only recorded the call made the command invisible to anything
-    // watching onData, and hid a defect that put the command BEHIND the keys
-    // typed after it until the e2e suite found it (nocx-yb5y).
-    paste: vi.fn((text: string) => {
-      cbs.onData?.(text)
-      // The write happened: the mock's terminal is always mounted, and the
-      // real renderer returns true whenever a terminal exists. A test
-      // wanting the refusal path overrides this with mockReturnValue(false).
-      return true
-    }),
-    // Mode 2004 off by default — a test that wants bracketed paste on
-    // flips it with mockReturnValue(true) on this same vi.fn.
-    bracketedPasteActive: vi.fn(() => false),
-    // The parse fence the real renderer offers. Settled by default: a test
-    // about the mode alone must not have to know this exists, and one about
-    // the ORDER (nocx-8rtr.1 — write() is fire-and-forget, so a synchronous
-    // read can answer about the terminal before the bytes) overrides it.
-    awaitWriteBarrier: vi.fn(async () => {}),
-    // A normal fixture has no parse work outstanding; ordering tests opt into
-    // it explicitly so a parse barrier has a meaningful target.
-    hasUnsettledWrite: vi.fn(() => false),
-    onSnippetChord: vi.fn((cb: (() => void) | null) => {
-      snippetChordCb = cb
-    }),
-    setReadOnly: vi.fn(),
-    refreshAtlas: vi.fn(),
-    focus: vi.fn(),
-    fitViewport: vi.fn(),
-    // The session's answer rather than the window's (nocx-eidfb.3). It moves
-    // the mock's cols/rows, because the whole claim a caller makes with it is
-    // that the grid IS that size when the next byte is written.
-    setGrid: vi.fn((cols: number, rows: number) => {
-      mock.cols = cols
-      mock.rows = rows
-    }),
-    registerMarker: vi.fn().mockReturnValue(undefined),
-    cellHeight: 16,
-    viewportTopLine: 0,
-    cellWidth: 8,
-    // The device cell the committed metric travels in (review round 1):
-    // dpr-1 identity with the CSS cell above, so existing expectations
-    // hold; a test about a dense display overrides this mock.
-    deviceCellDims: vi.fn(() => ({ width: 8, height: 16 })),
-    onCellDimsChange: vi.fn(),
-    onScroll: vi.fn(),
-    onRender: vi.fn(),
-    // The live region measures the grid from here, not from the write:
-    // xterm parses asynchronously, so this is the event that says the rows
-    // exist. Stored so a test can fire it the way a parse pass would.
-    onWriteParsed: vi.fn((cb: () => void) => {
-      cbs.onWriteParsed = cb
-    }),
-    paneElement: document.createElement('div'),
-    getBufferLine: vi.fn().mockReturnValue(undefined),
-    cursorLine: vi.fn().mockReturnValue(0),
-    // NULL means "cannot measure", which the caller treats as "keep the current
-    // height" — so a fixture that does not care about live-region sizing gets
-    // the same behaviour as before this method existed. Zero would be a
-    // different statement: a grid nobody has written to.
-    liveContentHeight: vi.fn().mockReturnValue(null),
-    // Wake diagnostics are queried when visibilitychange is dispatched. The
-    // mock must satisfy the renderer contract so visibility tests reach the
-    // panel gates instead of failing in the unrelated wake reporter.
-    diagnostics: vi.fn().mockReturnValue({ bufferRows: 0, accelerated: false }),
-    cols: 80,
-    rows: 24,
-    // A REAL store, not a stub: the composition point hands
-    // renderer.snapshotStore to the editor and to the scrollback's frozen
-    // headers, so a mock without one crashes the CM6 plugin at mount. It is
-    // per mock, exactly like the per-renderer instance it stands in for —
-    // tests that want a snapshot ingest into this one.
-    snapshotStore: new CommandSnapshotStore(),
-    _fireBufferChange(type: 'normal' | 'alternate') {
-      activeBuffer = type
-      for (const sub of cbs.onBufferChange ?? []) sub(type)
-    },
-    _fireWriteParsed() {
-      cbs.onWriteParsed?.()
-    },
-    _fireTitle(title: string) {
-      cbs.onTitle?.(title)
-    },
-    _fireCwd(host: string, path: string) {
-      cbs.onCwd?.({ host, path })
-    },
-    _fireCommandMarker(marker: Parameters<CommandMarkerCallback>[0]) {
-      cbs.onCommandMarker?.(marker)
-    },
-    _fireBell() {
-      cbs.onBell?.()
-    },
-    _fireSelectionChange(text: string) {
-      cbs.onSelectionChange?.(text)
-    },
-    _fireClipboardWrite(text: string) {
-      cbs.onClipboardWrite?.(text)
-    },
-    /** Fire a recovery-fence sighting (ADR-0024 decision 8). */
-    /** A keystroke reaching the grid in raw mode — what xterm's onData
-     *  fires once stdin is enabled. The real renderer drops these while
-     *  disableStdin is set; the mock does not model that, so a test that
-     *  cares asserts on setReadOnly instead. */
-    _fireData(data: string) {
-      cbs.onData?.(data)
-    },
-    _fireResize(cols: number, rows: number) {
-      cbs.onResize?.(cols, rows)
-    },
-    /** Fire the snippet-palette chord the way xterm's custom key handler
-     *  does when ⌥⌘P is pressed in the terminal (nocx-jj77). */
-    _fireSnippetChord() {
-      snippetChordCb?.()
-    },
-  }
-  return mock as unknown as RendererMock
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SessionHandle fake
@@ -429,7 +183,7 @@ export interface SessionFake {
    *  order requires. */
   awaitsIntegration: boolean
   send: ReturnType<typeof vi.fn>
-  sendResize: ReturnType<typeof vi.fn>
+  sendResize: Mock<(size: SessionSize) => boolean>
   /** Hand one session intent to the pane's helper (nocx-zg3k3.3.1). What a
    *  person typed, pasted or clicked lands here now, as the kind and payload
    *  the wire carries — never as bytes. Resolves `executed` by default: the
@@ -481,7 +235,7 @@ export interface SessionFake {
    *  undefined for a handle that was opened rather than taken back. `size` is
    *  the grid the BACKEND says the session runs at — the one the recovered
    *  bytes were wrapped at (nocx-eidfb.3). */
-  recovered?: { bytes: number; gaps: unknown[]; size: { cols: number; rows: number } }
+  recovered?: SessionRecovery
   /** Bytes waiting for a data callback, flushed synchronously the moment one
    *  is registered — exactly what WSClient.onSessionData does with what
    *  reclaimSession queued ahead of the live stream (ipc.ts). A fixture that
@@ -526,7 +280,7 @@ export function makeSession(overrides?: Partial<SessionFake>): SessionFake {
     parent: null,
     awaitsIntegration: false,
     send: vi.fn(),
-    sendResize: vi.fn(),
+    sendResize: vi.fn<(size: SessionSize) => boolean>(),
     intent: vi.fn(() => Promise.resolve({ state: 'executed', bytesWritten: 1, fenceAfter: 0 })),
     // The signal is ECHOED back, exactly as the wire echoes it: a fixture
     // that always answered 'interrupt' would let a caller that asked for
@@ -589,6 +343,11 @@ export function makeSession(overrides?: Partial<SessionFake>): SessionFake {
         floor: 0,
         more: false,
         durableThrough: null,
+        bufferKind: 'normal',
+        bufferInstance: '1',
+        baseRow: 0,
+        cols: 80,
+        rows: 24,
       }),
     ),
     fireData: (data: string) => {
@@ -681,6 +440,8 @@ export interface ClientFake {
   onSessionData: ReturnType<typeof vi.fn>
   onSessionExit: ReturnType<typeof vi.fn>
   onSessionReset: ReturnType<typeof vi.fn>
+  onBlockOutputStart: (cb: (anchor: BlockOutputStart) => void) => () => void
+  _fireBlockOutputStart: (anchor: BlockOutputStart) => void
   /** Control-plane calls (history.record, history.query, …). Rejects by
    *  default — the no-store state, which the recall overlay labels
    *  source=session. */
@@ -837,6 +598,7 @@ export function makeClient(overrides?: Partial<ClientFake>): ClientFake {
   const displacedHandlers = new Set<(d: DisplacedFact) => void>()
   const workerTabCreatedHandlers = new Set<(fact: WorkersTabCreated) => void>()
   const workerTabClosedHandlers = new Set<(fact: WorkersTabClosed) => void>()
+  const blockOutputStartHandlers = new Set<(anchor: BlockOutputStart) => void>()
   const newSession = (): SessionFake => {
     const s = makeSession()
     sessions.push(s)
@@ -858,6 +620,13 @@ export function makeClient(overrides?: Partial<ClientFake>): ClientFake {
     onSessionData: vi.fn(),
     onSessionExit: vi.fn(),
     onSessionReset: vi.fn(),
+    onBlockOutputStart: (cb) => {
+      blockOutputStartHandlers.add(cb)
+      return () => blockOutputStartHandlers.delete(cb)
+    },
+    _fireBlockOutputStart: (anchor) => {
+      for (const cb of [...blockOutputStartHandlers]) cb(anchor)
+    },
     notifyPaneClosed: vi.fn(),
     onReconnectResult: vi.fn((cb: (r: { resumed: number; lost: number }) => void) => {
       reconnectHandlers.add(cb)

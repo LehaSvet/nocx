@@ -36,11 +36,16 @@ import (
 // (sessionruntime.EncodeRows). It is the helper op's result carried across
 // the process boundary, and nothing here re-derives a field of it.
 type HistoryPage struct {
-	Floor uint64
-	Start uint64
-	End   uint64
-	More  bool
-	Rows  json.RawMessage
+	Floor          uint64
+	Start          uint64
+	End            uint64
+	More           bool
+	BufferKind     string
+	BufferInstance string
+	BaseRow        uint64
+	Cols           int
+	GeometryRows   int
+	Rows           json.RawMessage
 }
 
 // HistoryPager asks the process that holds a session's terminal for one page
@@ -96,6 +101,11 @@ type sessionHistoryPage struct {
 	Floor          uint64  `json:"floor"`
 	More           bool    `json:"more"`
 	DurableThrough *uint64 `json:"durableThrough"`
+	BufferKind     string  `json:"bufferKind"`
+	BufferInstance string  `json:"bufferInstance"`
+	BaseRow        uint64  `json:"baseRow"`
+	Cols           int     `json:"cols"`
+	GeometryRows   int     `json:"rows"`
 }
 
 // sessionHistoryPageRows is the carrier document: the page id the result
@@ -221,6 +231,8 @@ func (h historyPageHandlers) handleHistoryPage(ctx context.Context, req jsonrpcR
 		Floor:          res.Floor,
 		More:           res.More,
 		DurableThrough: nil,
+		BufferKind:     res.BufferKind, BufferInstance: res.BufferInstance, BaseRow: res.BaseRow,
+		Cols: res.Cols, GeometryRows: res.GeometryRows,
 	}))
 }
 

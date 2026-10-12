@@ -39,6 +39,7 @@ package session
 import (
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"time"
 	"unsafe"
 
@@ -75,15 +76,17 @@ const (
 // runtime's gift — freshly copied by the emulator's report, owned by whoever
 // takes them next — so the pump marshals them OFF the runtime's lock.
 type rowEmission struct {
-	end          bool
-	clear        bool
-	outputStart  bool
-	markSequence uint64
-	nonce        sessionruntime.FenceNonce
-	from         uint64
-	lost         uint64
-	rows         []emulator.Row
-	closing      []emulator.Row
+	end           bool
+	clear         bool
+	outputStart   bool
+	markSequence  uint64
+	nonce         sessionruntime.FenceNonce
+	from          uint64
+	anchor        *proto.OutputStartScreenAnchor
+	closingAnchor *proto.OutputStartScreenAnchor
+	lost          uint64
+	rows          []emulator.Row
+	closing       []emulator.Row
 	// noFence is an end marker's settledWithoutFence (nocx-2v80t.3.29).
 	noFence bool
 	// incomplete makes this emission the buffer's one overflow marker
@@ -104,6 +107,11 @@ func emissionBytes(em rowEmission) int64 {
 			for _, c := range r.Cells {
 				n += int64(len(c.Grapheme))
 			}
+		}
+	}
+	for _, anchor := range [2]*proto.OutputStartScreenAnchor{em.anchor, em.closingAnchor} {
+		if anchor != nil {
+			n += int64(unsafe.Sizeof(*anchor)) + int64(len(anchor.BufferInstance))
 		}
 	}
 	return n
@@ -138,7 +146,14 @@ func (b *rowBridge) OutputRows(from uint64, rows []emulator.Row, lost uint64) {
 }
 
 func (b *rowBridge) IntervalEnd(nonce sessionruntime.FenceNonce, endRow uint64, closing []emulator.Row, settledWithoutFence bool) {
-	b.hs.enqueueRowEmission(rowEmission{end: true, nonce: nonce, from: endRow, closing: closing, noFence: settledWithoutFence})
+	b.IntervalEndWithAnchor(nonce, endRow, closing, nil, settledWithoutFence)
+}
+
+func (b *rowBridge) IntervalEndWithAnchor(nonce sessionruntime.FenceNonce, endRow uint64, closing []emulator.Row, anchor *sessionruntime.ScreenRowAnchor, settledWithoutFence bool) {
+	b.hs.enqueueRowEmission(rowEmission{
+		end: true, nonce: nonce, from: endRow, closing: closing,
+		closingAnchor: screenAnchorDTO(anchor), noFence: settledWithoutFence,
+	})
 }
 
 // ClearBoundary hands off one sighted erase-saved-lines (nocx-2v80t.3.17), on
@@ -150,13 +165,48 @@ func (b *rowBridge) ClearBoundary() {
 }
 
 func (b *rowBridge) OutputStartRow(from uint64) {
+	b.outputStartRow(from, nil)
+}
+
+func screenAnchorDTO(anchor *sessionruntime.ScreenRowAnchor) *proto.OutputStartScreenAnchor {
+	if anchor == nil {
+		return nil
+	}
+	cols, colsOK := screenDimensionToUint32(anchor.Identity.Cols)
+	rows, rowsOK := screenDimensionToUint32(anchor.Identity.Rows)
+	if !colsOK || !rowsOK || anchor.Identity.BufferInstance == 0 || anchor.Row > sessionruntime.MaxScreenRowOffset || uint64(anchor.Revision) > sessionruntime.MaxScreenRowOffset {
+		return nil
+	}
+	kind := "normal"
+	if anchor.Identity.AltScreen {
+		kind = "alternate"
+	}
+	return &proto.OutputStartScreenAnchor{
+		Row: anchor.Row, ScreenRevision: uint64(anchor.Revision), BufferKind: kind,
+		BufferInstance: strconv.FormatUint(anchor.Identity.BufferInstance, 10), Cols: cols, Rows: rows,
+	}
+}
+
+func (b *rowBridge) OutputStartRowWithAnchor(from uint64, anchor sessionruntime.ScreenRowAnchor) {
+	b.outputStartRow(from, screenAnchorDTO(&anchor))
+}
+
+func screenDimensionToUint32(value int) (uint32, bool) {
+	if value <= 0 || int64(value) > int64(^uint32(0)) {
+		return 0, false
+	}
+	return uint32(value), true // #nosec G115 -- bounded to positive uint32 range above
+}
+
+func (b *rowBridge) outputStartRow(from uint64, anchor *proto.OutputStartScreenAnchor) {
 	b.hs.rowMu.Lock()
 	b.hs.outputStartRow = from
+	b.hs.outputStartAnchor = anchor
 	b.hs.outputStartKnown = true
 	b.hs.outputStartSequence++
 	sequence := b.hs.outputStartSequence
 	b.hs.rowMu.Unlock()
-	b.hs.enqueueRowEmission(rowEmission{outputStart: true, from: from, markSequence: sequence})
+	b.hs.enqueueRowEmission(rowEmission{outputStart: true, from: from, anchor: anchor, markSequence: sequence})
 }
 
 // enqueueRowEmission appends one emission to the FIFO if the buffer can hold
@@ -737,6 +787,7 @@ func (s *hostSession) resendFromScrollback() bool {
 	// those rows to an authenticated Start without a lifecycle-envelope field.
 	s.rowMu.Lock()
 	outputStartRow, outputStartKnown := s.outputStartRow, s.outputStartKnown
+	outputStartAnchor := s.outputStartAnchor
 	outputStartSequence := s.outputStartSequence
 	s.rowMu.Unlock()
 	if outputStartKnown {
@@ -750,7 +801,7 @@ func (s *hostSession) resendFromScrollback() bool {
 			if sink, ok := sub.sink.(interface {
 				SendOutputStartRow(proto.OutputStartRowFrame) error
 			}); ok {
-				if err := sink.SendOutputStartRow(proto.OutputStartRowFrame{Session: s.raw, Subscriber: sub.raw, FromRow: outputStartRow}); err != nil {
+				if err := sink.SendOutputStartRow(proto.OutputStartRowFrame{Session: s.raw, Subscriber: sub.raw, FromRow: outputStartRow, Anchor: outputStartAnchor}); err != nil {
 					s.log.Warn("session output-start replay mark not delivered", "session", s.id.Session, "subscriber", sub.id, "fromRow", outputStartRow, "err", err)
 				}
 			}
@@ -947,7 +998,7 @@ func (s *hostSession) deliverRowEmission(em rowEmission) bool {
 				s.log.Warn("session output-start mark not delivered: sink lacks row-mark support", "session", s.id.Session, "subscriber", sub.id, "fromRow", em.from)
 				continue
 			}
-			if err := sink.SendOutputStartRow(proto.OutputStartRowFrame{Session: s.raw, Subscriber: sub.raw, FromRow: em.from}); err != nil {
+			if err := sink.SendOutputStartRow(proto.OutputStartRowFrame{Session: s.raw, Subscriber: sub.raw, FromRow: em.from, Anchor: em.anchor}); err != nil {
 				s.log.Warn("session output-start mark not delivered", "session", s.id.Session, "subscriber", sub.id, "fromRow", em.from, "err", err)
 			}
 		}
@@ -992,10 +1043,11 @@ func (s *hostSession) deliverRowEmission(em rowEmission) bool {
 			return false
 		}
 		payload, err := json.Marshal(proto.IntervalEndDoc{
-			Nonce:   hex.EncodeToString(em.nonce[:]),
-			EndRow:  em.from,
-			Closing: closing,
-			NoFence: em.noFence,
+			Nonce:        hex.EncodeToString(em.nonce[:]),
+			EndRow:       em.from,
+			Closing:      closing,
+			ScreenAnchor: em.closingAnchor,
+			NoFence:      em.noFence,
 		})
 		if err != nil {
 			s.log.Warn("session interval end not encodable", "session", s.id.Session, "err", err)

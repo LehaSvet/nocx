@@ -1,9 +1,9 @@
 // Frozen frame minting (spec §2.2, bead nocx-3j9b).
 //
-// A frozen block has NO xterm cells left — they are cleared after the visual
-// freeze — and its text has already been transformed by the serializer
-// (wrapped lines joined, leading/trailing blanks dropped). So a frozen frame
-// is TEXT, and its provenance records source=frozen and the SERIALIZER
+// A frozen block has no live cells, and its text has already been
+// transformed by the serializer (wrapped lines joined, leading/trailing
+// blanks dropped). A frozen frame is TEXT, and its provenance records
+// source=frozen and the SERIALIZER
 // VERSION. The same gesture, the same frame shape, a different recorded
 // source — the two are never silently substituted for one another.
 //

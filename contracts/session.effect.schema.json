@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nocx.local/contracts/session.effect.schema.json",
   "title": "SessionEffect",
-  "description": "One identity-bearing non-visual effect emitted by the session runtime. A full session.frame never carries or replays effects; the client deduplicates this event across replay and reconnect by generation and effectId.",
+  "description": "One identity-bearing non-visual update emitted by the session runtime. A full session.frame never carries or replays effects; the client deduplicates events by generation and effectId. commandSnapshot is current-state data and is re-issued with a fresh identity for each attachment.",
   "type": "object",
   "additionalProperties": false,
   "required": ["sessionId", "generation", "effectId", "kind", "title", "body"],
@@ -21,7 +21,16 @@
     },
     "kind": {
       "type": "string",
-      "enum": ["bell", "notification", "clipboard", "title", "cwd", "promptBoundary", "recovery"]
+      "enum": [
+        "bell",
+        "notification",
+        "clipboard",
+        "title",
+        "cwd",
+        "promptBoundary",
+        "recovery",
+        "commandSnapshot"
+      ]
     },
     "title": {
       "type": "string"
@@ -33,6 +42,22 @@
       "type": "string",
       "minLength": 1,
       "pattern": "^rec-[0-9a-f]{32}$"
+    },
+    "screenRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "For promptBoundary only, the lower-bound full-frame revision that must be offered first. It is correlation, not acknowledgement or authority."
+    },
+    "commandNames": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 65536
+      },
+      "description": "The validated shell-local command names, present only for kind commandSnapshot."
     }
   },
   "allOf": [
@@ -59,6 +84,50 @@
       "else": {
         "not": {
           "required": ["episodeId"]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "promptBoundary"
+          }
+        },
+        "required": ["kind"]
+      },
+      "then": {
+        "required": ["screenRevision"]
+      },
+      "else": {
+        "not": {
+          "required": ["screenRevision"]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "commandSnapshot"
+          }
+        },
+        "required": ["kind"]
+      },
+      "then": {
+        "required": ["commandNames"],
+        "properties": {
+          "title": {
+            "const": ""
+          },
+          "body": {
+            "const": ""
+          }
+        }
+      },
+      "else": {
+        "not": {
+          "required": ["commandNames"]
         }
       }
     }

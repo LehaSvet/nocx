@@ -438,55 +438,6 @@
       "x-nocx-noResultSchema": true
     },
     {
-      "name": "agent.readScreenResolved",
-      "params": [
-        {
-          "name": "params",
-          "required": false,
-          "schema": {
-            "$ref": "https://nocx.local/contracts/agent.readScreenResolved.params.schema.json"
-          }
-        }
-      ],
-      "errors": [
-        {
-          "code": -32601,
-          "message": "Method not found",
-          "x-nocx-errorSchema": {
-            "$ref": "https://nocx.local/contracts/rpc.error.schema.json"
-          }
-        },
-        {
-          "code": -32602,
-          "message": "Invalid params",
-          "x-nocx-errorSchema": {
-            "$ref": "https://nocx.local/contracts/rpc.error.schema.json"
-          }
-        },
-        {
-          "code": -32603,
-          "message": "Internal error",
-          "x-nocx-errorSchema": {
-            "$ref": "https://nocx.local/contracts/rpc.error.schema.json"
-          }
-        },
-        {
-          "code": -32004,
-          "message": "Control plane busy",
-          "x-nocx-errorSchema": {
-            "$ref": "https://nocx.local/contracts/rpc.error.schema.json"
-          }
-        }
-      ],
-      "x-nocx-agent-disposition": "operation-owned",
-      "result": {
-        "name": "agent.readScreenResolvedResult",
-        "schema": {
-          "$ref": "https://nocx.local/contracts/agent.readScreenResolved.schema.json"
-        }
-      }
-    },
-    {
       "name": "agent.rules.delete",
       "params": [
         {
@@ -7580,55 +7531,6 @@
       }
     },
     {
-      "name": "session.output",
-      "params": [
-        {
-          "name": "params",
-          "required": false,
-          "schema": {
-            "$ref": "https://nocx.local/contracts/session.output.params.schema.json"
-          }
-        }
-      ],
-      "errors": [
-        {
-          "code": -32601,
-          "message": "Method not found",
-          "x-nocx-errorSchema": {
-            "$ref": "https://nocx.local/contracts/rpc.error.schema.json"
-          }
-        },
-        {
-          "code": -32602,
-          "message": "Invalid params",
-          "x-nocx-errorSchema": {
-            "$ref": "https://nocx.local/contracts/rpc.error.schema.json"
-          }
-        },
-        {
-          "code": -32603,
-          "message": "Internal error",
-          "x-nocx-errorSchema": {
-            "$ref": "https://nocx.local/contracts/rpc.error.schema.json"
-          }
-        },
-        {
-          "code": -32004,
-          "message": "Control plane busy",
-          "x-nocx-errorSchema": {
-            "$ref": "https://nocx.local/contracts/rpc.error.schema.json"
-          }
-        }
-      ],
-      "x-nocx-agent-disposition": "operation-owned",
-      "result": {
-        "name": "session.outputResult",
-        "schema": {
-          "$ref": "https://nocx.local/contracts/session.output.schema.json"
-        }
-      }
-    },
-    {
       "name": "session.recoveryStatus",
       "params": [
         {
@@ -10997,12 +10899,6 @@
       "$ref": "https://nocx.local/contracts/agent.emitting.schema.json"
     },
     {
-      "$ref": "https://nocx.local/contracts/agent.readScreenRequest.schema.json"
-    },
-    {
-      "$ref": "https://nocx.local/contracts/agent.readScreenResolved.schema.json"
-    },
-    {
       "$ref": "https://nocx.local/contracts/agent.rules.schema.json"
     },
     {
@@ -11127,6 +11023,9 @@
     },
     {
       "$ref": "https://nocx.local/contracts/block.grew.schema.json"
+    },
+    {
+      "$ref": "https://nocx.local/contracts/block.outputStart.schema.json"
     },
     {
       "$ref": "https://nocx.local/contracts/checkouts.status.schema.json"
@@ -11481,9 +11380,6 @@
     },
     {
       "$ref": "https://nocx.local/contracts/session.observationChanged.schema.json"
-    },
-    {
-      "$ref": "https://nocx.local/contracts/session.output.schema.json"
     },
     {
       "$ref": "https://nocx.local/contracts/session.outputGap.schema.json"

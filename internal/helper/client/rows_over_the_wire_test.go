@@ -301,6 +301,9 @@ func TestARowsStreamReachesTheCoordinatorInOrderThenTheEnd(t *testing.T) {
 	if end.Closing == nil {
 		t.Fatal("the end marker carries no closing screen")
 	}
+	if anchor := end.ScreenAnchor; anchor == nil || anchor.Row > sessionruntime.MaxScreenRowOffset || anchor.ScreenRevision == 0 || (anchor.BufferKind != "normal" && anchor.BufferKind != "alternate") || anchor.BufferInstance == "" {
+		t.Fatalf("the end marker carries no valid exact screen anchor: %+v", anchor)
+	}
 	// The closing screen is the screen as the boundary JOINED — the flood's
 	// tail is on it, and so is whatever the shell printed after the fence in
 	// the same breath the pump read: the capture is one instant of the real

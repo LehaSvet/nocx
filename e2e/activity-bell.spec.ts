@@ -57,7 +57,7 @@ test('a bell lights the indicator from inside the alternate buffer', async ({ pa
     // (nocx-42lb). `live-fullscreen` is what `enterFullscreen()` writes, on the
     // alt-screen path, so it states the same condition against the code that
     // survived.
-    await expect(page.locator('.pane.active .xterm-live-container')).toHaveClass(
+    await expect(page.locator('.pane.active .terminal-live-container')).toHaveClass(
       /live-fullscreen/,
       { timeout: 10_000 },
     )

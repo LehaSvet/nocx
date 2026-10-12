@@ -33,6 +33,7 @@ type rowEvent struct {
 	endRow  uint64
 	closing []emulator.Row
 	noFence bool
+	anchor  *ScreenRowAnchor
 }
 
 // recordingRowStream is a RowStream that records emissions in arrival order.
@@ -65,6 +66,13 @@ func (r *recordingRowStream) OutputStartRow(from uint64) {
 	r.events = append(r.events, rowEvent{kind: "output-start", from: from})
 }
 
+func (r *recordingRowStream) OutputStartRowWithAnchor(from uint64, anchor ScreenRowAnchor) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	copy := anchor
+	r.events = append(r.events, rowEvent{kind: "output-start", from: from, anchor: &copy})
+}
+
 func (r *recordingRowStream) snapshot() []rowEvent {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -78,6 +86,63 @@ func streamSession(t *testing.T, g Geometry) (*Session, *recordingRowStream) {
 	rs := &recordingRowStream{}
 	s.SetRowStream(rs)
 	return s, rs
+}
+
+type anchoredRecordingRowStream struct{ *recordingRowStream }
+
+func (r *anchoredRecordingRowStream) IntervalEndWithAnchor(
+	nonce FenceNonce,
+	endRow uint64,
+	closing []emulator.Row,
+	anchor *ScreenRowAnchor,
+	settledWithoutFence bool,
+) {
+	r.recordingRowStream.IntervalEnd(nonce, endRow, closing, settledWithoutFence)
+	if anchor == nil {
+		return
+	}
+	copy := *anchor
+	r.recordingRowStream.mu.Lock()
+	r.recordingRowStream.events[len(r.recordingRowStream.events)-1].anchor = &copy
+	r.recordingRowStream.mu.Unlock()
+}
+
+func TestIntervalEndCarriesItsExactClosingScreenAnchor(t *testing.T) {
+	for _, alternate := range []bool{false, true} {
+		t.Run(map[bool]string{false: "normal", true: "alternate"}[alternate], func(t *testing.T) {
+			s := obsSession(t, harnessGeometry(80, 24))
+			rs := &anchoredRecordingRowStream{recordingRowStream: &recordingRowStream{}}
+			s.SetRowStream(rs)
+			if alternate {
+				if err := s.Ingest([]byte("\x1b[?1049hALT")); err != nil {
+					t.Fatalf("enter alternate screen: %v", err)
+				}
+			}
+			s.mu.Lock()
+			want, err := s.screenRowAnchorLocked()
+			if err != nil {
+				s.mu.Unlock()
+				t.Fatalf("capture expected screen anchor: %v", err)
+			}
+			s.sealObservationLocked(FenceNonce{1})
+			s.mu.Unlock()
+
+			events := rs.snapshot()
+			if len(events) != 1 || events[0].kind != "end" || events[0].anchor == nil {
+				t.Fatalf("interval end did not carry a screen anchor: %+v", events)
+			}
+			if *events[0].anchor != want {
+				t.Fatalf("closing anchor = %+v, want exact snapshot %+v", *events[0].anchor, want)
+			}
+			wantKind := "normal"
+			if alternate {
+				wantKind = "alternate"
+			}
+			if got := events[0].anchor.Identity.AltScreen; got != alternate {
+				t.Fatalf("closing buffer kind = alternate:%v, want %s", got, wantKind)
+			}
+		})
+	}
 }
 
 // streamRowText reads one streamed row's text: the graphemes that carry
@@ -94,6 +159,21 @@ func streamRowText(r emulator.Row) string {
 
 // The output mark names the absolute stream position where command output
 // starts. It is ordered before rows emitted after OSC 133 C.
+func TestIntervalEndWithoutClosingScreenCarriesNullScreenAnchor(t *testing.T) {
+	s := obsSession(t, harnessGeometry(80, 24))
+	rs := &anchoredRecordingRowStream{recordingRowStream: &recordingRowStream{}}
+	s.SetRowStream(rs)
+
+	s.mu.Lock()
+	s.sealPendingWithoutScreenLocked(FenceNonce{2}, &observationOpen{EndRow: 3})
+	s.mu.Unlock()
+
+	events := rs.snapshot()
+	if len(events) != 1 || events[0].kind != "end" || events[0].anchor != nil || !events[0].noFence {
+		t.Fatalf("no-screen interval end = %+v, want null anchor and no-fence", events)
+	}
+}
+
 func TestOutputMarkEmitsItsAbsoluteRowPositionOnTheRowStream(t *testing.T) {
 	s, rs := streamSession(t, harnessGeometry(80, 24))
 	obsFeed(t, s, 0, 80)
@@ -106,15 +186,66 @@ func TestOutputMarkEmitsItsAbsoluteRowPositionOnTheRowStream(t *testing.T) {
 		t.Fatalf("events = %+v, want output-start after prior rows", events)
 	}
 	if got := events[len(events)-1].from; got != before {
-		t.Fatalf("output-start row = %d, want absolute stream position %d", got, before)
+		t.Fatalf("output-start stream position = %d, want absolute row-stream position %d", got, before)
 	}
-	// A replacement reader receives the current mark before it can consume
-	// the runtime's resend rows.
+	capture, err := s.ReadScreenCapture(nil)
+	if err != nil {
+		t.Fatalf("read screen capture: %v", err)
+	}
+	anchor := events[len(events)-1].anchor
+	if anchor == nil {
+		t.Fatal("output-start omitted its backend screen anchor")
+	}
+	if anchor.Row != capture.CursorRow || anchor.Revision != capture.Revision || anchor.Identity != capture.Identity {
+		t.Fatalf("screen anchor = %+v, capture row/revision/identity = %d/%d/%+v", anchor, capture.CursorRow, capture.Revision, capture.Identity)
+	}
+	// The screen-departure counter may include rows withheld from the helper
+	// stream. Rebinding must replay the saved stream index, not that other
+	// counter, while preserving the independent screen anchor.
+	s.mu.Lock()
+	s.observation.OutputMarkDeparted = before + 7
+	s.mu.Unlock()
 	replacement := &recordingRowStream{}
 	s.SetRowStream(replacement)
 	replayed := replacement.snapshot()
-	if len(replayed) != 1 || replayed[0].kind != "output-start" || replayed[0].from != before {
-		t.Fatalf("replacement stream marks = %+v, want output-start at %d", replayed, before)
+	if len(replayed) != 1 || replayed[0].kind != "output-start" || replayed[0].from != before || replayed[0].anchor == nil || *replayed[0].anchor != *anchor {
+		t.Fatalf("replacement stream marks = %+v, want stream row %d and anchor %+v", replayed, before, anchor)
+	}
+}
+
+func TestOutputStartScreenAnchorTracksAlternateBufferIdentity(t *testing.T) {
+	s, rs := streamSession(t, harnessGeometry(20, 5))
+	if err := s.Ingest([]byte("\x1b[?1049hALT")); err != nil {
+		t.Fatalf("enter alternate screen: %v", err)
+	}
+	if err := s.Ingest([]byte("\x1b]133;C\a")); err != nil {
+		t.Fatalf("ingest alternate output mark: %v", err)
+	}
+	var anchor *ScreenRowAnchor
+	for _, event := range rs.snapshot() {
+		if event.kind == "output-start" {
+			anchor = event.anchor
+		}
+	}
+	if anchor == nil || !anchor.Identity.AltScreen {
+		t.Fatalf("alternate output anchor = %+v, want alternate identity", anchor)
+	}
+	alt, err := s.ReadScreenCapture(nil)
+	if err != nil {
+		t.Fatalf("capture alternate screen: %v", err)
+	}
+	if anchor.Row != alt.CursorRow || anchor.Identity != alt.Identity {
+		t.Fatalf("alternate anchor = %+v, capture row/identity = %d/%+v", anchor, alt.CursorRow, alt.Identity)
+	}
+	if leaveErr := s.Ingest([]byte("\x1b[?1049l")); leaveErr != nil {
+		t.Fatalf("leave alternate screen: %v", leaveErr)
+	}
+	normal, err := s.ReadScreenCapture(nil)
+	if err != nil {
+		t.Fatalf("capture restored normal screen: %v", err)
+	}
+	if normal.Identity == anchor.Identity || normal.Identity.BufferInstance == anchor.Identity.BufferInstance {
+		t.Fatalf("restored normal identity %+v still matches alternate anchor %+v", normal.Identity, anchor.Identity)
 	}
 }
 

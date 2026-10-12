@@ -32,7 +32,8 @@
  *    the count the FAR host kept.
  * 2. **Answered with no browser client attached.** The pane runs a program that
  *    writes `ESC[6n` (DSR) to its terminal and READS the reply back off its own
- *    pty, then writes those bytes to a file on the far host and prints them.
+ *    pty, writes the raw bytes to a file on the far host, and prints their
+ *    visible hex encoding as a marker.
  *    The probe parks on a file this spec creates, and the spec creates it only
  *    AFTER `sessions.live` reports the session unattached — so the question was
  *    asked and answered while no renderer existed. With the browser gone there
@@ -173,7 +174,8 @@ done
 echo "read: $r" >>"$L"
 stty icanon echo 2>>"$L"
 printf '%s' "$r" >"$HOME/${ANSWER}"
-printf 'NOCXDSR[%s]\\n' "$r"
+hex=$(printf '%s' "$r" | od -An -v -tx1 | tr -d ' \\n')
+printf 'NOCXDSR[%s]\\n' "$hex"
 `
 
 /** A cursor report: the runtime's answer, and nothing else. The ESC is the
@@ -182,8 +184,8 @@ printf 'NOCXDSR[%s]\\n' "$r"
 // eslint-disable-next-line no-control-regex
 const CURSOR_REPORT = /^\u001b\[\d{1,3};\d{1,3}R$/
 
-/** What the far shell prints when it reads the report, and what goes into the
- *  coordinator's recording of this session. */
+/** What the far shell visibly prints after hex-encoding the report, so the
+ *  terminal displays the marker instead of consuming its ESC as a VT control. */
 const DSR_LINE = 'NOCXDSR['
 
 /** The round-trip command of stage 3, and the marker is deliberately NOT
@@ -200,12 +202,6 @@ interface LiveSession {
   sessionEpoch: number
   paneId: string | null
   attached: boolean
-}
-
-interface SessionOutput {
-  produced: number
-  effectiveSize: { cols: number; rows: number }
-  runs: { offset: number; body: string }[]
 }
 
 /** One JSON-RPC call on a socket of the test's own. It never attaches to a
@@ -276,28 +272,36 @@ function aliveFromThisMachine(pid: number): boolean {
   }
 }
 
-/** Everything the coordinator has recorded for one session, decoded, in stream
- *  order. Paged, because one answer is bounded and a recording larger than it
- *  arrives over several calls. */
-async function recorded(ep: BackendEndpoint, sessionId: string): Promise<string> {
-  let text = ''
-  let from = 0
-  for (;;) {
-    const page = await ask<SessionOutput>(ep, 'session.output', { sessionId, from })
-    for (const run of page.runs) {
-      text += Buffer.from(run.body, 'base64').toString('utf8')
-    }
-    if (page.produced <= from || page.runs.length === 0) return text
-    from = page.produced
-  }
+interface RecoveryStatus {
+  produced: number
+  gaps: { start: number; end: number; reason: string }[]
 }
 
-/** The session's own size, from the same read the renderer draws it from. */
-async function effectiveSize(
+async function recoveryStatus(
   ep: BackendEndpoint,
-  sessionId: string,
-): Promise<{ cols: number; rows: number }> {
-  return (await ask<SessionOutput>(ep, 'session.output', { sessionId, from: 0 })).effectiveSize
+  live: Pick<LiveSession, 'sessionId' | 'instanceId' | 'sessionEpoch'>,
+): Promise<RecoveryStatus> {
+  return ask<RecoveryStatus>(ep, 'session.recoveryStatus', {
+    sessionId: live.sessionId,
+    instanceId: live.instanceId,
+    sessionEpoch: live.sessionEpoch,
+  })
+}
+
+async function screenReading(
+  page: Page,
+): Promise<{ rows: string[]; reported: { cols: number; rows: number } | null }> {
+  return page.evaluate(() => {
+    const screen = (
+      window as Window & {
+        __nocxPaneScreen?: () => {
+          rows: string[]
+          reported: { cols: number; rows: number } | null
+        } | null
+      }
+    ).__nocxPaneScreen?.()
+    return { rows: screen?.rows ?? [], reported: screen?.reported ?? null }
+  })
 }
 
 /** Open a page on a context of its own, bound to this backend. Two of these
@@ -509,6 +513,9 @@ test.describe('one ssh connection per host, answered unwatched, surviving the co
         .toBe(true)
       const paneSessionId = await activePane.getAttribute('data-session-id')
       expect(paneSessionId).not.toBeNull()
+      const liveBeforeRestart = (await liveSessions(endpoint)).find(
+        (session) => session.sessionId === paneSessionId,
+      )!
 
       // WHAT OPENED THIS PANE is structural rather than a second RPC: an ssh
       // pane exists ONLY because a helper claimed the destination
@@ -586,6 +593,9 @@ test.describe('one ssh connection per host, answered unwatched, surviving the co
         .toBe('parked')
 
       // ── the window closes, and the coordinator says so ──────────────────
+      const sessionSize = (await screenReading(first)).reported
+      expect(sessionSize).not.toBeNull()
+
       await first.context().close()
       await expect
         .poll(
@@ -618,7 +628,7 @@ test.describe('one ssh connection per host, answered unwatched, surviving the co
 
       // And the report is the RUNTIME's own state rather than a constant: it
       // names a position inside the geometry this session actually has.
-      const size = await effectiveSize(endpoint, paneSessionId!)
+      const size = sessionSize!
       // eslint-disable-next-line no-control-regex
       const [, row, column] = /^\u001b\[(\d+);(\d+)R$/.exec(report)!.map(Number)
       expect(row).toBeGreaterThanOrEqual(1)
@@ -626,10 +636,14 @@ test.describe('one ssh connection per host, answered unwatched, surviving the co
       expect(row).toBeLessThanOrEqual(size.rows)
       expect(column).toBeLessThanOrEqual(size.cols)
 
-      // The same fact from the wire side: what the program printed with the
-      // answer in it is in the coordinator's recording of this session.
-      const contentBefore = await recorded(endpoint, paneSessionId!)
-      expect(contentBefore).toContain(`${DSR_LINE}${report}]`)
+      // The backend exposes recovery metadata, not a replay of PTY bytes.
+      // The answer itself is checked against the runtime screen after reclaim.
+      const statusBeforeRestart = await recoveryStatus(endpoint, {
+        sessionId: paneSessionId!,
+        instanceId: liveBeforeRestart.instanceId,
+        sessionEpoch: liveBeforeRestart.sessionEpoch,
+      })
+      expect(statusBeforeRestart.produced).toBeGreaterThan(0)
 
       // ── STAGE 3: the coordinator is replaced ────────────────────────────
       // The pane the session is the pipe of, read BEFORE the replacement: the
@@ -663,22 +677,15 @@ test.describe('one ssh connection per host, answered unwatched, surviving the co
       const liveAfter = (await liveSessions(endpoint)).find((s) => s.sessionId === paneSessionId)!
       expect(liveAfter.paneId).toBe(paneIdBefore)
 
-      // ── the same CONTENT, read through the new coordinator ──────────────
-      //
-      // The pane is drawn from this session's own stream, and the stream the
-      // replacement reads still carries what the screen showed before it:
-      // the far program's cursor report. Read from the coordinator's recording
-      // because the terminal grid is a canvas — there is no DOM text to read
-      // (e2e/coordinator-reclaim.spec.ts says the same thing about the same
-      // surface).
-      const contentAfter = await recorded(endpoint, paneSessionId!)
-      expect(contentAfter).toContain(`${DSR_LINE}${report}]`)
-
       // ── the pane is back, and it still takes input ───────────────────────
       const returned = await freshClient(browser, endpoint)
       const pane = returned.locator(`.pane[data-session-id="${paneSessionId}"]`)
       await expect(pane).toBeVisible({ timeout: 180_000 })
       await promptReady(returned)
+      const printableReport = Buffer.from(report, 'utf8').toString('hex')
+      await expect
+        .poll(async () => (await screenReading(returned)).rows.join('\n'), { timeout: 120_000 })
+        .toContain(`${DSR_LINE}${printableReport}]`)
       await clickIntoEditor(returned)
 
       // THE SAME FAR SHELL, asked of the far side itself. The shell reports its
@@ -712,16 +719,8 @@ test.describe('one ssh connection per host, answered unwatched, surviving the co
       await returned.keyboard.type(ROUND_TRIP_COMMAND)
       await returned.keyboard.press('Enter')
 
-      // The far side ran it, read through the coordinator's own recording...
-      await expect
-        .poll(async () => recorded(endpoint, paneSessionId!), {
-          timeout: 120_000,
-          intervals: [500],
-          message: 'the far shell never ran the command typed after the coordinator was replaced',
-        })
-        .toContain(ROUND_TRIP_OUTPUT)
-      // ...and the pane shows its output, which is the frozen block's own text
-      // and cannot be the echoed command (the command spells `2121*2`).
+      // The live painter exposes the command's output without reading or
+      // replaying terminal bytes through a control-plane route.
       await expect(
         returned.locator('.pane.active .cmd-block').filter({ hasText: ROUND_TRIP_OUTPUT }),
       ).toBeVisible({ timeout: 120_000 })

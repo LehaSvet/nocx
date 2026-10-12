@@ -344,55 +344,6 @@
   color: var(--color-text);
 }
 
-/* ── Command-ledger gutter glyphs (ADR-0008) ────────────────────────── */
-
-.nocx-gutter-glyph {
-  background: var(--color-text-dim);
-  opacity: 0.4;
-  transition: opacity 120ms ease;
-}
-
-.nocx-gutter-success {
-  background: var(--color-text-dim); /* neutral, not green */
-  opacity: 0.5;
-}
-
-.nocx-gutter-running {
-  background: var(--color-accent); /* accent blue */
-  opacity: 0.95;
-}
-
-.nocx-gutter-failure {
-  background: var(--color-danger); /* red */
-  opacity: 1;
-}
-
-.nocx-gutter-interrupted {
-  background: var(--color-warning); /* amber — was #ff9e64, collapsed to --color-warning */
-  opacity: 0.9;
-}
-
-.nocx-gutter-unknown {
-  background: var(--color-text-dim);
-  opacity: 0.4;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .nocx-gutter-running {
-    animation: nocx-gutter-pulse 1.4s ease-in-out infinite;
-  }
-}
-
-@keyframes nocx-gutter-pulse {
-  0%,
-  100% {
-    opacity: 0.5;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
 /* ── DOM scrollback layout ──────────────────────────────────────────── */
 
 .scrollback-layout {
@@ -401,9 +352,8 @@
   flex: 1 1 auto;
   min-height: 0;
   /* The terminal screen's one ground (spec §7), not the canvas: history rows
-     and the live region paint `transparent` (command-block.css, the xterm
-     live container) and composite to whatever sits behind them, which was
-     `.pane`'s --color-canvas — the one theme where that differs from
+     and the live region paint `transparent` and composite to what sits behind
+     them. That is `.pane`'s --color-canvas — the one theme where it differs from
      --terminal-background is `light`, which is exactly where the block rows
      read grey instead of white. This box spans the whole history + live
      region, including the empty space above bottom-anchored blocks
@@ -469,9 +419,9 @@
   overflow-x: auto;
 }
 
-.scrollback-area[data-grid-owner='session'] .xterm-live-container,
-.scrollback-area[data-grid-owner='session'] .xterm-live-viewport,
-.scrollback-area[data-grid-owner='session'] .xterm-inner {
+.scrollback-area[data-grid-owner='session'] .terminal-live-container,
+.scrollback-area[data-grid-owner='session'] .terminal-live-viewport,
+.scrollback-area[data-grid-owner='session'] .terminal-live-inner {
   width: max-content;
   min-width: 100%;
   overflow: visible;
@@ -523,18 +473,18 @@
   pointer-events: none;
 }
 
-/* ── Live region (three layers: flow box + content clip + xterm) ─────── */
+/* ── Live region (flow box, content clip, and painted grid) ───────────── */
 
-.xterm-live-container {
+.terminal-live-container {
   flex: none;
   overflow: hidden;
 }
 
-.xterm-live-container.live-idle {
+.terminal-live-container.live-idle {
   height: 0;
 }
 
-.xterm-live-container.live-running {
+.terminal-live-container.live-running {
   /* Fallback until the renderer can measure its first row. The controller
      replaces this with the written content height in measurable sessions. */
   height: 140px;
@@ -578,7 +528,7 @@
    (the rule below), and the dots themselves stay — the report survives. The
    stand-in stands at the first column, which is inside the inset now
    (nocx-9bpeq.8). */
-.xterm-live-container.live-running > .cmd-answer-typing {
+.terminal-live-container.live-running > .cmd-answer-typing {
   position: absolute;
   top: var(--cmd-output-pad-top);
   left: var(--pane-inline-padding);
@@ -586,14 +536,14 @@
 }
 
 /* The flow box and this clip receive the same measured height. The separate
-   clip still keeps xterm's full grid from leaking below a short command. */
-.xterm-live-viewport {
+   clip still keeps the painted grid from leaking below a short command. */
+.terminal-live-viewport {
   width: 100%;
   height: 100%;
   overflow: hidden;
 }
 
-.live-running > .xterm-live-viewport {
+.live-running > .terminal-live-viewport {
   height: 0;
 }
 
@@ -603,14 +553,14 @@
    doing exactly the same job did not. The height is set inline from the
    scroller by the controller, the same way the running region is sized, so
    both paths land on one treatment (nocx-6w4z). */
-.xterm-live-container.live-fullscreen {
+.terminal-live-container.live-fullscreen {
   flex: none;
 }
 
 /* Markerless sessions (plain SSH, serial) before the first OSC 133: the
    terminal fills the pane because there are no scrollback blocks to show.
    Sized inline by the controller, like live-fullscreen. */
-.xterm-live-container.live-unstructured {
+.terminal-live-container.live-unstructured {
   flex: none;
 }
 
@@ -639,9 +589,8 @@
   display: block;
 }
 
-/* Xterm wrapper: always has a stable min-height so xterm.fit() produces a
-   sane grid even when the content clip is one row tall. xterm mounts here,
-   inside the clip.
+/* Live grid wrapper: a stable min-height keeps row geometry sane even when
+   the content clip is one row tall. The painter surface mounts here.
    
    IT MUST NOT CLIP, because it is the element the echo shift TRANSLATES
    (controller._applyEchoShift). A clip on a translated element is applied in
@@ -656,50 +605,35 @@
    It carried `overflow: hidden` as "defence-in-depth against artifacts
    leaking below it (P1-5: stray bar below tabs)". Against a transform that is
    not redundant defence — it decides which rows can ever reach the real clip.
-   The clipping is done ONCE, outside: `.xterm-live-container` and
-   `.xterm-live-viewport` are both `overflow: hidden` and neither is
+   The clipping is done ONCE, outside: `.terminal-live-container` and
+   `.terminal-live-viewport` are both `overflow: hidden` and neither is
    translated. Do not answer a future leak by putting a clip back on this
    element; fix it on one of those. */
-.xterm-inner {
+.terminal-live-inner {
   min-height: 140px;
   height: 100%;
   width: 100%;
   /* The painter surface is positioned against THIS box: absolute (next
      rule) so it overlays the grid instead of taking flow space — an
      in-flow surface doubled the box the echo shift and the viewport
-     sizing were computed from, and pushed xterm's own root below the
+     sizing were computed from, and pushed the painted grid below the
      pane (measured: the click point hit the container, never a cell). */
   position: relative;
 }
 
 /* THE PAINTER'S SURFACE IN THE LIVE REGION (nocx-zg3k3.2.5). It paints
-   the committed grid at xterm-inner's origin — the same origin xterm's
+   the committed grid at terminal-live-inner's origin — the same origin the painter's
    own screen had — so the painted rows and the echo-shift transform move
    as one, and the input layer above them keeps its hit-test area. */
-.xterm-inner > .term-grid {
+.terminal-live-inner > .term-grid {
   position: absolute;
   top: 0;
   left: 0;
 }
 
-/* Fullscreen: override min-height so xterm fills the viewport. */
-.xterm-inner.inner-fullscreen {
+/* Fullscreen: override min-height so the painted grid fills the viewport. */
+.terminal-live-inner.inner-fullscreen {
   min-height: auto;
-}
-
-/* THE OCCLUDED INPUT LAYER (nocx-zg3k3.2.5). The cutover's interim: xterm
-   stays in the live region to receive what the person does and the bytes
-   that set the program's modes, and draws NOTHING — the cell painter
-   (.term-grid) draws the screen. The mark is on xterm's own root (renderers/
-   xterm.ts), set only when the renderer was built occluded, so no renderer
-   a person can see ever carries it. `opacity` and not `display`/`visibility`:
-   the layer must keep receiving pointer events (focus, mouse reporting) and
-   keep its helper textarea focusable for IME — hidden-but-hit-testable is
-   the whole point. Its DOM renderer still maintains its viewport-sized row
-   set underneath; that bounded cost is the interim's, paid until xterm is
-   removed (ADR-0072's order). */
-.xterm.xterm-occluded {
-  opacity: 0;
 }
 
 /* Alt-screen: the pane belongs to the program, so everything the block layer
@@ -717,7 +651,7 @@
    The live container is excluded rather than the whole stack being hidden from
    an ancestor: `display: none` on `.scrollback-inner` would take fixed
    descendants with it (P0-2). */
-.scrollback-inner.inner-fullscreen-mode > *:not(.xterm-live-container) {
+.scrollback-inner.inner-fullscreen-mode > *:not(.terminal-live-container) {
   display: none;
 }
 
@@ -800,7 +734,7 @@
      The indent costs a few pixels of visible width and NOTHING ELSE: a frozen
      `.cmd-output` is `white-space: pre` with its own `overflow-x: auto`
      (nocx-juau), so a wide grid reaches its far end by the scroll it already
-     had and nothing re-wraps. And the live xterm is not in here at all — it
+     had and nothing re-wraps. And the live grid is not in here at all — it
      is a sibling of the blocks in `.scrollback-inner` — so the terminal's own
      `cols` is untouched by any of this. */
   margin: var(--space-1) 0;
@@ -827,7 +761,7 @@
 
 .cmd-output {
   /* The block body's own padding, named because the LIVE region wears the
-     same box while the command runs (see .xterm-live-container.live-running):
+     same box while the command runs (see .terminal-live-container.live-running):
      the running region and the frozen body it becomes must occupy the same
      height, or the pane moves at the moment one replaces the other. */
   padding: var(--cmd-output-pad-top) 0 var(--cmd-output-pad-bottom);
@@ -836,7 +770,7 @@
   line-height: 1.2;
   color: var(--color-text);
   /* Frozen output never re-wraps (nocx-juau). The serializer joins the
-     physical rows xterm soft-wrapped at the PTY grid width back into one
+     physical rows soft-wrapped at the PTY grid width back into one
      logical line, so a CSS re-wrap here happens at the block's CURRENT
      width — a width nothing verifies against the grid the program drew to —
      and a re-wrap at the wrong width is exactly what folds a status bar or a
@@ -878,29 +812,28 @@
      total height at that moment, and the settle glide
      (scrollback/controller.ts `_glide`) has something to play back that a
      correct pitch would not have given it. The fallback keeps the old guess
-     for a session whose renderer has not measured yet. */
+     for a session whose accepted frame has not supplied cell metrics yet. */
   min-height: var(--term-cell-height, 1.2em);
   line-height: var(--term-cell-height, 1.2em);
   /* N frozen columns must occupy exactly N × the terminal's cell width
-     (nocx-yy9g). xterm rasterises at a cell advance snapped to whole
-     device pixels; the DOM would otherwise lay the same font out at its
+     (nocx-yy9g). The live painter places glyphs on device-pixel cell
+     advances; the DOM would otherwise lay the same font out at its
      natural fractional advance, and a fraction of a pixel per cell over a
      hundred columns is several columns of drift — a block that fitted the
      pane while live grows a scrollbar once frozen. The correction is
      per-character letter-spacing (cellWidth − naturalAdvance), published
      as --term-cell-delta on the scrollback container by
-     scrollback/cell-metric.ts from the renderer's real measurement
-     (_getCellDims). The DOM cannot simply be trusted to match: CSS has no
-     term for xterm's snapped cell width, because the snap depends on the
-     device pixel ratio at rasterise time. The value is refreshed by the
+     scrollback/cell-metric.ts from accepted frame geometry and a natural
+     font measurement. The DOM cannot simply be trusted to match: CSS has no
+     fixed value for cell width, because the device-pixel snap depends on
+     the device pixel ratio. The value is refreshed by the
      same publish on mount, resize and device-pixel-ratio change, and every
      block — old or new — adopts the current geometry, deliberately (see
      cell-metric.ts). */
   letter-spacing: var(--term-cell-delta, 0px);
-  /* ОДНА ЯЧЕЙКА — ОДИН ГЛИФ, как рисует сетка. Без этого DOM волен сшить
-     `->`, `==` или `ffi` в лигатуру и подвинуть кернингом то, что xterm
-     кладёт по ячейкам, — и предпосылка «одноколоночная латиница ложится на
-     сетку», на которой стоит вся коррекция выше, перестаёт быть верной. */
+  /* One cell is one glyph, as the painter draws it. Without this, the DOM
+     can shape `->`, `==`, or `ffi` as ligatures and alter the spacing that
+     the grid assigns per cell, invalidating the single-column correction. */
   font-variant-ligatures: none;
   font-kerning: none;
 }

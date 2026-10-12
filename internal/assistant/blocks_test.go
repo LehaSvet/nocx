@@ -259,7 +259,7 @@ func TestAsk_LongOutputIsAnsweredFromTheEnd(t *testing.T) {
 	defer srv.Close()
 
 	p := askParams(srv.URL, ptrGrant(sessionGrant("session-a", autonomousMatrix())), &fakeLedger{}, nil)
-	p.Requester = &blocksOnlyRequester{blocks: src}
+	p.SessionSource = src
 	p.Messages = []Message{{Role: "user", Content: "did df fail, and why?"}}
 
 	cl, err := newClientWithTestToolsFS(nil, toolsDirFS(t), nil, content.Floor{})
@@ -334,7 +334,7 @@ func TestAsk_AMarkedWindowIsReadEvenWhenTheModelOmitsTheCount(t *testing.T) {
 	defer srv.Close()
 
 	p := askParams(srv.URL, ptrGrant(sessionGrant("session-a", autonomousMatrix())), &fakeLedger{}, nil)
-	p.Requester = &blocksOnlyRequester{blocks: src}
+	p.SessionSource = src
 	p.MarkedSessionWindows = []MarkedSessionWindow{{ItemID: "blk-df", Start: 5, Count: 1}}
 	p.Messages = []Message{{Role: "user", Content: "what does this mean?"}}
 
@@ -388,7 +388,7 @@ func TestAsk_AWiderWindowAroundAMarkIsHonoured(t *testing.T) {
 	defer srv.Close()
 
 	p := askParams(srv.URL, ptrGrant(sessionGrant("session-a", autonomousMatrix())), &fakeLedger{}, nil)
-	p.Requester = &blocksOnlyRequester{blocks: src}
+	p.SessionSource = src
 	p.MarkedSessionWindows = []MarkedSessionWindow{{ItemID: "blk-log", Start: 20, Count: 1}}
 	p.Messages = []Message{{Role: "user", Content: "what does this line mean?"}}
 

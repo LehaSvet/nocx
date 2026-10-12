@@ -362,6 +362,10 @@ func effectKindName(k EffectKind) string {
 		return "a cwd report"
 	case EffectPromptBoundary:
 		return "a prompt-boundary observation"
+	case EffectRecovery:
+		return "a recovery snapshot"
+	case EffectCommandSnapshot:
+		return "a command-name snapshot"
 	default:
 		return fmt.Sprintf("EffectKind(%d)", int(k))
 	}
@@ -2552,7 +2556,7 @@ func TestSchedule_HostileOversizedDCS_FailsWhenItsRuleIsRemoved(t *testing.T) {
 // delivery path, and fails here — which is what makes the sentence in
 // contract.go a check rather than a claim.
 func TestEveryEffectKindBelongsToTheAtMostOnceClass(t *testing.T) {
-	for k := EffectBell; k <= EffectRecovery; k++ {
+	for k := EffectBell; k <= EffectCommandSnapshot; k++ {
 		if got := classOfEffect(k); got != DeliveryAtMostOnce {
 			t.Errorf("%s classifies as %s, want at-most-once: every effect kind the vocabulary declares changes no cell and must not be applied twice",
 				effectKindName(k), deliveryClassName(got))

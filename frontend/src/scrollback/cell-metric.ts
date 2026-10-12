@@ -1,15 +1,14 @@
 // Frozen output must be laid out on the terminal's cell metric (nocx-yy9g).
 //
-// xterm rasterises its grid into a GPU atlas at a cell advance SNAPPED TO
-// WHOLE DEVICE PIXELS (renderers/font.ts); the DOM lays the same characters
+// The live painter uses accepted cell metrics; the DOM lays frozen output
 // out at the font's natural fractional advance. Both surfaces resolve the
-// same font chain (FONT_FAMILY ≡ --font-family-mono, verified by test), so
-// this is not font substitution — the two agree on the font and disagree on
-// the metric. A fraction of a pixel per cell, over a hundred columns, is
-// several columns of drift: a block that fitted the pane while live grows a
-// horizontal scrollbar once frozen (the block was wider in the measured
-// screenshots; with a different platform font it can equally come out
-// narrower — both are the same defect, a pitch no one chose).
+// same font chain (--font-family-mono, verified by test), so this is not font
+// substitution — they agree on the font and differ on the metric. A fraction
+// of a pixel per cell, over a hundred columns, is several columns of drift: a
+// block that fitted the pane while live grows a horizontal scrollbar once
+// frozen (the block was wider in the measured screenshots; with a different
+// platform font it can equally come out narrower — both are the same defect,
+// a pitch no one chose).
 //
 // The DOM cannot simply be trusted to match, and the reason must stay in
 // sight or the next person deletes the correction as redundant: CSS has no

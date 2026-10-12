@@ -9,13 +9,12 @@
 // silently dead. The mount below exercises the REAL chain (editor mouseup →
 // seam → terminal-content policy → clipboard), so that bug fails here.
 //
-// The mount follows tabs.test.ts's pattern: the xterm renderer is mocked
-// (jsdom cannot run xterm.js), the WS client fake resolves a session, and
-// `tab.start()` drives TerminalContent through the same mount() a real tab
+// The mount uses the WS client fake to resolve a session, and `tab.start()`
+// drives TerminalContent through the same mount() a real tab
 // takes. The editor is reached through the same private-field escape hatch
 // editor.test.ts uses, and the selection is seeded through the CM6 view —
 // the same transaction a mouse drag produces.
-import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 // node builtins are untyped here (@types/node is not installed), so the
 // imports sit behind @ts-expect-error and the calls behind a contained
 // no-unsafe disable — the same trade theme-catalogue.test.ts makes at file
@@ -35,13 +34,13 @@ const COMMAND_BLOCK_FRAME_STYLE_ENTRY = resolve(srcDir, 'styles/components/comma
 const COMPOSER_STYLE = resolve(srcDir, 'styles/surfaces/composer.css')
 
 import type { PaneIdentity, PaneScreenReading } from './terminal-content'
+import type { SessionEffect } from './generated/session.effect'
 import type { Row, SessionFrame } from './generated/session.frame'
-import { styleOf, wireRowOf, type CellSpec } from './painter/fixtures'
+import { frameOf, styleOf, wireRowOf, type CellSpec } from './painter/fixtures'
 import { grantBlockFromElement, type GrantBlock } from './ask-entry'
 import type { AgentStatusResult } from './generated/agent.status'
 import { EditorView } from '@codemirror/view'
 import {
-  createRendererMock,
   makeClient,
   makeClipboard,
   makeBanner,
@@ -54,8 +53,6 @@ import {
   blockClosedHandler,
   type ClipboardFake,
   type ClientFake,
-  type LiveContentHeightSpy,
-  type RendererMock,
   type SessionFake,
   FIXTURE_CWD,
   FIXTURE_DIRECTORY_LABEL,
@@ -81,19 +78,16 @@ import { fixedEndpoint } from './endpoint'
 import type { SessionHandle, SessionRecovery, WSClient } from './ipc'
 import { blockOutputText, createCommandBlock, type RunningBlockActions } from './scrollback/blocks'
 import type { AgentRunCompletion } from './run-command'
-import { mountReadScreenHandler } from './read-screen'
 import { CommandSnapshotStore } from './command-snapshot'
 import type { ActionFacts, DesiredMode } from './capability'
 import type * as Capability from './capability'
 import type { ScrollbackController } from './scrollback/controller'
-import type { TerminalRenderer } from './renderers/types'
 import { pushOverlay, popOverlay } from './ui/overlay/stack'
 import { _resetThemeState } from './renderers/theme-adapter'
 import { showToast } from './ui/toast'
 import type { CapturedFrame } from './frame/types'
 import { createCapturedFrameView } from './frame/display'
 import { emptyAttrs } from './scrollback/serializer'
-import { BufferLine } from './scrollback/test-helpers'
 import type { SessionHomeSource } from './where/session-home'
 import type { BranchSource, BranchRequest } from './where/branch-source'
 import type { FilesOpenResult } from './generated/files.open'
@@ -111,18 +105,18 @@ vi.mock('./capability', async () => {
   }
 })
 
-// Mock the XtermRenderer class before any imports use it (same as tabs.test.ts).
-// The shared fixture mock implements the full TerminalRenderer surface,
-// including the recovery-fence seam and the _fire* test helpers.
-vi.mock('./renderers/xterm', () => ({
-  XtermRenderer: vi.fn(createRendererMock),
-}))
-
 // The refusal path calls showToast, which mounts a Solid root; the
 // export-section tests mock the module the same way.
 vi.mock('./ui/toast', () => ({
   showToast: vi.fn(),
 }))
+
+// Selection is a document-global browser state, unlike the mounted pane.
+// Clear it before every test so an earlier selection cannot own the next pane's
+// affordance after its DOM has been removed.
+beforeEach(() => {
+  window.getSelection()?.removeAllRanges()
+})
 
 /**
  * The token the renderer minted for its most recent submit, read off the
@@ -185,21 +179,13 @@ const editorOf = (content: TerminalContent): CommandEditor => {
   return withEditor.editor
 }
 
-/** TerminalContent also keeps the renderer private; tests reach the live
- *  mock through the same escape hatch editorOf uses (the field is typed
- *  TerminalRenderer in the class, structurally the mock). */
-const rendererOf = (content: TerminalContent): RendererMock => {
-  const withRenderer = content as unknown as { renderer: RendererMock }
-  return withRenderer.renderer
-}
-
 /** The live session mock behind TerminalContent's private field — the same
  *  escape hatch editorOf uses. `send` is what a raw pty write lands on. */
 const sessionOf = (content: TerminalContent): SessionFake =>
   (content as unknown as { session: SessionFake }).session
 
 /** The pane's input element (nocx-zg3k3.3.1): the seam a person's keyboard now
- *  reaches, where xterm's onData used to be. Private, reached the same way
+ *  reaches; it emits structured key intents. Private, reached the same way
  *  editorOf and sessionOf reach theirs. */
 const intentElementOf = (content: TerminalContent): HTMLTextAreaElement => {
   const withInput = content as unknown as {
@@ -361,121 +347,185 @@ async function mountTerminal(
 // fit followed by identical parsed-output frames must not fit the same usable
 // rectangle a second time, and the trailing PTY resize must settle on the
 // final grid and be cancelled by disposal.
-describe('TerminalContent geometry handoff and PTY resize policy (nocx-cwnz0)', () => {
-  it('a pane fit followed by identical parsed-output frames does not re-fit the same usable rectangle', async () => {
-    const client = makeClient()
-    const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
-    const renderer = rendererOf(content)
-    const raf = globalThis.requestAnimationFrame
-    globalThis.requestAnimationFrame = (cb: FrameRequestCallback): number => {
-      cb(0)
-      return 0
-    }
-    try {
-      content.viewportChanged({ width: 800, height: 400 })
-      /* eslint-disable @typescript-eslint/unbound-method */
-      expect(renderer.fitViewport).toHaveBeenCalledTimes(1)
-      expect(renderer.fitViewport).toHaveBeenLastCalledWith(
-        expect.objectContaining({ width: 800, height: 400 }),
-      )
-
-      // The live-region output path runs on every parsed frame; the usable
-      // rectangle is unchanged, so it must not fit again — the existing grid
-      // stays authoritative.
-      renderer._fireWriteParsed()
-      renderer._fireWriteParsed()
-      renderer._fireWriteParsed()
-      expect(renderer.fitViewport).toHaveBeenCalledTimes(1)
-      /* eslint-enable @typescript-eslint/unbound-method */
-    } finally {
-      globalThis.requestAnimationFrame = raf
-      teardown()
-    }
-  })
-
-  it('fits the grid to the live content box, not to the scroller (nocx-9bpeq.8)', async () => {
-    const client = makeClient()
-    const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
-    const withScrollback = content as unknown as { scrollback: ScrollbackController }
-    const renderer = rendererOf(content)
-    const raf = globalThis.requestAnimationFrame
-    globalThis.requestAnimationFrame = (cb: FrameRequestCallback): number => {
-      cb(0)
-      return 0
-    }
-    try {
-      const live = withScrollback.scrollback.xtermLiveContainer
-      live.style.paddingLeft = '16px'
-      live.style.paddingRight = '16px'
-      /* eslint-disable @typescript-eslint/unbound-method */
-      // Fallback path: jsdom reports clientWidth 0, so the delivered viewport
-      // is the guess — and the rows' inset is still not the grid's.
-      content.viewportChanged({ width: 1000, height: 400 })
-      expect(renderer.fitViewport).toHaveBeenLastCalledWith(
-        expect.objectContaining({ width: 968, height: 400 }),
-      )
-      // Measured path: the scroller's content width minus the same inset.
-      Object.defineProperty(withScrollback.scrollback.scrollbackArea, 'clientWidth', {
-        value: 800,
-        configurable: true,
-      })
-      content.viewportChanged({ width: 1000, height: 400 })
-      expect(renderer.fitViewport).toHaveBeenLastCalledWith(
-        expect.objectContaining({ width: 768, height: 400 }),
-      )
-      /* eslint-enable @typescript-eslint/unbound-method */
-    } finally {
-      globalThis.requestAnimationFrame = raf
-      teardown()
-    }
-  })
-
-  it('sends only the final grid to the session after the 80 ms settle window', async () => {
+describe('TerminalContent geometry follows accepted painter frames', () => {
+  it('uses committed backend cell metrics for the window size report', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    let teardown: (() => void) | undefined
+    const client = makeClient()
+    const { content, tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
     try {
-      const client = makeClient()
-      const mounted = await mountTerminal(makeClipboard(), {}, client)
-      teardown = mounted.teardown
-      const renderer = rendererOf(mounted.content)
-      const session = sessionOf(mounted.content)
-      renderer._fireResize(120, 40)
-      renderer._fireResize(100, 30)
-      renderer._fireResize(90, 28)
-
-      expect(session.sendResize).not.toHaveBeenCalled()
+      tab.pane.classList.add('active')
+      await vi.waitFor(() => expect(paneScreen()).not.toBeNull())
+      const session = sessionOf(content)
+      session.fireScreenFrame(
+        screenFrame(4, ['accepted geometry'], { cellWidthPx: 17, cellHeightPx: 34 }),
+      )
+      await vi.waitFor(() => expect(paneScreen()?.revision).toBe(4))
       vi.advanceTimersByTime(80)
-      expect(session.sendResize).toHaveBeenCalledTimes(1)
-      expect(session.sendResize).toHaveBeenCalledWith({
-        cols: 90,
-        rows: 28,
-        xpixel: 720,
-        ypixel: 448,
-      })
+
+      const expected = {
+        cols: SCREEN_COLS,
+        rows: SCREEN_ROWS,
+        xpixel: SCREEN_COLS * 17,
+        ypixel: SCREEN_ROWS * 34,
+      }
+      expect(session.sendResize).toHaveBeenCalledWith(expected)
+      expect(paneScreen()?.reported).toEqual(expected)
     } finally {
-      teardown?.()
+      teardown()
       vi.useRealTimers()
     }
   })
 
-  it('disposal cancels a pending PTY resize', async () => {
+  it('converts accepted device metrics after a DPR change, then adopts accepted geometry', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const client = makeClient()
+    const { content, tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
     try {
-      const client = makeClient()
-      const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
-      const renderer = rendererOf(content)
+      tab.pane.classList.add('active')
+      await vi.waitFor(() => expect(paneScreen()).not.toBeNull())
       const session = sessionOf(content)
+      session.fireScreenFrame(
+        screenFrame(4, ['accepted geometry'], { cellWidthPx: 7, cellHeightPx: 16 }),
+      )
+      await vi.waitFor(() => expect(paneScreen()?.revision).toBe(4))
+      vi.advanceTimersByTime(80)
+      session.sendResize.mockClear()
 
-      renderer._fireResize(90, 28)
-      expect(session.sendResize).not.toHaveBeenCalled()
+      vi.stubGlobal('devicePixelRatio', 2)
+      expect(window.devicePixelRatio).toBe(2)
+      ;(content as unknown as { _scheduleResizeReport(): void })._scheduleResizeReport()
+      vi.advanceTimersByTime(80)
 
-      // Dispose before the settle window elapses: the trailing resize must
-      // never reach the session.
-      teardown()
+      const resizeCalls = session.sendResize.mock.calls
+      const report = resizeCalls[resizeCalls.length - 1]?.[0]
+      if (!report) throw new Error('expected a resize report after the DPR change')
+      expect(report.xpixel).toBe(report.cols * 14)
+      expect(report.ypixel).toBe(report.rows * 32)
 
-      vi.advanceTimersByTime(100)
-      expect(session.sendResize).not.toHaveBeenCalled()
+      session.fireScreenFrame(
+        screenFrame(5, ['updated geometry'], {
+          cols: report.cols,
+          rows: report.rows,
+          cellWidthPx: 14,
+          cellHeightPx: 32,
+        }),
+      )
+      await vi.waitFor(() => expect(paneScreen()?.revision).toBe(5))
+      expect(paneScreen()?.geometry).toMatchObject({ cellWidthPx: 14, cellHeightPx: 32 })
     } finally {
+      vi.unstubAllGlobals()
+      teardown()
+      vi.useRealTimers()
+    }
+  })
+
+  it('bootstraps the first pixel report from the shared font probe when the backend has none', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.classList.contains('cell-metric-probe')) {
+          return { width: 64 * 8 } as DOMRect
+        }
+        if (this.classList.contains('term-grid-row')) {
+          return { width: SCREEN_COLS * 8, height: 17 } as DOMRect
+        }
+        return Element.prototype.getBoundingClientRect.call(this)
+      })
+    const client = makeClient()
+    const { content, tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    try {
+      tab.pane.classList.add('active')
+      await vi.waitFor(() => expect(paneScreen()).not.toBeNull())
+      const session = sessionOf(content)
+      session.fireScreenFrame(screenFrame(1, ['prompt'], { cellWidthPx: 0, cellHeightPx: 0 }))
+      await vi.waitFor(() => expect(tab.pane.querySelector('.term-grid-row')).not.toBeNull())
+      vi.advanceTimersByTime(80)
+
+      expect(session.sendResize).toHaveBeenCalledWith({
+        cols: SCREEN_COLS,
+        rows: SCREEN_ROWS,
+        xpixel: SCREEN_COLS * 8,
+        ypixel: SCREEN_ROWS * 17,
+      })
+    } finally {
+      teardown()
+      rectSpy.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('coalesces quick pane resizes and sends only the final grid', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const client = makeClient()
+    const { content, tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    try {
+      tab.pane.classList.add('active')
+      await vi.waitFor(() => expect(paneScreen()).not.toBeNull())
+      const session = sessionOf(content)
+      session.fireScreenFrame(screenFrame(1, ['prompt']))
+      await vi.waitFor(() => expect(paneScreen()?.revision).toBe(1))
+
+      content.viewportChanged({ width: 1200, height: 800 })
+      content.viewportChanged({ width: 1000, height: 600 })
+      content.viewportChanged({ width: 800, height: 400 })
+      expect(session.sendResize).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(80)
+
+      expect(session.sendResize).toHaveBeenCalledTimes(1)
+      const report = session.sendResize.mock.calls[0][0]
+      expect(report.cols).toBeGreaterThan(0)
+      expect(report.rows).toBeGreaterThan(0)
+      expect(report.xpixel).toBe(report.cols * 8)
+      expect(report.ypixel).toBe(report.rows * 16)
+    } finally {
+      teardown()
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores stale frames and does not replace accepted geometry', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const client = makeClient()
+    const { content, tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    try {
+      tab.pane.classList.add('active')
+      await vi.waitFor(() => expect(paneScreen()).not.toBeNull())
+      const session = sessionOf(content)
+      session.fireScreenFrame(screenFrame(3, ['accepted'], { cellWidthPx: 10, cellHeightPx: 20 }))
+      await vi.waitFor(() => expect(paneScreen()?.revision).toBe(3))
+      vi.advanceTimersByTime(80)
+      const firstReport =
+        session.sendResize.mock.calls[session.sendResize.mock.calls.length - 1]?.[0]
+
+      session.fireScreenFrame(screenFrame(2, ['stale'], { cellWidthPx: 20, cellHeightPx: 40 }))
+      vi.advanceTimersByTime(80)
+      expect(paneScreen()?.revision).toBe(3)
+      expect(session.sendResize.mock.calls[session.sendResize.mock.calls.length - 1]?.[0]).toEqual(
+        firstReport,
+      )
+    } finally {
+      teardown()
       vi.useRealTimers()
     }
   })
@@ -1104,9 +1154,9 @@ describe('Escape with the editor visible but unfocused (focus-loss rescue)', () 
     try {
       content.setVisible(true)
       ed.show()
-      const live = tab.pane.querySelector<HTMLElement>('.xterm-live-container')
+      const live = tab.pane.querySelector<HTMLElement>('.terminal-live-container')
       expect(live).not.toBeNull()
-      // xterm's real hidden input lives inside the live container; while
+      // The terminal input element lives inside the live container; while
       // the editor is up the grid is read-only dead space, so focus parked
       // there must be rescued like a click on the scrollback.
       gridInput = document.createElement('textarea')
@@ -1389,6 +1439,54 @@ describe("the dropdown owns the arrows while it is open; recall's bare-Up gestur
   })
 })
 
+describe('the terminal keyboard sends physical key intents', () => {
+  it('preserves Shift+Enter as a key intent instead of xterm-encoded bytes', async () => {
+    const { content, teardown } = await mountTerminal(makeClipboard())
+    try {
+      const session = sessionOf(content)
+      const input = (content as unknown as { _intentInput: { element: HTMLTextAreaElement } })
+        ._intentInput.element
+      const event = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      })
+      input.dispatchEvent(event)
+      expect(event.defaultPrevented).toBe(true)
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('key', 'Shift+enter'))
+      expect(session.send).not.toHaveBeenCalled()
+    } finally {
+      teardown()
+    }
+  })
+})
+
+describe('clipboard paste into the live terminal uses session intents', () => {
+  it.each([
+    ['right-click', 'contextmenu', undefined],
+    ['middle-click', 'mousedown', 1],
+  ])('%s queues one paste intent instead of using xterm', async (_name, eventType, button) => {
+    const clipboard = makeClipboard({ readText: vi.fn().mockResolvedValue('clipboard text') })
+    const { content, teardown } = await mountTerminal(clipboard)
+    try {
+      const session = sessionOf(content)
+      const target = (content as unknown as { _paneTarget: HTMLElement })._paneTarget
+      target.dispatchEvent(
+        eventType === 'contextmenu'
+          ? new MouseEvent(eventType, { bubbles: true, cancelable: true })
+          : new MouseEvent(eventType, { bubbles: true, cancelable: true, button }),
+      )
+      await vi.waitFor(() => expect(clipboard.readText).toHaveBeenCalledOnce())
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('paste', 'clipboard text'))
+      expect(session.send).not.toHaveBeenCalled()
+    } finally {
+      teardown()
+    }
+  })
+})
+
 describe('paste with focus on a frozen block (nocx-w7h.9)', () => {
   it('Cmd/Ctrl+V redirects to the editor, deselects the block, and never reaches the session', async () => {
     const { ed, content, teardown } = await mountTerminal(makeClipboard(), {
@@ -1450,20 +1548,19 @@ describe('paste with focus on a frozen block (nocx-w7h.9)', () => {
       teardown()
     }
   })
-  it("Cmd/Ctrl+V leaves xterm's helper textarea as the text owner", async () => {
+  it('Cmd/Ctrl+V leaves the pane intent input as the text owner', async () => {
     const { ed, content, tab, teardown } = await mountTerminal(makeClipboard(), {
       attachToDocument: true,
     })
-    const renderer = rendererOf(content)
-    const textarea = document.createElement('textarea')
+    const session = sessionOf(content)
+    const textarea = intentElementOf(content)
     try {
       content.setVisible(true)
       ed.show()
       ed.insertText('keep this draft')
-      renderer.paste.mockClear()
-      const live = tab.pane.querySelector<HTMLElement>('.xterm-live-container')
+      const live = tab.pane.querySelector<HTMLElement>('.terminal-live-container')
       expect(live).not.toBeNull()
-      live!.append(textarea)
+      expect(live!.contains(textarea)).toBe(true)
       textarea.focus()
       expect(document.activeElement).toBe(textarea)
 
@@ -1475,12 +1572,12 @@ describe('paste with focus on a frozen block (nocx-w7h.9)', () => {
       })
       textarea.dispatchEvent(ev)
 
-      // xterm owns paste while its helper textarea is focused. The
-      // document rescue must not steal a browser-native paste from it.
+      // The pane's own intent input remains the active owner. Ctrl+V is left
+      // to the browser's native paste event rather than claimed as terminal bytes.
       expect(ev.defaultPrevented).toBe(false)
       expect(document.activeElement).toBe(textarea)
       expect(ed.getDoc()).toBe('keep this draft')
-      expect(renderer.paste).not.toHaveBeenCalled()
+      expect(session.intent.mock.calls).toEqual([['focus', 'in']])
     } finally {
       textarea.remove()
       teardown()
@@ -1501,7 +1598,7 @@ describe('inserting a saved secret into the pane in front (nocx-fk32)', () => {
     return client
   }
 
-  it('writes the VALUE to the pty when the terminal owns input, and sends it', async () => {
+  it('sends the VALUE and Return as intents when the terminal owns input', async () => {
     const client = resolvingClient('hunter2')
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
@@ -1511,10 +1608,14 @@ describe('inserting a saved secret into the pane in front (nocx-fk32)', () => {
       // the value goes across, WITH its newline: choosing a secret at a
       // password prompt is the answer to that prompt (owner, 2026-08-10).
       editorOf(content).hide()
-      const sentBefore = session.send.mock.calls.length
+      const intentCountBefore = session.intent.mock.calls.length
       await expect(content.insertSecret('pi@far')).resolves.toBe('value')
-      const sent = session.send.mock.calls.slice(sentBefore).map((c: unknown[]) => c[0])
-      expect(sent).toEqual(['hunter2\n'])
+      await vi.waitFor(() => expect(session.intent.mock.calls.length).toBe(intentCountBefore + 2))
+      expect(session.intent.mock.calls.slice(intentCountBefore)).toEqual([
+        ['text', 'hunter2'],
+        ['key', 'enter'],
+      ])
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -1534,8 +1635,10 @@ describe('inserting a saved secret into the pane in front (nocx-fk32)', () => {
       const session = sessionOf(content)
       editorOf(content).hide()
       const sentBefore = session.send.mock.calls.length
+      const intentCountBefore = session.intent.mock.calls.length
       await expect(content.insertSecret('gone')).resolves.toBe('unavailable')
       expect(session.send.mock.calls.length).toBe(sentBefore)
+      expect(session.intent.mock.calls.length).toBe(intentCountBefore)
     } finally {
       teardown()
     }
@@ -1564,7 +1667,7 @@ describe('inserting a saved secret into the pane in front (nocx-fk32)', () => {
     }
   })
 })
-describe('characterising insertSecret before the input-owner extraction (nocx-xqu5)', () => {
+describe('saved-secret input preserves the single intent route', () => {
   // Written BEFORE the extraction and required to pass unchanged after it:
   // the extraction may change only WHERE the question 'who owns input in
   // this pane' is answered (into a private inputOwner()), never the
@@ -1602,20 +1705,25 @@ describe('characterising insertSecret before the input-owner extraction (nocx-xq
     }
   })
 
-  it('with the terminal owning input, the value is resolved and sent WITH its newline', async () => {
+  it('with the terminal owning input, the VALUE and Return are structured intents', async () => {
     const client = resolvingClient('hunter2')
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
       const session = sessionOf(content)
       editorOf(content).hide()
-      const sentBefore = session.send.mock.calls.length
+      const intentCountBefore = session.intent.mock.calls.length
       await expect(content.insertSecret('pi@far')).resolves.toBe('value')
       // The vault is asked for exactly the reference line — nothing more.
       expect(client.call).toHaveBeenCalledWith('vault.resolveLine', { line: REFERENCE })
-      const sent = session.send.mock.calls.slice(sentBefore).map((c: unknown[]) => c[0])
-      // The resolved value crosses, with the newline: choosing a secret at
-      // a password prompt IS the answer to that prompt (owner, 2026-08-10).
-      expect(sent).toEqual(['hunter2\n'])
+      await vi.waitFor(() => expect(session.intent.mock.calls.length).toBe(intentCountBefore + 2))
+      // The resolved value and Return travel as two typed intents. The runtime
+      // supplies the mode-aware key encoding; the frontend never appends a
+      // newline byte to a raw write.
+      expect(session.intent.mock.calls.slice(intentCountBefore)).toEqual([
+        ['text', 'hunter2'],
+        ['key', 'enter'],
+      ])
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -1633,8 +1741,10 @@ describe('characterising insertSecret before the input-owner extraction (nocx-xq
     withSession.session = null
     try {
       const sentBefore = session.send.mock.calls.length
+      const intentCountBefore = session.intent.mock.calls.length
       await expect(content.insertSecret('pi@far')).resolves.toBe('unavailable')
       expect(session.send.mock.calls.length).toBe(sentBefore)
+      expect(session.intent.mock.calls.length).toBe(intentCountBefore)
     } finally {
       withSession.session = original
       teardown()
@@ -1685,7 +1795,6 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
       const session = sessionOf(content)
-      const renderer = rendererOf(content)
       editorOf(content).hide()
       const sentBefore = session.send.mock.calls.length
       await expect(content.insertSnippet('run {{secret:pi@far}}')).resolves.toEqual({
@@ -1696,12 +1805,10 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
       expect(client.call).toHaveBeenCalledWith('vault.resolveLine', {
         line: 'run {{secret:pi@far}}',
       })
-      // The paste goes through the engine with the resolved line, and the
-      // engine's onData is what reaches the session — byte for byte. No
-      // newline is appended anywhere on this path (§9.3).
-      expect(renderer.paste).toHaveBeenCalledWith('run hunter2')
-      const sent = session.send.mock.calls.slice(sentBefore).map((c: unknown[]) => c[0])
-      expect(sent).toEqual(['run hunter2'])
+      // The resolved body remains one paste intent (no newline); the runtime
+      // applies the program's current paste mode.
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('paste', 'run hunter2'))
+      expect(session.send.mock.calls.length).toBe(sentBefore)
     } finally {
       teardown()
     }
@@ -1723,7 +1830,6 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
       const session = sessionOf(content)
-      const renderer = rendererOf(content)
       editorOf(content).hide()
       const sentBefore = session.send.mock.calls.length
       await expect(content.insertSnippet('fire {{secret:gone}}')).resolves.toEqual({
@@ -1731,7 +1837,6 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
         reason: 'unresolved-secret',
         name: 'gone',
       })
-      expect(renderer.paste).not.toHaveBeenCalled()
       expect(session.send.mock.calls.length).toBe(sentBefore)
     } finally {
       teardown()
@@ -1752,14 +1857,12 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
       const session = sessionOf(content)
-      const renderer = rendererOf(content)
       editorOf(content).hide()
       const sentBefore = session.send.mock.calls.length
       await expect(content.insertSnippet('fire {{secret:pi@far}}')).resolves.toEqual({
         ok: false,
         reason: 'unresolved-secret',
       })
-      expect(renderer.paste).not.toHaveBeenCalled()
       expect(session.send.mock.calls.length).toBe(sentBefore)
     } finally {
       teardown()
@@ -1773,17 +1876,56 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
       resolvingClient('hunter2'),
     )
     const session = sessionOf(content)
-    const renderer = rendererOf(content)
     const withSession = content as unknown as { session: SessionFake | null }
     const original = withSession.session
     withSession.session = null
     try {
       const sentBefore = session.send.mock.calls.length
       await expect(content.insertSnippet('echo hi')).resolves.toEqual(NO_OWNER)
-      expect(renderer.paste).not.toHaveBeenCalled()
       expect(session.send.mock.calls.length).toBe(sentBefore)
     } finally {
       withSession.session = original
+      teardown()
+    }
+  })
+
+  it('uses the latest accepted backend bracketed-paste mode', async () => {
+    const client = resolvingClient('line1\nhunter2')
+    const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    try {
+      const session = sessionOf(content)
+      editorOf(content).hide()
+      const frame = screenFrame(1, [])
+      frame.state.bracketedPaste = true
+      session.fireScreenFrame(frame)
+
+      await expect(content.insertSnippet('line1\n{{secret:pi@far}}')).resolves.toEqual({
+        ok: true,
+        where: 'pty',
+      })
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('paste', 'line1\nhunter2'))
+    } finally {
+      teardown()
+    }
+  })
+
+  it('refuses multi-line paste when the latest accepted backend mode is disabled', async () => {
+    const client = resolvingClient('line1\nhunter2')
+    const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    try {
+      const session = sessionOf(content)
+      editorOf(content).hide()
+      const frame = screenFrame(1, [])
+      frame.state.bracketedPaste = false
+      session.fireScreenFrame(frame)
+      const sentBefore = session.send.mock.calls.length
+
+      await expect(content.insertSnippet('line1\n{{secret:pi@far}}')).resolves.toEqual({
+        ok: false,
+        reason: 'multi-line-no-bracketed-paste',
+      })
+      expect(session.send.mock.calls.length).toBe(sentBefore)
+    } finally {
       teardown()
     }
   })
@@ -1793,9 +1935,7 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
       const session = sessionOf(content)
-      const renderer = rendererOf(content)
       editorOf(content).hide()
-      renderer.bracketedPasteActive.mockReturnValue(false)
       const sentBefore = session.send.mock.calls.length
       await expect(content.insertSnippet('line1\n{{secret:pi@far}}')).resolves.toEqual({
         ok: false,
@@ -1804,7 +1944,6 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
       // The refusal is about the destination, so it is decided before the
       // vault is asked and before the engine is touched (§9.4).
       expect(client.call).not.toHaveBeenCalledWith('vault.resolveLine', expect.anything())
-      expect(renderer.paste).not.toHaveBeenCalled()
       expect(session.send.mock.calls.length).toBe(sentBefore)
     } finally {
       teardown()
@@ -1816,9 +1955,10 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
       const session = sessionOf(content)
-      const renderer = rendererOf(content)
       editorOf(content).hide()
-      renderer.bracketedPasteActive.mockReturnValue(true)
+      const frame = screenFrame(1, [])
+      frame.state.bracketedPaste = true
+      session.fireScreenFrame(frame)
       const sentBefore = session.send.mock.calls.length
       await expect(content.insertSnippet('line1\n{{secret:pi@far}}')).resolves.toEqual({
         ok: true,
@@ -1828,46 +1968,8 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
         line: 'line1\n{{secret:pi@far}}',
       })
       // One document: resolved, newline intact, nothing appended (§9.4).
-      expect(renderer.paste).toHaveBeenCalledWith('line1\nhunter2')
-      const sent = session.send.mock.calls.slice(sentBefore).map((c: unknown[]) => c[0])
-      expect(sent).toEqual(['line1\nhunter2'])
-    } finally {
-      teardown()
-    }
-  })
-
-  // nocx-8rtr.1. The bytes a program sent HAVE arrived — the wire carries
-  // them, measured in the stand — but renderer.write() is fire-and-forget
-  // and the parse is one pass behind. A synchronous read of the mode at the
-  // moment of the fire therefore answers about the terminal BEFORE the
-  // program's DECSET, and refuses a body the destination can honour.
-  //
-  // Measured on the real renderer (renderers/xterm.test.ts's own
-  // 'bracketed paste, read from the real parser' seam): immediately after
-  // write('\x1b[?2004h') the read is false, and after the parse it is true.
-  // So the fire must fence on the parse before it decides.
-  it('a multi-line body is delivered when the program enabled the mode and the parse is still one pass behind', async () => {
-    const client = resolvingClient('line1\nhunter2')
-    const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
-    try {
-      const renderer = rendererOf(content)
-      editorOf(content).hide()
-
-      // The terminal as it is at the instant of the fire: the DECSET is in
-      // the write queue, not yet in the parser. It becomes true only once
-      // the barrier the renderer already offers has settled.
-      let parsed = false
-      renderer.bracketedPasteActive.mockImplementation(() => parsed)
-      renderer.awaitWriteBarrier.mockImplementation(() => {
-        parsed = true
-        return Promise.resolve()
-      })
-
-      await expect(content.insertSnippet('line1\n{{secret:pi@far}}')).resolves.toEqual({
-        ok: true,
-        where: 'pty',
-      })
-      expect(renderer.paste).toHaveBeenCalledWith('line1\nhunter2')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('paste', 'line1\nhunter2'))
+      expect(session.send.mock.calls.length).toBe(sentBefore)
     } finally {
       teardown()
     }
@@ -1878,14 +1980,17 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
       const client = resolvingClient('echo hunter2')
       const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
       try {
-        const renderer = rendererOf(content)
         editorOf(content).hide()
-        renderer.bracketedPasteActive.mockReturnValue(active)
+        const frame = screenFrame(1, [])
+        frame.state.bracketedPaste = active
+        sessionOf(content).fireScreenFrame(frame)
         await expect(content.insertSnippet('echo {{secret:pi@far}}')).resolves.toEqual({
           ok: true,
           where: 'pty',
         })
-        expect(renderer.paste).toHaveBeenCalledWith('echo hunter2')
+        await vi.waitFor(() =>
+          expect(sessionOf(content).intent).toHaveBeenCalledWith('paste', 'echo hunter2'),
+        )
       } finally {
         teardown()
       }
@@ -1907,7 +2012,7 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
     }
   })
 
-  it('a paste that reports no write is a refusal, not a reported delivery', async () => {
+  it('snippet paste is queued as a session intent, not written by xterm', async () => {
     const { content, teardown } = await mountTerminal(
       makeClipboard(),
       {},
@@ -1915,15 +2020,12 @@ describe('firing a snippet into the pane in front (nocx-xqu5)', () => {
     )
     try {
       const session = sessionOf(content)
-      const renderer = rendererOf(content)
       editorOf(content).hide()
-      renderer.paste.mockReturnValue(false)
-      const sentBefore = session.send.mock.calls.length
       await expect(content.insertSnippet('echo {{secret:pi@far}}')).resolves.toEqual({
-        ok: false,
-        reason: 'write-failed',
+        ok: true,
+        where: 'pty',
       })
-      expect(session.send.mock.calls.length).toBe(sentBefore)
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('paste', 'echo hunter2'))
     } finally {
       teardown()
     }
@@ -1982,18 +2084,9 @@ describe('the snippet palette chord (nocx-jj77)', () => {
     }
   })
 
-  it('the xterm boundary (the renderer chord registration) delegates to the SAME opener', async () => {
-    const onSnippetChord = vi.fn()
-    const { content, teardown } = await mountTerminal(makeClipboard(), {
-      hooks: { onSnippetChord },
-    })
-    try {
-      rendererOf(content)._fireSnippetChord()
-      expect(onSnippetChord).toHaveBeenCalledTimes(1)
-    } finally {
-      teardown()
-    }
-  })
+  // The former XtermRenderer chord subscription is obsolete: the grid's
+  // actual intent input and the editor arbiter above now share the opener.
+  // The input-surface acceptance test above covers the user-visible route.
 
   it("the chord closes the pane's own floating surfaces before opening the palette", async () => {
     const onSnippetChord = vi.fn()
@@ -2211,10 +2304,19 @@ describe('the recovery action chip in editor chrome (nocx-atyf.2)', () => {
       // No markers yet: unsupported shell, no recovery needed.
       expect(recoveryLabel(content)).toBeNull()
 
-      // Fire markers to reach integrated + editor = healthy.
-      const renderer = rendererOf(content)
-      renderer._fireCommandMarker({ kind: 'A', line: 0, col: 0, buffer: 'normal' })
-      renderer._fireCommandMarker({ kind: 'B', line: 0, col: 0, buffer: 'normal' })
+      // A backend-accepted prompt boundary is the integration signal; the
+      // client no longer parses shell markers.
+      const session = sessionOf(content)
+      session.fireScreenFrame(screenFrame(1, ['$ prompt']))
+      session.fireEffect({
+        sessionId: session.sessionId,
+        generation: '1',
+        effectId: '1',
+        kind: 'promptBoundary',
+        screenRevision: 1,
+        title: '',
+        body: '',
+      })
 
       // Healthy state: no recovery action shown.
       expect(recoveryLabel(content)).toBeNull()
@@ -2294,8 +2396,10 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
         status: 'starting',
         shell: '/bin/zsh',
       })
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('x')
+      typeIntoPane(content, 'x')
+      expect(session.intent).not.toHaveBeenCalled()
       expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
@@ -2306,6 +2410,7 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
     const client = makeClient()
     const { content, tab, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
+      const session = sessionOf(content)
       const sessionId = client._sessions[0].sessionId
       integrationHandler(client)({ sessionId, status: 'starting', shell: '/bin/zsh' })
       integrationHandler(client)({ sessionId, status: 'integrated', shell: '/bin/zsh' })
@@ -2313,10 +2418,11 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       expect(tab.pane.querySelector(WAITING)).toBeNull()
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('')
 
-      const session = sessionOf(content)
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('y')
-      expect(session.send).toHaveBeenCalledWith('y')
+      typeIntoPane(content, 'y')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'y'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -2343,9 +2449,11 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       expect(tab.pane.querySelector('.nocx-integration-notice')).not.toBeNull()
 
       const session = sessionOf(content)
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('z')
-      expect(session.send).toHaveBeenCalledWith('z')
+      typeIntoPane(content, 'z')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'z'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -2357,9 +2465,11 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
     try {
       expect(tab.pane.querySelector(WAITING)).toBeNull()
       const session = sessionOf(content)
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('a')
-      expect(session.send).toHaveBeenCalledWith('a')
+      typeIntoPane(content, 'a')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'a'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -2402,9 +2512,11 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('')
 
       const session = sessionOf(content)
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('b')
-      expect(session.send).toHaveBeenCalledWith('b')
+      typeIntoPane(content, 'b')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'b'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -2439,8 +2551,10 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       })
       expect(tab.pane.querySelector(WAITING)).not.toBeNull()
       expect(content.shellState).not.toBe('integrated')
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('x')
+      typeIntoPane(content, 'x')
+      expect(session.intent).not.toHaveBeenCalled()
       expect(session.send).not.toHaveBeenCalled()
 
       // The fact the ack promised, now arriving: nothing about the pane's
@@ -2460,9 +2574,11 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       })
       expect(tab.pane.querySelector(WAITING)).toBeNull()
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('')
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('y')
-      expect(session.send).toHaveBeenCalledWith('y')
+      typeIntoPane(content, 'y')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'y'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -2479,9 +2595,11 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
     try {
       expect(tab.pane.querySelector(WAITING)).toBeNull()
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('')
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('z')
-      expect(session.send).toHaveBeenCalledWith('z')
+      typeIntoPane(content, 'z')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'z'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -2506,8 +2624,10 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       // on alone, before any session.integrationChanged exists.
       expect(tab.pane.querySelector(WAITING)).not.toBeNull()
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('none')
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('x')
+      typeIntoPane(content, 'x')
+      expect(session.intent).not.toHaveBeenCalled()
       expect(session.send).not.toHaveBeenCalled()
 
       fireIntegration({
@@ -2517,9 +2637,11 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       })
       expect(tab.pane.querySelector(WAITING)).toBeNull()
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('')
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('y')
-      expect(session.send).toHaveBeenCalledWith('y')
+      typeIntoPane(content, 'y')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'y'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -2538,38 +2660,64 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
     try {
       expect(tab.pane.querySelector(WAITING)).toBeNull()
       expect(scrollbackFor(content).scrollbackLayout.style.display).toBe('')
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('z')
-      expect(session.send).toHaveBeenCalledWith('z')
+      typeIntoPane(content, 'z')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'z'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
   })
 })
 
-// The other half of the one-answerer change (ADR-0066, nocx-ygxjv.12). The
-// renderer stopped producing xterm's automatic replies to the program's own
-// queries — proved against the REAL engine in renderers/xterm.test.ts — and
-// this is the half that lives at the surface: the replies travelled
-// renderer.onData → session.send, which is ALSO the path a keystroke takes, so
-// removing the path with the replies would have left a terminal nobody can
-// type into. What this pins is the path, not the engine: a key reaching the
-// terminal still reaches the session, byte for byte and in order.
-describe('typing still reaches the session (nocx-ygxjv.12)', () => {
-  it('forwards every key the terminal produces, in order', async () => {
+// One input authority remains after the xterm cutover (ADR-0066): renderer
+// output cannot become PTY input, while a person's key and committed text
+// arrive as structured session intents.
+describe('terminal input uses session intents, never renderer bytes', () => {
+  it('ignores renderer onData and forwards the person’s actions as intents', async () => {
     const client = makeClient()
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
       const session = sessionOf(content)
       session.send.mockClear()
+      session.intent.mockClear()
 
-      // A word and the Enter that submits it: three separate onData events at
-      // xterm, and three writes at the pty.
-      rendererOf(content)._fireData('l')
-      rendererOf(content)._fireData('s')
-      rendererOf(content)._fireData('\r')
+      // This is the old xterm protocol-reply/input seam. It has no route to the
+      // session; only the input element below can submit a user's action.
+      session.fireData('backend data-plane bytes')
+      expect(session.send).not.toHaveBeenCalled()
+      expect(session.intent).not.toHaveBeenCalled()
 
-      expect(session.send.mock.calls).toEqual([['l'], ['s'], ['\r']])
+      typeIntoPane(content, 'ls', '\r')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledTimes(3))
+
+      expect(session.intent.mock.calls).toEqual([
+        ['text', 'l'],
+        ['text', 's'],
+        ['key', 'enter'],
+      ])
+      expect(session.send).not.toHaveBeenCalled()
+    } finally {
+      teardown()
+    }
+  })
+
+  it('restores the native shell with text and Enter intents', async () => {
+    const { content, teardown } = await mountTerminal(makeClipboard())
+    try {
+      const session = sessionOf(content)
+      session.intent.mockClear()
+      session.send.mockClear()
+
+      content.switchToTerminalInput()
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledTimes(2))
+
+      expect(session.intent.mock.calls).toEqual([
+        ['text', '__nocx_native_mode'],
+        ['key', 'enter'],
+      ])
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -3119,13 +3267,21 @@ describe('terminal/editor input switching (nocx-atyf.5)', () => {
     const { content, teardown } = await mountTerminal(makeClipboard(), {
       attachToDocument: true,
     })
-    const renderer = rendererOf(content)
     try {
       content.setVisible(true)
-      // Even a full marker cycle cannot reach 'editor': the presentation
-      // axis is severed (ADR-0024 §1) — no ownership, no editor.
-      renderer._fireCommandMarker({ kind: 'A', line: 0, col: 0, buffer: 'normal' })
-      renderer._fireCommandMarker({ kind: 'B', line: 0, col: 0, buffer: 'normal' })
+      // Even an accepted screen and prompt boundary cannot change the
+      // presentation axis (ADR-0024 §1).
+      const session = sessionOf(content)
+      session.fireScreenFrame(screenFrame(1, ['$ prompt']))
+      session.fireEffect({
+        sessionId: session.sessionId,
+        generation: '1',
+        effectId: '1',
+        kind: 'promptBoundary',
+        screenRevision: 1,
+        title: '',
+        body: '',
+      })
       expect(content.presentation).toBe('terminal')
       // The user gestures still exist and leave the presentation alone.
       content.switchToTerminalInput()
@@ -3242,10 +3398,9 @@ describe('activeOrigin (B.9) — the machine the tab speaks for', () => {
     const client = makeClient()
     client.openSession.mockResolvedValue(session)
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
-    const renderer = rendererOf(content)
     try {
       expect(content.activeOrigin()?.cwdVerified).toBe(false)
-      renderer._fireCwd('host', '/srv/new/path')
+      fireFrameMetadata(sessionOf(content), 1, { cwd: { host: 'host', path: '/srv/new/path' } })
       const after = content.activeOrigin()
       expect(after?.cwd).toBe('/srv/new/path')
       expect(after?.cwdVerified).toBe(true)
@@ -3268,13 +3423,12 @@ describe('activeOrigin (B.9) — the machine the tab speaks for', () => {
       { hooks: { onActiveOriginChange } },
       client,
     )
-    const renderer = rendererOf(content)
     try {
       // The session open itself is an origin transition (null → origin).
       expect(onActiveOriginChange).toHaveBeenCalledTimes(1)
 
       // A verified OSC 7 cwd changes the answer.
-      renderer._fireCwd('host', '/srv/new/path')
+      fireFrameMetadata(sessionOf(content), 1, { cwd: { host: 'host', path: '/srv/new/path' } })
       expect(onActiveOriginChange).toHaveBeenCalledTimes(2)
       expect(content.activeOrigin()?.cwd).toBe('/srv/new/path')
 
@@ -3371,7 +3525,7 @@ describe("the pane's where-facts, fed from fake sources (nocx-9bpeq.16)", () => 
     try {
       content.setVisible(true)
       // A verified cwd asks the source to open, exactly once.
-      rendererOf(content)._fireCwd('', '/home/nocx/project')
+      fireFrameMetadata(sessionOf(content), 1, { cwd: { host: '', path: '/home/nocx/project' } })
       expect(sessionHome.ensureCalls).toHaveLength(1)
       expect(sessionHome.ensureCalls[0]).toMatchObject({
         sessionId,
@@ -3430,7 +3584,7 @@ describe("the pane's where-facts, fed from fake sources (nocx-9bpeq.16)", () => 
     const withScrollback = content as unknown as { scrollback: ScrollbackController }
     try {
       content.setVisible(true)
-      rendererOf(content)._fireCwd('', '/repo')
+      fireFrameMetadata(sessionOf(content), 1, { cwd: { host: '', path: '/repo' } })
       branchSource.publish('main')
 
       handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
@@ -3480,7 +3634,6 @@ describe("the pane's where-facts, fed from fake sources (nocx-9bpeq.16)", () => 
       client,
     )
     const handler = lifecycleHandler(client)
-    const renderer = rendererOf(content)
     const sessionId = sessionOf(content).sessionId
     try {
       content.setVisible(true)
@@ -3488,7 +3641,7 @@ describe("the pane's where-facts, fed from fake sources (nocx-9bpeq.16)", () => 
       expect(branchSource.requests).toHaveLength(0)
 
       // A verified cwd triggers exactly one request.
-      renderer._fireCwd('', '/repo')
+      fireFrameMetadata(sessionOf(content), 1, { cwd: { host: '', path: '/repo' } })
       expect(branchSource.requests).toHaveLength(1)
       expect(branchSource.requests[0]).toMatchObject({
         sessionId,
@@ -3499,7 +3652,7 @@ describe("the pane's where-facts, fed from fake sources (nocx-9bpeq.16)", () => 
 
       // The SAME verified cwd reported again (an unrelated OSC 7 replay)
       // does not reset the debounce for nothing.
-      renderer._fireCwd('', '/repo')
+      fireFrameMetadata(sessionOf(content), 2, { cwd: { host: '', path: '/repo' } })
       expect(branchSource.requests).toHaveLength(1)
 
       // A settled command block asks again, unconditionally — a `git
@@ -3578,7 +3731,6 @@ describe("the pane's where-facts, fed from fake sources (nocx-9bpeq.16)", () => 
       client,
     )
     const handler = lifecycleHandler(client)
-    const renderer = rendererOf(content)
     try {
       content.setVisible(true)
       // The local shell's own domain first.
@@ -3595,7 +3747,7 @@ describe("the pane's where-facts, fed from fake sources (nocx-9bpeq.16)", () => 
       })
       // A verified cwd reported on the nested domain — a path on the far
       // host, which this pane's own (local) session cannot answer for.
-      renderer._fireCwd('192.168.0.93', '/home/pi')
+      fireFrameMetadata(sessionOf(content), 1, { cwd: { host: '192.168.0.93', path: '/home/pi' } })
       expect(branchSource.requests).toHaveLength(0)
       expect(partText(editorOf(content).root, 'branch')).toBeUndefined()
     } finally {
@@ -3854,7 +4006,7 @@ describe('the projections consume the kernel through the composition root (ADR-0
       const handler = factHandler(client)
       handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
       expect(ed.isVisible).toBe(true)
-      // The user's own escape: the editor hides, keys route raw.
+      // The user's own escape: the editor hides and keys use structured intents.
       content.switchToTerminalInput()
       expect(ed.isVisible).toBe(false)
       // A native fact and ANOTHER authenticated prompt must not undo the
@@ -4104,6 +4256,74 @@ describe('the projections consume the kernel through the composition root (ADR-0
       teardown()
     }
   })
+  it('reconciles mounted command rows from durable storage after reconnect', async () => {
+    const client = makeClient()
+    const line = JSON.stringify({
+      from: 0,
+      row: wireRowOf([['recovered', 1, true] as CellSpec]),
+    })
+    client.call.mockImplementation((method: string) => {
+      if (method === 'ledger.get') {
+        return Promise.resolve({
+          entry: {},
+          edges: [],
+          artifacts: [{ id: 'art-rows', mediaType: 'application/x-nocx-rows' }],
+        })
+      }
+      if (method === 'ledger.artifact') {
+        return Promise.resolve({
+          id: 'art-rows',
+          mediaType: 'application/x-nocx-rows',
+          body: `${line}\n`,
+          truncated: null,
+          byteLen: line.length,
+        })
+      }
+      return Promise.reject(new Error('no store wired (fake)'))
+    })
+    const { view, ed, content, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    const handler = factHandler(client)
+    const withScrollback = content as unknown as { scrollback: ScrollbackController }
+    try {
+      content.setVisible(true)
+      handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
+      ed.insertText('make')
+      view.contentDOM.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+      )
+      handler({
+        lane: 'lane-1',
+        lifecycle: 'running',
+        domain: 'd1',
+        epoch: 1,
+        attempt: {
+          id: 'att-1',
+          state: 'open',
+          origin: 'app',
+          submitId: submitToken(client),
+          command: 'make',
+        },
+      })
+
+      // No block notification is delivered during the outage. Reconnect must
+      // find the already-mounted attempt and fetch its current durable rows.
+      expect(withScrollback.scrollback.scrollbackInner.querySelector('.cmd-output')).toBeNull()
+      client._fireReconnect()
+      await vi.waitFor(() => {
+        expect(
+          withScrollback.scrollback.scrollbackInner.querySelector('.cmd-output')?.textContent,
+        ).toContain('recovered')
+      })
+      expect(client.call.mock.calls.filter(([method]) => method === 'ledger.get')).toHaveLength(1)
+    } finally {
+      teardown()
+    }
+  })
+
   it('follows the tail when a block.grew delivery grows a block after the scroller already settled (nocx-2v80t.3.19)', async () => {
     // block.grew/block.closed only NAME the entry; the rows are a further
     // fetch (ledger.get then ledger.artifact) that resolves well after the
@@ -4398,7 +4618,6 @@ describe('the projections consume the kernel through the composition root (ADR-0
     )
     const handler = factHandler(client)
     const withScrollback = content as unknown as { scrollback: ScrollbackController }
-    const renderer = rendererOf(content)
     /* eslint-disable @typescript-eslint/unbound-method */
     const protoScrollTo = Element.prototype.scrollTo
     const protoScrollIntoView = Element.prototype.scrollIntoView
@@ -4408,13 +4627,6 @@ describe('the projections consume the kernel through the composition root (ADR-0
     try {
       content.setVisible(true)
       handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
-      // One row of output for the freeze to serialize into the card's body.
-      /* eslint-disable @typescript-eslint/unbound-method */
-      vi.mocked(renderer.getBufferLine).mockImplementation((y: number) =>
-        y === 1 ? new BufferLine('hello world', false) : undefined,
-      )
-      /* eslint-enable @typescript-eslint/unbound-method */
-
       ed.insertText('make')
       view.contentDOM.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
@@ -4543,141 +4755,16 @@ describe('the projections consume the kernel through the composition root (ADR-0
     }
   })
 
-  it('no clear or rebase of the buffer survives in the boundary sources (nocx-2v80t.3.3)', () => {
-    for (const rel of [
-      'scrollback/controller.ts',
-      'scrollback/blocks.ts',
-      'terminal-content.ts',
-      'renderers/xterm.ts',
-      'renderers/types.ts',
-    ]) {
+  it('no clear or rebase of the live cell model survives at command boundaries', () => {
+    for (const rel of ['scrollback/controller.ts', 'scrollback/blocks.ts', 'terminal-content.ts']) {
       const src = readFileSync(resolve(srcDir, rel), 'utf8')
       expect(src, `${rel}: clearViewport`).not.toMatch(/clearViewport/)
       expect(src, `${rel}: _settleFrozen`).not.toMatch(/_settleFrozen/)
       expect(src, `${rel}: _freezeVisual`).not.toMatch(/_freezeVisual/)
       expect(src, `${rel}: _clearFrozenRows`).not.toMatch(/_clearFrozenRows/)
     }
-    // And the renderer carries no raw clear of its own: the only writer of
-    // the grid is the program's byte stream.
-    expect(
-      readFileSync(resolve(srcDir, 'renderers/xterm.ts'), 'utf8'),
-      'renderers/xterm.ts: t.clear()',
-    ).not.toMatch(/\bt\.clear\(\)/)
   })
 
-  it('a finished command leaves its rows on the live surface (nocx-2v80t.3.3)', async () => {
-    const client = makeClient()
-    // A REAL renderer, injected through this file's mock seam: the rows
-    // this criterion is about live in the actual grid, which the shared
-    // mock does not model.
-    window.matchMedia = (query: string) => ({
-      matches: false,
-      media: query,
-      onchange: null,
-      addListener: () => {},
-      removeListener: () => {},
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      dispatchEvent: () => false,
-    })
-    ;(globalThis as Record<string, unknown>).ResizeObserver = class {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-    }
-    // The dynamic import is the point: the mock seam replaced the class, and
-    // the real implementation is reachable only at runtime here. Through the
-    // mock, the actual module's types are unresolvable to the linter — the
-    // runtime object is the real class this file's tests assert against.
-    const raw: unknown = await vi.importActual('./renderers/xterm')
-    const RealXterm = (raw as { XtermRenderer: new () => TerminalRenderer }).XtermRenderer
-    const realRenderer = new RealXterm()
-    const { XtermRenderer } = await import('./renderers/xterm')
-    vi.mocked(XtermRenderer).mockImplementationOnce(
-      () => realRenderer as unknown as InstanceType<typeof XtermRenderer>,
-    )
-    const { ed, view, content, teardown } = await mountTerminal(
-      makeClipboard(),
-      { attachToDocument: true },
-      client,
-    )
-    const handler = factHandler(client)
-    const withScrollback = content as unknown as { scrollback: ScrollbackController }
-    /* eslint-disable @typescript-eslint/unbound-method */
-    const protoScrollTo = Element.prototype.scrollTo
-    const protoScrollIntoView = Element.prototype.scrollIntoView
-    /* eslint-enable @typescript-eslint/unbound-method */
-    Element.prototype.scrollTo = () => {}
-    Element.prototype.scrollIntoView = () => {}
-    try {
-      content.setVisible(true)
-      handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
-
-      ed.insertText('seq 3')
-      view.contentDOM.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
-      )
-      await Promise.resolve()
-      await Promise.resolve()
-      await Promise.resolve()
-
-      // The authenticated start opens the card; the command's bytes land on
-      // the grid while it runs.
-      handler({
-        lane: 'lane-1',
-        lifecycle: 'running',
-        domain: 'd1',
-        epoch: 1,
-        attempt: {
-          id: 'att-1',
-          state: 'open',
-          origin: 'app',
-          submitId: submitToken(client),
-          command: 'seq 3',
-        },
-      })
-      expect(withScrollback.scrollback.blockManager.blocks).toHaveLength(1)
-      rendererOf(content).write('out 1\r\nout 2\r\nout 3')
-      // The shell writes the render fence AFTER the command's output; the
-      // sighting is the ordinary freeze's boundary half.
-      rendererOf(content).write('\x1b]1337;NOCX_FENCE;' + 'a'.repeat(64) + '\x07')
-      // The sighting must have LANDED before the completion fact fires, or
-      // the freeze defers and this test reasons about a boundary that never
-      // settled. Wait on the renderer's own write fence, never a duration.
-      const real = rendererOf(content) as unknown as { hasUnsettledWrite(): boolean }
-      await vi.waitFor(() => expect(real.hasUnsettledWrite()).toBe(false))
-
-      // The command completes and its boundary is sighted — the ordinary
-      // freeze every finished command takes.
-      handler({
-        lane: 'lane-1',
-        lifecycle: 'running',
-        domain: 'd1',
-        epoch: 1,
-        attempt: {
-          id: 'att-1',
-          state: 'completed',
-          exitCode: 0,
-          fence: 'a'.repeat(64),
-          completedAt: '2026-08-08T12:00:02Z',
-        },
-      })
-      expect(withScrollback.scrollback.blockManager.blocks[0].status).toBe('success')
-
-      // AND THE ROWS ARE STILL ON THE LIVE SURFACE. A freeze that cleared
-      // the buffer would make this a lie: the grid is the frame the backend
-      // diffs against, and the rows a command printed belong to it.
-      const row = (y: number): string =>
-        rendererOf(content).getBufferLine(y)?.translateToString(true) ?? ''
-      expect(row(0)).toBe('out 1')
-      expect(row(1)).toBe('out 2')
-      expect(row(2)).toBe('out 3')
-    } finally {
-      Element.prototype.scrollTo = protoScrollTo
-      Element.prototype.scrollIntoView = protoScrollIntoView
-      teardown()
-    }
-  })
   it('submitAgentCommand runs the command through the ordinary path with the agent author and resolves with the completed run body (nocx-tjppv)', async () => {
     const client = makeClient()
     const { content, teardown } = await mountTerminal(
@@ -4699,6 +4786,14 @@ describe('the projections consume the kernel through the composition root (ADR-0
       handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
 
       const pending = content.submitAgentCommand('make')
+      const session = sessionOf(content)
+      await vi.waitFor(() =>
+        expect(session.intent.mock.calls.slice(-2)).toEqual([
+          ['paste', 'make'],
+          ['key', 'enter'],
+        ]),
+      )
+      expect(session.send).not.toHaveBeenCalled()
 
       // The ordinary path ran: the ledger record was minted at submit with
       // the agent's author (design §3.1) — the command exists as a command,
@@ -4931,7 +5026,7 @@ describe('the projections consume the kernel through the composition root (ADR-0
         },
       })
       // A full-screen program owns the terminal when its command ends.
-      if (opts.alternate) rendererOf(content)._fireBufferChange('alternate')
+      if (opts.alternate) fireBufferState(sessionOf(content), 'alternate', 20)
       handler({
         lane: 'lane-1',
         lifecycle: 'running',
@@ -5555,40 +5650,27 @@ describe('the projections consume the kernel through the composition root (ADR-0
     }
   })
 
-  it('reports the lane buffer kind to the backend on every buffer change and at session open (ADR-0020 decision 3)', async () => {
-    // The backend cannot see the alternate screen (AD-6 — it never sniffs
-    // the byte stream), so the renderer reports the buffer kind it owns
-    // and the backend decides the awaiting-takeover transition from it:
-    // a program that takes the alternate screen demotes the agent.
+  it('reports accepted backend frame buffer state to the lane, not the renderer parser (ADR-0020 decision 3)', async () => {
     const client = makeClient()
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
       const laneCalls = () =>
         client.call.mock.calls.filter((c) => c[0] === 'agent.laneInteractivity')
-      const renderer = rendererOf(content)
       const session = sessionOf(content)
 
-      // The open re-reported the CURRENT kind once the session had a
-      // backend id (a change before open had no session to name).
-      expect(laneCalls().length).toBeGreaterThanOrEqual(1)
-      expect(laneCalls()[0][1]).toEqual({ sessionId: session.sessionId, bufferKind: 'normal' })
+      // No frame has been accepted yet, so there is no lane buffer state.
+      expect(laneCalls()).toEqual([])
 
-      // A program enters the alternate screen: reported as it happens.
-      renderer._fireBufferChange('alternate')
-      await vi.waitFor(() => {
-        expect(laneCalls()[laneCalls().length - 1]?.[1]).toEqual({
-          sessionId: session.sessionId,
-          bufferKind: 'alternate',
-        })
-      })
-      // The TUI exits: the lane leaves awaiting-takeover, reported again.
-      renderer._fireBufferChange('normal')
-      await vi.waitFor(() => {
-        expect(laneCalls()[laneCalls().length - 1]?.[1]).toEqual({
-          sessionId: session.sessionId,
-          bufferKind: 'normal',
-        })
-      })
+      // The lane follows the same accepted state as the painted screen.
+      fireBufferState(session, 'alternate', 20)
+      expect(laneCalls()).toEqual([
+        ['agent.laneInteractivity', { sessionId: session.sessionId, bufferKind: 'alternate' }],
+      ])
+      fireBufferState(session, 'normal', 21)
+      expect(laneCalls()).toEqual([
+        ['agent.laneInteractivity', { sessionId: session.sessionId, bufferKind: 'alternate' }],
+        ['agent.laneInteractivity', { sessionId: session.sessionId, bufferKind: 'normal' }],
+      ])
     } finally {
       teardown()
     }
@@ -5609,7 +5691,7 @@ describe('the projections consume the kernel through the composition root (ADR-0
     )
     const recorded = historyRecordedHandler(client)
     const handler = factHandler(client)
-    const renderer = rendererOf(content)
+    const session = sessionOf(content)
     const withScrollback = content as unknown as { scrollback: ScrollbackController }
     /* eslint-disable @typescript-eslint/unbound-method */
     const protoScrollTo = Element.prototype.scrollTo
@@ -5666,8 +5748,12 @@ describe('the projections consume the kernel through the composition root (ADR-0
         withScrollback.scrollback.scrollbackInner.classList.contains('inner-fullscreen-mode'),
       ).toBe(false)
 
-      // 4. Output lands and stays visible while the command runs.
-      renderer.write('hello\n')
+      // 4. Output lands as an accepted backend frame and stays visible while
+      // the command runs; it is not serialized from client-side terminal bytes.
+      session.fireScreenFrame(screenFrame(1, ['hello']))
+      await vi.waitFor(() =>
+        expect(withScrollback.scrollback.terminalLiveContainer.textContent).toContain('hello'),
+      )
       expect(withScrollback.scrollback.blockManager.blocks[0].status).toBe('running')
 
       // 5. Complete plus fence freezes the complete block with the
@@ -5781,22 +5867,21 @@ describe('the projections consume the kernel through the composition root (ADR-0
 
   it('the grid turns writable when the command starts — raw input is never dropped (nocx-u7uh.23)', async () => {
     const client = makeClient()
-    const { content, ed, view, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    const { content, ed, view, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
     /* eslint-disable @typescript-eslint/unbound-method */
     const protoScrollTo = Element.prototype.scrollTo
     /* eslint-enable @typescript-eslint/unbound-method */
     Element.prototype.scrollTo = () => {}
     try {
-      const renderer = rendererOf(content)
-      // The typed interface says setReadOnly(boolean); the mock clears its
-      // call history — reached through a cast, like the existing tests do.
-      const readOnlyMock = (renderer as unknown as { setReadOnly: ReturnType<typeof vi.fn> })
-        .setReadOnly
+      const input = intentElementOf(content)
       const handler = factHandler(client)
       handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
       expect(ed.isVisible).toBe(true)
-      expect(readOnlyMock).toHaveBeenLastCalledWith(true)
-      readOnlyMock.mockClear()
+      expect(ed.root.contains(document.activeElement)).toBe(true)
 
       // The atomic handoff: the editor leaves the layout at commit, box and
       // all (nocx-g6hnk), and the submit callback makes the grid writable in
@@ -5809,7 +5894,7 @@ describe('the projections consume the kernel through the composition root (ADR-0
       )
       expect(ed.isVisible).toBe(false)
       expect(ed.root.style.display).toBe('none')
-      expect(readOnlyMock).toHaveBeenLastCalledWith(false)
+      expect(document.activeElement).toBe(input)
 
       // The published attempt opens the running interval; the sync keeps
       // the grid writable — a program waiting on stdin (read, ssh, less)
@@ -5832,7 +5917,7 @@ describe('the projections consume the kernel through the composition root (ADR-0
       // resurrect it or take the keyboard back off the program.
       expect(ed.isVisible).toBe(false)
       expect(ed.root.style.display).toBe('none')
-      expect(readOnlyMock).toHaveBeenLastCalledWith(false)
+      expect(document.activeElement).toBe(input)
       // The completion closes the interval, and back at the prompt the
       // editor returns and the grid locks again.
       handler({
@@ -5853,7 +5938,7 @@ describe('the projections consume the kernel through the composition root (ADR-0
       expect(ed.root.style.visibility).toBe('')
       expect(ed.root.dataset.suspended).toBeUndefined()
       expect(ed.root.hasAttribute('inert')).toBe(false)
-      expect(readOnlyMock).toHaveBeenLastCalledWith(true)
+      expect(ed.root.contains(document.activeElement)).toBe(true)
     } finally {
       Element.prototype.scrollTo = protoScrollTo
       teardown()
@@ -5937,7 +6022,6 @@ describe('the projections consume the kernel through the composition root (ADR-0
     /* eslint-enable @typescript-eslint/unbound-method */
     Element.prototype.scrollTo = () => {}
     try {
-      const renderer = rendererOf(content)
       const session = sessionOf(content)
       const handler = factHandler(client)
       handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
@@ -5970,7 +6054,6 @@ describe('the projections consume the kernel through the composition root (ADR-0
         ]),
       )
       expect(session.send).not.toHaveBeenCalled()
-      expect(renderer.paste).not.toHaveBeenCalled()
     } finally {
       Element.prototype.scrollTo = protoScrollTo
       teardown()
@@ -6044,7 +6127,6 @@ describe('the projections consume the kernel through the composition root (ADR-0
       await Promise.resolve()
       await Promise.resolve()
       await Promise.resolve()
-      expect(rendererOf(content).paste).not.toHaveBeenCalledWith('echo RACE')
       expect(withScrollback.scrollback.blockManager.blocks).toHaveLength(0)
       // Neither the command nor the 0x03. The cancel is served by the
       // withdrawal itself: nothing is running at the shell to interrupt, and
@@ -6293,12 +6375,8 @@ describe('two attempts and the live region stay separate while running (nocx-m87
       view.contentDOM.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
       )
-      // The authenticated start opens the block — and it arrives BEFORE the
-      // bytes (the fact precedes the RPC response on the wire), on the
-      // prompt line (fixture cursorLine is 0). The shell's echo of `ls`
-      // will land on that same line, so the block's OUTPUT range starts one
-      // row later; the creation line and the output range are two different
-      // things (nocx-4yhi, nocx-2v80t.3.2).
+      // The authenticated start opens the block before the bytes. Its output
+      // anchor remains unknown until the backend publishes screen coordinates.
       handler({
         lane: 'lane-1',
         lifecycle: 'running',
@@ -6315,7 +6393,7 @@ describe('two attempts and the live region stay separate while running (nocx-m87
       const block = withScrollback.scrollback.blockManager.runningBlock
       expect(block).not.toBeNull()
       expect(block!.startLine).toBe(0)
-      expect(block!.outputStart).toBe(1)
+      expect(block!.outputStart).toBeUndefined()
     } finally {
       teardown()
     }
@@ -6337,38 +6415,119 @@ describe('two attempts and the live region stay separate while running (nocx-m87
       })
       const block = withScrollback.scrollback.blockManager.blockForAttempt('att-1')
       expect(block).not.toBeNull()
-      // The user typed at the shell: the command was echoed as they typed,
-      // and the running fact landed after it — so the block's output range
-      // is exactly where the block opened, no echo to skip.
-      expect(block!.startLine).toBe(block!.outputStart)
+      // Renderer cursor geometry is not an output anchor.
+      expect(block!.outputStart).toBeUndefined()
+    } finally {
+      teardown()
+    }
+  })
+
+  it('wires backend output anchors to the attempt and uses only a matching accepted screen frame', async () => {
+    const client = makeClient()
+    const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    const handler = factHandler(client)
+    const scrollback = (content as unknown as { scrollback: ScrollbackController }).scrollback
+    const anchor = {
+      entryId: 'att-anchor',
+      row: 12,
+      screenRevision: 5,
+      bufferKind: 'normal' as const,
+      bufferInstance: '1',
+      cols: SCREEN_COLS,
+      rows: SCREEN_ROWS,
+    }
+    try {
+      // The notification can beat the authenticated running fact.
+      client._fireBlockOutputStart(anchor)
+      handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
+      handler({
+        lane: 'lane-1',
+        lifecycle: 'running',
+        domain: 'd1',
+        epoch: 1,
+        attempt: { id: 'att-anchor', state: 'open', origin: 'shell', command: 'ls' },
+      })
+      const block = scrollback.blockManager.blockForAttempt('att-anchor')!
+      expect(block.outputStart).toBeUndefined()
+      expect(block.outputAnchor).toEqual(anchor)
+
+      const older = screenFrame(4, ['prompt ls', '', ''])
+      older.state.baseRow = 10
+      client._sessions[0].fireScreenFrame(older)
+      expect(block.outputAnchorOffset).toBeUndefined()
+
+      const alternate = screenFrame(5, ['prompt ls', '', ''])
+      alternate.state.bufferKind = 'alternate'
+      alternate.state.baseRow = 10
+      client._sessions[0].fireScreenFrame(alternate)
+      expect(block.outputAnchorOffset).toBeUndefined()
+
+      const wrongInstance = screenFrame(6, ['prompt ls', '', ''])
+      wrongInstance.state.baseRow = 10
+      wrongInstance.state.bufferInstance = '2'
+      client._sessions[0].fireScreenFrame(wrongInstance)
+      expect(block.outputAnchorOffset).toBeUndefined()
+
+      const wrongGeometry = screenFrame(7, ['prompt ls', '', ''], { cols: SCREEN_COLS + 1 })
+      wrongGeometry.state.baseRow = 10
+      client._sessions[0].fireScreenFrame(wrongGeometry)
+      expect(block.outputAnchorOffset).toBeUndefined()
+
+      const accepted = screenFrame(8, ['', 'prompt ls', ''])
+      accepted.state.baseRow = 10
+      client._sessions[0].fireScreenFrame(accepted)
+      expect(block.outputAnchor).toEqual(anchor)
+      expect(block.outputAnchorOffset).toBe(2)
+      expect(block.outputAnchorText).toBe('prompt ls')
+      expect(block.outputStart).toBe(12)
+      const mismatchAfterAcceptance = screenFrame(9, ['', '', 'replacement'])
+      mismatchAfterAcceptance.state.baseRow = 10
+      mismatchAfterAcceptance.state.bufferInstance = '2'
+      client._sessions[0].fireScreenFrame(mismatchAfterAcceptance)
+      expect(block.outputAnchorOffset).toBe(2)
+      expect(block.outputAnchorText).toBe('prompt ls')
+
+      // One accepted output row below the command echo must occupy one row
+      // in the live clip. The controller subtracts the two-row echo offset;
+      // liveContentHeight therefore supplies the full three-row grid height.
+      Object.defineProperty(scrollback.scrollbackArea, 'clientHeight', {
+        value: 400,
+        configurable: true,
+      })
+      block.el.getBoundingClientRect = () => ({
+        height: 20,
+        width: 800,
+        top: 0,
+        left: 0,
+        right: 800,
+        bottom: 20,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      })
+      const output = screenFrame(10, ['', 'prompt ls', 'one output row'])
+      output.state.baseRow = 10
+      client._sessions[0].fireScreenFrame(output)
+      await vi.waitFor(() => expect(scrollback.terminalLiveViewport.style.height).toBe('16px'))
     } finally {
       teardown()
     }
   })
 
   it('the first PARSED write stands the running command\u2019s stand-in down (nocx-vnirv.1)', async () => {
-    // THE WIRING TEST for the seam the block manager exposes and this
-    // file's onWriteParsed handler is the call site of. A running command
-    // carries the same "working, nothing written yet" stand-in a turn does,
-    // in the live region where its output will appear; it must stand down
-    // at the first byte of output — and "arrives" means the renderer has
-    // PARSED the write, not that bytes were handed over (write() parses
-    // asynchronously, so onData firing is not output existing).
+    // THE WIRING TEST for the block manager's output-arrival seam and the
+    // accepted-frame call site. A running command carries the same "working,
+    // nothing written yet" stand-in a turn does; its first accepted output
+    // frame removes it, while later frames leave it absent.
     //
-    // This is the check that failed before the wiring existed:
-    // noteCommandOutput had no caller outside blocks.test.ts, so the first
-    // parsed write left the stand-in in place — a live block, reached
-    // through the same interface as every other block, with its write half
-    // unreachable, the exact shape AGENTS.md names as invisible to
-    // deadcode's RTA. The drive is the real mount: the authenticated
-    // running fact opens the block, and the frame double fires
-    // onWriteParsed exactly as xterm's parse pass does (xterm.test.ts
-    // exercises the same event off the real renderer).
+    // This guards the reachable write half of the seam: the authenticated
+    // running fact opens the block, then an accepted backend frame removes
+    // its stand-in through the real TerminalContent mount.
     const client = makeClient()
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     const handler = factHandler(client)
     const withScrollback = content as unknown as { scrollback: ScrollbackController }
-    const renderer = rendererOf(content)
+    const session = sessionOf(content)
     try {
       content.setVisible(true)
       handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
@@ -6379,37 +6538,32 @@ describe('two attempts and the live region stay separate while running (nocx-m87
         epoch: 1,
         attempt: { id: 'att-1', state: 'open', origin: 'shell', command: 'make' },
       })
-      const live = withScrollback.scrollback.xtermLiveContainer
+      const live = withScrollback.scrollback.terminalLiveContainer
       // The command is running and nothing has been parsed: the stand-in
       // stands where the first output line will be written.
       expect(live.querySelector('.cmd-answer-typing')).not.toBeNull()
-      // The first parsed write stands it down.
-      renderer._fireWriteParsed()
+      // The first accepted frame stands the indicator down.
+      session.fireScreenFrame(screenFrame(1, ['make output']))
       expect(live.querySelector('.cmd-answer-typing')).toBeNull()
-      // Idempotent: every later chunk fires the same event and nothing
-      // changes — the seam is called again, not rebuilt.
-      renderer._fireWriteParsed()
+      // Idempotent: later output frames do not rebuild the stand-in.
+      session.fireScreenFrame(screenFrame(2, ['make output', 'next line']))
       expect(live.querySelector('.cmd-answer-typing')).toBeNull()
     } finally {
       teardown()
     }
   })
 
-  it('sizes the live region when the grid has PARSED the bytes, not when they were handed over', async () => {
-    // xterm parses asynchronously. The measure used to be scheduled from
-    // session.onData, one line after renderer.write(), so it ran on the
-    // animation frame BEFORE the chunk was in the buffer and sized the region
-    // to the grid as it was WITHOUT the output. A command that prints
-    // everything in one chunk has no next chunk to correct it, so it ran at
-    // the wrong size until it finished and then arrived all at once: `seq 1
-    // 10` measured three rows live and froze eleven, and the block leapt
-    // 153px up the pane at the end of a command that had already finished
-    // (2026-08-19 frame capture, e2e container).
+  it('sizes the live region from the accepted backend screen frame', async () => {
+    // The accepted frame is now both the paint and sizing input. The old
+    // byte-parser path measured before parsing completed, so it sized the
+    // region from the pre-output grid. A one-chunk command had no later
+    // update to correct it; `seq 1 10` measured three rows live and froze
+    // eleven, making the block jump 153px when the command finished.
     const client = makeClient()
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     const handler = factHandler(client)
     const withScrollback = content as unknown as { scrollback: ScrollbackController }
-    const renderer = rendererOf(content)
+    const session = sessionOf(content)
     const raf = globalThis.requestAnimationFrame
     globalThis.requestAnimationFrame = (cb: FrameRequestCallback): number => {
       cb(0)
@@ -6430,17 +6584,14 @@ describe('two attempts and the live region stay separate while running (nocx-m87
         attempt: { id: 'att-1', state: 'open', origin: 'shell', command: 'seq' },
       })
       expect(withScrollback.scrollback.mode).toBe('running')
-      const before = withScrollback.scrollback.xtermLiveContainer.style.height
+      const before = withScrollback.scrollback.terminalLiveContainer.style.height
 
-      // The bytes arrive and the grid ALREADY reports the taller content —
-      // but they have not been parsed, so nothing may be measured yet.
-      ;(renderer.liveContentHeight as LiveContentHeightSpy).mockReturnValue(200)
-      client._sessions[0].fireData('one\ntwo\nthree\n')
-      expect(withScrollback.scrollback.xtermLiveContainer.style.height).toBe(before)
-
-      // The parse pass settles: NOW the rows exist and the region is sized.
-      renderer._fireWriteParsed()
-      expect(withScrollback.scrollback.xtermLiveContainer.style.height).toBe('200px')
+      // Handing over bytes is not a client-visible update. Only an accepted
+      // backend frame advances the cell model and sizes the live region.
+      expect(withScrollback.scrollback.terminalLiveContainer.style.height).toBe(before)
+      const rows = Array.from({ length: 12 }, (_, i) => `output ${i + 1}`)
+      session.fireScreenFrame(screenFrame(1, rows, { rows: rows.length }))
+      expect(withScrollback.scrollback.terminalLiveContainer.style.height).toBe('192px')
     } finally {
       globalThis.requestAnimationFrame = raf
       teardown()
@@ -6452,13 +6603,13 @@ describe('two attempts and the live region stay separate while running (nocx-m87
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     const handler = factHandler(client)
     const withScrollback = content as unknown as { scrollback: ScrollbackController }
-    const renderer = rendererOf(content)
+    const session = sessionOf(content)
+    const reports = () => session.sendResize.mock.calls.map((call) => call[0])
     /* eslint-disable @typescript-eslint/unbound-method */
     const protoScrollTo = Element.prototype.scrollTo
     const protoScrollIntoView = Element.prototype.scrollIntoView
     const protoRect = Element.prototype.getBoundingClientRect
     const raf = globalThis.requestAnimationFrame
-    const fitViewport = renderer.fitViewport
     /* eslint-enable @typescript-eslint/unbound-method */
     Element.prototype.scrollTo = () => {}
     Element.prototype.scrollIntoView = () => {}
@@ -6468,12 +6619,11 @@ describe('two attempts and the live region stay separate while running (nocx-m87
     }
     try {
       content.setVisible(true)
-      // The initial fit uses the delivered viewport (jsdom reports no
-      // layout, so clientHeight is 0 at this point).
+      // An accepted frame establishes the cell metrics; the delivered
+      // viewport is then measured against those committed metrics.
+      session.fireScreenFrame(screenFrame(1, ['prompt']))
       content.viewportChanged({ width: 800, height: 400 })
-      expect(fitViewport).toHaveBeenLastCalledWith(
-        expect.objectContaining({ width: 800, height: 400 }),
-      )
+      await vi.waitFor(() => expect(reports().length).toBeGreaterThan(0))
 
       // A real scroller height, and a running block header that occupies
       // part of it: grid and live box share the scroller, so the grid must
@@ -6523,13 +6673,17 @@ describe('two attempts and the live region stay separate while running (nocx-m87
       // header (276) and the grid must be fitted to the SAME 276 — not the
       // bare scroller, which would leave the last rows clipped and
       // unscrollable inside the box.
-      ;(renderer.liveContentHeight as LiveContentHeightSpy).mockReturnValue(1000)
-      client._sessions[0].fireData('repaint')
-      renderer._fireWriteParsed()
-      expect(withScrollback.scrollback.xtermLiveContainer.style.height).toBe('276px')
-      expect(fitViewport).toHaveBeenLastCalledWith(
-        expect.objectContaining({ width: 800, height: 276 }),
+      const before = reports().length
+      session.fireScreenFrame(
+        screenFrame(
+          2,
+          Array.from({ length: 20 }, () => 'repaint'),
+          { rows: 20 },
+        ),
       )
+      expect(withScrollback.scrollback.terminalLiveContainer.style.height).toBe('276px')
+      await vi.waitFor(() => expect(reports().length).toBeGreaterThan(before))
+      expect(reports()[reports().length - 1]).toMatchObject({ rows: 17, ypixel: 272 })
     } finally {
       globalThis.requestAnimationFrame = raf
       Element.prototype.scrollTo = protoScrollTo
@@ -6560,12 +6714,12 @@ describe('two attempts and the live region stay separate while running (nocx-m87
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     const handler = factHandler(client)
     const withScrollback = content as unknown as { scrollback: ScrollbackController }
-    const renderer = rendererOf(content)
+    const session = sessionOf(content)
+    const reports = () => session.sendResize.mock.calls.map((call) => call[0])
     /* eslint-disable @typescript-eslint/unbound-method */
     const protoScrollTo = Element.prototype.scrollTo
     const protoScrollIntoView = Element.prototype.scrollIntoView
     const raf = globalThis.requestAnimationFrame
-    const fitViewport = renderer.fitViewport
     /* eslint-enable @typescript-eslint/unbound-method */
     Element.prototype.scrollTo = () => {}
     Element.prototype.scrollIntoView = () => {}
@@ -6575,7 +6729,9 @@ describe('two attempts and the live region stay separate while running (nocx-m87
     }
     try {
       content.setVisible(true)
+      session.fireScreenFrame(screenFrame(1, ['prompt']))
       content.viewportChanged({ width: 800, height: 400 })
+      await vi.waitFor(() => expect(reports().length).toBeGreaterThan(0))
       Object.defineProperty(withScrollback.scrollback.scrollbackArea, 'clientHeight', {
         value: 300,
         configurable: true,
@@ -6603,21 +6759,19 @@ describe('two attempts and the live region stay separate while running (nocx-m87
         toJSON: () => ({}),
       })
 
-      // First output: the grid is fitted once, to scroller minus header.
-      ;(renderer.liveContentHeight as LiveContentHeightSpy).mockReturnValue(100)
-      client._sessions[0].fireData('box top')
-      renderer._fireWriteParsed()
-      expect(fitViewport).toHaveBeenCalledTimes(2)
+      // First output arrives as a backend frame. Its rows fit inside the
+      // running cap, so no size report is needed.
+      const before = reports().length
+      session.fireScreenFrame(screenFrame(2, ['box top']))
+      expect(reports()).toHaveLength(before)
 
       // The header grows by one row mid-command — the block gains its
       // duration chip while omp is still drawing. Nothing about the PANE
       // changed, so the program must not be resized.
       headerHeight = 48
-      ;(renderer.liveContentHeight as LiveContentHeightSpy).mockReturnValue(140)
-      client._sessions[0].fireData('box bottom')
-      renderer._fireWriteParsed()
+      session.fireScreenFrame(screenFrame(3, ['box top', 'box bottom']))
 
-      expect(fitViewport).toHaveBeenCalledTimes(2)
+      expect(reports()).toHaveLength(before)
     } finally {
       globalThis.requestAnimationFrame = raf
       Element.prototype.scrollTo = protoScrollTo
@@ -6631,7 +6785,7 @@ describe('two attempts and the live region stay separate while running (nocx-m87
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     const handler = factHandler(client)
     const withScrollback = content as unknown as { scrollback: ScrollbackController }
-    const renderer = rendererOf(content)
+    const session = sessionOf(content)
     /* eslint-disable @typescript-eslint/unbound-method */
     const protoScrollTo = Element.prototype.scrollTo
     const protoScrollIntoView = Element.prototype.scrollIntoView
@@ -6673,7 +6827,7 @@ describe('two attempts and the live region stay separate while running (nocx-m87
       // jsdom does no layout, so a measured height never reflects the
       // inline height setLiveHeight wrote. A real browser applies it next
       // frame; the guard reads it. Emulate that so the guard is exercised.
-      const live = withScrollback.scrollback.xtermLiveContainer
+      const live = withScrollback.scrollback.terminalLiveContainer
       live.getBoundingClientRect = () => ({
         height: parseFloat(live.style.height) || 0,
         width: 800,
@@ -6688,21 +6842,27 @@ describe('two attempts and the live region stay separate while running (nocx-m87
       const scrollTo = vi.fn()
       withScrollback.scrollback.scrollbackArea.scrollTo = scrollTo
 
-      // The first sizing sets the height; the box grows to the cap.
-      ;(renderer.liveContentHeight as LiveContentHeightSpy).mockReturnValue(276)
-      client._sessions[0].fireData('top frame')
-      renderer._fireWriteParsed()
-      expect(withScrollback.scrollback.xtermLiveContainer.style.height).toBe('276px')
+      // The accepted frame sizes the box to the running cap.
+      const topFrame = screenFrame(
+        1,
+        Array.from({ length: 20 }, () => 'top frame'),
+        { rows: 20 },
+      )
+      session.fireScreenFrame(topFrame)
+      expect(withScrollback.scrollback.terminalLiveContainer.style.height).toBe('276px')
       expect(scrollTo).toHaveBeenCalled()
       scrollTo.mockClear()
 
-      // `top` repaints the same rows: the height does not change, so the
-      // early return holds and the scroll is NOT yanked while the user
-      // reads (nocx-6w4z).
-      ;(renderer.liveContentHeight as LiveContentHeightSpy).mockReturnValue(276)
-      client._sessions[0].fireData('top frame')
-      renderer._fireWriteParsed()
-      expect(withScrollback.scrollback.xtermLiveContainer.style.height).toBe('276px')
+      // A repaint of the same rows does not change the height, so the early
+      // return holds and the scroll is NOT yanked while the user reads.
+      session.fireScreenFrame(
+        screenFrame(
+          2,
+          Array.from({ length: 20 }, () => 'top frame'),
+          { rows: 20 },
+        ),
+      )
+      expect(withScrollback.scrollback.terminalLiveContainer.style.height).toBe('276px')
       expect(scrollTo).not.toHaveBeenCalled()
     } finally {
       globalThis.requestAnimationFrame = raf
@@ -6723,8 +6883,8 @@ describe('two attempts and the live region stay separate while running (nocx-m87
     const client = makeClient()
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     const handler = factHandler(client)
+    const session = sessionOf(content)
     const withScrollback = content as unknown as { scrollback: ScrollbackController }
-    const renderer = rendererOf(content)
     /* eslint-disable @typescript-eslint/unbound-method */
     const protoScrollTo = Element.prototype.scrollTo
     const protoScrollIntoView = Element.prototype.scrollIntoView
@@ -6743,14 +6903,14 @@ describe('two attempts and the live region stay separate while running (nocx-m87
       })
       expect(withScrollback.scrollback.mode).toBe('running')
 
-      // omp's repaint writes its own prompt marks. Under the severed
-      // lifecycle these are render-only: no setIdle, no zero-height live
-      // region, no editor, no keyboard handoff.
-      renderer._fireCommandMarker({ kind: 'B', line: 12, col: 0, buffer: 'normal' })
-      renderer._fireCommandMarker({ kind: 'A', line: 12, col: 0, buffer: 'normal' })
+      // Repaint frames cannot alter lifecycle ownership. The backend's
+      // screen plane updates the picture, while the authenticated lifecycle
+      // remains the sole authority for prompt/running transitions.
+      session.fireScreenFrame(screenFrame(1, ['omp repaint']))
+      session.fireScreenFrame(screenFrame(2, ['omp prompt marks']))
       expect(withScrollback.scrollback.mode).toBe('running')
-      expect(withScrollback.scrollback.xtermLiveContainer.className).not.toContain('live-idle')
-      expect(withScrollback.scrollback.xtermLiveContainer.style.height).not.toBe('0px')
+      expect(withScrollback.scrollback.terminalLiveContainer.className).not.toContain('live-idle')
+      expect(withScrollback.scrollback.terminalLiveContainer.style.height).not.toBe('0px')
       // The editor never takes the keyboard from a stream mark — ownership
       // is the lifecycle axis (prompt_ready) alone (ADR-0024 §6).
       expect(content.presentation).toBe('terminal')
@@ -6792,7 +6952,7 @@ describe('the live box follows the pane it fills (nocx-liveheight)', () => {
         configurable: true,
       })
       content.viewportChanged({ width: 800, height: 400 })
-      expect(sb.xtermLiveContainer.style.height).toBe('400px')
+      expect(sb.terminalLiveContainer.style.height).toBe('400px')
 
       // The card is dismissed (or the window grew): the scroller is taller.
       Object.defineProperty(sb.scrollbackArea, 'clientHeight', {
@@ -6800,7 +6960,7 @@ describe('the live box follows the pane it fills (nocx-liveheight)', () => {
         configurable: true,
       })
       content.viewportChanged({ width: 800, height: 560 })
-      expect(sb.xtermLiveContainer.style.height).toBe('560px')
+      expect(sb.terminalLiveContainer.style.height).toBe('560px')
     } finally {
       globalThis.requestAnimationFrame = raf
       teardown()
@@ -6847,15 +7007,14 @@ describe('alt-screen exit and the ready prompt present the structured layout (no
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
       const handler = factHandler(client)
-      const renderer = rendererOf(content)
       handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
       // vim enters the alternate buffer: the program takes the pane.
-      renderer._fireBufferChange('alternate')
+      fireBufferState(sessionOf(content), 'alternate', 20)
       expect(scrollbackOf(content).mode).toBe('fullscreen')
       // vim quits: leaving the alternate buffer must land on the structured
       // idle layout, not the flat conventional grid — the live domain
       // entitles the session to the block model on the way out too.
-      renderer._fireBufferChange('normal')
+      fireBufferState(sessionOf(content), 'normal', 21)
       expect(scrollbackOf(content).mode).toBe('idle')
       expect(
         scrollbackOf(content).scrollbackInner.classList.contains('inner-fullscreen-mode'),
@@ -6868,7 +7027,6 @@ describe('alt-screen exit and the ready prompt present the structured layout (no
   it('leaving the alternate buffer while the attempt still runs keeps the live region up (nocx-u7uh.26)', async () => {
     const client = makeClient()
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
-    const renderer = rendererOf(content)
     /* eslint-disable @typescript-eslint/unbound-method */
     const protoScrollTo = Element.prototype.scrollTo
     const protoScrollIntoView = Element.prototype.scrollIntoView
@@ -6887,12 +7045,12 @@ describe('alt-screen exit and the ready prompt present the structured layout (no
         attempt: { id: 'att-1', state: 'open', origin: 'shell', command: 'vim file' },
       })
       expect(scrollbackOf(content).mode).toBe('running')
-      renderer._fireBufferChange('alternate')
+      fireBufferState(sessionOf(content), 'alternate', 20)
       expect(scrollbackOf(content).mode).toBe('fullscreen')
       // vim exits before the completion fact lands: the command cycle still
       // owns the live region, so the pane stays in the running layout until
       // the authenticated completion freezes the block.
-      renderer._fireBufferChange('normal')
+      fireBufferState(sessionOf(content), 'normal', 21)
       expect(scrollbackOf(content).mode).toBe('running')
     } finally {
       Element.prototype.scrollTo = protoScrollTo
@@ -6905,12 +7063,11 @@ describe('alt-screen exit and the ready prompt present the structured layout (no
     const client = makeClient()
     const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
-      const renderer = rendererOf(content)
       // Native: no domain, a conventional terminal. The alt-screen path
       // must leave it exactly as it found it — a flat grid.
-      renderer._fireBufferChange('alternate')
+      fireBufferState(sessionOf(content), 'alternate', 20)
       expect(scrollbackOf(content).mode).toBe('fullscreen')
-      renderer._fireBufferChange('normal')
+      fireBufferState(sessionOf(content), 'normal', 21)
       expect(scrollbackOf(content).mode).toBe('unstructured')
     } finally {
       teardown()
@@ -7773,7 +7930,6 @@ describe('shell submit input intent ordering (nocx-zg3k3.3.1)', () => {
     const session = makeSession({ awaitsIntegration: true })
     client.openSession.mockResolvedValue(session)
     const { ed, content, teardown } = await mountTerminal(makeClipboard(), {}, client)
-    const renderer = rendererOf(content)
     let releasePaste!: () => void
     const pasteGate = new Promise<void>((resolve) => {
       releasePaste = resolve
@@ -7785,7 +7941,6 @@ describe('shell submit input intent ordering (nocx-zg3k3.3.1)', () => {
       return (kind === 'paste' ? pasteGate : Promise.resolve()).then(() => result)
     })
     session.send.mockClear()
-    renderer.paste.mockClear()
     try {
       content.setVisible(true)
       ed.show()
@@ -7805,7 +7960,6 @@ describe('shell submit input intent ordering (nocx-zg3k3.3.1)', () => {
         ]),
       )
       expect(session.send).not.toHaveBeenCalled()
-      expect(renderer.paste).not.toHaveBeenCalled()
     } finally {
       releasePaste()
       teardown()
@@ -9043,32 +9197,56 @@ describe('the ask entry gesture (nocx-4wtlh)', () => {
 //
 // The repaint therefore hangs off setVisible, which is where visibility is
 // owned — a caller that has to remember is a caller that forgets.
-describe('TerminalContent visibility repaints the grid', () => {
-  it('repaints the whole viewport when the pane becomes visible (nocx-jfgb)', async () => {
-    const { content, teardown } = await mountTerminal()
+describe('TerminalContent visibility preserves the accepted painter frame', () => {
+  it('paints the accepted frame when the pane becomes visible', async () => {
+    const client = makeClient()
+    const { content, tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
     try {
-      const repaint = vi.spyOn(rendererOf(content), 'refreshAtlas')
-
+      const session = sessionOf(content)
+      session.fireScreenFrame(screenFrame(1, ['retained screen']))
       content.setVisible(true)
-      expect(repaint).toHaveBeenCalledTimes(1)
+      await vi.waitFor(() =>
+        expect(tab.pane.querySelector<HTMLElement>('.term-grid')?.textContent).toContain(
+          'retained screen',
+        ),
+      )
+      expect(tab.pane.classList.contains('active')).toBe(true)
     } finally {
       teardown()
     }
   })
 
-  it('does not repaint when the pane is hidden — the atlas is stale, not the screen', async () => {
-    const { content, teardown } = await mountTerminal()
+  it('keeps the accepted rows while hidden, then restores the same painted grid', async () => {
+    const client = makeClient()
+    const { content, tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
     try {
-      const repaint = vi.spyOn(rendererOf(content), 'refreshAtlas')
-
+      const session = sessionOf(content)
+      session.fireScreenFrame(screenFrame(1, ['retained screen']))
+      content.setVisible(true)
+      await vi.waitFor(() =>
+        expect(tab.pane.querySelector('.term-grid')?.textContent).toContain('retained screen'),
+      )
+      const row = tab.pane.querySelector('.term-grid-row')
       content.setVisible(false)
-      expect(repaint).not.toHaveBeenCalled()
+      expect(tab.pane.classList.contains('active')).toBe(false)
+      expect(tab.pane.querySelector('.term-grid-row')).toBe(row)
+      content.setVisible(true)
+      expect(tab.pane.classList.contains('active')).toBe(true)
+      expect(tab.pane.querySelector('.term-grid-row')).toBe(row)
     } finally {
       teardown()
     }
   })
 
-  it('still toggles the active class, so the repaint is added to setVisible and not swapped for it', async () => {
+  it('still toggles the active class on each visibility change', async () => {
     const { content, tab, teardown } = await mountTerminal()
     try {
       content.setVisible(true)
@@ -9175,7 +9353,6 @@ describe('the running command names the tab (nocx-n8n82)', () => {
       client,
     )
     const handler = factHandler(client)
-    const renderer = rendererOf(content)
     const restoreScroll = stubScrolling()
     try {
       content.setVisible(true)
@@ -9185,7 +9362,7 @@ describe('the running command names the tab (nocx-n8n82)', () => {
       expect(tab.title).toBe('herdr')
 
       // Absolute order: the program's own title outranks the command name.
-      renderer._fireTitle('herdr 2.0')
+      fireFrameMetadata(sessionOf(content), 1, { title: 'herdr 2.0' })
       expect(tab.title).toBe('herdr 2.0')
     } finally {
       restoreScroll()
@@ -9201,7 +9378,6 @@ describe('the running command names the tab (nocx-n8n82)', () => {
       client,
     )
     const handler = factHandler(client)
-    const renderer = rendererOf(content)
     const restoreScroll = stubScrolling()
     try {
       content.setVisible(true)
@@ -9212,8 +9388,8 @@ describe('the running command names the tab (nocx-n8n82)', () => {
 
       // The program sets its own title and clears it on the way out —
       // an OSC 0/2 with an EMPTY string (tabs.ts documents the gesture).
-      renderer._fireTitle('herdr')
-      renderer._fireTitle('')
+      fireFrameMetadata(sessionOf(content), 1, { title: 'herdr' })
+      fireFrameMetadata(sessionOf(content), 2, { title: '' })
       // The command is still the running record: without the clear guard
       // the running-command source would resurrect 'herdr' right here.
       const ledger = (content as unknown as { ledger: CommandLedger }).ledger
@@ -9251,7 +9427,6 @@ describe('the running command names the tab (nocx-n8n82)', () => {
       client,
     )
     const handler = factHandler(client)
-    const renderer = rendererOf(content)
     const restoreScroll = stubScrolling()
     try {
       content.setVisible(true)
@@ -9271,7 +9446,7 @@ describe('the running command names the tab (nocx-n8n82)', () => {
       expect(onProgramTitleChange).toHaveBeenLastCalledWith('')
 
       // A program title is also a name of its own — same second line.
-      renderer._fireTitle('herdr')
+      fireFrameMetadata(sessionOf(content), 1, { title: 'herdr' })
       expect(onSubtitleChange).toHaveBeenLastCalledWith(FIXTURE_CWD)
       expect(onProgramTitleChange).toHaveBeenLastCalledWith('herdr')
     } finally {
@@ -9298,13 +9473,12 @@ describe('the running command names the tab (nocx-n8n82)', () => {
       client,
     )
     const handler = factHandler(client)
-    const renderer = rendererOf(content)
     const restoreScroll = stubScrolling()
     try {
       content.setVisible(true)
       // A program title is a name of its own, so the strip's second line is
       // the LOCATION line — which is where the strip names a machine.
-      renderer._fireTitle('herdr')
+      fireFrameMetadata(sessionOf(content), 1, { title: 'herdr' })
 
       // Local: the strip has nothing but the directory to show, and the
       // origin still names the machine, in words rather than a blank.
@@ -9709,21 +9883,20 @@ describe('the pane reports its directory (nocx-zkiv4)', () => {
       { hooks: { onPaneCwdChange: (cwd) => reported.push(cwd) } },
       client,
     )
-    const renderer = rendererOf(content)
     try {
       // The session-open cwd is a provider's fallback, not a report: nothing
       // has been verified yet, so nothing may be stored (AD-5).
       expect(reported).toEqual([])
 
-      renderer._fireCwd('', '/repo/frontend')
+      fireFrameMetadata(sessionOf(content), 1, { cwd: { host: '', path: '/repo/frontend' } })
       expect(reported).toEqual(['/repo/frontend'])
 
       // A shell prints its prompt many times in one directory. The row is
       // written on CHANGE, or sitting still would cost a write per prompt.
-      renderer._fireCwd('', '/repo/frontend')
+      fireFrameMetadata(sessionOf(content), 2, { cwd: { host: '', path: '/repo/frontend' } })
       expect(reported).toEqual(['/repo/frontend'])
 
-      renderer._fireCwd('', '/repo/internal')
+      fireFrameMetadata(sessionOf(content), 3, { cwd: { host: '', path: '/repo/internal' } })
       expect(reported).toEqual(['/repo/frontend', '/repo/internal'])
     } finally {
       teardown()
@@ -9741,12 +9914,11 @@ describe('the pane reports its directory (nocx-zkiv4)', () => {
       },
       client,
     )
-    const renderer = rendererOf(content)
     try {
       // /home/pi on a Raspberry Pi is not /home/pi here. Storing it would
       // send the restored pane to a directory that does not exist on this
       // machine — or, worse, to a different one that does.
-      renderer._fireCwd('pi.local', '/home/pi')
+      fireFrameMetadata(sessionOf(content), 1, { cwd: { host: 'pi.local', path: '/home/pi' } })
       expect(reported).toEqual([])
     } finally {
       teardown()
@@ -11077,13 +11249,13 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
   /** The live grid container: where the focus is while a command runs and
    *  the person has not clicked away. */
   const gridOf = (content: TerminalContent): HTMLElement =>
-    (content as unknown as { scrollback: ScrollbackController }).scrollback.xtermLiveContainer
+    (content as unknown as { scrollback: ScrollbackController }).scrollback.terminalLiveContainer
 
   /** The grid's writability seam. Reached through a cast because the typed
    *  interface says setReadOnly(boolean) while the mock is a spy — the same
    *  trade the ownership tests above make. */
-  const readOnlyOf = (content: TerminalContent): ReturnType<typeof vi.fn> =>
-    (rendererOf(content) as unknown as { setReadOnly: ReturnType<typeof vi.fn> }).setReadOnly
+  const editorOwnsKeyboard = (content: TerminalContent): boolean =>
+    editorOf(content).root.contains(document.activeElement)
 
   /** The registry's active target id — read through the product's own
    *  account of it, the mode indicator's data-target, wherever the editor
@@ -11123,9 +11295,8 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
   /** ⌘/Ctrl+Enter, dispatched where a person's keystroke lands while the
    *  grid owns input: on the live grid, so it travels the same path. */
   async function summonChord(content: TerminalContent): Promise<void> {
-    const renderer = rendererOf(content)
-    if (typeof renderer.captureLiveFrame !== 'function') {
-      renderer.captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
+    if (!Object.prototype.hasOwnProperty.call(content, 'captureLiveFrame')) {
+      content.captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
     }
     gridOf(content).dispatchEvent(
       new KeyboardEvent('keydown', {
@@ -11186,6 +11357,74 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
     handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
   }
 
+  async function waitForSessionQueue(content: TerminalContent): Promise<void> {
+    const queue = content as unknown as {
+      _sessionCallQueue: unknown[]
+      _sessionCallSending: boolean
+    }
+    await vi.waitFor(() => {
+      expect(queue._sessionCallQueue).toHaveLength(0)
+      expect(queue._sessionCallSending).toBe(false)
+    })
+  }
+
+  it('uses the accepted backend cursor row for command block coordinates', async () => {
+    const client = makeClient()
+    const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    try {
+      const rows = Array.from({ length: 24 }, () => [] as CellSpec[])
+      const screen = (revision: number, baseRow: number, cursorY: number): SessionFrame =>
+        frameOf(
+          revision,
+          rows,
+          { x: 0, y: cursorY, visible: true },
+          { cols: 80, rows: 24 },
+          {
+            bufferKind: 'normal',
+            bufferInstance: '9',
+            baseRow,
+            bracketedPaste: false,
+            mouseTracking: false,
+            title: null,
+            cwd: null,
+          },
+        )
+      const session = sessionOf(content)
+      session.fireScreenFrame(screen(1, 100, 3))
+
+      const lifecycle = startCommand(client)
+      const manager = (content as unknown as { scrollback: ScrollbackController }).scrollback
+        .blockManager
+      expect(manager.runningBlock?.startLine).toBe(103)
+
+      session.fireScreenFrame(screen(2, 200, 5))
+      finishCommand(lifecycle)
+      // Completion and the backend's block.closed may cross on the control
+      // plane. The accepted screen at block.closed owns the final row.
+      session.fireScreenFrame(screen(3, 300, 7))
+      const closeSubscriber = client.dispatcher.subscribe.mock.calls.find(
+        (call: unknown[]) => call[0] === 'block.closed',
+      ) as [string, (params: unknown) => void] | undefined
+      if (!closeSubscriber) throw new Error('block.closed subscription was not installed')
+      closeSubscriber[1]({
+        entryId: 'att-run',
+        kept: false,
+        screenAnchor: {
+          row: 307,
+          screenRevision: 3,
+          bufferKind: 'normal',
+          bufferInstance: '9',
+          cols: 80,
+          rows: 24,
+        },
+      })
+
+      expect(manager.blocks[0]?.endLine).toBe(307)
+    } finally {
+      teardown()
+    }
+  })
+
   it('Ctrl+Enter while a command is running summons the editor as an overlay without resizing the grid', async () => {
     const client = makeClient()
     const { ed, content, teardown } = await mountTerminal(
@@ -11197,9 +11436,10 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
     try {
       content.setVisible(true)
       startCommand(client)
-      const renderer = rendererOf(content)
       const session = sessionOf(content)
-      const dimensions = { cols: renderer.cols, rows: renderer.rows }
+      const accepted = screenFrame(1, ['running command'])
+      session.fireScreenFrame(accepted)
+      const dimensions = { cols: accepted.geometry.cols, rows: accepted.geometry.rows }
       const resizeCalls = session.sendResize.mock.calls.length
       session.send.mockClear()
       // The editor is gone while it runs — that is deliberate and it
@@ -11234,13 +11474,12 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       // The grid remains the same size and no PTY resize was requested. The
       // overlay is removed from layout rather than making a second viewport
       // fit pass.
-      expect({ cols: renderer.cols, rows: renderer.rows }).toEqual(dimensions)
+      expect(paneScreen()?.geometry).toMatchObject(dimensions)
       expect(session.send).not.toHaveBeenCalled()
       expect(session.sendResize).toHaveBeenCalledTimes(resizeCalls)
-      // And the grid is read-only again, which is the invariant
-      // _syncLifecycleOwnership states about itself: editor shown ⟺ grid
-      // read-only.
-      expect(readOnlyOf(content)).toHaveBeenLastCalledWith(true)
+      // The editor now owns keyboard focus; the terminal input is no longer
+      // the active keyboard surface.
+      expect(editorOwnsKeyboard(content)).toBe(true)
     } finally {
       restore()
       teardown()
@@ -11261,9 +11500,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       scrollback.beginBlock('top', '~', 0)
       scrollback.blockManager.bindAttempt('att-run')
       closeRunningBlock(scrollback.blockManager)
-      const renderer = rendererOf(content)
-      renderer._fireBufferChange('alternate')
-      renderer._fireWriteParsed()
+      fireBufferState(sessionOf(content), 'alternate', 20)
 
       await summonChord(content)
 
@@ -11290,9 +11527,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       const scrollback = (content as unknown as { scrollback: ScrollbackController }).scrollback
       scrollback.beginBlock('top', '~', 0)
       scrollback.blockManager.bindAttempt('att-run')
-      const renderer = rendererOf(content)
-      renderer._fireBufferChange('alternate')
-      renderer._fireWriteParsed()
+      fireBufferState(sessionOf(content), 'alternate', 20)
 
       await summonChord(content)
 
@@ -11322,7 +11557,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       const scrollback = (content as unknown as { scrollback: ScrollbackController }).scrollback
       scrollback.beginBlock('top', '~', 0)
       scrollback.blockManager.bindAttempt('att-run')
-      rendererOf(content)._fireWriteParsed()
+      sessionOf(content).fireScreenFrame(screenFrame(1, ['top output']))
 
       await summonChord(content)
 
@@ -11353,7 +11588,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       const scrollback = (content as unknown as { scrollback: ScrollbackController }).scrollback
       scrollback.beginBlock('top', '~', 0)
       scrollback.blockManager.bindAttempt('att-run')
-      rendererOf(content)._fireWriteParsed()
+      sessionOf(content).fireScreenFrame(screenFrame(1, ['top output']))
 
       await summonChord(content)
 
@@ -11485,8 +11720,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
     try {
       content.setVisible(true)
       startCommand(client)
-      const renderer = rendererOf(content)
-      renderer.captureLiveFrame = vi.fn(
+      content.captureLiveFrame = vi.fn(
         () =>
           new Promise<CapturedFrame>((resolve) => {
             release = resolve
@@ -11518,7 +11752,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
     try {
       content.setVisible(true)
       startCommand(client)
-      rendererOf(content).captureLiveFrame = vi.fn().mockRejectedValue(new Error('capture refused'))
+      content.captureLiveFrame = vi.fn().mockRejectedValue(new Error('capture refused'))
 
       await summonChord(content)
       expect(ed.isVisible).toBe(false)
@@ -11547,40 +11781,32 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       startCommand(client, 'top')
       await summonChord(content)
       expect(ed.isVisible).toBe(true)
-      const renderer = rendererOf(content)
+      const session = sessionOf(content)
       const focus = vi.spyOn(intentElementOf(content), 'focus')
       focus.mockClear()
-      const write = Object.getOwnPropertyDescriptor(renderer, 'write')?.value as Mock<
-        (data: string) => void
-      >
-      const liveOutput = document.createElement('span')
-      gridOf(content).appendChild(liveOutput)
-      write.mockImplementation((data: string) => {
-        liveOutput.textContent += data
-      })
-      write.mockClear()
-      sessionOf(content).fireData('during freeze\n')
-      expect(write).toHaveBeenCalledWith('during freeze\n')
+      session.fireScreenFrame(screenFrame(1, ['during freeze']))
+      await vi.waitFor(() => expect(gridOf(content).textContent).toContain('during freeze'))
 
       escapeOn(viewOf(ed).contentDOM)
 
       expect(ed.isVisible).toBe(false)
       expect(ed.root.dataset.placement).toBe('inline')
-      expect(readOnlyOf(content)).toHaveBeenLastCalledWith(false)
+      expect(editorOwnsKeyboard(content)).toBe(false)
       expect(focus).toHaveBeenCalledTimes(1)
       // The assertion that matters is not the flag: it is a key the PROGRAM
       expect(content.pinnedFrame()).toBeNull()
-      expect(gridOf(content).textContent).toContain('during freeze\n')
+      expect(gridOf(content).textContent).toContain('during freeze')
       expect(
         gridOf(content).parentElement?.parentElement?.querySelector('.nocx-freeze-frame'),
       ).toBeNull()
       expect(ed.root.querySelector('[role="status"]')).toBeNull()
       // consumes arriving at the session. `q` is what quits `top`, and if
       // the editor still owned input it would be a letter in a draft.
-      const session = sessionOf(content)
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('q')
-      expect(session.send).toHaveBeenCalledWith('q')
+      typeIntoPane(content, 'q')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'q'))
+      expect(session.send).not.toHaveBeenCalled()
       // And the summon is UNWOUND, not merely hidden: the target it
       // displaced is back, so the prompt that returns when the command ends
       // is the shell's again. Leaving it on Ask would put the person's next
@@ -11591,7 +11817,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       teardown()
     }
   })
-  it("Escape dismisses an accepted summon when xterm's helper textarea owns focus", async () => {
+  it('Escape dismisses an accepted summon when the terminal input owns focus', async () => {
     const client = makeClient()
     client.dispatcher.call.mockImplementation((method: string) => {
       if (method === 'agent.ask') {
@@ -11706,13 +11932,15 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       // The direct assertion the criterion asks for: Enter on a typed line
       // starts no command. A shell submission would paste the line into the
       // grid and open a running block; a question does neither.
-      const renderer = rendererOf(content)
-      renderer.paste.mockClear()
+      const session = sessionOf(content)
+      session.intent.mockClear()
+      session.send.mockClear()
       ed.insertText('rm -rf /tmp/x')
       viewOf(ed).contentDOM.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
       )
-      expect(renderer.paste).not.toHaveBeenCalled()
+      expect(session.intent).not.toHaveBeenCalled()
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       restore()
       teardown()
@@ -11776,7 +12004,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
   //
   // ⌘/Ctrl+Enter used to be claimed in three places, each keyed on where
   // the browser had parked the focus: a capture listener on the editor's
-  // root (flip the target), a capture listener on the xterm host (summon),
+  // root (flip the target), a capture listener on terminal input (summon),
   // and a document bubble listener added so a scrollback selection — which
   // blurs onto <body>, neither of the other two — could still reach the
   // flip. Three guard sets for one key, and the third had none of its own
@@ -11788,36 +12016,30 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
   // These tests press the chord from every place a person's focus can be.
   describe('the target chord has one owner (nocx-a7mw7.6)', () => {
     /** A settled block with output, the way the ask-entry specs build one. */
-    function frozenBlock(content: TerminalContent, command: string, output: string[]): HTMLElement {
+    function frozenBlock(content: TerminalContent, command: string): HTMLElement {
       const manager = (content as unknown as { scrollback: ScrollbackController }).scrollback
         .blockManager
       manager.startBlock(command, '~', 0)
       manager.bindAttempt(`att-chord-${manager.blocks.length}`)
-      const lines = output.map((t) => new BufferLine(t))
-      const frozen = closeRunningBlock(manager, 0, (y) => lines[y])
+      const frozen = closeRunningBlock(manager, 0)
       expect(frozen).not.toBeNull()
       return frozen!.el
     }
 
-    /** THE PROMPT FINISHED PAINTING. The helper delivers PTY bytes before
-     *  promptBoundary, but xterm may still be parsing those bytes when the
-     *  effect arrives. Model that ordering with a pending write and FIFO fence. */
-    async function promptPainted(
-      content: TerminalContent,
-      renderer: ReturnType<typeof rendererOf>,
-    ): Promise<void> {
+    /** The prompt frame is already accepted before its boundary effect.
+     *  Background output is eligible only after that backend ordering point. */
+    async function promptPainted(content: TerminalContent): Promise<void> {
       const session = sessionOf(content)
-      renderer.hasUnsettledWrite.mockReturnValue(true)
+      session.fireScreenFrame(screenFrame(1, ['$ ']))
       session.fireEffect({
         sessionId: session.sessionId,
         generation: '1',
         effectId: '1',
         kind: 'promptBoundary',
+        screenRevision: 1,
         title: '',
         body: '',
       })
-      renderer._fireWriteParsed()
-      renderer.hasUnsettledWrite.mockReturnValue(false)
       await Promise.resolve()
     }
 
@@ -11878,17 +12100,13 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         content.setVisible(true)
         ed.show()
         ed.focus()
-        frozenBlock(content, 'top', ['screen marker'])
-        const renderer = rendererOf(content)
-        // The prompt came back and finished painting — the screen is nobody's
-        // as of this pass.
-        await promptPainted(content, renderer)
-        // …and then the background child repainted it. That write, parsed
-        // after the handback, is what makes this screen worth attaching; the
-        // finished-command case below has no such write and is refused.
-        renderer._fireWriteParsed()
+        frozenBlock(content, 'top')
+        // The prompt boundary closes the old screen interval. A later
+        // accepted frame is eligible as the background program's live screen.
+        await promptPainted(content)
+        sessionOf(content).fireScreenFrame(screenFrame(2, ['background repaint']))
         const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
-        renderer.captureLiveFrame = captureLiveFrame
+        content.captureLiveFrame = captureLiveFrame
 
         chordOn(viewOf(ed).contentDOM)
 
@@ -11910,14 +12128,12 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         content.setVisible(true)
         ed.show()
         ed.focus()
-        frozenBlock(content, 'echo beta', ['beta'])
-        const renderer = rendererOf(content)
-        // Screen bytes may parse before the corresponding control-plane
-        // boundary. Switching to Ask in that gap must not treat the prompt as
-        // background TUI output.
-        renderer._fireWriteParsed()
+        frozenBlock(content, 'echo beta')
+        // An accepted prompt frame may precede its control-plane boundary.
+        // Ask must not treat that frame as background program output.
+        sessionOf(content).fireScreenFrame(screenFrame(1, ['$ prompt']))
         const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
-        renderer.captureLiveFrame = captureLiveFrame
+        content.captureLiveFrame = captureLiveFrame
 
         chordOn(viewOf(ed).contentDOM)
         expect(targetNamed(ed)).toBe('agent')
@@ -11929,6 +12145,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
           generation: '1',
           effectId: '2',
           kind: 'promptBoundary',
+          screenRevision: 1,
           title: '',
           body: '',
         })
@@ -11951,18 +12168,16 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         content.setVisible(true)
         ed.show()
         ed.focus()
-        frozenBlock(content, 'top', ['screen marker'])
-        const renderer = rendererOf(content)
-        await promptPainted(content, renderer)
-        // A background TUI paints after the prompt. Ask begins capturing that
-        // live screen, but the helper's boundary notification is still in
-        // flight and must revoke the candidate before capture commits.
-        renderer._fireWriteParsed()
+        frozenBlock(content, 'top')
+        await promptPainted(content)
+        // A background frame makes this screen eligible; a later boundary
+        // during capture revokes that candidate before capture commits.
+        sessionOf(content).fireScreenFrame(screenFrame(2, ['background tui']))
         let finishCapture!: (frame: CapturedFrame) => void
         const captureLiveFrame = vi.fn(
           () => new Promise<CapturedFrame>((resolve) => (finishCapture = resolve)),
         )
-        renderer.captureLiveFrame = captureLiveFrame
+        content.captureLiveFrame = captureLiveFrame
 
         chordOn(viewOf(ed).contentDOM)
         expect(targetNamed(ed)).toBe('agent')
@@ -11974,6 +12189,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
           generation: '1',
           effectId: '2',
           kind: 'promptBoundary',
+          screenRevision: 2,
           title: '',
           body: '',
         })
@@ -11996,10 +12212,9 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         content.setVisible(true)
         ed.show()
         ed.focus()
-        frozenBlock(content, 'old command', ['old output'])
-        const renderer = rendererOf(content)
+        frozenBlock(content, 'old command')
         const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
-        renderer.captureLiveFrame = captureLiveFrame
+        content.captureLiveFrame = captureLiveFrame
 
         chordOn(viewOf(ed).contentDOM)
         await settleAttachment()
@@ -12020,7 +12235,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
     // person who marked block A was handed block B as well, under a sentence
     // calling it the current screen of a full-screen program. The baseline
     // moves to the prompt's own last byte, which is what B is.
-    it('waits for every queued prompt write before opening the live-screen interval', async () => {
+    it('does not open a live-screen interval until the prompt boundary is accepted', async () => {
       const { ed, content, teardown } = await mountTerminal(makeClipboard(), {
         attachToDocument: true,
       })
@@ -12028,37 +12243,28 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         content.setVisible(true)
         ed.show()
         ed.focus()
-        frozenBlock(content, 'echo beta', ['beta'])
-        const renderer = rendererOf(content)
-        let releaseBarrier!: () => void
-        renderer.hasUnsettledWrite.mockReturnValue(true)
-        renderer.awaitWriteBarrier.mockImplementation(
-          () => new Promise<void>((resolve) => (releaseBarrier = resolve)),
-        )
+        frozenBlock(content, 'echo beta')
         const session = sessionOf(content)
+        // The prompt frame has arrived, but its boundary has not. Selecting
+        // Ask in this interval cannot attach the prompt as a live screen.
+        session.fireScreenFrame(screenFrame(1, ['$ prompt']))
+        const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
+        content.captureLiveFrame = captureLiveFrame
+
+        chordOn(viewOf(ed).contentDOM)
+        expect(targetNamed(ed)).toBe('agent')
+        expect(captureLiveFrame).not.toHaveBeenCalled()
+
         session.fireEffect({
           sessionId: session.sessionId,
           generation: '1',
           effectId: '1',
           kind: 'promptBoundary',
+          screenRevision: 1,
           title: '',
           body: '',
         })
-        const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
-        renderer.captureLiveFrame = captureLiveFrame
-
-        // Switch while the two prompt chunks are still behind xterm's fence.
-        chordOn(viewOf(ed).contentDOM)
-        expect(targetNamed(ed)).toBe('agent')
-        expect(captureLiveFrame).not.toHaveBeenCalled()
-        renderer._fireWriteParsed()
-        renderer._fireWriteParsed()
-        renderer.hasUnsettledWrite.mockReturnValue(false)
-        releaseBarrier()
-        await Promise.resolve()
-
-        // The barrier resolves only after both chunks have parsed, so the
-        // prompt itself cannot reopen the interval.
+        await settleAttachment()
         expect(captureLiveFrame).not.toHaveBeenCalled()
       } finally {
         teardown()
@@ -12073,16 +12279,12 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         content.setVisible(true)
         ed.show()
         ed.focus()
-        frozenBlock(content, 'echo beta', ['beta'])
-        const renderer = rendererOf(content)
-        // The prompt's own bytes, parsed after the freeze — the one write
-        // this screen will ever see again, and it ends in B. Fire it WITHOUT
-        // the marker and this test goes green on a broken product, because a
-        // bare write after the freeze is what the defect mistook for a live
-        // screen.
-        await promptPainted(content, renderer)
+        frozenBlock(content, 'echo beta')
+        // The prompt frame is accepted before the boundary effect. With no
+        // later background frame, a finished command is not live screen.
+        await promptPainted(content)
         const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
-        renderer.captureLiveFrame = captureLiveFrame
+        content.captureLiveFrame = captureLiveFrame
 
         chordOn(viewOf(ed).contentDOM)
         await settleAttachment()
@@ -12105,26 +12307,26 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         content.setVisible(true)
         ed.show()
         ed.focus()
-        frozenBlock(content, 'echo beta', ['beta'])
-        const renderer = rendererOf(content)
-
-        // All prompt bytes have parsed before the ordered effect arrives.
-        renderer._fireWriteParsed()
+        frozenBlock(content, 'echo beta')
         const session = sessionOf(content)
+
+        // The accepted prompt frame precedes its ordered boundary effect.
+        session.fireScreenFrame(screenFrame(1, ['$ prompt']))
         session.fireEffect({
           sessionId: session.sessionId,
           generation: '1',
           effectId: '1',
           kind: 'promptBoundary',
+          screenRevision: 1,
           title: '',
           body: '',
         })
         const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
-        renderer.captureLiveFrame = captureLiveFrame
+        content.captureLiveFrame = captureLiveFrame
 
-        // The very next parsed write is a background TUI repaint, not prompt
-        // tail. It must remain eligible after the boundary is closed.
-        renderer._fireWriteParsed()
+        // The next accepted frame is a background TUI repaint, not prompt
+        // tail. It remains eligible after the boundary is closed.
+        session.fireScreenFrame(screenFrame(2, ['background repaint']))
         chordOn(viewOf(ed).contentDOM)
         await settleAttachment()
 
@@ -12244,9 +12446,8 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         // is neither the composer nor the grid. The gesture is the same
         // gesture and must still summon — when the chord was claimed by
         // whichever element happened to hold the focus, this pressed nothing.
-        const renderer = rendererOf(content)
-        if (typeof renderer.captureLiveFrame !== 'function') {
-          renderer.captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
+        if (!Object.prototype.hasOwnProperty.call(content, 'captureLiveFrame')) {
+          content.captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
         }
         gridOf(content).blur()
         expect(document.activeElement).toBe(document.body)
@@ -12269,7 +12470,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       try {
         content.setVisible(true)
         ed.show()
-        const block = frozenBlock(content, 'git status', ['clean'])
+        const block = frozenBlock(content, 'git status')
         block.querySelector<HTMLButtonElement>('[data-block-actions]')!.click()
         expect(document.querySelector('[data-testid="block-actions-menu"]')).not.toBeNull()
 
@@ -12318,11 +12519,13 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       // an inline TUI keeps every row and every key it has today, until the
       // person deliberately asks for the editor.
       expect(ed.isVisible).toBe(false)
-      expect(readOnlyOf(content)).toHaveBeenLastCalledWith(false)
+      expect(editorOwnsKeyboard(content)).toBe(false)
       const session = sessionOf(content)
+      session.intent.mockClear()
       session.send.mockClear()
-      rendererOf(content)._fireData('q')
-      expect(session.send).toHaveBeenCalledWith('q')
+      typeIntoPane(content, 'q')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'q'))
+      expect(session.send).not.toHaveBeenCalled()
     } finally {
       restore()
       teardown()
@@ -12340,10 +12543,11 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
     try {
       content.setVisible(true)
       startCommand(client, 'htop')
-      const renderer = rendererOf(content)
       const session = sessionOf(content)
-      renderer._fireBufferChange('alternate')
-      const dimensions = { cols: renderer.cols, rows: renderer.rows }
+      const alternate = screenFrame(20, ['alternate program'])
+      alternate.state.bufferKind = 'alternate'
+      session.fireScreenFrame(alternate)
+      const dimensions = { cols: alternate.geometry.cols, rows: alternate.geometry.rows }
       const resizeCalls = session.sendResize.mock.calls.length
 
       await summonChord(content)
@@ -12351,7 +12555,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       expect(ed.isVisible).toBe(true)
       expect(ed.root.dataset.placement).toBe('overlay')
       expect(targetNamed(ed)).toBe('agent')
-      expect({ cols: renderer.cols, rows: renderer.rows }).toEqual(dimensions)
+      expect(paneScreen()?.geometry).toMatchObject(dimensions)
       expect(session.sendResize).toHaveBeenCalledTimes(resizeCalls)
     } finally {
       restore()
@@ -12458,6 +12662,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
           cancelable: true,
         })
         target.element.dispatchEvent(event)
+        await waitForSessionQueue(content)
         const signals = signalsSent(content)
         results.push({
           target: target.name,
@@ -12537,6 +12742,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
           cancelable: true,
         }),
       )
+      await waitForSessionQueue(content)
 
       expect(signalsSent(content)).toEqual(['interrupt'])
     } finally {
@@ -12557,8 +12763,8 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
     try {
       content.setVisible(true)
       startCommand(client)
-      // The grid's hidden textarea is where xterm parks focus; from there
-      // the key becomes 0x03 on the data plane and the line discipline
+      // The terminal input element owns focus; Ctrl+C becomes an interrupt
+      // intent and the backend line discipline handles it.
       // turns it into SIGINT. Two owners for one keystroke would signal
       // twice — which is a second interrupt the person did not ask for.
       const textarea = document.createElement('textarea')
@@ -12650,6 +12856,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       // The command — not the turn — receives exactly one ordinary interrupt
       // through its signal ladder, and the half-typed question survives.
       expect(ed.getDoc()).toBe('what is it waiting on')
+      await waitForSessionQueue(content)
       expect(signalsSent(content)).toEqual(['interrupt'])
       expect(session.send).not.toHaveBeenCalledWith('\x03')
       expect(
@@ -12782,7 +12989,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         },
       })
       expect(ed.isVisible).toBe(false)
-      rendererOf(content).captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
+      content.captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
 
       const runItems = runningBlockMenu(content)
       expect(itemNamed(runItems, 'grant')).toBeUndefined()
@@ -12857,6 +13064,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       const stop = itemNamed(runningBlockMenu(content), 'stop')
       expect(stop, 'the card the runtime opened offers no Stop').toBeDefined()
       stop!.click()
+      await waitForSessionQueue(content)
       expect(signalsSent(content)).toEqual(['stop'])
     } finally {
       restore()
@@ -12901,6 +13109,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
 
       // `stop`, not `interrupt`: the menu item promises the command is gone,
       // and the backend's ladder is what keeps that promise.
+      await waitForSessionQueue(content)
       expect(signalsSent(content)).toEqual(['stop'])
     } finally {
       restore()
@@ -13006,6 +13215,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       )
       expect(stop, 'the running block has no Stop control').not.toBeNull()
       stop!.click()
+      await waitForSessionQueue(content)
       expect(signalsSent(content)).toEqual(['stop'])
       expect(itemNamed(runningBlockMenu(content), 'stop')).not.toBeUndefined()
     } finally {
@@ -13022,6 +13232,84 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
   // otherwise indistinguishable. These two tests are the pairing the bead
   // asks for: the SAME exit code, through the SAME completion path, reading
   // two different ways depending on whether nocx actually sent the signal.
+
+  it('orders Interrupt after a queued mouse release', async () => {
+    const client = makeClient()
+    const { content, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    const restore = stubScrolling()
+    const session = sessionOf(content)
+    let releasePress!: () => void
+    const pressGate = new Promise<void>((resolve) => {
+      releasePress = resolve
+    })
+    const result = { state: 'executed', bytesWritten: 1, fenceAfter: 0 }
+    const events: string[] = []
+    session.intent.mockImplementation((kind: string, payload: string) => {
+      events.push(`intent:${payload}`)
+      return (payload === 'press left 2 1' ? pressGate : Promise.resolve()).then(() => result)
+    })
+    session.signal.mockImplementation((signal: string) => {
+      events.push(`signal:${signal}`)
+      return Promise.resolve({ signal, outcome: 'delivered' })
+    })
+
+    try {
+      content.setVisible(true)
+      const frame = screenFrame(1, ['mouse target'])
+      frame.state.mouseTracking = true
+      session.fireScreenFrame(frame)
+      startCommand(client, 'cat -v')
+
+      const surface = gridOf(content).querySelector<HTMLElement>('.term-grid')!
+      await vi.waitFor(() => expect(surface.textContent).toContain('mouse target'))
+      surface.getBoundingClientRect = () =>
+        ({ left: 10, top: 20, right: 330, bottom: 84, width: 320, height: 64 }) as DOMRect
+      const pointer = (type: 'pointerdown' | 'pointerup', buttons: number): Event => {
+        const event = new Event(type, { bubbles: true, cancelable: true })
+        Object.defineProperties(event, {
+          button: { value: 0 },
+          buttons: { value: buttons },
+          clientX: { value: 26 },
+          clientY: { value: 44 },
+        })
+        return event
+      }
+      surface.dispatchEvent(pointer('pointerdown', 1))
+      surface.dispatchEvent(pointer('pointerup', 0))
+      await vi.waitFor(() => expect(events).toEqual(['intent:press left 2 1']))
+      expect(
+        (
+          content as unknown as {
+            _sessionCallQueue: Array<{ intent?: { payload: string } }>
+          }
+        )._sessionCallQueue.map((call) => call.intent?.payload),
+      ).toEqual(['release left 2 1'])
+
+      const interrupt = paneOf(content).querySelector<HTMLButtonElement>(
+        '[data-control="interrupt"]',
+      )
+      expect(interrupt).not.toBeNull()
+      interrupt!.click()
+      expect(events).toEqual(['intent:press left 2 1'])
+
+      releasePress()
+      await vi.waitFor(() =>
+        expect(events).toEqual([
+          'intent:press left 2 1',
+          'intent:release left 2 1',
+          'signal:interrupt',
+        ]),
+      )
+    } finally {
+      releasePress()
+      restore()
+      teardown()
+    }
+  })
 
   it('a command stopped through the pane settles as cancelled, never failed', async () => {
     const client = makeClient()
@@ -13058,6 +13346,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       // The REAL stop path: the Stop menu item, signalActiveCommand, the
       // pane's session.signal — not a status flipped by hand.
       itemNamed(runningBlockMenu(content), 'stop')!.click()
+      await waitForSessionQueue(content)
       expect(signalsSent(content)).toEqual(['stop'])
 
       // The escalation ladder's SIGINT rung. `fence` is REQUIRED here, not
@@ -13139,6 +13428,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       vi.mocked(showToast).mockClear()
 
       itemNamed(runningBlockMenu(content), 'stop')!.click()
+      await waitForSessionQueue(content)
       expect(signalsSent(content)).toEqual(['stop'])
 
       await vi.waitFor(() => expect(showToast).toHaveBeenCalled())
@@ -13611,10 +13901,8 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
 // other's question. Replacing one with the other is the defect these tests
 // exist to catch, so every one of them asserts both halves.
 //
-// The BEL BYTE reaching onBell is proven against the real VT parser in
-// renderers/xterm.test.ts ("onBell through the real parser"), including that
-// the BEL terminating an OSC sequence does NOT ring. This file owns the
-// other half of the chain: what the callback does when it fires.
+// The session runtime parses BEL and delivers an identity-bearing effect.
+// This suite checks the product behavior at the session-effect boundary.
 describe('a program printing BEL (nocx-n3nfg)', () => {
   /** The bell only lights the dot on a pane that has SETTLED and is not the
    *  one being looked at (panes.ts markActivity): a shell's banner and first
@@ -13622,19 +13910,54 @@ describe('a program printing BEL (nocx-n3nfg)', () => {
    *  delivers, so the settle here is the one a user's session performs. */
   const settle = (content: TerminalContent): void => {
     const session = sessionOf(content)
+    session.fireScreenFrame(screenFrame(1, ['$ prompt']))
     session.fireEffect({
       sessionId: session.sessionId,
       generation: '1',
       effectId: '1',
       kind: 'promptBoundary',
+      screenRevision: 1,
       title: '',
       body: '',
+    })
+  }
+
+  const fireRuntimeEffect = (
+    session: SessionFake,
+    kind: SessionEffect['kind'],
+    effectId: string,
+    body = '',
+    title = '',
+  ): void => {
+    session.fireEffect({
+      sessionId: session.sessionId,
+      generation: '1',
+      effectId,
+      kind,
+      title,
+      body,
     })
   }
 
   /** The notify.bell requests this pane sent, in order. */
   const bellCalls = (client: ClientFake): unknown[][] =>
     client.dispatcher.call.mock.calls.filter((c: unknown[]) => c[0] === 'notify.bell')
+
+  it('routes backend notification effects through notify.raise', async () => {
+    const client = makeClient()
+    const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    try {
+      const session = sessionOf(content)
+      fireRuntimeEffect(session, 'notification', '2', 'Build finished', 'Build')
+      expect(client.dispatcher.call).toHaveBeenCalledWith('notify.raise', {
+        sessionId: session.sessionId,
+        title: 'Build',
+        body: 'Build finished',
+      })
+    } finally {
+      teardown()
+    }
+  })
 
   it('settles integrated startup on authenticated prompt_ready before a background bell', async () => {
     const session = makeSession({ awaitsIntegration: true })
@@ -13644,7 +13967,7 @@ describe('a program printing BEL (nocx-n3nfg)', () => {
     try {
       // The backend's promptBoundary is an observation, not lifecycle authority.
       settle(content)
-      rendererOf(content)._fireBell()
+      fireRuntimeEffect(session, 'bell', '2')
       expect(tab.hasActivity).toBe(false)
 
       lifecycleHandler(
@@ -13656,7 +13979,7 @@ describe('a program printing BEL (nocx-n3nfg)', () => {
         domain: 'd1',
         epoch: 1,
       })
-      rendererOf(content)._fireBell()
+      fireRuntimeEffect(session, 'bell', '3')
 
       expect(tab.hasActivity).toBe(true)
       expect(bellCalls(client)).toHaveLength(2)
@@ -13672,7 +13995,7 @@ describe('a program printing BEL (nocx-n3nfg)', () => {
       settle(content)
       expect(tab.hasActivity).toBe(false)
 
-      rendererOf(content)._fireBell()
+      fireRuntimeEffect(sessionOf(content), 'bell', '2')
 
       // The notification: its own method, carrying addressing and nothing
       // else. The kind is not here because it cannot be — it is stamped from
@@ -13701,7 +14024,7 @@ describe('a program printing BEL (nocx-n3nfg)', () => {
       // Set after the mount so this rejection belongs to the bell alone.
       client.dispatcher.call.mockRejectedValue(new Error('notify.bell not available'))
 
-      rendererOf(content)._fireBell()
+      fireRuntimeEffect(sessionOf(content), 'bell', '2')
       // Let the rejection settle: an unhandled one surfaces here, not later.
       await Promise.resolve()
       await Promise.resolve()
@@ -13714,60 +14037,24 @@ describe('a program printing BEL (nocx-n3nfg)', () => {
     }
   })
 
-  // The id is read at FIRE time, not at subscribe time: it is
-  // server-authoritative (AD-7) and a reattach replaces it, so a captured one
-  // would address the session the pane used to hold. With no session there is
-  // nothing to address — and the half that never needed one still happens.
-  it('marks the tab and reports nothing when the pane holds no session', async () => {
+  it('ignores an effect from a session no longer bound to the pane', async () => {
     const client = makeClient()
     const { content, tab, teardown } = await mountTerminal(makeClipboard(), {}, client)
     try {
       settle(content)
+      const session = sessionOf(content)
       ;(content as unknown as { session: SessionFake | null }).session = null
 
-      rendererOf(content)._fireBell()
+      fireRuntimeEffect(session, 'bell', '2')
 
       expect(bellCalls(client)).toEqual([])
-      expect(tab.hasActivity).toBe(true)
+      expect(tab.hasActivity).toBe(false)
     } finally {
       teardown()
     }
   })
 })
-describe('session.read serves the frame the question is about (nocx-7l4ex.3)', () => {
-  type ReadCall = { method: string; params: unknown }
-  type ReadRow = { kind: string; text: string }
-  type ReadResolution = {
-    requestId: string
-    outcome: string
-    rows?: ReadRow[]
-    cursor?: unknown
-    identity?: unknown
-    range?: unknown
-    error?: string
-  }
-  type ReadCallFunction = (method: string, params: unknown) => Promise<undefined>
-  type ReadDispatcher = {
-    handlers: Map<string, (params: unknown) => void>
-    calls: ReadCall[]
-    subscribe: (method: string, handler: (params: unknown) => void) => () => void
-    call: ReadCallFunction
-  }
-
-  function readDispatcher(): ReadDispatcher {
-    const handlers = new Map<string, (params: unknown) => void>()
-    const calls: ReadCall[] = []
-    const subscribe = (method: string, handler: (params: unknown) => void): (() => void) => {
-      handlers.set(method, handler)
-      return () => handlers.delete(method)
-    }
-    const call = vi.fn((method: string, params: unknown) => {
-      calls.push({ method, params })
-      return Promise.resolve(undefined)
-    })
-    return { handlers, calls, subscribe, call }
-  }
-
+describe('the summoned frame stays a local display pin', () => {
   function frame(text: string): CapturedFrame {
     return {
       rows: [
@@ -13794,12 +14081,6 @@ describe('session.read serves the frame the question is about (nocx-7l4ex.3)', (
     }
   }
 
-  function wireText(params: unknown): string {
-    const resolution = params as ReadResolution
-    const rows = resolution.rows ?? []
-    return rows.map((row) => row.text).join('\n')
-  }
-
   function startRunning(client: ClientFake, command = 'top'): void {
     const handler = lifecycleHandler(client)
     handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
@@ -13820,7 +14101,7 @@ describe('session.read serves the frame the question is about (nocx-7l4ex.3)', (
 
   function gridOf(content: TerminalContent): HTMLElement {
     const withScrollback = content as unknown as { scrollback: ScrollbackController }
-    return withScrollback.scrollback.xtermLiveContainer
+    return withScrollback.scrollback.terminalLiveContainer
   }
 
   async function summon(content: TerminalContent): Promise<void> {
@@ -13835,19 +14116,68 @@ describe('session.read serves the frame the question is about (nocx-7l4ex.3)', (
     await vi.waitFor(() => expect(editorOf(content).isVisible).toBe(true))
   }
 
-  function readCurrent(
-    dispatcher: ReadDispatcher,
-    content: TerminalContent,
-    requestId: string,
-  ): void {
-    mountReadScreenHandler(dispatcher as unknown as Dispatcher, (sessionId) =>
-      sessionId === content.sessionId() ? content : null,
-    )
-    dispatcher.handlers.get('agent.readScreenRequest')!({
-      requestId,
-      sessionId: content.sessionId(),
+  function dispatchSummon(content: TerminalContent): KeyboardEvent {
+    const event = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
     })
+    gridOf(content).dispatchEvent(event)
+    return event
   }
+
+  it('rejects capture with CaptureAbortedError before any backend frame is accepted', async () => {
+    const { content, teardown } = await mountTerminal(makeClipboard(), { attachToDocument: true })
+    try {
+      await expect(content.captureLiveFrame()).rejects.toMatchObject({
+        name: 'CaptureAbortedError',
+        message: 'frame capture aborted: no accepted screen frame is available',
+      })
+    } finally {
+      teardown()
+    }
+  })
+
+  it('captures the accepted backend screen at its absolute active-buffer rows', async () => {
+    const { content, teardown } = await mountTerminal(makeClipboard(), { attachToDocument: true })
+    try {
+      const rows: CellSpec[][] = [
+        [['A', 1, true]],
+        ...Array.from({ length: 23 }, () => [] as CellSpec[]),
+      ]
+      sessionOf(content).fireScreenFrame(
+        frameOf(
+          9,
+          rows,
+          { x: 2, y: 0, visible: true },
+          { cols: 80, rows: 24 },
+          {
+            bufferKind: 'normal',
+            bufferInstance: '9007199254740993',
+            baseRow: 41,
+            bracketedPaste: false,
+            mouseTracking: false,
+            title: null,
+            cwd: null,
+          },
+        ),
+      )
+
+      const captured = await content.captureLiveFrame()
+      if (captured.provenance.source !== 'live') throw new Error('expected live capture')
+      expect(captured.provenance.range).toEqual({ start: 41, end: 65 })
+      expect(captured.provenance.identity.buffer).toEqual({
+        kind: 'normal',
+        instance: '9007199254740993',
+      })
+      expect(captured.provenance.identity.generation).toBe(9)
+      expect(captured.cursor).toEqual({ line: 41, col: 2 })
+      expect(captured.rows[0].kind).toBe('cells')
+    } finally {
+      teardown()
+    }
+  })
 
   it('freezes an alternate-screen paint from row zero', async () => {
     const client = makeClient()
@@ -13859,56 +14189,16 @@ describe('session.read serves the frame the question is about (nocx-7l4ex.3)', (
     try {
       content.setVisible(true)
       startRunning(client)
-      const renderer = rendererOf(content)
-      renderer._fireBufferChange('alternate')
+      fireBufferState(sessionOf(content), 'alternate', 20)
       const capture = vi.fn().mockResolvedValue(frame('top: load 1.00\nTasks: 254 total'))
-      renderer.captureLiveFrame = capture
+      content.captureLiveFrame = capture
 
       await summon(content)
 
-      expect(capture).toHaveBeenCalledWith({ start: 0, end: renderer.rows })
+      expect(capture).toHaveBeenCalledTimes(1)
       expect(gridOf(content).querySelector('.nocx-freeze-frame')?.textContent).toMatch(
         /^top: load 1\.00/,
       )
-    } finally {
-      teardown()
-    }
-  })
-
-  it('returns the pinned frame for both reads in one question turn', async () => {
-    const client = makeClient()
-    const { content, teardown } = await mountTerminal(
-      makeClipboard(),
-      { attachToDocument: true },
-      client,
-    )
-    try {
-      content.setVisible(true)
-      startRunning(client)
-      const pinned = frame('top: load 1.00')
-      const renderer = rendererOf(content)
-      const capture = vi.fn().mockResolvedValue(pinned)
-      renderer.captureLiveFrame = capture
-      await summon(content)
-      expect(capture).toHaveBeenCalledWith(undefined)
-      capture.mockClear()
-
-      const dispatcher = readDispatcher()
-      readCurrent(dispatcher, content, 'read-1')
-      await vi.waitFor(() => expect(dispatcher.calls).toHaveLength(1))
-      readCurrent(dispatcher, content, 'read-2')
-      await vi.waitFor(() => expect(dispatcher.calls).toHaveLength(2))
-
-      const first = dispatcher.calls[0].params as ReadResolution
-      const second = dispatcher.calls[1].params as ReadResolution
-      expect(first).toMatchObject({ requestId: 'read-1', outcome: 'frame' })
-      expect(second).toMatchObject({ requestId: 'read-2', outcome: 'frame' })
-      expect(wireText(first)).toContain('top: load 1.00')
-      expect(second.rows).toEqual(first.rows)
-      expect(second.cursor).toEqual(first.cursor)
-      expect(second.identity).toEqual(first.identity)
-      expect(second.range).toEqual(first.range)
-      expect(capture).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -13925,9 +14215,8 @@ describe('session.read serves the frame the question is about (nocx-7l4ex.3)', (
       content.setVisible(true)
       startRunning(client)
       const pinned = frame('pinned top frame')
-      const renderer = rendererOf(content)
       const capture = vi.fn().mockResolvedValue(pinned)
-      renderer.captureLiveFrame = capture
+      content.captureLiveFrame = capture
       await summon(content)
 
       const editorWithView = editorOf(content) as unknown as { view: EditorView }
@@ -13947,297 +14236,6 @@ describe('session.read serves the frame the question is about (nocx-7l4ex.3)', (
     }
   })
 
-  it('answers a repainting top without waiting on the live capture fence', async () => {
-    const client = makeClient()
-    const { content, teardown } = await mountTerminal(
-      makeClipboard(),
-      { attachToDocument: true },
-      client,
-    )
-    try {
-      content.setVisible(true)
-      startRunning(client, 'top')
-      const pinned = frame('top: pinned while repainting')
-      const renderer = rendererOf(content)
-      const capture = vi.fn().mockResolvedValue(pinned)
-      renderer.captureLiveFrame = capture
-      await summon(content)
-
-      let liveCaptureStarted = false
-      const blockedCapture = vi.fn(
-        () =>
-          new Promise<CapturedFrame>(() => {
-            liveCaptureStarted = true
-          }),
-      )
-      renderer.captureLiveFrame = blockedCapture
-
-      await expect(content.captureLiveFrame()).resolves.toBe(pinned)
-      expect(liveCaptureStarted).toBe(false)
-      expect(blockedCapture).not.toHaveBeenCalled()
-    } finally {
-      teardown()
-    }
-  })
-
-  it('keeps region reads live while the whole-screen read is pinned', async () => {
-    const client = makeClient()
-    const { content, teardown } = await mountTerminal(
-      makeClipboard(),
-      { attachToDocument: true },
-      client,
-    )
-    try {
-      content.setVisible(true)
-      startRunning(client)
-      const pinned = frame('pinned whole screen')
-      const renderer = rendererOf(content)
-      const capture = vi.fn().mockResolvedValue(pinned)
-      renderer.captureLiveFrame = capture
-      await summon(content)
-
-      const live = frame('live selected rows')
-      capture.mockResolvedValue(live)
-      const result = await content.captureLiveFrame({ start: 3, end: 5 })
-
-      expect(result).toBe(live)
-      expect(capture).toHaveBeenLastCalledWith({ start: 3, end: 5 })
-    } finally {
-      teardown()
-    }
-  })
-
-  it('keeps the renderer failed outcome when no frame can be produced', async () => {
-    const client = makeClient()
-    const { content, teardown } = await mountTerminal(
-      makeClipboard(),
-      { attachToDocument: true },
-      client,
-    )
-    try {
-      content.setVisible(true)
-      startRunning(client)
-      rendererOf(content).captureLiveFrame = vi.fn().mockRejectedValue(new Error('capture refused'))
-
-      const dispatcher = readDispatcher()
-      readCurrent(dispatcher, content, 'read-failed')
-      await vi.waitFor(() => expect(dispatcher.calls).toHaveLength(1))
-
-      expect(dispatcher.calls[0].params).toMatchObject({
-        requestId: 'read-failed',
-        outcome: 'failed',
-        error: 'capture refused',
-      })
-    } finally {
-      teardown()
-    }
-  })
-  it('keeps the read pin through Escape until the stopped ask turn terminalizes', async () => {
-    const client = makeClient()
-    const { content, teardown } = await mountTerminal(
-      makeClipboard(),
-      { attachToDocument: true },
-      client,
-    )
-    try {
-      content.setVisible(true)
-      startRunning(client)
-      const pinned = frame('pinned while the answer streams')
-      const live = frame('live after the answer ends')
-      const renderer = rendererOf(content)
-      const capture = vi.fn().mockResolvedValue(pinned)
-      renderer.captureLiveFrame = capture
-      client.dispatcher.call.mockImplementation((method: string) => {
-        if (method === 'agent.ask') {
-          return Promise.resolve({ runId: 42, entryId: 'entry-42', model: 'test-model' })
-        }
-        return Promise.resolve({
-          id: 'att-0',
-          domain: 'd1',
-          state: 'open',
-          command: '',
-          cwd: '',
-          host: '',
-          origin: 'app',
-          submitId: submitToken(client),
-          startedAt: '2026-08-08T12:00:00Z',
-        })
-      })
-
-      await summon(content)
-      capture.mockClear()
-      const ed = editorOf(content)
-      ed.insertText('why is this screen changing?')
-      viewOf(ed).contentDOM.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
-      )
-      await vi.waitFor(() =>
-        expect(client.dispatcher.call.mock.calls.some(([method]) => method === 'agent.ask')).toBe(
-          true,
-        ),
-      )
-
-      viewOf(ed).contentDOM.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
-      )
-      expect(content.pinnedFrame()).toBeNull()
-
-      const dispatcher = readDispatcher()
-      readCurrent(dispatcher, content, 'read-after-escape-1')
-      await vi.waitFor(() => expect(dispatcher.calls).toHaveLength(1))
-      readCurrent(dispatcher, content, 'read-after-escape-2')
-      await vi.waitFor(() => expect(dispatcher.calls).toHaveLength(2))
-      const first = dispatcher.calls[0].params as ReadResolution
-      const second = dispatcher.calls[1].params as ReadResolution
-      expect(wireText(first)).toContain('pinned while the answer streams')
-      expect(second.rows).toEqual(first.rows)
-      expect(capture).not.toHaveBeenCalled()
-
-      const runState = client.dispatcher.subscribe.mock.calls.find(
-        ([method]) => method === 'agent.runState',
-      )
-      expect(runState).toBeDefined()
-      ;(runState![1] as (params: unknown) => void)({ runId: 42, state: 'cancelled' })
-
-      capture.mockResolvedValue(live)
-      readCurrent(dispatcher, content, 'read-after-turn')
-      await vi.waitFor(() => expect(dispatcher.calls).toHaveLength(3))
-      expect(wireText(dispatcher.calls[2].params)).toContain('live after the answer ends')
-      expect(capture).toHaveBeenCalledTimes(1)
-    } finally {
-      teardown()
-    }
-  })
-  it('clears an unsettled turn pin when the next question starts without a summon', async () => {
-    const client = makeClient()
-    const { content, teardown } = await mountTerminal(
-      makeClipboard(),
-      { attachToDocument: true },
-      client,
-    )
-    try {
-      content.setVisible(true)
-      startRunning(client)
-      const pinned = frame('stale first-turn frame')
-      const live = frame('live second-turn frame')
-      const renderer = rendererOf(content)
-      const capture = vi.fn().mockResolvedValue(pinned)
-      renderer.captureLiveFrame = capture
-      let nextRun = 42
-      client.dispatcher.call.mockImplementation((method: string) => {
-        if (method === 'agent.status') {
-          return Promise.resolve({
-            endpointConfigured: true,
-            credential: 'resolvable',
-            lastProbe: null,
-            answering: { ready: true, reason: null, endpoint: 'openrouter', model: 'test-model' },
-          })
-        }
-        if (method === 'agent.ask') {
-          nextRun += 1
-          return Promise.resolve({
-            runId: nextRun,
-            entryId: `entry-${nextRun}`,
-            model: 'test-model',
-          })
-        }
-        return Promise.resolve({
-          id: 'att-0',
-          domain: 'd1',
-          state: 'open',
-          command: '',
-          cwd: '',
-          host: '',
-          origin: 'app',
-          startedAt: '2026-08-08T12:00:00Z',
-        })
-      })
-
-      await summon(content)
-      capture.mockClear()
-      const ed = editorOf(content)
-      ed.insertText('what is this first screen?')
-      viewOf(ed).contentDOM.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
-      )
-      await vi.waitFor(() =>
-        expect(client.dispatcher.call.mock.calls.some(([method]) => method === 'agent.ask')).toBe(
-          true,
-        ),
-      )
-
-      viewOf(ed).contentDOM.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
-      )
-      lifecycleHandler(client)({
-        lane: 'lane-1',
-        lifecycle: 'prompt_ready',
-        domain: 'd1',
-        epoch: 1,
-      })
-      ed.show()
-      viewOf(ed).contentDOM.dispatchEvent(
-        new KeyboardEvent('keydown', {
-          key: 'Enter',
-          ctrlKey: true,
-          bubbles: true,
-          cancelable: true,
-        }),
-      )
-      ed.insertText('what is this second screen?')
-      viewOf(ed).contentDOM.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
-      )
-      await vi.waitFor(() =>
-        expect(
-          client.dispatcher.call.mock.calls.filter(([method]) => method === 'agent.ask'),
-        ).toHaveLength(2),
-      )
-
-      capture.mockResolvedValue(live)
-      const dispatcher = readDispatcher()
-      readCurrent(dispatcher, content, 'read-second-turn')
-      await vi.waitFor(() => expect(dispatcher.calls).toHaveLength(1))
-      expect(wireText(dispatcher.calls[0].params)).toContain('live second-turn frame')
-      expect(capture).toHaveBeenCalledTimes(1)
-    } finally {
-      teardown()
-    }
-  })
-})
-
-describe('summoning answers instead of vanishing (nocx-og42r)', () => {
-  function startRunning(contentClient: ClientFake): void {
-    const handler = lifecycleHandler(contentClient)
-    handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
-    handler({
-      lane: 'lane-1',
-      lifecycle: 'running',
-      domain: 'd1',
-      epoch: 1,
-      attempt: {
-        id: 'att-run',
-        state: 'open',
-        origin: 'app',
-        submitId: submitToken(contentClient),
-        command: 'htop',
-      },
-    })
-  }
-
-  function dispatchSummon(content: TerminalContent): KeyboardEvent {
-    const event = new KeyboardEvent('keydown', {
-      key: 'Enter',
-      ctrlKey: true,
-      bubbles: true,
-      cancelable: true,
-    })
-    const withScrollback = content as unknown as { scrollback: ScrollbackController }
-    const scrollback = withScrollback.scrollback
-    scrollback.xtermLiveContainer.dispatchEvent(event)
-    return event
-  }
-
   it('names the native latch in the alternate buffer and keeps the program untouched', async () => {
     const client = makeClient()
     const { ed, content, teardown } = await mountTerminal(
@@ -14248,9 +14246,8 @@ describe('summoning answers instead of vanishing (nocx-og42r)', () => {
     try {
       content.setVisible(true)
       startRunning(client)
-      const renderer = rendererOf(content)
       const session = sessionOf(content)
-      renderer._fireBufferChange('alternate')
+      fireBufferState(sessionOf(content), 'alternate', 20)
       content.switchToTerminalInput()
       session.send.mockClear()
       session.sendResize.mockClear()
@@ -14334,8 +14331,8 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
   const commandFence = 'd'.repeat(64)
   const firstCallFence = 'e'.repeat(64)
   const secondCallFence = 'f'.repeat(64)
-  const rendererReadOnly = (content: TerminalContent): ReturnType<typeof vi.fn> =>
-    (rendererOf(content) as unknown as { setReadOnly: ReturnType<typeof vi.fn> }).setReadOnly
+  const editorOwnsKeyboard = (content: TerminalContent): boolean =>
+    editorOf(content).root.contains(document.activeElement)
 
   function startCommand(client: ClientFake): (params: unknown) => void {
     const handler = lifecycleHandler(client)
@@ -14358,7 +14355,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
 
   function dispatchSummon(content: TerminalContent): KeyboardEvent {
     const grid = (content as unknown as { scrollback: ScrollbackController }).scrollback
-      .xtermLiveContainer
+      .terminalLiveContainer
     const event = new KeyboardEvent('keydown', {
       key: 'Enter',
       ctrlKey: true,
@@ -14370,16 +14367,19 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
   }
 
   async function summon(content: TerminalContent): Promise<void> {
-    const renderer = rendererOf(content)
-    renderer.captureLiveFrame = vi.fn().mockResolvedValue({
+    // The accepted backend frame is the authority for the live-screen
+    // identity used by capture. No renderer dimensions or parser are involved.
+    const frame = screenFrame(1, [])
+    sessionOf(content).fireScreenFrame(frame)
+    content.captureLiveFrame = vi.fn().mockResolvedValue({
       rows: [],
-      cursor: { line: 0, col: 0 },
+      cursor: { line: frame.cursor.y, col: frame.cursor.x },
       provenance: {
         source: 'live',
         identity: {
           buffer: { kind: 'normal' },
-          cols: renderer.cols,
-          rows: renderer.rows,
+          cols: frame.geometry.cols,
+          rows: frame.geometry.rows,
           generation: 0,
         },
         range: { start: 0, end: 0 },
@@ -14387,7 +14387,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
       },
     } satisfies CapturedFrame)
     const grid = (content as unknown as { scrollback: ScrollbackController }).scrollback
-      .xtermLiveContainer
+      .terminalLiveContainer
     grid.dispatchEvent(
       new KeyboardEvent('keydown', {
         key: 'Enter',
@@ -14609,9 +14609,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
       const repeatedSummon = dispatchSummon(content)
       await Promise.resolve()
       expect(repeatedSummon.defaultPrevented).toBe(true)
-      expect(
-        (rendererOf(content).captureLiveFrame as ReturnType<typeof vi.fn>).mock.calls,
-      ).toHaveLength(1)
+      expect((content.captureLiveFrame as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
       expect(pane.querySelectorAll('.nocx-freeze-frame')).toHaveLength(1)
       state!({
         runId: 1,
@@ -14635,7 +14633,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
       const seam = stack?.querySelector<HTMLElement>('.nocx-summon-seam')
       expect(seam).not.toBeNull()
       expect(Array.from(stack!.children)).toEqual([seam, answerList, editorRoot])
-      expect(rendererReadOnly(content)).toHaveBeenLastCalledWith(true)
+      expect(editorOwnsKeyboard(content)).toBe(true)
       expect(session.send).not.toHaveBeenCalled()
       expect(session.sendResize).toHaveBeenCalledTimes(resizeCalls)
 
@@ -14648,7 +14646,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
 
       expect(ed.root).toBe(editorRoot)
       expect(ed.isVisible).toBe(true)
-      expect(rendererReadOnly(content)).toHaveBeenLastCalledWith(true)
+      expect(editorOwnsKeyboard(content)).toBe(true)
       expect(Array.from(answerList!.children)).toEqual([first, second])
       expect(first.textContent).toContain('first answer')
       expect(second.textContent).toContain('second answer')
@@ -15498,7 +15496,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
 
       const scrollback = (content as unknown as { scrollback: ScrollbackController }).scrollback
       const inner = scrollback.scrollbackInner
-      const live = scrollback.xtermLiveContainer
+      const live = scrollback.terminalLiveContainer
 
       // Escape while `top` is STILL running.
       document.body.dispatchEvent(
@@ -15585,8 +15583,10 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
     try {
       content.setVisible(true)
       startCommand(client)
-      const renderer = rendererOf(content)
-      renderer.captureLiveFrame = vi.fn().mockResolvedValue({
+      const session = sessionOf(content)
+      const acceptedFrame = screenFrame(20, ['load 1.00', 'PID USER', 'nocx 0.1', 'idle'])
+      session.fireScreenFrame(acceptedFrame)
+      content.captureLiveFrame = vi.fn().mockResolvedValue({
         rows: ['load 1.00', 'PID USER', 'nocx 0.1', 'idle'].map((text) => ({
           kind: 'text' as const,
           text,
@@ -15596,8 +15596,8 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
           source: 'live',
           identity: {
             buffer: { kind: 'normal' },
-            cols: renderer.cols,
-            rows: 4,
+            cols: acceptedFrame.geometry.cols,
+            rows: acceptedFrame.geometry.rows,
             generation: 0,
           },
           range: { start: 0, end: 4 },
@@ -15605,7 +15605,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
         },
       } satisfies CapturedFrame)
       const grid = (content as unknown as { scrollback: ScrollbackController }).scrollback
-        .xtermLiveContainer
+        .terminalLiveContainer
       grid.dispatchEvent(
         new KeyboardEvent('keydown', {
           key: 'Enter',
@@ -15619,9 +15619,9 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
         expect(document.querySelector<HTMLElement>('.nocx-freeze-frame')).not.toBeNull(),
       )
 
-      const frame = document.querySelector<HTMLElement>('.nocx-freeze-frame')
-      expect(frame).not.toBeNull()
-      const rows = Array.from(frame!.querySelectorAll<HTMLElement>('.nocx-freeze-frame__row'))
+      const freezeFrame = document.querySelector<HTMLElement>('.nocx-freeze-frame')
+      expect(freezeFrame).not.toBeNull()
+      const rows = Array.from(freezeFrame!.querySelectorAll<HTMLElement>('.nocx-freeze-frame__row'))
       expect(rows).toHaveLength(4)
 
       // Select the middle band and finish the gesture, the way a scrollback
@@ -15659,7 +15659,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
       expect(rows[0].dataset.granted).toBeUndefined()
       expect(rows[3].dataset.granted).toBeUndefined()
 
-      // ONE item on the wire: the attachment's own id, still renderer-owned,
+      // ONE item on the wire: the attachment's own id, from the accepted backend frame,
       // now carrying the band.
       await submitQuestion(content, client, 'what are these two lines?')
       const ask = client.dispatcher.call.mock.calls.find(([method]) => method === 'agent.ask')
@@ -15833,8 +15833,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
     try {
       content.setVisible(true)
       startCommand(client)
-      const renderer = rendererOf(content)
-      renderer._fireBufferChange('alternate')
+      fireBufferState(sessionOf(content), 'alternate', 20)
       await summon(content)
       const answer = await submitQuestion(content, client, 'leave when the program thaws')
       const pane = answer.closest<HTMLElement>('.pane')
@@ -15843,7 +15842,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
       expect(answer.isConnected).toBe(true)
       expect(paneElement.querySelector('.nocx-freeze-frame')).not.toBeNull()
 
-      renderer._fireBufferChange('normal')
+      fireBufferState(sessionOf(content), 'normal', 21)
 
       expect(answer.isConnected).toBe(true)
       expect(answer.parentElement).toBe(
@@ -15854,7 +15853,6 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
       expect(paneElement.querySelector('.nocx-freeze-frame')).toBeNull()
       expect(content.pinnedFrame()).toBeNull()
       expect(editorOf(content).isVisible).toBe(false)
-      expect(rendererReadOnly(content)).toHaveBeenLastCalledWith(false)
     } finally {
       teardown()
     }
@@ -16015,7 +16013,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
       const gridInput = document.createElement('textarea')
       ;(
         content as unknown as { scrollback: ScrollbackController }
-      ).scrollback.xtermLiveContainer.append(gridInput)
+      ).scrollback.terminalLiveContainer.append(gridInput)
       gridInput.focus()
       key(gridInput)
       expect(session.signal).not.toHaveBeenCalled()
@@ -16102,7 +16100,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
 // A reclaimed pane says what is missing (nocx-fz4qa)
 // ═══════════════════════════════════════════════════════════════════════════
 // The backend already tells a reclaiming client which byte ranges it could
-// not give back (session.output's `gaps`, plus the renderer-derived
+// not give back (session.recoveryStatus's `gaps`, plus the renderer-derived
 // `unrecorded` stretch nothing kept), and until this bead nothing read it: a
 // pane came back short and said nothing about it. AGENTS.md forbids exactly
 // that — a soft degrade must be visible in the product.
@@ -16111,8 +16109,6 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
 // (TerminalContentHooks.adoptSession), not through the notice module, so
 // they can report the wiring being absent.
 describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
-  const RECLAIM_SIZE = { cols: 80, rows: 24, xpixel: 0, ypixel: 0 }
-
   /** The pane's own reclaim: a session handle carrying what the claim
    *  recovered, handed back by the thunk PaneManager supplies. */
   function reclaiming(recovered: SessionRecovery | null) {
@@ -16130,9 +16126,8 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
 
   it('tells the user how much of the run is gone and that the size limit took it', async () => {
     const { hooks } = reclaiming({
-      bytes: 8192,
+      produced: 0,
       gaps: [{ start: 0, end: 3_000_000, reason: 'cap' }],
-      size: RECLAIM_SIZE,
     })
     const { tab, teardown } = await mountTerminal(makeClipboard(), { hooks })
     try {
@@ -16148,9 +16143,8 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
     const hostWindow = { start: 2722, end: 98_304, reason: 'hostWindow' }
     const cap = { start: 131_072, end: 4_046_848, reason: 'cap' }
     const { session, hooks } = reclaiming({
-      bytes: 0,
+      produced: 0,
       gaps: [hostWindow, cap],
-      size: RECLAIM_SIZE,
     })
     const { tab, teardown } = await mountTerminal(makeClipboard(), { hooks })
     try {
@@ -16179,12 +16173,11 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
 
   it('keeps both overlapping live losses distinct, and dismissing one leaves the other and history intact', async () => {
     const { session, hooks } = reclaiming({
-      bytes: 0,
+      produced: 0,
       gaps: [
         { start: 10, end: 30, reason: 'hostWindow' },
         { start: 50, end: 60, reason: 'cap' },
       ],
-      size: RECLAIM_SIZE,
     })
     const { tab, teardown } = await mountTerminal(makeClipboard(), {
       hooks,
@@ -16239,9 +16232,8 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
 
   it('does not resurrect a dismissed historical card when another live gap arrives', async () => {
     const { session, hooks } = reclaiming({
-      bytes: 0,
+      produced: 0,
       gaps: [{ start: 10, end: 20, reason: 'cap' }],
-      size: RECLAIM_SIZE,
     })
     const { tab, teardown } = await mountTerminal(makeClipboard(), {
       hooks,
@@ -16281,9 +16273,8 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
 
   it('keeps historical host-window loss visible when no live gap notification arrives', async () => {
     const { hooks } = reclaiming({
-      bytes: 0,
+      produced: 0,
       gaps: [{ start: 100, end: 200, reason: 'hostWindow' }],
-      size: RECLAIM_SIZE,
     })
     const { tab, teardown } = await mountTerminal(makeClipboard(), { hooks })
     try {
@@ -16297,9 +16288,8 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
 
   it('names the unrecorded stretch, which is a different fact from the bound', async () => {
     const { hooks } = reclaiming({
-      bytes: 0,
+      produced: 0,
       gaps: [{ start: 100, end: 5100, reason: 'unrecorded' }],
-      size: RECLAIM_SIZE,
     })
     const { tab, teardown } = await mountTerminal(makeClipboard(), { hooks })
     try {
@@ -16313,7 +16303,7 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
 
   // The negative, and the reason the positive means anything.
   it('says nothing when the reclaim recovered the whole recording', async () => {
-    const { hooks } = reclaiming({ bytes: 8192, gaps: [], size: RECLAIM_SIZE })
+    const { hooks } = reclaiming({ produced: 8192, gaps: [] })
     const { content, tab, teardown } = await mountTerminal(makeClipboard(), { hooks })
     try {
       await expect(content.ready).resolves.toBe(true)
@@ -16359,9 +16349,8 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
 
   it('is taken away when the user dismisses it', async () => {
     const { hooks } = reclaiming({
-      bytes: 8192,
+      produced: 0,
       gaps: [{ start: 0, end: 1000, reason: 'cap' }],
-      size: RECLAIM_SIZE,
     })
     // In the document: Solid delegates `click` at the document root, so a
     // detached pane never sees the press a user makes.
@@ -16409,63 +16398,44 @@ describe('a pane drawing a session it did not size (nocx-eidfb.3)', () => {
    *  registers its data callback — which is what WSClient.onSessionData does
    *  with the bytes reclaimSession queued ahead of the live stream. */
   const reclaimingPane = async () => {
-    const session = makeSession({
-      recovered: { bytes: RECOVERED.length, gaps: [], size: SESSION_GRID },
-      pendingData: RECOVERED,
-    })
+    const session = makeSession({ recovered: { produced: 0, gaps: [] } })
     const mounted = await mountTerminal(makeClipboard(), {
       hooks: { adoptSession: () => Promise.resolve(asSessionHandleForTest(session)) },
     })
+    // Recovery communicates metadata, not bytes. The backend's accepted
+    // frame is what supplies the visible screen and the grid dimensions.
+    mounted.tab.pane.classList.add('active')
+    const frame = screenFrame(1, [RECOVERED], { cols: SESSION_GRID.cols, rows: SESSION_GRID.rows })
+    session.fireScreenFrame(frame)
     return { ...mounted, session }
   }
 
-  it('writes the recovered screen at the grid the session is running at', async () => {
-    const { content, teardown } = await reclaimingPane()
+  it('paints the recovered screen from the accepted frame at the session grid', async () => {
+    const { tab, teardown } = await reclaimingPane()
     try {
-      const renderer = rendererOf(content)
-      /* eslint-disable @typescript-eslint/unbound-method */
-      expect(renderer.setGrid).toHaveBeenCalledWith(132, 43)
-      // ORDER IS THE ASSERTION. Bytes wrapped at 132 columns written into an
-      // 80-column grid are wrapped twice over, and the grid change has to
-      // land before them or there is nothing left to correct.
-      const sized = (renderer.setGrid as Mock).mock.invocationCallOrder[0]
-      const wrote = (renderer.write as Mock).mock.invocationCallOrder[0]
-      /* eslint-enable @typescript-eslint/unbound-method */
-      expect(wrote).toBeGreaterThan(sized)
+      const live = tab.pane.querySelector<HTMLElement>('.terminal-live-container')!
+      await vi.waitFor(() => expect(live.textContent).toContain(RECOVERED))
+      // The painter receives the backend's full accepted geometry, including
+      // blank rows beyond the recovered line.
+      expect(live.querySelectorAll('.term-grid-row')).toHaveLength(SESSION_GRID.rows)
     } finally {
       teardown()
     }
   })
 
-  it('does not report the session grid back as a size this window measured', async () => {
+  it('does not echo an accepted session grid until this window measures its own', async () => {
     const { content, session, teardown } = await reclaimingPane()
     try {
-      // The grid moved to 132×43, and xterm reports every grid change the
-      // same way whoever caused it. A report sent from here would be this
-      // window claiming a size it never measured — and under nocx-eidfb.2 a
-      // report is a claim on the session.
-      //
-      // Fake time rather than a wait: the report is debounced, so "it was not
-      // sent" is only a fact once the debounce has had its chance, and a real
-      // delay would be a test measuring a duration.
       vi.useFakeTimers()
       try {
-        rendererOf(content)._fireResize(132, 43)
-        vi.advanceTimersByTime(10_000)
         expect(session.sendResize).not.toHaveBeenCalled()
-
-        // And the control, so the assertion above cannot pass by the report
-        // being broken for everyone: this window's OWN measurement is still
-        // reported, and it is what ends the borrowed grid.
         content.viewportChanged({ width: 800, height: 400 })
-        rendererOf(content)._fireResize(100, 30)
         vi.advanceTimersByTime(10_000)
-        expect(session.sendResize).toHaveBeenCalledWith({
-          cols: 100,
-          rows: 30,
-          xpixel: 800,
-          ypixel: 480,
-        })
+        expect(session.sendResize).toHaveBeenCalledTimes(1)
+        const report = session.sendResize.mock.calls[0][0]
+        expect(report).not.toMatchObject({ cols: SESSION_GRID.cols, rows: SESSION_GRID.rows })
+        expect(report.xpixel).toBe(report.cols * 8)
+        expect(report.ypixel).toBe(report.rows * 16)
       } finally {
         vi.useRealTimers()
       }
@@ -16494,18 +16464,15 @@ describe('a pane drawing a session it did not size (nocx-eidfb.3)', () => {
     }
   })
 
-  it('hands the grid back to the window the moment this window measures itself', async () => {
+  it('hands the grid back to the window when its measured viewport changes', async () => {
     const { content, teardown } = await reclaimingPane()
     try {
-      const renderer = rendererOf(content)
-      // THE CLOSING END OF THE INTERVAL. A fit is this window taking the
-      // session's size over — applying it is what makes this the client the
-      // channel follows — so from here the grid is its own again, and so is
-      // the scroller's overflow.
+      const area = scrollbackFor(content).scrollbackArea
+      expect(area.dataset.gridOwner).toBe('session')
+      // A local measurement takes ownership; the accepted frame remains the
+      // visual source until the backend publishes its resized screen.
       content.viewportChanged({ width: 800, height: 400 })
-      /* eslint-disable-next-line @typescript-eslint/unbound-method */
-      expect(renderer.fitViewport).toHaveBeenCalledTimes(1)
-      expect(scrollbackFor(content).scrollbackArea.dataset.gridOwner).toBeUndefined()
+      expect(area.dataset.gridOwner).toBeUndefined()
     } finally {
       teardown()
     }
@@ -16529,48 +16496,24 @@ describe('a pane drawing a session it did not size (nocx-eidfb.3)', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 // A reclaimed pane is still named after where it is (nocx-07cf4)
 // ═══════════════════════════════════════════════════════════════════════════
-// A tab is named by its pane and a pane by its cwd, and for a session this
-// window OPENED the cwd arrives in the open ack. A RECLAIM carries no cwd —
-// `ipc.reclaimSession` passes '' on purpose, because a reclaim hands over the
-// session and never the pane's own facts — so the only statement of where a
-// reclaimed pane is, is the OSC 7 in the scrollback the claim recovered.
-//
-// That makes the SUBSCRIPTION ORDER load-bearing: `renderer.onCwd` installs
-// its OSC 7 parser handler at subscribe time and has no last-value replay, so
-// a sequence parsed before it is dispatched to nobody. Twelve e2e specs were
-// the only thing watching this, and only because they waited on a non-empty
-// tab title on their way to something else.
+// A tab is named by its pane and a pane by its cwd. A RECLAIM carries no cwd
+// in the open acknowledgement — `ipc.reclaimSession` passes '' on purpose —
+// so the backend-owned full-frame baseline must restore the latest OSC 7
+// report without parsing recovered PTY bytes in the renderer.
 describe('a reclaimed pane is still named after where it is (nocx-07cf4)', () => {
-  const RECLAIM_GRID = { cols: 80, rows: 24, xpixel: 0, ypixel: 0 }
-
-  /** A pane that takes a live session back and whose recovered scrollback
-   *  carries an OSC 7.
-   *
-   *  The renderer mock is programmed BEFORE the mount, because that is when
-   *  the bytes are parsed: `awaitWriteBarrier` is exactly "xterm has finished
-   *  parsing everything written so far", and a reclaiming bind awaits it over
-   *  the recovered write (nocx-k6p18.6). Firing the report from inside the
-   *  barrier is therefore where the real OSC 7 comes out — and it is the one
-   *  moment a subscription installed after the bind has already missed. */
+  /** A reclaimed session has no cwd in its open acknowledgement. Its first
+   *  accepted frame carries the runtime's current metadata instead. */
   const reclaimingPaneReporting = async (cwd: string) => {
-    const { XtermRenderer } = await import('./renderers/xterm')
-    vi.mocked(XtermRenderer).mockImplementationOnce(() => {
-      const renderer = createRendererMock()
-      renderer.awaitWriteBarrier.mockImplementation(() => {
-        renderer._fireCwd('', cwd)
-        return Promise.resolve()
-      })
-      return renderer as unknown as InstanceType<typeof XtermRenderer>
-    })
-    // No cwd on the handle, which is what a reclaim actually looks like.
     const session = makeSession({
       cwd: '',
-      recovered: { bytes: 32, gaps: [], size: RECLAIM_GRID },
+      recovered: { produced: 0, gaps: [] },
       pendingData: 'the screen this window was away for',
     })
-    return mountTerminal(makeClipboard(), {
+    const mounted = await mountTerminal(makeClipboard(), {
       hooks: { adoptSession: () => Promise.resolve(asSessionHandleForTest(session)) },
     })
+    fireFrameMetadata(session, 1, { cwd: { host: '', path: cwd } })
+    return mounted
   }
 
   it('names the tab from the OSC 7 in the scrollback the claim recovered', async () => {
@@ -16598,71 +16541,12 @@ describe('a reclaimed pane is still named after where it is (nocx-07cf4)', () =>
 // whole of that window, and LifecycleProjections.pump records an attempt in
 // `_bound` before it calls the port: the drop is permanent, and the person who
 // came back to their pane never saw the command that was still running.
-describe('a reclaimed pane shows the work that never stopped (nocx-ht15k)', () => {
-  const RECLAIM_GRID = { cols: 80, rows: 24, xpixel: 0, ypixel: 0 }
-
-  it('opens the running block for a fact replayed during the reclaim write barrier', async () => {
-    const client = makeClient()
-    const session = makeSession({
-      cwd: '',
-      recovered: { bytes: 32, gaps: [], size: RECLAIM_GRID },
-      pendingData: 'the screen this window was away for',
-    })
-    // The replay, fired from INSIDE the barrier — the one moment the bind is
-    // still running and mount has not published the renderer. Programmed
-    // before the mount because that is when it is awaited.
-    const { XtermRenderer } = await import('./renderers/xterm')
-    let replayed = false
-    vi.mocked(XtermRenderer).mockImplementationOnce(() => {
-      const renderer = createRendererMock()
-      renderer.awaitWriteBarrier.mockImplementation(() => {
-        if (!replayed) {
-          replayed = true
-          const deliver = lifecycleHandler(client, session.sessionId)
-          deliver({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
-          deliver({
-            lane: 'lane-1',
-            lifecycle: 'running',
-            domain: 'd1',
-            epoch: 1,
-            attempt: {
-              id: 'att-reclaimed',
-              state: 'open',
-              origin: 'shell',
-              command: 'make deploy',
-            },
-          })
-        }
-        return Promise.resolve()
-      })
-      return renderer as unknown as InstanceType<typeof XtermRenderer>
-    })
-    const { content, teardown } = await mountTerminal(
-      makeClipboard(),
-      { hooks: { adoptSession: () => Promise.resolve(asSessionHandleForTest(session)) } },
-      client,
-    )
-    try {
-      expect(replayed, 'the reclaiming bind must await the recovered write').toBe(true)
-      const blocks = scrollbackFor(content).blockManager
-      const block = blocks.blockForAttempt('att-reclaimed')
-      expect(block, 'the replayed running attempt must have opened a block').not.toBeNull()
-      expect(block!.status).toBe('running')
-      expect(block!.el.classList.contains('cmd-block-running')).toBe(true)
-      expect(block!.el.textContent).toContain('make deploy')
-    } finally {
-      teardown()
-    }
-  })
-})
-
 describe('replayed completion restores a durable block outcome (nocx-gm21o)', () => {
-  it('lands OSC 133 D on the restored entry rather than leaving it unknown', async () => {
+  it('restores the persisted failure outcome for a completed entry', async () => {
     const session = makeSession({
       recovered: {
-        bytes: 1,
+        produced: 0,
         gaps: [],
-        size: { cols: 80, rows: 24 },
       },
     })
     const entry = {
@@ -16675,13 +16559,13 @@ describe('replayed completion restores a durable block outcome (nocx-gm21o)', ()
       source: 'user',
       intent: 'make deploy',
       phase: 'bound',
-      status: 'running',
-      unreconciled: 'notYetAsked',
+      status: 'failure',
+      unreconciled: null,
       submittedAt: 1,
       startedAt: 1,
-      endedAt: null,
-      durationMs: null,
-      exitCode: null,
+      endedAt: 2,
+      durationMs: 1,
+      exitCode: 7,
       maskedCount: 0,
       maskedKinds: [],
       redactions: [],
@@ -16714,7 +16598,7 @@ describe('replayed completion restores a durable block outcome (nocx-gm21o)', ()
         return Promise.reject(new Error(`unexpected method ${method}`))
       }),
     })
-    const { content, tab, teardown } = await mountTerminal(
+    const { tab, teardown } = await mountTerminal(
       makeClipboard(),
       {
         visibleBeforeMount: true,
@@ -16723,18 +16607,7 @@ describe('replayed completion restores a durable block outcome (nocx-gm21o)', ()
       client,
     )
     try {
-      // The parsed C/D callbacks arrive while the durable page read is still
-      // pending. This is the replacement-reader race; xterm parser coverage
-      // is owned by parseOsc133 tests, while this test pins the association.
-      const renderer = rendererOf(content)
-      renderer._fireCommandMarker({ kind: 'C', line: 1, col: 0, buffer: 'normal' })
-      renderer._fireCommandMarker({
-        kind: 'D',
-        exitCode: 7,
-        line: 2,
-        col: 0,
-        buffer: 'normal',
-      })
+      // The completed outcome is durable history, not a client-parsed marker.
       resolveQuery({
         entries: [entry],
         scope: 'everywhere',
@@ -16749,12 +16622,7 @@ describe('replayed completion restores a durable block outcome (nocx-gm21o)', ()
       const restored = tab.pane.querySelector<HTMLElement>(
         '[data-entry-id="entry-replayed-command"]',
       )
-      expect(
-        restored?.querySelector(
-          ':scope > .cmd-header .cmd-header-right > .ui-meta:not([data-column])',
-        )?.textContent,
-        'the restored block still reads unknown after its completion replayed',
-      ).toBe('Exit 7')
+      expect(restored?.dataset.outcome).toBe('failure')
     } finally {
       teardown()
     }
@@ -16764,8 +16632,8 @@ describe('replayed completion restores a durable block outcome (nocx-gm21o)', ()
 // ═══════════════════════════════════════════════════════════════════════════
 // The pane receives the screen plane into its cell model (nocx-zg3k3.2.8)
 // ═══════════════════════════════════════════════════════════════════════════
-// The pane holds ONE cell model, fed by the session's screen frames; nothing
-// paints from it and xterm keeps the byte path. These tests read the model
+// The pane holds ONE cell model, fed by accepted session frames; the painter
+// draws from it. These tests read the model
 // only through the seam an e2e spec reads — window.__nocxPaneScreen() over
 // the ACTIVE pane — so the unit layer asserts the same surface the e2e
 // layer drives, not a private field.
@@ -16791,7 +16659,7 @@ function screenFrame(
   const rows: Row[] = lines.map((text) =>
     wireRowOf(Array.from(text, (ch) => [ch, 1, true, style] as CellSpec)),
   )
-  while (rows.length < SCREEN_ROWS) rows.push({ text: '' })
+  while (rows.length < (geometry.rows ?? SCREEN_ROWS)) rows.push({ text: '' })
   return {
     revision,
     geometry: {
@@ -16803,8 +16671,38 @@ function screenFrame(
       ...geometry,
     },
     cursor: { x: 0, y: 0, visible: true },
+    state: {
+      bufferKind: 'normal',
+      bufferInstance: '1',
+      baseRow: 0,
+      bracketedPaste: false,
+      mouseTracking: false,
+      title: null,
+      cwd: null,
+    },
     rows,
   }
+}
+
+function fireBufferState(
+  session: SessionFake,
+  bufferKind: 'normal' | 'alternate',
+  revision: number,
+): void {
+  const frame = screenFrame(revision, [])
+  frame.state.bufferKind = bufferKind
+  session.fireScreenFrame(frame)
+}
+
+function fireFrameMetadata(
+  session: SessionFake,
+  revision: number,
+  metadata: { title?: string; cwd?: { host: string; path: string } },
+): void {
+  const frame = screenFrame(revision, ['metadata'])
+  if (metadata.title !== undefined) frame.state.title = metadata.title
+  if (metadata.cwd !== undefined) frame.state.cwd = metadata.cwd
+  session.fireScreenFrame(frame)
 }
 
 function paneScreen(): PaneScreenReading | null {
@@ -16825,15 +16723,14 @@ describe('the pane receives the screen plane into its cell model (nocx-zg3k3.2.8
       tab.pane.classList.add('active')
       await vi.waitFor(() => expect(paneScreen()).not.toBeNull())
       const session: SessionFake = client._sessions[0]
-      // Before any frame: the model holds no revision and names no rows.
-      // The open reported THIS renderer's device cell (the fixture's dpr-1
-      // identity, 8x16) over its grid — the report thread carries the
-      // renderer even before the window's own field exists.
+      // Before the first accepted frame, the model has no committed cell
+      // metric. The open reports the named 80x24 grid with zero pixel sizes;
+      // only a backend frame can establish the painter's cell dimensions.
       expect(paneScreen()).toEqual({
         revision: null,
         rows: [],
         geometry: null,
-        reported: { cols: 80, rows: 24, xpixel: 640, ypixel: 384 },
+        reported: { cols: 80, rows: 24, xpixel: 0, ypixel: 0 },
       })
       session.fireScreenFrame(screenFrame(3, ['PROMPT$ ls', 'NOCX-MARKER-1']))
       await vi.waitFor(() => expect(paneScreen()?.revision).toBe(3))
@@ -16861,6 +16758,135 @@ describe('the pane receives the screen plane into its cell model (nocx-zg3k3.2.8
     }
   })
 
+  it('restores program title and cwd only from an accepted backend frame', async () => {
+    const reported: string[] = []
+    const client = makeClient()
+    const { tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      {
+        attachToDocument: true,
+        hooks: { onPaneCwdChange: (cwd) => reported.push(cwd) },
+      },
+      client,
+    )
+    try {
+      tab.pane.classList.add('active')
+      await vi.waitFor(() => expect(paneScreen()).not.toBeNull())
+      const session: SessionFake = client._sessions[0]
+      const accepted = screenFrame(3, ['restored screen'])
+      accepted.state.title = 'restored program title'
+      accepted.state.cwd = { host: '', path: '/repo/restored' }
+      session.fireScreenFrame(accepted)
+      await vi.waitFor(() => expect(tab.title).toBe('restored program title'))
+      expect(reported).toEqual(['/repo/restored'])
+
+      const stale = screenFrame(2, ['stale screen'])
+      stale.state.title = 'stale title'
+      stale.state.cwd = { host: '', path: '/repo/stale' }
+      session.fireScreenFrame(stale)
+      expect(tab.title).toBe('restored program title')
+      expect(reported).toEqual(['/repo/restored'])
+    } finally {
+      teardown()
+    }
+  })
+
+  it('drops a prompt boundary and settlement when its correlated screen frame was refused', async () => {
+    const client = makeClient()
+    const { content, tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    try {
+      tab.pane.classList.add('active')
+      await vi.waitFor(() => expect(paneScreen()).not.toBeNull())
+      const session = sessionOf(content)
+      const host = (content as unknown as { host: { contentSettled: () => void } }).host
+      const settled = vi.spyOn(host, 'contentSettled')
+      session.fireScreenFrame(screenFrame(3, ['accepted']))
+      await vi.waitFor(() => expect(paneScreen()?.revision).toBe(3))
+
+      const refused = screenFrame(7, ['refused'])
+      refused.geometry.cols = 0
+      session.fireScreenFrame(refused)
+      expect(paneScreen()?.revision).toBe(3)
+
+      session.fireEffect({
+        sessionId: session.sessionId,
+        generation: '1',
+        effectId: '9',
+        kind: 'promptBoundary',
+        title: '',
+        body: '',
+        screenRevision: 7,
+      })
+      expect(settled).not.toHaveBeenCalled()
+    } finally {
+      teardown()
+    }
+  })
+
+  it('applies a prompt boundary only after its session model accepts the screen revision', async () => {
+    const client = makeClient()
+    const { content, tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    try {
+      tab.pane.classList.add('active')
+      await vi.waitFor(() => expect(paneScreen()).not.toBeNull())
+      const session = sessionOf(content)
+      const host = (content as unknown as { host: { contentSettled: () => void } }).host
+      const settled = vi.spyOn(host, 'contentSettled')
+      session.fireScreenFrame(screenFrame(7, ['accepted']))
+      await vi.waitFor(() => expect(paneScreen()?.revision).toBe(7))
+
+      settled.mockClear()
+      session.fireEffect({
+        sessionId: session.sessionId,
+        generation: '1',
+        effectId: '10',
+        kind: 'promptBoundary',
+        title: '',
+        body: '',
+        screenRevision: 7,
+      })
+
+      expect(settled).toHaveBeenCalledOnce()
+    } finally {
+      teardown()
+    }
+  })
+
+  it('drops an early prompt boundary until its screen revision is accepted', async () => {
+    const client = makeClient()
+    const pendingSession = makeSession()
+    const pendingEffect: SessionEffect = {
+      sessionId: pendingSession.sessionId,
+      generation: '1',
+      effectId: '11',
+      kind: 'promptBoundary',
+      title: '',
+      body: '',
+      screenRevision: 1,
+    }
+    const delivered = vi.fn()
+    pendingSession.onEffect = vi.fn((cb: (effect: SessionEffect) => void) => {
+      delivered()
+      cb(pendingEffect)
+    })
+    client.openSession.mockImplementation(() => Promise.resolve(pendingSession))
+
+    const { teardown } = await mountTerminal(makeClipboard(), { attachToDocument: true }, client)
+    try {
+      expect(delivered).toHaveBeenCalledOnce()
+    } finally {
+      teardown()
+    }
+  })
+
   // THE COMMITTED METRIC IS DEVICE PIXELS (review round 1, nocx-zg3k3.2.9).
   // xterm builds its CSS cell FROM an integer device cell (css = device /
   // dpr), so device pixels are the unit where the metric is exact: at dpr 2
@@ -16874,7 +16900,7 @@ describe('the pane receives the screen plane into its cell model (nocx-zg3k3.2.8
   it('reports and commits the device cell: committed px / dpr is the CSS cell', async () => {
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
     const client = makeClient()
-    const { content, tab, teardown } = await mountTerminal(
+    const { tab, teardown } = await mountTerminal(
       makeClipboard(),
       { attachToDocument: true },
       client,
@@ -16883,23 +16909,21 @@ describe('the pane receives the screen plane into its cell model (nocx-zg3k3.2.8
       tab.pane.classList.add('active')
       await vi.waitFor(() => expect(paneScreen()).not.toBeNull())
       const session: SessionFake = client._sessions[0]
-      const renderer = rendererOf(content)
-      // A dense display: dpr 2, device cell 17x34 — CSS 8.5x17.
+      // The backend commits a dense display's device cell (17x34 at dpr 2).
+      // That accepted frame is the sole metric source; there is no renderer
+      // callback or client-side terminal measurement to synthesize.
       vi.stubGlobal('devicePixelRatio', 2)
-      vi.spyOn(renderer, 'deviceCellDims').mockReturnValue({ width: 17, height: 34 })
-
       session.fireScreenFrame(
         screenFrame(4, ['NOCX-MARKER-1'], { cellWidthPx: 17, cellHeightPx: 34 }),
       )
       await vi.waitFor(() => expect(paneScreen()?.revision).toBe(4))
-      // The display moved: fire the dims-change subscription the pane
-      // registered, exactly what a dpr change or a zoom fires.
-      const fireDimsChange = (
-        renderer.onCellDimsChange as unknown as Mock<(cb: () => void) => void>
-      ).mock.calls.slice(-1)[0][0]
-      fireDimsChange()
       await vi.waitFor(() => {
-        const expected = { cols: 80, rows: 24, xpixel: 1360, ypixel: 816 }
+        const expected = {
+          cols: SCREEN_COLS,
+          rows: SCREEN_ROWS,
+          xpixel: SCREEN_COLS * 17,
+          ypixel: SCREEN_ROWS * 34,
+        }
         expect(session.sendResize).toHaveBeenCalledWith(expected)
         expect(paneScreen()?.reported).toEqual(expected)
       })
@@ -16962,15 +16986,15 @@ describe('the pane receives the screen plane into its cell model (nocx-zg3k3.2.8
 // The live region is the painter picture (nocx-zg3k3.2.5)
 // ═══════════════════════════════════════════════════════════════════════════
 // The cutover: what a person sees in the live region is the cell painter
-// drawing the backend frames, and xterm paints nothing. These tests read the
+// drawing the backend frames. These tests read the
 // DOM a person eyes reach — the painted grid inside the live container, the
 // cursor overlay placed by THE mapping over the committed geometry, and the
-// occluded xterm root that must not draw. Every wait is on painted DOM
+// absence of a legacy xterm root. Every wait is on painted DOM
 // state, never on a duration.
 
 describe('the live region is the painter picture (nocx-zg3k3.2.5)', () => {
   const liveRegionOf = (pane: HTMLElement): HTMLElement =>
-    pane.querySelector('.xterm-live-container') as HTMLElement
+    pane.querySelector('.terminal-live-container') as HTMLElement
 
   it('paints frame rows into the live region with the cursor on the committed geometry', async () => {
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
@@ -17013,18 +17037,6 @@ describe('the live region is the painter picture (nocx-zg3k3.2.5)', () => {
       expect(cursor!.style.left).toBe('0px')
       expect(cursor!.style.width).toBe('8px')
       expect(cursor!.style.height).toBe('16px')
-
-      // AND THE INPUT LAYER IS THE OCCLUDED ONE: the composition constructs
-      // xterm WITH occluded. What that option buys — no visual renderer
-      // constructed, the root marked — is asserted against the real class
-      // in renderers/xterm.test.ts; this file's renderer is the shared
-      // mock, which records how it was constructed and builds no DOM.
-      // Dynamic import because vi.mock replaces the module before static
-      // imports resolve — the file's established way to reach the mock.
-      const { XtermRenderer } = await import('./renderers/xterm')
-      expect(vi.mocked(XtermRenderer)).toHaveBeenCalledWith(
-        expect.objectContaining({ occluded: true }),
-      )
     } finally {
       debug.mockRestore()
       teardown()
@@ -17098,6 +17110,108 @@ describe('the live region is the painter picture (nocx-zg3k3.2.5)', () => {
       teardown()
     }
   })
+
+  it('sends painted-grid pointer coordinates as session mouse intent', async () => {
+    const client = makeClient()
+    const { tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    try {
+      tab.pane.classList.add('active')
+      const session = client._sessions[0]
+      const frame = screenFrame(1, ['pointer target'])
+      frame.state.mouseTracking = true
+      session.fireScreenFrame(frame)
+      const live = liveRegionOf(tab.pane)
+      await vi.waitFor(() => expect(live.querySelector('.term-grid')).not.toBeNull())
+      const surface = live.querySelector<HTMLElement>('.term-grid')!
+      await vi.waitFor(() => expect(surface.textContent).toContain('pointer target'))
+      surface.getBoundingClientRect = () =>
+        ({ left: 10, top: 20, right: 330, bottom: 84, width: 320, height: 64 }) as DOMRect
+
+      const pointer = (
+        type: 'pointerdown' | 'pointermove' | 'pointerup',
+        buttons: number,
+      ): Event => {
+        const event = new Event(type, { bubbles: true, cancelable: true })
+        Object.defineProperties(event, {
+          button: { value: 0 },
+          buttons: { value: buttons },
+          clientX: { value: 26 },
+          clientY: { value: 44 },
+        })
+        return event
+      }
+      surface.dispatchEvent(pointer('pointerdown', 1))
+      window.dispatchEvent(pointer('pointermove', 1))
+      // The accepted backend mode owns mouse reporting and suppresses local
+      // selection without a renderer-side mode mirror.
+      expect(surface.querySelector('.term-grid-selection')).toBeNull()
+      surface.dispatchEvent(pointer('pointerup', 0))
+      surface.dispatchEvent(
+        new WheelEvent('wheel', { bubbles: true, clientX: 26, clientY: 44, deltaY: -1 }),
+      )
+
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledTimes(3))
+      expect(session.intent.mock.calls).toEqual([
+        ['mouse', 'press left 2 1'],
+        ['mouse', 'release left 2 1'],
+        ['mouse', 'press wheel-up 2 1'],
+      ])
+    } finally {
+      teardown()
+    }
+  })
+
+  it('keeps local selection and scrolling when the accepted backend mode is off', async () => {
+    const client = makeClient()
+    const { tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    try {
+      tab.pane.classList.add('active')
+      const session = client._sessions[0]
+      const frame = screenFrame(1, ['selectable text'])
+      frame.state.mouseTracking = false
+      session.fireScreenFrame(frame)
+      const live = liveRegionOf(tab.pane)
+      await vi.waitFor(() => expect(live.querySelector('.term-grid')).not.toBeNull())
+      const surface = live.querySelector<HTMLElement>('.term-grid')!
+      await vi.waitFor(() => expect(surface.textContent).toContain('selectable text'))
+      surface.getBoundingClientRect = () =>
+        ({ left: 10, top: 20, right: 330, bottom: 84, width: 320, height: 64 }) as DOMRect
+
+      const pointer = (
+        type: 'pointerdown' | 'pointermove' | 'pointerup',
+        buttons: number,
+      ): Event => {
+        const event = new Event(type, { bubbles: true, cancelable: true })
+        Object.defineProperties(event, {
+          button: { value: 0 },
+          buttons: { value: buttons },
+          clientX: { value: 26 },
+          clientY: { value: 44 },
+        })
+        return event
+      }
+      session.intent.mockClear()
+      surface.dispatchEvent(pointer('pointerdown', 1))
+      window.dispatchEvent(pointer('pointermove', 1))
+      expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+      surface.dispatchEvent(pointer('pointerup', 0))
+      surface.dispatchEvent(
+        new WheelEvent('wheel', { bubbles: true, clientX: 26, clientY: 44, deltaY: -1 }),
+      )
+
+      expect(session.intent).not.toHaveBeenCalled()
+    } finally {
+      teardown()
+    }
+  })
 })
 
 describe('the grid is not re-measured around every command (nocx-2v80t.3.46)', () => {
@@ -17122,7 +17236,11 @@ describe('the grid is not re-measured around every command (nocx-2v80t.3.46)', (
     const mounted = await mountTerminal(makeClipboard(), { attachToDocument: true }, client)
     const { content } = mounted
     const handler = lifecycleHandler(client)
-    const renderer = rendererOf(content)
+    const session = sessionOf(content)
+    let frameRevision = 0
+    const paint = (line: string): void => {
+      session.fireScreenFrame(screenFrame(++frameRevision, [line]))
+    }
     const inner = content as unknown as {
       scrollback: ScrollbackController
       editor: CommandEditor
@@ -17222,8 +17340,7 @@ describe('the grid is not re-measured around every command (nocx-2v80t.3.46)', (
     const openShellCommand = (): string => {
       n += 1
       const id = `att-${n}`
-      client._sessions[0].fireData(`$ printf ${n}\r\n`)
-      renderer._fireWriteParsed()
+      paint(`$ printf ${n}`)
       handler({
         lane: 'lane-1',
         lifecycle: 'running',
@@ -17236,9 +17353,7 @@ describe('the grid is not re-measured around every command (nocx-2v80t.3.46)', (
     /** Output, completion and the block's close, through the return to a
      *  ready prompt. */
     const finishCommand = (id: string): void => {
-      ;(renderer.liveContentHeight as LiveContentHeightSpy).mockReturnValue(100)
-      client._sessions[0].fireData(`out ${id}\r\n`)
-      renderer._fireWriteParsed()
+      paint(`out ${id}`)
       handler({
         lane: 'lane-1',
         lifecycle: 'running',
@@ -17255,8 +17370,7 @@ describe('the grid is not re-measured around every command (nocx-2v80t.3.46)', (
       blockClosedHandler(client)(id)
       handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
       // The prompt's own redraw is output too, and re-measures like any.
-      client._sessions[0].fireData('$ ')
-      renderer._fireWriteParsed()
+      paint('$ ')
     }
     /** One ordinary command, through the composer, to its block's close. */
     const runCommand = (): void => {
@@ -17278,13 +17392,11 @@ describe('the grid is not re-measured around every command (nocx-2v80t.3.46)', (
     // The opening prompt's own output: the grid's first parse is where the
     // prediction first reads layout, so the prompt settles the grid before
     // anyone types (a live pane has the same prompt behind it).
-    client._sessions[0].fireData('$ ')
-    renderer._fireWriteParsed()
-    /** Every rectangle the grid was fitted to — each one a pty resize. */
-    const fits = (): Array<{ width: number; height: number }> =>
-      (renderer.fitViewport as Mock).mock.calls.map(
-        (call) => call[0] as { width: number; height: number },
-      )
+    paint('$ ')
+    /** Every size report sent to the backend, derived from accepted frame metrics. */
+    const fits = (): { cols: number; rows: number; xpixel: number; ypixel: number }[] =>
+      session.sendResize.mock.calls.map((call) => call[0])
+    await vi.waitFor(() => expect(fits().length).toBeGreaterThan(0))
     return {
       sb,
       fits,
@@ -17332,7 +17444,7 @@ describe('the grid is not re-measured around every command (nocx-2v80t.3.46)', (
       // The pairing: the grid is not frozen — a genuine pane resize still
       // commits, exactly once.
       resize(776)
-      expect(fits().length).toBe(before + 1)
+      await vi.waitFor(() => expect(fits().length).toBe(before + 1))
     } finally {
       restore()
     }
@@ -17363,7 +17475,7 @@ describe('the grid is not re-measured around every command (nocx-2v80t.3.46)', (
       finishCommand(id)
       expect(fits().length).toBe(before)
       resize(776)
-      expect(fits().length).toBe(before + 1)
+      await vi.waitFor(() => expect(fits().length).toBe(before + 1))
     } finally {
       restore()
     }
@@ -17383,7 +17495,7 @@ describe('the grid is not re-measured around every command (nocx-2v80t.3.46)', (
       finishCommand(id)
       expect(fits().length).toBe(before)
       resize(776)
-      expect(fits().length).toBe(before + 1)
+      await vi.waitFor(() => expect(fits().length).toBe(before + 1))
     } finally {
       restore()
     }
@@ -17393,13 +17505,14 @@ describe('the grid is not re-measured around every command (nocx-2v80t.3.46)', (
     const { fits, runCommand, resize, restore } = await paneWithLayout()
     try {
       runCommand()
-      const last = (): number => fits()[fits().length - 1]?.height ?? 0
+      const last = () => fits()[fits().length - 1]
       const running = last()
       const before = fits().length
 
       resize(776)
-      expect(fits().length).toBe(before + 1)
-      expect(last()).toBe(running + 100)
+      await vi.waitFor(() => expect(fits().length).toBe(before + 1))
+      expect(last().rows).toBeGreaterThan(running.rows)
+      expect(last().ypixel).toBeGreaterThan(running.ypixel)
 
       for (let i = 0; i < 5; i++) runCommand()
       expect(fits().length).toBe(before + 1)
@@ -17437,7 +17550,11 @@ describe('the prompt prediction measures at the real block width, once per frame
     const mounted = await mountTerminal(makeClipboard(), { attachToDocument: true }, client)
     const { content, view, teardown } = mounted
     const handler = lifecycleHandler(client)
-    const renderer = rendererOf(content)
+    const session = sessionOf(content)
+    let frameRevision = 0
+    const paint = (line: string): void => {
+      session.fireScreenFrame(screenFrame(++frameRevision, [line]))
+    }
     const inner = content as unknown as {
       scrollback: ScrollbackController
       editor: CommandEditor
@@ -17530,9 +17647,7 @@ describe('the prompt prediction measures at the real block width, once per frame
     }
     /** Output, completion, the block's close, the return to a ready prompt. */
     const finishCommand = (id: string): void => {
-      ;(renderer.liveContentHeight as LiveContentHeightSpy).mockReturnValue(100)
-      client._sessions[0].fireData(`out ${id}\r\n`)
-      renderer._fireWriteParsed()
+      paint(`out ${id}`)
       handler({
         lane: 'lane-1',
         lifecycle: 'running',
@@ -17548,14 +17663,11 @@ describe('the prompt prediction measures at the real block width, once per frame
       })
       blockClosedHandler(client)(id)
       handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
-      client._sessions[0].fireData('$ ')
-      renderer._fireWriteParsed()
+      paint('$ ')
     }
-    /** Every rectangle the grid was fitted to. */
-    const fits = (): Array<{ width: number; height: number }> =>
-      (renderer.fitViewport as Mock).mock.calls.map(
-        (call) => call[0] as { width: number; height: number },
-      )
+    /** Every accepted-size report sent to the backend. */
+    const fits = (): { cols: number; rows: number; xpixel: number; ypixel: number }[] =>
+      session.sendResize.mock.calls.map((call) => call[0])
     const probeMeasures = (): Array<{ width: number; height: number }> =>
       measured.filter((m) => m.probe)
     const realMeasures = (): Array<{ width: number; height: number }> =>
@@ -17604,8 +17716,8 @@ describe('the prompt prediction measures at the real block width, once per frame
     content.viewportChanged({ width: 936, height: pane })
     handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
     // The opening prompt's own output settles the grid before anyone types.
-    client._sessions[0].fireData('$ ')
-    renderer._fireWriteParsed()
+    paint('$ ')
+    await vi.waitFor(() => expect(fits().length).toBeGreaterThan(0))
 
     return {
       typeCommand,
@@ -17690,14 +17802,15 @@ describe('the prompt prediction measures at the real block width, once per frame
       expect(h.probeMeasures().length).toBe(settled)
       const before = h.fits().length
       const id = h.submitCommand(LONG)
-      // The submit flushed it synchronously — the wrapped height is
-      // committed inside Enter, before the command's bytes can move.
+      // The submit flushes the pending measurement before command output.
       expect(h.probeMeasures().length).toBe(settled + 1)
-      expect(h.fits().length).toBe(before + 1)
+      await vi.waitFor(() => expect(h.fits().length).toBe(before + 1))
       const wrapped = LINE * linesFor(LONG, 926)
-      expect(h.fits()[h.fits().length - 1]?.height).toBe(PANE - BAR - wrapped)
+      const committed = h.fits()[h.fits().length - 1]
+      expect(committed.rows).toBe(Math.floor((PANE - BAR - wrapped) / 16))
+      expect(committed.ypixel).toBe(committed.rows * 16)
       // The frame the keystroke scheduled is gone: firing it mid-command
-      // measures nothing and fits nothing.
+      // measures nothing and emits no new backend size report.
       frames.runFrame()
       expect(h.probeMeasures().length).toBe(settled + 1)
       expect(h.fits().length).toBe(before + 1)
@@ -17705,6 +17818,34 @@ describe('the prompt prediction measures at the real block width, once per frame
     } finally {
       frames.restore()
       h.restore()
+    }
+  })
+})
+
+describe('runtime command snapshots update the per-pane store', () => {
+  it('applies only a valid backend snapshot', async () => {
+    const client = makeClient()
+    const mounted = await mountTerminal(makeClipboard(), {}, client)
+    try {
+      const session = client._sessions[0]
+      if (!session) throw new Error('session not opened')
+      const store = mounted.content.snapshotStore
+      const effect: SessionEffect = {
+        sessionId: session.sessionId,
+        generation: '1',
+        effectId: '1',
+        kind: 'commandSnapshot',
+        title: '',
+        body: '',
+        commandNames: ['alias', 'git'],
+      }
+      session.fireEffect(effect)
+      expect(store.has('alias')).toBe(true)
+      expect(store.has('git')).toBe(true)
+      store.applyBackendSnapshot([])
+      expect(store.has('alias')).toBe(true)
+    } finally {
+      mounted.teardown()
     }
   })
 })

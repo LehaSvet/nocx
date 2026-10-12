@@ -107,23 +107,3 @@ func TestRecorderStopsWhenTheHoleCannotBeRecorded(t *testing.T) {
 		t.Errorf("detail = %v, want the store's own words", got.Detail)
 	}
 }
-
-// The fallback stops guessing (found while doing nocx-fz4qa). A hole with no
-// recorded reason used to be named `cap` on purpose — the cap was the only
-// thing that could make one. Skip makes a second kind, so that fallback would
-// confidently name the retention bound for bytes it never touched.
-func TestSessionOutputGapReasonNeverGuessesTheCap(t *testing.T) {
-	gaps := []content.Gap{
-		{Start: 10, End: 20, Reason: content.GapReasonCap},
-		{Start: 40, End: 90, Reason: content.GapReasonUnrecorded},
-	}
-	if got := sessionOutputGapReason(10, 20, gaps); got != content.GapReasonCap {
-		t.Fatalf("a cap eviction reads back as %q", got)
-	}
-	if got := sessionOutputGapReason(40, 90, gaps); got != content.GapReasonUnrecorded {
-		t.Fatalf("a never-ingested range reads back as %q, want %q", got, content.GapReasonUnrecorded)
-	}
-	if got := sessionOutputGapReason(200, 300, gaps); got != content.GapReasonUnknown {
-		t.Fatalf("an unexplained hole reads back as %q; naming the cap for bytes the cap never had is the false statement this forbids", got)
-	}
-}

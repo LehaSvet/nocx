@@ -18,11 +18,12 @@ async function measure(page: Page) {
     const pane = document.querySelector<HTMLElement>('.pane.active')!
     const area = pane.querySelector<HTMLElement>('.scrollback-area')!
     const inner = pane.querySelector<HTMLElement>('.scrollback-inner')!
-    const live = pane.querySelector<HTMLElement>('.xterm-live-container')!
+    const live = pane.querySelector<HTMLElement>('.terminal-live-container')!
     // THE LIVE COLUMN IS THE PAINTED GRID since the cutover (nocx-zg3k3.2.5):
-    // the first painted row's inline content is exactly the grid's columns —
-    // every row is a full rectangle — read through a Range because a block
-    // element spans its container while its content is the paint. Scoped to
+    // this ASCII probe fills the model's full row, including blank cells, so
+    // its text length is the grid's column count. Use a Range only for the
+    // painted content's left edge: Range width is browser layout output, not
+    // an independent source of the accepted grid geometry. Scoped to
     // `.term-grid`, the live painter's own container (painter.ts GRID_CLASS):
     // a frozen block's rows carry the same `.term-grid-row` class since the
     // block-rows painter cutover (nocx-2v80t.3.18), and an unscoped query
@@ -38,11 +39,20 @@ async function measure(page: Page) {
     const liveContent = live.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)
     const cellWidth = parseFloat(getComputedStyle(inner).getPropertyValue('--term-cell-width'))
     const areaRect = area.getBoundingClientRect()
+    const rangeRect = rowRange.getBoundingClientRect()
     return {
       frozenLeft: line ? line.getBoundingClientRect().left : null,
-      liveLeft: rowRange.getBoundingClientRect().left,
-      cols: Math.round(rowRange.getBoundingClientRect().width / cellWidth),
+      liveLeft: rangeRect.left,
+      cols: row.textContent?.length ?? 0,
       expectedCols: Math.floor(liveContent / cellWidth),
+      rangeCols: Math.round(rangeRect.width / cellWidth),
+      // Keep the independent model and owner facts beside the rendered Range
+      // width: when the session owns its accepted grid, it may be narrower than
+      // the local fit, and the Range value alone cannot distinguish the two.
+      gridOwner: area.dataset.gridOwner ?? 'local',
+      rowTextLength: row.textContent?.length ?? 0,
+      rangeWidth: rangeRect.width,
+      liveContentWidth: liveContent,
       cellWidth,
       blockWidth: block ? block.getBoundingClientRect().width : null,
       areaContentWidth: area.clientWidth,
@@ -57,20 +67,27 @@ async function measure(page: Page) {
 async function settled(page: Page, previousCols: number | null) {
   // Settled = a cell width is published and the grid fills its box exactly
   // as the fit computes it; after a resize, also that the cols moved.
-  await expect
-    .poll(
-      async () => {
-        const m = await measure(page)
-        return (
-          m.cellWidth > 0 &&
-          m.frozenLeft !== null &&
-          m.cols === m.expectedCols &&
-          (previousCols === null || m.cols !== previousCols)
-        )
-      },
-      { timeout: 15_000 },
-    )
-    .toBe(true)
+  let lastMeasurement: Awaited<ReturnType<typeof measure>> | null = null
+  try {
+    await expect
+      .poll(
+        async () => {
+          const m = await measure(page)
+          lastMeasurement = m
+          return (
+            m.cellWidth > 0 &&
+            m.frozenLeft !== null &&
+            m.cols === m.expectedCols &&
+            (previousCols === null || m.cols !== previousCols)
+          )
+        },
+        { timeout: 15_000 },
+      )
+      .toBe(true)
+  } catch (error) {
+    console.error('row-gutter last measured geometry:', JSON.stringify(lastMeasurement))
+    throw error
+  }
   return measure(page)
 }
 

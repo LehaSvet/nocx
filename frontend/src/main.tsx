@@ -55,7 +55,6 @@ import { mountConnectionOverlay, type ConnectionOverlayState } from './ui/connec
 import { IconButton } from './ui/icon-button'
 import { BellIcon, CheckCircleIcon, PlugIcon, RefreshIcon, SettingsIcon } from './ui/icons'
 import { SettingsObserver } from './settings-observer'
-import { mountReadScreenHandler } from './read-screen'
 import { mountClientHost } from './client-host'
 import type { ApprovalFacts } from './client-host'
 import { mountRunCommandHandler } from './run-command'
@@ -170,8 +169,8 @@ function main(): void {
   // mounts into. Everything below is the composition root — no more DOM
   // construction, no hand-wired layout.
   // Bootstrap the theme before any render. Applies data-theme, validates
-  // terminal tokens, and sets the module-level current theme so every
-  // XtermRenderer mount() reads the correct palette from the first frame.
+  // terminal tokens, and sets the module-level current theme so the painter
+  // uses the correct palette from its first accepted frame.
   // ADR-0013 §8, §8.1; design spec §5.4.
   const appliedThemeId = bootstrapTheme()
   // Publishes data-platform for the chrome that differs by host — currently the
@@ -654,13 +653,6 @@ function main(): void {
   // fact on screen names the one page that manages it.
   tm.onManagePermissions = () => openSettingsPane().openPage('policy')
   tm.onActivity = reportActivity
-
-  // ── Backend-initiated readScreen requests (nocx-ljfwz) ─────────────
-  // The broker's pull: the backend asks the renderer to produce a session's
-  // frame (the readScreen tool). The handler resolves the session to the
-  // pane that owns its grid; a request for a session no pane holds is
-  // answered failed, honestly — never a hang.
-  mountReadScreenHandler(dispatcher, (sessionId) => tm.terminalContentForSession(sessionId))
 
   // ── Backend-initiated run requests (nocx-tjppv) ─────────────────────
   // The broker's pull for the headline tool: the backend asks the renderer
@@ -1775,10 +1767,9 @@ function main(): void {
   wireQuickConnect(tabStrip)
 
   // The snippet palette chord (⌥⌘P, snippets/chord.ts) — ONE opener, wired
-  // here, reached from both keyboard boundaries (the xterm custom key
-  // handler and the editor's arbiter chain), which both delegate through
-  // the pane's TerminalContent (AD-8). The chord is consumed at the xterm
-  // boundary, so zero bytes reach the pty (design §10.1, bead nocx-jj77).
+  // here, reached from terminal input and the editor's arbiter chain; both
+  // delegate through the pane's TerminalContent (AD-8). The chord is
+  // consumed before it becomes a session intent (design §10.1, bead nocx-jj77).
   tm.onSnippetChord = () => qc.showSnippets()
 
   // ⌥⌘N: one keystroke from the impulse to the first character (design

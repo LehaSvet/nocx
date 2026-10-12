@@ -1651,9 +1651,9 @@ describe('AgentApprovalPrompt — the receipt a standing answer earns', () => {
   async function paneWithAnOpenTurn(wire: Wire, openPermissions?: () => void) {
     const inner = document.createElement('div')
     document.body.appendChild(inner)
-    const xtermContainer = document.createElement('div')
-    inner.appendChild(xtermContainer)
-    const manager = new BlockManager(inner, xtermContainer, {
+    const liveContainer = document.createElement('div')
+    inner.appendChild(liveContainer)
+    const manager = new BlockManager(inner, liveContainer, {
       snapshotStore: new CommandSnapshotStore(),
     })
     const target = new AgentInputTarget({

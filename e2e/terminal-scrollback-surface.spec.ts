@@ -83,7 +83,7 @@ test('scrollback: a markerless session scrolls the rows that left the screen bac
     const liveRows = (): Promise<string> =>
       page.evaluate(() =>
         Array.from(
-          document.querySelectorAll('.pane.active .xterm-inner .term-grid-row'),
+          document.querySelectorAll('.pane.active .terminal-live-inner .term-grid-row'),
           (r) => r.textContent ?? '',
         ).join('\n'),
       )
@@ -93,7 +93,9 @@ test('scrollback: a markerless session scrolls the rows that left the screen bac
         if (!(scroller instanceof HTMLElement)) throw new Error('scrollback scroller is missing')
         const clip = scroller.getBoundingClientRect()
         return Array.from(
-          scroller.querySelectorAll('.live-history .term-grid-row, .xterm-inner .term-grid-row'),
+          scroller.querySelectorAll(
+            '.live-history .term-grid-row, .terminal-live-inner .term-grid-row',
+          ),
           (row) => ({ el: row, text: (row.textContent ?? '').trim() }),
         )
           .filter(({ el }) => {
@@ -122,12 +124,21 @@ test('scrollback: a markerless session scrolls the rows that left the screen bac
         timeout: 30_000,
       })
       .toBeGreaterThanOrEqual(0)
-    await pane.locator('.xterm-live-container').click()
+    // The pane can paint a first frame before the raw shell's input route is
+    // ready. Wait for the observable integration check to settle, then verify
+    // the terminal's own input element owns focus before sending the command.
+    await expect(pane.getByRole('status', { name: 'Checking this shell…' })).toHaveCount(0, {
+      timeout: 30_000,
+    })
+    const painterGrid = pane.getByRole('grid', { name: 'Terminal output' })
+    const terminalInput = pane.locator('.ui-terminal-input')
+    await painterGrid.click()
+    await expect(terminalInput).toBeFocused()
 
     // ── Clause 1: more than one screen of output, every line found ──────
     const nonce = Date.now().toString(36)
     await type_(
-      `for i in $(seq 1 ${LINES}); do echo ${'SCROLLBK-'}$(printf '%03d' $i); done; echo DONE-${nonce}`,
+      `for i in $(seq 1 ${LINES}); do echo ${'SCROLLBK-'}$(printf '%03d' $i); done; printf '%s%s\\n' 'DONE-' '${nonce}'`,
     )
     await expect.poll(async () => liveRows(), { timeout: 20_000 }).toContain(`DONE-${nonce}`)
 
@@ -208,7 +219,8 @@ test('scrollback: a markerless session scrolls the rows that left the screen bac
         { timeout: 30_000, intervals: [250] },
       )
       .toBe(true)
-    await pane.locator('.xterm-live-container').click()
+    await pane.locator('.terminal-live-container').click()
+    await expect(terminalInput).toBeFocused()
     const lateMarker = `ANCHOR-LATE-${nonce}`
     await type_(`( sleep 15; echo ${lateMarker} ) & echo ANCHOR-ARMED-${nonce}`)
     await expect
@@ -282,8 +294,8 @@ test('scrollback: a markerless session scrolls the rows that left the screen bac
       .toBe(true)
     // At the live end again: a new command's output is followed, not lost
     // below the fold.
-    await pane.locator('.xterm-live-container').click()
-    await type_(`echo TAIL-RESUMED-${nonce}`)
+    await pane.locator('.terminal-live-container').click()
+    await type_(`printf '%s%s\\n' 'TAIL-RESUMED-' '${nonce}'`)
     await expect
       .poll(async () => liveRows(), { timeout: 20_000 })
       .toContain(`TAIL-RESUMED-${nonce}`)
@@ -311,7 +323,7 @@ test('scrollback: a markerless session scrolls the rows that left the screen bac
     // ── Clause 5: a full-screen program's pane reveals no primary rows ──
     // Fresh history first. The person must be able to wheel back to its first
     // row before the program takes the pane.
-    await pane.locator('.xterm-live-container').click()
+    await pane.locator('.terminal-live-container').click()
     await type_(`for i in $(seq 1 120); do echo ${'SCROLLBK-'}$(printf '%03d' $i); done`)
     await expect.poll(async () => liveRows(), { timeout: 30_000 }).toContain(label(120))
     await expect
@@ -334,7 +346,7 @@ test('scrollback: a markerless session scrolls the rows that left the screen bac
     // the program has not started yet. Measured on the merged-tree gate run of
     // 2026-10-06 (webkit): the failed read carried SCROLLBK-080..120 plus the
     // echoed command line, and the trace's DOM snapshot at that instant shows
-    // `.xterm-live-container live-unstructured` with the history surface still
+    // `.terminal-live-container live-unstructured` with the history surface still
     // visible, the alternate screen taking the pane ~25 ms later. The row the
     // shell did not echo is the one that says the program owns the pane.
     const altScreenIsUp = async (): Promise<boolean> =>
@@ -356,7 +368,7 @@ test('scrollback: a markerless session scrolls the rows that left the screen bac
     // Leaving the program restores the primary history, which the reader can
     // still reach by its visible first row.
     await page.keyboard.press('Control+C')
-    await pane.locator('.xterm-live-container').click()
+    await pane.locator('.terminal-live-container').click()
     // A post-exit line the shell did not echo proves Ctrl+C returned to the
     // live shell and the alternate-buffer exit sequence reached its parser.
     // The command echo is longer than this row, so it cannot satisfy the check.

@@ -239,7 +239,7 @@ test.describe('the application opens on what you left (nocx-l21ib)', () => {
     await clickIntoEditor(page)
     await page.keyboard.type("printf '\\033[?1049h'; cat")
     await page.keyboard.press('Enter')
-    await expect(page.locator('.pane.active .xterm-live-container')).toHaveClass(
+    await expect(page.locator('.pane.active .terminal-live-container')).toHaveClass(
       /live-fullscreen/,
       { timeout: 30_000 },
     )

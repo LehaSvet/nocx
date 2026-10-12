@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
+	"github.com/shady2k/nocx/internal/assistant"
 	"github.com/shady2k/nocx/internal/storage/storagetest"
 	"github.com/shady2k/nocx/internal/transport"
 )
@@ -238,6 +240,89 @@ func TestAScreenFrameOffTheWireConformsToContract(t *testing.T) {
 	}
 }
 
+// TestAssistantScreenCaptureReadsTheOwningRuntimeWithoutARenderer proves the
+// assistant's screen seam goes to the helper-owned runtime, with absolute rows
+// and buffer identity, even when no renderer is connected to answer a request.
+func TestAssistantScreenCaptureReadsTheOwningRuntimeWithoutARenderer(t *testing.T) {
+	src := realHelperArtifacts(t)
+	home := storagetest.IsolateWithHome(t)
+	t.Cleanup(func() { endTheDaemon(t, filepath.Join(helperRoot(home, src.hash()), "nocx-helper")) })
+	a := bootLocalAppOn(t, src)
+	opened, openErr := a.Transport.OpenSession(context.Background(), transport.OpenSpec{Cols: 100, Rows: 30})
+	if openErr != nil {
+		t.Fatalf("open local session: %v", openErr)
+	}
+	if err := a.paneViews.Enrol(string(opened.Session.ID())); err != nil {
+		t.Fatalf("enrol the pane for its runtime screen: %v", err)
+	}
+	var command strings.Builder
+	command.WriteString("printf '")
+	for row := range 35 {
+		command.WriteString("CAPTURE-ROW-")
+		command.WriteString(strconv.Itoa(row))
+		command.WriteString("\\n")
+	}
+	command.WriteString("'\n")
+	if _, err := opened.Session.Write([]byte(command.String())); err != nil {
+		t.Fatalf("write the screen-producing command: %v", err)
+	}
+	waitForMarkerOnAnyRow(t, a, string(opened.Session.ID()), "CAPTURE-ROW-34")
+
+	body, err := a.Transport.RequestScreen(context.Background(), string(opened.Session.ID()), nil)
+	if err != nil {
+		t.Fatalf("read the backend-owned screen without a renderer: %v", err)
+	}
+	var capture struct {
+		Floor int `json:"floor"`
+		Total int `json:"total"`
+		Rows  []struct {
+			Text string `json:"text"`
+		} `json:"rows"`
+		Identity struct {
+			Buffer struct {
+				Kind     string `json:"kind"`
+				Instance uint64 `json:"instance"`
+			} `json:"buffer"`
+			Generation int `json:"generation"`
+		} `json:"identity"`
+		Range struct{ Start, End int } `json:"range"`
+	}
+	if decodeErr := json.Unmarshal(body, &capture); decodeErr != nil {
+		t.Fatalf("decode helper screen capture: %v\n%s", decodeErr, body)
+	}
+	if capture.Range.Start != capture.Floor || capture.Range.End != capture.Total || len(capture.Rows) != capture.Total-capture.Floor {
+		t.Fatalf("capture range [%d,%d), floor %d, total %d, rows %d", capture.Range.Start, capture.Range.End, capture.Floor, capture.Total, len(capture.Rows))
+	}
+	if capture.Identity.Buffer.Kind != "normal" || capture.Identity.Buffer.Instance == 0 {
+		t.Fatalf("capture lost the backend buffer identity: %+v", capture.Identity.Buffer)
+	}
+	fullText := make([]string, len(capture.Rows))
+	for i, row := range capture.Rows {
+		fullText[i] = row.Text
+	}
+	if !strings.Contains(strings.Join(fullText, "\n"), "CAPTURE-ROW-34") {
+		t.Fatalf("backend capture omitted the program output: %q", fullText)
+	}
+
+	start, end := capture.Floor+2, capture.Floor+5
+	partialBody, err := a.Transport.RequestScreen(context.Background(), string(opened.Session.ID()), &assistant.FrameRegion{Start: start, End: end})
+	if err != nil {
+		t.Fatalf("read an absolute subrange: %v", err)
+	}
+	var partial struct {
+		Range struct{ Start, End int } `json:"range"`
+		Rows  []struct {
+			Text string `json:"text"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(partialBody, &partial); err != nil {
+		t.Fatalf("decode absolute subrange: %v\n%s", err, partialBody)
+	}
+	if partial.Range.Start != start || partial.Range.End != end || len(partial.Rows) != end-start {
+		t.Fatalf("absolute subrange = [%d,%d) with %d rows, want [%d,%d)", partial.Range.Start, partial.Range.End, len(partial.Rows), start, end)
+	}
+}
+
 // The criterion beside it, also end to end: a client attaching mid-session
 // receives a full snapshot at the current revision before any later frame —
 // and the snapshot carries output produced BEFORE the attach.
@@ -302,4 +387,51 @@ func TestAMidSessionAttachReceivesTheBaselineBeforeAnyLaterFrame(t *testing.T) {
 			break
 		}
 	}
+}
+
+// TestARealShellCDPublishesItsCwdInTheScreenFrame proves the shell report
+// survives the helper and public websocket screen path: the command runs in a
+// real shell on the shipped helper, and the assertion reads the actual
+// type-2 frame sent to the renderer.
+func TestARealShellCDPublishesItsCwdInTheScreenFrame(t *testing.T) {
+	src := realHelperArtifacts(t)
+	home := storagetest.IsolateWithHome(t)
+	t.Cleanup(func() { endTheDaemon(t, filepath.Join(helperRoot(home, src.hash()), "nocx-helper")) })
+
+	a := bootLocalAppOn(t, src)
+	opened, err := a.Transport.OpenSession(context.Background(), transport.OpenSpec{Cols: 100, Rows: 30})
+	if err != nil {
+		t.Fatalf("opening a local pane through the shipped opener: %v", err)
+	}
+	sid := string(opened.Session.ID())
+	conn := dialRenderer(t, a)
+	attachRenderer(t, conn, sid)
+
+	target := filepath.Join(t.TempDir(), "cwd-target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatalf("create target directory: %v", err)
+	}
+	if _, err := opened.Session.Write([]byte("cd '" + target + "'\n")); err != nil {
+		t.Fatalf("write cd to the real shell: %v", err)
+	}
+
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		frame := nextScreenFrame(t, conn)
+		var doc struct {
+			Revision uint64 `json:"revision"`
+			State    struct {
+				Cwd *struct {
+					Path string `json:"path"`
+				} `json:"cwd"`
+			} `json:"state"`
+		}
+		if err := json.Unmarshal(frame.Payload, &doc); err != nil {
+			t.Fatalf("decode real screen frame: %v\n%s", err, frame.Payload)
+		}
+		if doc.State.Cwd != nil && doc.State.Cwd.Path == target {
+			return
+		}
+	}
+	t.Fatalf("no actual metadata/type-2 frame for session %s carried cwd %q", sid, target)
 }

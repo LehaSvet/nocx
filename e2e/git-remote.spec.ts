@@ -328,6 +328,13 @@ test('a commit from the panel, on a remote host, through its own pre-commit hook
     // into the repository the way a person would: by typing `cd`.
     await expect(page.locator(TAB)).toHaveCount(2, { timeout: 30_000 })
     await promptReady(page)
+    // The editor can be focused before shell integration finishes; wait for the
+    // product's observable readiness state before sending the cd command.
+    await expect(
+      page.locator('.pane.active').getByRole('status', { name: 'Checking this shell…' }),
+    ).toHaveCount(0, {
+      timeout: 30_000,
+    })
     await page.keyboard.type(`cd '${fixture.repo}'`)
     await page.keyboard.press('Enter')
 

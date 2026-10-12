@@ -1,39 +1,21 @@
-// ВЛАДЕЛЕЦ ВОПРОСА «ложится ли эта ячейка на сетку» (nocx-ec18).
+// THE OWNER of "does this grapheme land on the grid?" (nocx-ec18).
 //
-// xterm говорит, сколько колонок занимает ячейка (getWidth()); DOM кладёт
-// глиф с продвижкой того шрифта, который для него выбрал браузер. Для
-// одноколоночной латиницы эти числа сведены глобальной коррекцией
-// --term-cell-delta, применяемой как letter-spacing ко всей строке. Для
-// глифа, ушедшего в другой шрифт, единой дельты не существует: U+1F5D1
-// меряется 13.572px против ячейки 8, U+27F3 и U+27F2 по 9.087, U+2B22 8.903
-// (macOS, 2026-09-05). Сумма их промахов на одной строке дала 8.649px —
-// ровно одну колонку, и это разъехавшийся угол рамки.
+// The terminal grid reports cell columns, while the DOM lays out glyphs with
+// browser font advances. `--term-cell-delta` corrects ordinary single-column
+// Latin text. A glyph that uses a different font has no shared correction:
+// on macOS (2026-09-05), measured U+1F5D1 was 13.572px against an 8px cell,
+// while U+27F3, U+27F2, and U+2B22 missed by 9.087px, 9.087px, and 8.903px.
+// Their combined error moved a box-drawing corner by one column.
 //
-// Здесь решается ТОЛЬКО кого запирать в коробку. Как её нарисовать — вопрос
-// стилей (.term-cell), кто её ставит — вопрос сериализатора.
+// This module decides only which glyphs need a fitted box. CSS draws the box;
+// the serializer supplies its DOM wrapper. Measurements run as one batch so
+// a freeze causes one layout rather than one layout per glyph. Actual shaped
+// glyph advances are measured because code points alone do not determine font
+// face or width (VS15/VS16 and platform font fallback change both).
 //
-// ПОЧЕМУ ПАКЕТОМ. Замер — это запись в DOM и чтение ректа, а чтение после
-// записи форсирует раскладку. Поштучно на заморозке это N раскладок в тот
-// самый момент, когда блок подменяет живую область. Пакет делает ВСЕ записи,
-// потом ВСЕ чтения: одна раскладка независимо от N. Поэтому заморозка сперва
-// собирает кандидатов (тем же обходом ячеек, с пустыми атрибутами), греет
-// кэш, и только потом сериализует — на этом проходе boxOf уже чистое
-// чтение Map.
-//
-// ПОЧЕМУ ПО ЗАМЕРУ, А НЕ ПО КОДПОИНТУ. Кодпоинт не определяет ни выбранный
-// face (VS15/VS16 переключают представление), ни продвижку: цепочка шрифтов
-// различается по машине, обновление ОС меняет метрики.
-//
-// ПОЧЕМУ НЕ ЗАПЕРЕТЬ ВСЁ НЕ-ASCII БЕЗ ЗАМЕРА. Псевдографика в моноширинном
-// шрифте есть и ложится точно; на строке рамки это 150 коробок без единого
-// исправленного пикселя.
-//
-// ГДЕ МЕРЯЕТСЯ — И ЭТО НЕ МЕЛОЧЬ. font-family живёт на .cmd-output
-// (style.css), а .term-line задаёт только font-size; контейнер скроллбэка
-// шрифта не имеет вовсе. Зонд, повешенный на контейнер с одним классом
-// .term-line, унаследовал бы UI-шрифт. Поэтому зонд — настоящий .cmd-output
-// с .term-line внутри, и сигнатура кэша снимается С НЕГО, а не с контейнера:
-// иначе замер делается правильным шрифтом, а ключ описывает другой.
+// The probe uses the actual `.cmd-output` font context, with a `.term-line`
+// inside it. Measuring only on the scrollback container would inherit the UI
+// font and cache a width that does not match frozen output.
 
 export const FIT_EPSILON_PX = 0.05
 
@@ -219,10 +201,9 @@ export function createCellFit(
   let cellWidth = 0
   let rowDelta = 0
 
-  // ЗАГРУЗКА ШРИФТА НЕ МЕНЯЕТ НИ ОДНОЙ СТРОКИ ВЫЧИСЛЕННОГО СТИЛЯ: то же
-  // семейство, тот же размер, другой файл. xterm ждёт document.fonts.ready
-  // при монтировании (renderers/xterm.ts), поэтому начальное состояние
-  // сигнатуры честное; всё, что грузится позже, ловится эпохой.
+  // A loaded font face can change glyph advances without changing the CSS
+  // signature. Record the font-loading epoch and invalidate measurements when
+  // the browser reports a completed load.
   let fontEpoch = 0
   const onFontsLoaded = (): void => {
     fontEpoch += 1

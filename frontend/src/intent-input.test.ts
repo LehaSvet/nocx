@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest'
 import { IntentInput, type SessionIntent } from './intent-input'
+import { NATIVE_RESTORE_COMMAND } from './native-mode'
 
 // The pane's input element is where a person's actions become SESSION INTENT
 // (nocx-zg3k3.3.1): a physical key, committed text, a paste, a pointer event, a
@@ -298,6 +299,91 @@ describe('the layout owns the character, and the client does not', () => {
   })
 })
 
+describe('mouse intent follows the accepted backend tracking mode', () => {
+  it('leaves ordinary clicks and wheel events to selection and scrolling', () => {
+    const intents: SessionIntent[] = []
+    const surface = document.createElement('div')
+    document.body.append(surface)
+    let tracking = false
+    let selectionSawPress = false
+    surface.addEventListener('pointerdown', () => {
+      selectionSawPress = true
+    })
+    const input = new IntentInput({
+      emit: (intent) => intents.push(intent),
+      surface,
+      cellAt: () => ({ x: 2, y: 3 }),
+      mouseTracking: () => tracking,
+    })
+    document.body.append(input.element)
+    live.push(input)
+
+    surface.dispatchEvent(
+      new MouseEvent('pointerdown', { button: 0, buttons: 1, clientX: 10, clientY: 20 }),
+    )
+    const wheel = new WheelEvent('wheel', { deltaY: 1, clientX: 10, clientY: 20, cancelable: true })
+    surface.dispatchEvent(wheel)
+
+    expect(intents).toEqual([])
+    expect(selectionSawPress).toBe(true)
+    expect(wheel.defaultPrevented).toBe(false)
+
+    tracking = true
+    surface.dispatchEvent(
+      new MouseEvent('pointerdown', { button: 0, buttons: 1, clientX: 10, clientY: 20 }),
+    )
+    surface.dispatchEvent(
+      new MouseEvent('pointerup', { button: 0, buttons: 0, clientX: 10, clientY: 20 }),
+    )
+    const trackedWheel = new WheelEvent('wheel', {
+      deltaY: -1,
+      clientX: 10,
+      clientY: 20,
+      cancelable: true,
+    })
+    surface.dispatchEvent(trackedWheel)
+
+    expect(intents).toEqual([
+      { kind: 'mouse', payload: 'press left 2 3' },
+      { kind: 'mouse', payload: 'release left 2 3' },
+      { kind: 'mouse', payload: 'press wheel-up 2 3' },
+    ])
+    expect(trackedWheel.defaultPrevented).toBe(true)
+  })
+
+  it('clears a held drag when tracking turns off before release', () => {
+    const intents: SessionIntent[] = []
+    const surface = document.createElement('div')
+    document.body.append(surface)
+    let tracking = true
+    const input = new IntentInput({
+      emit: (intent) => intents.push(intent),
+      surface,
+      cellAt: () => ({ x: 2, y: 3 }),
+      mouseTracking: () => tracking,
+    })
+    document.body.append(input.element)
+    live.push(input)
+
+    surface.dispatchEvent(
+      new MouseEvent('pointerdown', { button: 0, buttons: 1, clientX: 10, clientY: 20 }),
+    )
+    tracking = false
+    surface.dispatchEvent(
+      new MouseEvent('pointerup', { button: 0, buttons: 0, clientX: 10, clientY: 20 }),
+    )
+    tracking = true
+    surface.dispatchEvent(
+      new MouseEvent('pointermove', { button: 0, buttons: 0, clientX: 10, clientY: 20 }),
+    )
+
+    expect(intents).toEqual([
+      { kind: 'mouse', payload: 'press left 2 3' },
+      { kind: 'mouse', payload: 'motion none 2 3' },
+    ])
+  })
+})
+
 describe('composition commits the text exactly once', () => {
   // What the IME draws while it is composing is PROVISIONAL: the candidate
   // window's text is not what the person committed, and sending it would type
@@ -330,6 +416,13 @@ describe('composition commits the text exactly once', () => {
   })
 })
 
+describe('native-mode restore remains structured input', () => {
+  it('keeps the restore command free of encoded Enter bytes', () => {
+    expect(NATIVE_RESTORE_COMMAND).toBe('__nocx_native_mode')
+    expect(NATIVE_RESTORE_COMMAND).not.toMatch(/[\r\n]$/)
+  })
+})
+
 describe('paste, focus and the element itself', () => {
   // A paste is its own kind and not text: the runtime wraps it for bracketed
   // paste when the program asked for that (mode 2004), and the body arrives
@@ -341,6 +434,23 @@ describe('paste, focus and the element itself', () => {
 
     expect(intents).toEqual([{ kind: 'paste', payload: 'one\ntwo' }])
     expect(input.element.value).toBe('')
+  })
+
+  it.each([
+    ['Ctrl+V', { ctrlKey: true }],
+    ['Meta+V', { metaKey: true }],
+  ])('lets %s reach the browser paste event instead of the terminal', (_chord, modifiers) => {
+    const { input, intents } = makeInput()
+
+    const key = keydown('KeyV', { key: 'v', ...modifiers })
+    input.element.dispatchEvent(key)
+
+    expect(key.defaultPrevented).toBe(false)
+    expect(intents).toEqual([])
+
+    input.element.dispatchEvent(pasteEvent('clipboard text'))
+
+    expect(intents).toEqual([{ kind: 'paste', payload: 'clipboard text' }])
   })
 
   it('reports focus gained and lost', () => {

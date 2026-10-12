@@ -3,7 +3,7 @@
 //
 // The frozen half of a terminal is DOM, not a grid: `serializeRange` emits
 // one `<span class="term-line">` per logical row, holding one `<span>` per
-// colour run (scrollback/serializer.ts). So the live region's xterm link
+// colour run (scrollback/serializer.ts). So the live region's painter link
 // provider does not reach it, and this is the second surface that has to be
 // taught the same grammar — which is exactly why the grammar is a module of
 // its own and not a regex in either of them.

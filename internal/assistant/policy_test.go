@@ -380,7 +380,11 @@ func middlewareForTurn(t *testing.T, grant content.Grant, ledger AttemptLedger, 
 		}
 	}
 	// Test grants carry the pane identity; production receives it from transport.
-	mw, err := newPolicyMiddleware(nil, grant, reg, ledger, approvals, known, "run-1", sessionID, 1, turnEntryID, requester, Attachments{}, nil, nil)
+	var screenCapture ScreenCaptureSource
+	if source, ok := requester.(ScreenCaptureSource); ok {
+		screenCapture = source
+	}
+	mw, err := newPolicyMiddleware(nil, grant, reg, ledger, approvals, known, "run-1", sessionID, 1, turnEntryID, requester, Attachments{}, nil, nil, toolSeams{screenCapture: screenCapture})
 	if err != nil {
 		t.Fatalf("newPolicyMiddleware: %v", err)
 	}

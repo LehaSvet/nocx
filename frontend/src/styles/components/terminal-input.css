@@ -9,7 +9,7 @@
  * and everything about how it looks is here.
  *
  * opacity 0 rather than display:none or visibility:hidden, and for the same
- * reason xterm's own helper textarea uses it: a hidden element has no caret
+ * reason the former terminal helper textarea used it: a hidden element has no caret
  * rect for the IME to measure, while a transparent one lays out normally and
  * is simply not drawn.
  */

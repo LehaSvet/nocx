@@ -135,6 +135,8 @@ func effectKindName(k emulator.EffectKind) string {
 		return "title"
 	case emulator.EffectCwdReport:
 		return "cwd"
+	case emulator.EffectCommandSnapshot:
+		return "command-snapshot"
 	case emulator.EffectFence:
 		return "fence"
 	case emulator.EffectOutputMark:

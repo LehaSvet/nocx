@@ -3,6 +3,7 @@ package ghostty
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -45,10 +46,11 @@ import (
 //     makes "bounded" a claim about the input length rather than about the size
 //     of today's test.
 //
-// The reading is process-wide and this test lives in that process, so
-// TestTheResidentReadingSeesWhatIsRetained is the control: an instrument that
-// answered the same number whatever happened would pass every case below and
-// fail that one.
+// The reading is process-wide. Each sequence case runs in its own test-binary
+// subprocess, so earlier package tests and sequence cases cannot contribute
+// their allocator history. TestTheResidentReadingSeesWhatIsRetained is the
+// control: an instrument that answered the same number whatever happened
+// would pass every case below and fail that one.
 //
 // # The bounds, as the source at the pin states them
 //
@@ -141,6 +143,10 @@ func TestTheResidentReadingSeesWhatIsRetained(t *testing.T) {
 // parser 1 MiB, 16 MiB and 64 MiB of four sequences that never terminate and
 // holds what it retains to the bound the source states.
 func TestTheLibraryBoundsWhatItHoldsForAnUnterminatedSequence(t *testing.T) {
+	if _, err := os.ReadFile("/proc/self/statm"); err != nil {
+		t.Skipf("the resident set is read from /proc/self/statm, which this platform does not have, so the library's bound cannot be measured on it: the measurement is a Linux reading of the process the pinned archive is linked into (doc.go)")
+	}
+
 	const (
 		small  = 1 << 20
 		middle = 16 << 20
@@ -187,37 +193,71 @@ func TestTheLibraryBoundsWhatItHoldsForAnUnterminatedSequence(t *testing.T) {
 		},
 	}
 
+	const childCaseEnv = "NOCX_GHOSTTY_SEQUENCE_BOUNDS_CASE"
+	runCase := func(t *testing.T, c struct {
+		name       string
+		prefix     string
+		ceilingKiB int64
+		where      string
+	},
+	) {
+		t.Helper()
+		term, err := New(emulator.Geometry{Cols: 80, Rows: 24, CellWidthPx: 10, CellHeightPx: 20})
+		if err != nil {
+			t.Fatalf("building the terminal: %v", err)
+		}
+		defer term.Close()
+
+		// The hook is fed once, and the baseline is taken before a byte of
+		// payload is, so what the three readings measure is the growth the
+		// PAYLOAD causes rather than where the process happens to start.
+		if _, err := term.Ingest([]byte(c.prefix)); err != nil {
+			t.Fatalf("ingesting the sequence's introducer %q: %v", c.prefix, err)
+		}
+		settle()
+		base := residentKiB(t)
+
+		at1 := feedUnterminated(t, term, small) - base
+		at16 := feedUnterminated(t, term, middle-small) - base
+		at64 := feedUnterminated(t, term, large-middle) - base
+		t.Logf("resident set above the start of the sequence: +%d KiB at 1 MiB fed, +%d KiB at 16 MiB, +%d KiB at 64 MiB (bound: %s)",
+			at1, at16, at64, c.where)
+
+		if growth := at64 - at1; growth > c.ceilingKiB {
+			t.Errorf("the library retained %d KiB more after 64 MiB of an unterminated sequence than after 1 MiB, want at most %d KiB (%s): the sequence's length is not bounded by a constant",
+				growth, c.ceilingKiB, c.where)
+		}
+		if move := at64 - at16; move > plateauKiB {
+			t.Errorf("the resident set moved by %d KiB between 16 MiB and 64 MiB fed, want at most %d: 48 MiB of further input made the library retain more, so what it holds grows with the sequence rather than being bounded",
+				move, plateauKiB)
+		}
+	}
+
+	if selected := os.Getenv(childCaseEnv); selected != "" {
+		for _, c := range cases {
+			if c.name == selected {
+				runCase(t, c)
+				return
+			}
+		}
+		t.Fatalf("unknown sequence-bound child case %q", selected)
+	}
+
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			term, err := New(emulator.Geometry{Cols: 80, Rows: 24, CellWidthPx: 10, CellHeightPx: 20})
+			cmd := exec.Command(os.Args[0], "-test.run=^TestTheLibraryBoundsWhatItHoldsForAnUnterminatedSequence$", "-test.v") // #nosec G204 — os.Args[0] is this test binary; arguments are fixed literals.
+			cmd.Env = make([]string, 0, len(os.Environ())+1)
+			for _, entry := range os.Environ() {
+				if !strings.HasPrefix(entry, childCaseEnv+"=") {
+					cmd.Env = append(cmd.Env, entry)
+				}
+			}
+			cmd.Env = append(cmd.Env, childCaseEnv+"="+c.name)
+			output, err := cmd.CombinedOutput()
 			if err != nil {
-				t.Fatalf("building the terminal: %v", err)
+				t.Fatalf("isolated sequence-bound child failed: %v\nchild output:\n%s", err, output)
 			}
-			defer term.Close()
-
-			// The hook is fed once, and the baseline is taken before a byte of
-			// payload is, so what the three readings measure is the growth the
-			// PAYLOAD causes rather than where the process happens to start.
-			if _, err := term.Ingest([]byte(c.prefix)); err != nil {
-				t.Fatalf("ingesting the sequence's introducer %q: %v", c.prefix, err)
-			}
-			settle()
-			base := residentKiB(t)
-
-			at1 := feedUnterminated(t, term, small) - base
-			at16 := feedUnterminated(t, term, middle-small) - base
-			at64 := feedUnterminated(t, term, large-middle) - base
-			t.Logf("resident set above the start of the sequence: +%d KiB at 1 MiB fed, +%d KiB at 16 MiB, +%d KiB at 64 MiB (bound: %s)",
-				at1, at16, at64, c.where)
-
-			if growth := at64 - at1; growth > c.ceilingKiB {
-				t.Errorf("the library retained %d KiB more after 64 MiB of an unterminated sequence than after 1 MiB, want at most %d KiB (%s): the sequence's length is not bounded by a constant",
-					growth, c.ceilingKiB, c.where)
-			}
-			if move := at64 - at16; move > plateauKiB {
-				t.Errorf("the resident set moved by %d KiB between 16 MiB and 64 MiB fed, want at most %d: 48 MiB of further input made the library retain more, so what it holds grows with the sequence rather than being bounded",
-					move, plateauKiB)
-			}
+			t.Logf("isolated child output:\n%s", output)
 		})
 	}
 }

@@ -35,12 +35,10 @@ const ctx = (over: Partial<SuggestContext> = {}): SuggestContext => ({
   ...over,
 })
 
-/** A store holding the SESSION-LOCAL half only (the shell's own tables). */
+/** A store holding the session-local names delivered by the backend. */
 const snapshotted = (names: string[]): CommandSnapshotStore => {
   const store = new CommandSnapshotStore()
-  const nonce = 'a'.repeat(32)
-  store.ingest(`H;${nonce}`)
-  store.ingest(`S;${nonce};${names.join(';')}`)
+  store.applyBackendSnapshot(names)
   return store
 }
 
@@ -120,7 +118,7 @@ describe('commandProvider', () => {
   })
 
   it('a snapshot that has not arrived yet is named, not hidden', async () => {
-    // A fresh store: the OSC 636 hello and snapshot have not been ingested.
+    // A fresh store: no backend session snapshot has arrived.
     const pending = commandProvider(new CommandSnapshotStore())
     const got = await pending.suggest(
       ctx({ position: 'command', token: { text: 'vi', from: 0, to: 2 }, doc: 'vi' }),

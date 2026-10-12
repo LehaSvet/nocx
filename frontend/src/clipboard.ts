@@ -111,18 +111,16 @@ const OSC52_MAX_BASE64 = 1_398_104
  * the payload is invalid, malformed, oversized, zero-byte, or is a read
  * request.
  *
- * xterm's OSC callback passes `target;base64`; the session.effect wire carries
- * the full `52;target;base64` body. Both forms use this decoder. Target `c`
+ * The backend effect carries the OSC 52 body `52;target;base64`; this
+ * decoder also accepts the body without the `52;` prefix. Target `c`
  * (clipboard) and empty (default) are accepted; `p`/`q`/`s` are ignored.
  * The read form `c;?` is refused — no code path for reading the clipboard.
  *
- * xterm.js's parser already caps the raw OSC payload at 1e7 characters, so
- * the 1 MiB rule here is a policy cap on what a program may silently place
- * on the clipboard, not a memory guard.
+ * The 1 MiB rule is a policy cap on what a program may silently place on
+ * the clipboard and is checked before decoding allocates the result.
  */
 export function decodeOsc52(payload: string): string | null {
-  // xterm's OSC handler has already removed `52;`; session.effect carries the
-  // complete OSC body, so accept that wire form through the same decoder.
+  // Accept both the OSC 52 body and the backend effect's full wire form.
   if (payload.startsWith('52;')) payload = payload.slice(3)
 
   const semi = payload.indexOf(';')
@@ -140,8 +138,7 @@ export function decodeOsc52(payload: string): string | null {
 
   // Size cap on the base64 string before decoding, so a hostile stream
   // cannot allocate megabytes per sequence on the render thread.
-  // xterm.js already caps the raw OSC payload at 1e7 characters, so
-  // this is a policy cap, not a memory guard.
+  // Reject oversized payloads before base64 decoding allocates the result.
   if (data.length > OSC52_MAX_BASE64) return null
 
   let decoded: string

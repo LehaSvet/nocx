@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
-import type { TerminalRenderer } from '../renderers/types'
 import { ScrollbackController } from './controller'
 import { CommandSnapshotStore } from '../command-snapshot'
 import type { LiveContentHeightSpy } from '../test-support/panes-fixtures'
@@ -8,41 +7,35 @@ import type { ExecutionAttempt } from '../lifecycle/state'
 import { mintDomain, type IntegrationDomain } from '../lifecycle/domains'
 import { PetOverlay } from '../pets/overlay'
 import { mountWindowPet, unmountWindowPet } from '../pets/window-pet'
-import { XtermRenderer } from '../renderers/xterm'
 import { closeRunningBlock } from '../test-support/block-close'
 
-function makeRenderer(): TerminalRenderer {
+function makeRenderer() {
+  let cellWidth = 0
+  let cellHeight = 0
+  const liveContentHeight = vi.fn(() => 0)
   return {
-    write: vi.fn(),
-    onData: vi.fn(),
-    onCommandMarker: vi.fn(),
-    onBufferChange: vi.fn(),
-    onTitle: vi.fn(),
-    mount: vi.fn(() => Promise.resolve({ cols: 80, rows: 24 })),
-    dispose: vi.fn(),
-    focus: vi.fn(),
-    setReadOnly: vi.fn(),
-    registerMarker: vi.fn(() => undefined),
-    paste: vi.fn(),
-    fitViewport: vi.fn(),
-    // 0 = "cannot measure", which the frozen-block metric publisher treats
-    // as "publish nothing" — existing tests are unaffected by the metric.
-    cellWidth: 0,
-    // 0 = "cannot measure yet"; setRunning sizes the live region from this
-    // on the first frame (the command-start pop), so tests that want the
-    // sizing path override it.
-    liveContentHeight: vi.fn(() => 0),
-    getBufferLine: vi.fn(() => null),
-    cursorLine: vi.fn(() => 0),
-    reset: vi.fn(),
-  } as unknown as TerminalRenderer
+    liveContentHeight,
+    get cellWidth() {
+      return cellWidth
+    },
+    get cellHeight() {
+      return cellHeight
+    },
+    setCellWidth(value: number) {
+      cellWidth = value
+    },
+    setCellHeight(value: number) {
+      cellHeight = value
+    },
+  }
 }
 
 function makeController() {
   const pane = document.createElement('div')
   const controller = new ScrollbackController({
     pane,
-    renderer: makeRenderer(),
+    liveContentHeight: () => null,
+    cellMetrics: () => null,
     snapshotStore: new CommandSnapshotStore(),
   })
   // jsdom does no layout: give the scrollback area a real height so the
@@ -225,7 +218,7 @@ describe('clear empties the whole scrollback, restored blocks included (nocx-0zb
     expect(controller.blockManager.runningBlock).toBeNull()
     expect(controller.scrollbackInner.querySelectorAll('.cmd-block').length).toBe(0)
     // The chrome the manager anchors on is NOT the manager's to remove.
-    expect(controller.scrollbackInner.querySelector('.xterm-live-container')).not.toBeNull()
+    expect(controller.scrollbackInner.querySelector('.terminal-live-container')).not.toBeNull()
     expect(controller.scrollbackInner.querySelector('.scrollback-separator')).not.toBeNull()
   })
 
@@ -310,8 +303,8 @@ describe('ScrollbackController unstructured mode', () => {
     controller.setUnstructured()
 
     expect(controller.mode).toBe('unstructured')
-    expect(controller.xtermLiveContainer.className).toContain('live-unstructured')
-    expect(controller.xtermLiveContainer.style.height).toBe('360px')
+    expect(controller.terminalLiveContainer.className).toContain('live-unstructured')
+    expect(controller.terminalLiveContainer.style.height).toBe('360px')
   })
 
   it('lets the first OSC-133 marker transition back to the normal layout', () => {
@@ -322,7 +315,7 @@ describe('ScrollbackController unstructured mode', () => {
     controller.setIdle()
 
     expect(controller.mode).toBe('idle')
-    expect(controller.xtermLiveContainer.className).toContain('live-idle')
+    expect(controller.terminalLiveContainer.className).toContain('live-idle')
   })
 
   it('markerless alt-screen return restores the full pane, not the hidden idle', () => {
@@ -337,7 +330,7 @@ describe('ScrollbackController unstructured mode', () => {
     controller.setUnstructured()
 
     expect(controller.mode).toBe('unstructured')
-    expect(controller.xtermLiveContainer.className).toContain('live-unstructured')
+    expect(controller.terminalLiveContainer.className).toContain('live-unstructured')
   })
 })
 
@@ -353,7 +346,7 @@ describe('the live region follows the pane it fills (nocx-liveheight)', () => {
   it('re-measures an unstructured session when the scroller grows', () => {
     const { controller } = makeController()
     controller.setUnstructured()
-    expect(controller.xtermLiveContainer.style.height).toBe('360px')
+    expect(controller.terminalLiveContainer.style.height).toBe('360px')
 
     // The card is dismissed and the pane gives the pixels back.
     Object.defineProperty(controller.scrollbackArea, 'clientHeight', {
@@ -362,13 +355,13 @@ describe('the live region follows the pane it fills (nocx-liveheight)', () => {
     })
     controller.setLiveHeight(null)
 
-    expect(controller.xtermLiveContainer.style.height).toBe('540px')
+    expect(controller.terminalLiveContainer.style.height).toBe('540px')
   })
 
   it('re-measures an alt-screen program when the scroller shrinks', () => {
     const { controller } = makeController()
     controller.enterFullscreen()
-    expect(controller.xtermLiveContainer.style.height).toBe('360px')
+    expect(controller.terminalLiveContainer.style.height).toBe('360px')
 
     Object.defineProperty(controller.scrollbackArea, 'clientHeight', {
       value: 200,
@@ -376,7 +369,7 @@ describe('the live region follows the pane it fills (nocx-liveheight)', () => {
     })
     controller.setLiveHeight(null)
 
-    expect(controller.xtermLiveContainer.style.height).toBe('200px')
+    expect(controller.terminalLiveContainer.style.height).toBe('200px')
   })
 
   it('leaves an idle pane alone: there is no live box to fill', () => {
@@ -388,7 +381,7 @@ describe('the live region follows the pane it fills (nocx-liveheight)', () => {
     })
     controller.setLiveHeight(null)
 
-    expect(controller.xtermLiveContainer.style.height).toBe('')
+    expect(controller.terminalLiveContainer.style.height).toBe('')
   })
 })
 
@@ -422,7 +415,7 @@ describe('ScrollbackController render-fence rendezvous (nocx-u7uh.8)', () => {
     }
   }
 
-  function rendererWithFence(): { renderer: TerminalRenderer } {
+  function rendererWithFence(): { renderer: ReturnType<typeof makeRenderer> } {
     return { renderer: makeRenderer() }
   }
   it("flips the status on the completion event and closes the block on the backend's block.closed (nocx-2v80t.3.27)", () => {
@@ -430,7 +423,8 @@ describe('ScrollbackController render-fence rendezvous (nocx-u7uh.8)', () => {
     const pane = document.createElement('div')
     const controller = new ScrollbackController({
       pane,
-      renderer,
+      liveContentHeight: () => renderer.liveContentHeight(),
+      cellMetrics: () => ({ cellWidth: renderer.cellWidth, cellHeight: renderer.cellHeight }),
       snapshotStore: new CommandSnapshotStore(),
     })
     controller.scrollbackArea.scrollTo = vi.fn()
@@ -465,7 +459,8 @@ describe('ScrollbackController render-fence rendezvous (nocx-u7uh.8)', () => {
     const pane = document.createElement('div')
     const controller = new ScrollbackController({
       pane,
-      renderer,
+      liveContentHeight: () => renderer.liveContentHeight(),
+      cellMetrics: () => ({ cellWidth: renderer.cellWidth, cellHeight: renderer.cellHeight }),
       snapshotStore: new CommandSnapshotStore(),
     })
     // jsdom implements no scrollTo; setRunning scrolls to the live end.
@@ -487,7 +482,8 @@ describe('ScrollbackController render-fence rendezvous (nocx-u7uh.8)', () => {
     const pane = document.createElement('div')
     const controller = new ScrollbackController({
       pane,
-      renderer,
+      liveContentHeight: () => renderer.liveContentHeight(),
+      cellMetrics: () => ({ cellWidth: renderer.cellWidth, cellHeight: renderer.cellHeight }),
       snapshotStore: new CommandSnapshotStore(),
     })
     controller.scrollbackArea.scrollTo = vi.fn()
@@ -509,7 +505,7 @@ describe('ScrollbackController render-fence rendezvous (nocx-u7uh.8)', () => {
     // boundary is still pending: a NEW block opens and owns the running
     // slot (the owner's Ctrl-C then `codex` again — keys are raw, so the
     // second command arrives through openBlock, not the editor).
-    controller.beginBlock('codex', '~', 4)
+    controller.beginBlock('codex', '~', 0)
     controller.blockManager.bindAttempt('att-2')
     expect(controller.blockManager.blocks).toHaveLength(2)
     expect(controller.blockManager.runningBlock?.status).toBe('running')
@@ -531,132 +527,11 @@ describe('ScrollbackController render-fence rendezvous (nocx-u7uh.8)', () => {
   })
 })
 
-describe('nothing clears or rebases the grid (nocx-2v80t.3.3)', () => {
-  // The old contract handed a frozen block the rows and cleared the grid so
-  // they would not show twice (nocx-m87n). The backend diffs against a frame
-  // it holds: a client-side clear desynchronises the two, and nothing
-  // anywhere reports it — the screen simply goes wrong. So no freeze path
-  // may clear or rebase the buffer. The rows a command printed stay on the
-  // live surface, and the saved-cursor state a program holds across the
-  // freeze stays true — the savedY hazard the clear carried.
-  const domain = mintDomain({
-    lane: 'l',
-    lifecycle: 'prompt_ready',
-    domain: 'd1',
-    epoch: 1,
-  }) as IntegrationDomain
-  function completedAttempt(fence?: string): ExecutionAttempt {
-    return {
-      id: 'att-1',
-      domain,
-      state: 'completed',
-      exitCode: 0,
-      ...(fence === undefined ? {} : { fence }),
-    }
-  }
-  const FENCE = 'a'.repeat(64)
-  const stubBrowser = () => {
-    window.matchMedia = (query: string) => ({
-      matches: false,
-      media: query,
-      onchange: null,
-      addListener: () => {},
-      removeListener: () => {},
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      dispatchEvent: () => false,
-    })
-    ;(globalThis as Record<string, unknown>).ResizeObserver = class {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-    }
-  }
-  async function mounted(): Promise<{
-    controller: ScrollbackController
-    renderer: XtermRenderer
-    done: () => void
-  }> {
-    stubBrowser()
-    const renderer = new XtermRenderer()
-    const container = document.createElement('div')
-    Object.defineProperty(container, 'clientWidth', { value: 800 })
-    Object.defineProperty(container, 'clientHeight', { value: 600 })
-    await renderer.mount(container)
-    const pane = document.createElement('div')
-    const controller = new ScrollbackController({
-      pane,
-      renderer,
-      snapshotStore: new CommandSnapshotStore(),
-    })
-    controller.scrollbackArea.scrollTo = vi.fn()
-    return {
-      controller,
-      renderer,
-      done: () => {
-        controller.dispose()
-        renderer.dispose()
-      },
-    }
-  }
-
-  it('a finished command leaves its rows on the live surface', async () => {
-    const { controller, renderer, done } = await mounted()
-    try {
-      controller.beginBlock('seq 3', '~', 0)
-      controller.blockManager.bindAttempt('att-1')
-      renderer.write('out 1\r\nout 2\r\nout 3')
-      await vi.waitFor(() => expect(renderer.hasUnsettledWrite()).toBe(false))
-      // The backend's block.closed is the ordinary freeze's other half.
-      controller.blockManager.blockClosed('att-1')
-      const endLine: number = renderer.cursorLine()
-
-      expect(controller.freezeFromAttempt(completedAttempt(FENCE), endLine)).toBe(true)
-
-      const row = (y: number): string => renderer.getBufferLine(y)?.translateToString(true) ?? ''
-      expect(row(0)).toBe('out 1')
-      expect(row(1)).toBe('out 2')
-      expect(row(2)).toBe('out 3')
-    } finally {
-      done()
-    }
-  })
-
-  it('saved-cursor state stays true across a freeze — the savedY hazard is gone', async () => {
-    const { controller, renderer, done } = await mounted()
-    try {
-      const rows = Array.from({ length: 12 }, (_, i) => `before ${i}`)
-      renderer.write(rows.join('\r\n') + '\u001b7')
-      await vi.waitFor(() => expect(renderer.hasUnsettledWrite()).toBe(false))
-      const savedRow = renderer.cursorLine()
-      expect(savedRow).toBe(11)
-
-      controller.beginBlock('true', '~', 0)
-      controller.blockManager.bindAttempt('att-1')
-      controller.blockManager.blockClosed('att-1')
-      expect(controller.freezeFromAttempt(completedAttempt(FENCE), renderer.cursorLine())).toBe(
-        true,
-      )
-
-      // The program restores its cursor and repaints the row it saved. The
-      // restore must land on the row it saved — the row still holding its
-      // own content — not on a grid the freeze wiped underneath it.
-      renderer.write('\u001b8\rMARK')
-      await vi.waitFor(() => expect(renderer.hasUnsettledWrite()).toBe(false))
-      const row = (y: number): string => renderer.getBufferLine(y)?.translateToString(true) ?? ''
-      expect(row(3)).toBe('before 3')
-      expect(row(savedRow)).toBe('MARKre 11')
-    } finally {
-      done()
-    }
-  })
-})
-
 describe('the echoed command line leaves the live region too (nocx-w1n4)', () => {
   // The frozen body already skips the echo: the app-owned submit opens the
   // block BEFORE the bytes, the shell's echo lands on the creation line,
   // and the output range starts one row later (nocx-4yhi). The LIVE region
-  // is the xterm grid itself, which still holds that echoed line on the
+  // is the painted grid itself, which still holds that echoed line on the
   // creation row — so the running block showed one row more than the frozen
   // one will. The range was decided in the block model; this describe pins
   // the grid to the same decision: the region's first SHOWN row is
@@ -678,64 +553,39 @@ describe('the echoed command line leaves the live region too (nocx-w1n4)', () =>
     fence,
   })
 
-  /** A renderer whose cell geometry the controller can read, with a
-   *  settable viewport top — the number that decides when the echo has
-   *  scrolled out of the grid. */
-  function rendererWithGeometry(): {
-    renderer: TerminalRenderer
-    setViewportTop: (line: number) => void
-  } {
+  function rendererWithGeometry() {
     const renderer = makeRenderer()
-    let top = 0
-    Object.defineProperty(renderer, 'cellHeight', { value: 16, configurable: true })
-    Object.defineProperty(renderer, 'viewportTopLine', {
-      configurable: true,
-      get: () => top,
-    })
-    return {
-      renderer,
-      setViewportTop: (line: number) => {
-        top = line
-      },
-    }
+    renderer.setCellHeight(16)
+    return renderer
   }
 
-  it('releases the shift when the program overwrote the echo row (nocx-hp8p2.9)', () => {
-    const { renderer } = rendererWithGeometry()
-    const pane = document.createElement('div')
+  it('releases the shift only when an accepted backend row no longer contains the echo', () => {
+    const renderer = rendererWithGeometry()
     const controller = new ScrollbackController({
-      pane,
-      renderer,
+      pane: document.createElement('div'),
+      liveContentHeight: () => renderer.liveContentHeight(),
+      cellMetrics: () => ({ cellWidth: renderer.cellWidth, cellHeight: renderer.cellHeight }),
       snapshotStore: new CommandSnapshotStore(),
     })
-    Object.defineProperty(controller.scrollbackArea, 'clientHeight', {
-      value: 360,
-      configurable: true,
-    })
-    controller.scrollbackArea.scrollTo = vi.fn()
-
-    controller.beginBlock('top', '~', 0, 1)
-    expect(controller.xtermInner.style.transform).toBe('translateY(-16px)')
-
-    // `top` clears the screen and paints from home, so its FIRST line lands
-    // on the row the shell echoed the command on. The shift would then hide
-    // a line of the program's output — the uptime header — instead of the
-    // echo, which is exactly what the owner saw.
-    renderer.getBufferLine = () =>
-      ({
-        translateToString: () => 'top - 19:20:15 up 18 days,  1:53,  2 users',
-      }) as unknown as ReturnType<typeof renderer.getBufferLine>
-    controller.setLiveHeight(3 * 16)
-    expect(controller.xtermInner.style.transform).toBe('')
+    controller.beginBlock('top', '~', 0)
+    const record = controller.blockManager.runningBlock!
+    record.outputAnchorOffset = 1
+    record.outputAnchorText = 'prompt top'
+    controller.outputAnchorChanged()
+    expect(controller.terminalLiveInner.style.transform).toBe('translateY(-16px)')
+    record.outputAnchorText = 'top - 19:20:15 up 18 days,  1:53,  2 users'
+    controller.outputAnchorChanged()
+    expect(controller.terminalLiveInner.style.transform).toBe('')
   })
 
-  it('hides the echo row from the running block and releases it once the grid scrolls past', () => {
-    const { renderer, setViewportTop } = rendererWithGeometry()
+  it('hides the backend-anchored echo row and sizes the live region without renderer line numbers', () => {
+    const renderer = rendererWithGeometry()
 
     const pane = document.createElement('div')
     const controller = new ScrollbackController({
       pane,
-      renderer,
+      liveContentHeight: () => renderer.liveContentHeight(),
+      cellMetrics: () => ({ cellWidth: renderer.cellWidth, cellHeight: renderer.cellHeight }),
       snapshotStore: new CommandSnapshotStore(),
     })
     Object.defineProperty(controller.scrollbackArea, 'clientHeight', {
@@ -744,44 +594,46 @@ describe('the echoed command line leaves the live region too (nocx-w1n4)', () =>
     })
     controller.scrollbackArea.scrollTo = vi.fn()
 
-    // App-owned submit: the block opens at the prompt line and the output
-    // range starts one row later (nocx-4yhi) — the shape Defect 1 is about.
-    // The grid was cleared at the previous freeze, so the echo row IS the
-    // grid's top row and the shift is exactly one cell.
-    controller.beginBlock('ls', '~', 0, 1)
+    // The accepted backend anchor says the echoed command is one row below
+    // the current base row. No renderer viewport line is consulted.
+    controller.beginBlock('ls', '~', 0)
+    const record = controller.blockManager.runningBlock!
+    record.outputAnchorOffset = 1
+    record.outputAnchorText = 'prompt ls'
+    controller.outputAnchorChanged()
     expect(controller.mode).toBe('running')
-    expect(controller.xtermInner.style.transform).toBe('translateY(-16px)')
+    expect(controller.terminalLiveInner.style.transform).toBe('translateY(-16px)')
 
     // Output arrives: the flow box and clip reserve only the two shown rows;
     // the translated echo row occupies neither visible space nor layout.
     controller.setLiveHeight(3 * 16)
-    expect(controller.xtermLiveContainer.style.height).toBe('32px')
-    expect(controller.xtermLiveViewport.style.height).toBe('32px')
-    expect(controller.xtermInner.style.transform).toBe('translateY(-16px)')
+    expect(controller.terminalLiveContainer.style.height).toBe('32px')
+    expect(controller.terminalLiveViewport.style.height).toBe('32px')
+    expect(controller.terminalLiveInner.style.transform).toBe('translateY(-16px)')
 
     // A measurement no taller than the translated echo must clear, rather
     // than retain, stale flow space from a previous chunk.
     controller.setLiveHeight(8)
-    expect(controller.xtermLiveContainer.style.height).toBe('0px')
-    expect(controller.xtermLiveViewport.style.height).toBe('0px')
+    expect(controller.terminalLiveContainer.style.height).toBe('0px')
+    expect(controller.terminalLiveViewport.style.height).toBe('0px')
 
-    // The output outgrows the viewport: the echo row scrolls above the
-    // grid, and the shift MUST release — a stale shift would clip the
-    // first real output row instead.
-    setViewportTop(1)
+    // A backend frame can move the base row past the anchor. Its new offset
+    // is zero, so the first real output row is no longer shifted.
+    record.outputAnchorOffset = 0
+    controller.outputAnchorChanged()
     controller.setLiveHeight(24 * 16)
-    expect(controller.xtermInner.style.transform).toBe('')
+    expect(controller.terminalLiveInner.style.transform).toBe('')
     // Both the content clip and flow box clamp to the live-region cap.
-    expect(controller.xtermLiveViewport.style.height).toBe('360px')
-    expect(controller.xtermLiveContainer.style.height).toBe('360px')
+    expect(controller.terminalLiveViewport.style.height).toBe('360px')
+    expect(controller.terminalLiveContainer.style.height).toBe('360px')
 
-    // The shift is live, not one-shot: back before the echo scrolled out,
-    // it re-applies on the next sizing frame.
-    setViewportTop(0)
+    // A later matching accepted frame may place the anchor back in view.
+    record.outputAnchorOffset = 1
+    controller.outputAnchorChanged()
     controller.setLiveHeight(3 * 16)
-    expect(controller.xtermInner.style.transform).toBe('translateY(-16px)')
-    expect(controller.xtermLiveViewport.style.height).toBe('32px')
-    expect(controller.xtermLiveContainer.style.height).toBe('32px')
+    expect(controller.terminalLiveInner.style.transform).toBe('translateY(-16px)')
+    expect(controller.terminalLiveViewport.style.height).toBe('32px')
+    expect(controller.terminalLiveContainer.style.height).toBe('32px')
 
     // The freeze paints the verdict and the live region STAYS UP — the
     // whole terminal is the session's surface now, and nothing clears it
@@ -791,7 +643,7 @@ describe('the echoed command line leaves the live region too (nocx-w1n4)', () =>
     controller.blockManager.blockClosed('att-1')
     expect(controller.freezeFromAttempt(completedAttempt(FENCE), 3)).toBe(true)
     expect(controller.mode).toBe('running')
-    expect(controller.xtermInner.style.transform).toBe('')
+    expect(controller.terminalLiveInner.style.transform).toBe('')
     controller.blockManager.clearAll()
   })
 
@@ -802,35 +654,39 @@ describe('the echoed command line leaves the live region too (nocx-w1n4)', () =>
     // which hangs from its bottom edge — moved at every freeze. The number
     // is never repeated in TypeScript: the controller reads it off the
     // element, which is what this test writes to it.
-    const { renderer } = rendererWithGeometry()
+    const renderer = rendererWithGeometry()
     const pane = document.createElement('div')
     const controller = new ScrollbackController({
       pane,
-      renderer,
+      liveContentHeight: () => renderer.liveContentHeight(),
+      cellMetrics: () => ({ cellWidth: renderer.cellWidth, cellHeight: renderer.cellHeight }),
       snapshotStore: new CommandSnapshotStore(),
     })
     document.body.appendChild(pane)
-    controller.xtermLiveContainer.style.paddingTop = '2px'
-    controller.xtermLiveContainer.style.paddingBottom = '6px'
+    controller.terminalLiveContainer.style.paddingTop = '2px'
+    controller.terminalLiveContainer.style.paddingBottom = '6px'
     Object.defineProperty(controller.scrollbackArea, 'clientHeight', {
       value: 360,
       configurable: true,
     })
     controller.scrollbackArea.scrollTo = vi.fn()
 
-    controller.beginBlock('ls', '~', 0, 1)
+    controller.beginBlock('ls', '~', 0)
+    controller.blockManager.runningBlock!.outputAnchorOffset = 1
+    controller.blockManager.runningBlock!.outputAnchorText = 'prompt ls'
+    controller.outputAnchorChanged()
     // Two shown rows (the third is the translated echo): the clip holds the
     // rows, the flow box holds the rows plus the body's 8px.
     controller.setLiveHeight(3 * 16)
-    expect(controller.xtermLiveViewport.style.height).toBe('32px')
-    expect(controller.xtermLiveContainer.style.height).toBe('40px')
+    expect(controller.terminalLiveViewport.style.height).toBe('32px')
+    expect(controller.terminalLiveContainer.style.height).toBe('40px')
 
     // The cap is a ceiling on the BOX, not on the rows inside it: a grid
     // taller than the pane must not push the region past the space it shares
     // with the running block's header (nocx-zn4d), padding included.
     controller.setLiveHeight(100 * 16)
-    expect(controller.xtermLiveContainer.style.height).toBe('360px')
-    expect(controller.xtermLiveViewport.style.height).toBe('352px')
+    expect(controller.terminalLiveContainer.style.height).toBe('360px')
+    expect(controller.terminalLiveViewport.style.height).toBe('352px')
     controller.blockManager.clearAll()
     pane.remove()
   })
@@ -839,17 +695,18 @@ describe('the echoed command line leaves the live region too (nocx-w1n4)', () =>
     // Rows carry the pane gutter now, the live region included, so the grid's
     // box is the scroller MINUS that inset. Read off the element, like the body
     // padding above: the stylesheet stays the one place the number lives.
-    const { renderer } = rendererWithGeometry()
+    const renderer = rendererWithGeometry()
     const pane = document.createElement('div')
     const controller = new ScrollbackController({
       pane,
-      renderer,
+      liveContentHeight: () => renderer.liveContentHeight(),
+      cellMetrics: () => ({ cellWidth: renderer.cellWidth, cellHeight: renderer.cellHeight }),
       snapshotStore: new CommandSnapshotStore(),
     })
     document.body.appendChild(pane)
     expect(controller.liveInlineInsetPx).toBe(0)
-    controller.xtermLiveContainer.style.paddingLeft = '16px'
-    controller.xtermLiveContainer.style.paddingRight = '16px'
+    controller.terminalLiveContainer.style.paddingLeft = '16px'
+    controller.terminalLiveContainer.style.paddingRight = '16px'
     expect(controller.liveInlineInsetPx).toBe(32)
     controller.blockManager.clearAll()
     pane.remove()
@@ -867,7 +724,8 @@ describe('the pane moves rather than jumping (nocx-i4h04.2)', () => {
     const pane = document.createElement('div')
     const controller = new ScrollbackController({
       pane,
-      renderer,
+      liveContentHeight: () => renderer.liveContentHeight(),
+      cellMetrics: () => ({ cellWidth: renderer.cellWidth, cellHeight: renderer.cellHeight }),
       snapshotStore: new CommandSnapshotStore(),
     })
     Object.defineProperty(controller.scrollbackArea, 'clientHeight', {
@@ -883,7 +741,7 @@ describe('the pane moves rather than jumping (nocx-i4h04.2)', () => {
     const frames: Array<{ el: string; keyframes: unknown }> = []
     for (const [name, el] of [
       ['inner', controller.scrollbackInner],
-      ['live', controller.xtermLiveContainer],
+      ['live', controller.terminalLiveContainer],
     ] as const) {
       ;(el as unknown as { animate: unknown }).animate = (keyframes: unknown) => {
         frames.push({ el: name, keyframes })
@@ -910,7 +768,7 @@ describe('the pane moves rather than jumping (nocx-i4h04.2)', () => {
     // and removed.
     const { controller, frames } = movingController([500, 440])
 
-    controller.beginBlock('ls', '~', 0, 1)
+    controller.beginBlock('ls', '~', 0)
 
     // ONE element, because the stack is one element — and the follow
     // observer's sentinel is deliberately outside it (nocx-i4h04.3).
@@ -951,7 +809,7 @@ describe('the pane moves rather than jumping (nocx-i4h04.2)', () => {
       const writes = new MutationObserver((records) => written.push(...records))
       writes.observe(controller.scrollbackArea, { attributes: true, attributeFilter: ['class'] })
 
-      controller.beginBlock('ls', '~', 0, 1)
+      controller.beginBlock('ls', '~', 0)
       await Promise.resolve()
       await Promise.resolve()
 
@@ -976,7 +834,7 @@ describe('the pane moves rather than jumping (nocx-i4h04.2)', () => {
 
     expect(controller.followSentinel.parentElement).toBe(controller.scrollbackArea)
     expect(controller.scrollbackInner.contains(controller.followSentinel)).toBe(false)
-    expect(controller.scrollbackInner.contains(controller.xtermLiveContainer)).toBe(true)
+    expect(controller.scrollbackInner.contains(controller.terminalLiveContainer)).toBe(true)
   })
 
   it('moves nothing when the person asked for less motion', () => {
@@ -989,7 +847,7 @@ describe('the pane moves rather than jumping (nocx-i4h04.2)', () => {
       }) as unknown as MediaQueryList
     const { controller, frames } = movingController([500, 440])
 
-    controller.beginBlock('ls', '~', 0, 1)
+    controller.beginBlock('ls', '~', 0)
 
     expect(frames).toEqual([])
     controller.blockManager.clearAll()
@@ -1002,97 +860,38 @@ describe('the pane moves rather than jumping (nocx-i4h04.2)', () => {
     const { controller, frames } = movingController([500, 440])
     stopFollowing(controller)
 
-    controller.beginBlock('ls', '~', 0, 1)
+    controller.beginBlock('ls', '~', 0)
 
     expect(frames).toEqual([])
     controller.blockManager.clearAll()
   })
 })
 
-describe('the frozen block metric is published from the renderer (nocx-yy9g)', () => {
-  /** A renderer whose cell width the test controls and whose cell-dims
-   *  notification the test can fire. */
-  function metricRenderer() {
-    let cellWidth = 8.5
-    let onChange: (() => void) | null = null
-    const renderer = makeRenderer() as TerminalRenderer & {
-      cellWidth: number
-      onCellDimsChange: (cb: () => void) => void
-      _setCellWidth: (w: number) => void
-      _fireCellDimsChange: () => void
-    }
-    renderer.cellWidth = cellWidth
-    renderer.onCellDimsChange = (cb) => {
-      onChange = cb
-    }
-    renderer._setCellWidth = (w) => {
-      cellWidth = w
-      renderer.cellWidth = w
-    }
-    renderer._fireCellDimsChange = () => onChange?.()
-    return renderer
-  }
-
-  /** The publisher's probe measures its text as 64 W's at 10px = 640px,
-   *  so the natural advance is 10 — a stand-in for the real layout the
-   *  browser computes. */
-  function stubProbeMeasurement(container: HTMLElement): void {
-    const probe = container.querySelector<HTMLElement>('.cell-metric-probe')
-    expect(probe).not.toBeNull()
-    Object.defineProperty(probe!, 'getBoundingClientRect', {
-      value: () => ({ width: 640, height: 16 }),
-      configurable: true,
+describe('the frozen block metric follows accepted painter metrics', () => {
+  it('publishes the current cell width and row pitch', () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.classList.contains('cell-metric-probe')) {
+        return { width: 64 * 8 } as DOMRect
+      }
+      return Element.prototype.getBoundingClientRect.call(this)
     })
-  }
-
-  it('publishes the renderer cell width onto the scrollback at construction', () => {
-    const pane = document.createElement('div')
-    const renderer = metricRenderer()
+    const metrics = { cellWidth: 8.5, cellHeight: 16 }
     const controller = new ScrollbackController({
-      pane,
-      renderer,
+      pane: document.createElement('div'),
+      liveContentHeight: () => null,
+      cellMetrics: () => metrics,
       snapshotStore: new CommandSnapshotStore(),
     })
-    stubProbeMeasurement(controller.scrollbackInner)
-    // The constructor publish ran before the probe was measurable, so the
-    // properties land on the first refresh — same path the mount-end
-    // notification takes in the app.
-    renderer._fireCellDimsChange()
+    // Metrics are published only after the backend accepts a screen geometry.
+    controller.cellMetricsChanged()
     expect(controller.scrollbackInner.style.getPropertyValue('--term-cell-width')).toBe('8.5px')
-    expect(controller.scrollbackInner.style.getPropertyValue('--term-cell-delta')).toBe('-1.5px')
-  })
-
-  it('re-publishes when the renderer reports its cell dims changed (resize, dpr)', () => {
-    const pane = document.createElement('div')
-    const renderer = metricRenderer()
-    const controller = new ScrollbackController({
-      pane,
-      renderer,
-      snapshotStore: new CommandSnapshotStore(),
-    })
-    stubProbeMeasurement(controller.scrollbackInner)
-
-    renderer._setCellWidth(9)
-    renderer._fireCellDimsChange()
-
-    expect(controller.scrollbackInner.style.getPropertyValue('--term-cell-width')).toBe('9px')
-    expect(controller.scrollbackInner.style.getPropertyValue('--term-cell-delta')).toBe('-1px')
-  })
-
-  it('publishes nothing while the renderer cannot measure — blocks keep their natural advance', () => {
-    const pane = document.createElement('div')
-    const renderer = metricRenderer()
-    renderer._setCellWidth(0)
-    const controller = new ScrollbackController({
-      pane,
-      renderer,
-      snapshotStore: new CommandSnapshotStore(),
-    })
-    renderer._fireCellDimsChange()
-    expect(controller.scrollbackInner.style.getPropertyValue('--term-cell-width')).toBe('')
-    expect(controller.scrollbackInner.style.getPropertyValue('--term-cell-delta')).toBe('')
+    expect(controller.scrollbackInner.style.getPropertyValue('--term-cell-height')).toBe('16px')
+    controller.dispose()
   })
 })
+
 describe('the running live region follows its written rows', () => {
   const protoScrollTo = Element.prototype.scrollTo?.bind(Element.prototype)
   beforeEach(() => {
@@ -1108,7 +907,8 @@ describe('the running live region follows its written rows', () => {
     const pane = document.createElement('div')
     const controller = new ScrollbackController({
       pane,
-      renderer,
+      liveContentHeight: () => renderer.liveContentHeight(),
+      cellMetrics: () => ({ cellWidth: renderer.cellWidth, cellHeight: renderer.cellHeight }),
       snapshotStore: new CommandSnapshotStore(),
     })
     Object.defineProperty(controller.scrollbackArea, 'clientHeight', {
@@ -1116,17 +916,17 @@ describe('the running live region follows its written rows', () => {
       configurable: true,
     })
 
-    controller.beginBlock('printf slow', '~', 0, 0)
-    expect(controller.xtermLiveContainer.style.height).toBe('19px')
-    expect(controller.xtermLiveViewport.style.height).toBe('19px')
+    controller.beginBlock('printf slow', '~', 0)
+    expect(controller.terminalLiveContainer.style.height).toBe('19px')
+    expect(controller.terminalLiveViewport.style.height).toBe('19px')
 
     controller.setLiveHeight(38)
-    expect(controller.xtermLiveContainer.style.height).toBe('38px')
-    expect(controller.xtermLiveViewport.style.height).toBe('38px')
+    expect(controller.terminalLiveContainer.style.height).toBe('38px')
+    expect(controller.terminalLiveViewport.style.height).toBe('38px')
 
     controller.setLiveHeight(57)
-    expect(controller.xtermLiveContainer.style.height).toBe('57px')
-    expect(controller.xtermLiveViewport.style.height).toBe('57px')
+    expect(controller.terminalLiveContainer.style.height).toBe('57px')
+    expect(controller.terminalLiveViewport.style.height).toBe('57px')
   })
 
   it('keeps the CSS fallback visible while the empty command waits', () => {
@@ -1138,7 +938,8 @@ describe('the running live region follows its written rows', () => {
     const pane = document.createElement('div')
     const controller = new ScrollbackController({
       pane,
-      renderer,
+      liveContentHeight: () => renderer.liveContentHeight(),
+      cellMetrics: () => ({ cellWidth: renderer.cellWidth, cellHeight: renderer.cellHeight }),
       snapshotStore: new CommandSnapshotStore(),
     })
     Object.defineProperty(controller.scrollbackArea, 'clientHeight', {
@@ -1146,10 +947,10 @@ describe('the running live region follows its written rows', () => {
       configurable: true,
     })
 
-    controller.beginBlock('ls', '~', 0, 1)
+    controller.beginBlock('ls', '~', 0)
 
-    expect(controller.xtermLiveContainer.style.height).toBe('')
-    expect(controller.xtermLiveViewport.style.height).toBe('')
+    expect(controller.terminalLiveContainer.style.height).toBe('')
+    expect(controller.terminalLiveViewport.style.height).toBe('')
     expect(controller.mode).toBe('running')
   })
 
@@ -1159,23 +960,24 @@ describe('the running live region follows its written rows', () => {
     const pane = document.createElement('div')
     const controller = new ScrollbackController({
       pane,
-      renderer,
+      liveContentHeight: () => renderer.liveContentHeight(),
+      cellMetrics: () => ({ cellWidth: renderer.cellWidth, cellHeight: renderer.cellHeight }),
       snapshotStore: new CommandSnapshotStore(),
     })
     document.body.appendChild(pane)
-    controller.xtermLiveContainer.style.paddingTop = '2px'
-    controller.xtermLiveContainer.style.paddingBottom = '6px'
+    controller.terminalLiveContainer.style.paddingTop = '2px'
+    controller.terminalLiveContainer.style.paddingBottom = '6px'
     Object.defineProperty(controller.scrollbackArea, 'clientHeight', {
       value: 360,
       configurable: true,
     })
 
-    controller.beginBlock('ls', '~', 0, 1)
+    controller.beginBlock('ls', '~', 0)
 
     // The waiting stand-in keeps the CSS fallback box until output retires it.
-    expect(controller.xtermLiveContainer.style.height).toBe('')
-    expect(controller.xtermLiveViewport.style.height).toBe('')
-    expect(controller.xtermLiveContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
+    expect(controller.terminalLiveContainer.style.height).toBe('')
+    expect(controller.terminalLiveViewport.style.height).toBe('')
+    expect(controller.terminalLiveContainer.querySelector('.cmd-answer-typing')).not.toBeNull()
     pane.remove()
   })
 })
@@ -1379,7 +1181,8 @@ describe('ScrollbackController tells the pet how the command went', () => {
     const pane = document.createElement('div')
     const controller = new ScrollbackController({
       pane,
-      renderer,
+      liveContentHeight: () => renderer.liveContentHeight(),
+      cellMetrics: () => ({ cellWidth: renderer.cellWidth, cellHeight: renderer.cellHeight }),
       snapshotStore: new CommandSnapshotStore(),
     })
     controller.scrollbackArea.scrollTo = vi.fn()
@@ -1391,7 +1194,7 @@ describe('ScrollbackController tells the pet how the command went', () => {
     exitCode: number,
     author: 'shell' | 'agent' = 'shell',
   ): void {
-    controller.beginBlock('ls', '~', 0, undefined, author)
+    controller.beginBlock('ls', '~', 0, author)
     controller.blockManager.bindAttempt('att-1')
     controller.blockManager.blockClosed('att-1')
     controller.freezeFromAttempt(
@@ -1436,7 +1239,8 @@ describe('ScrollbackController tells the pet how the command went', () => {
     const renderer = makeRenderer()
     const controller = new ScrollbackController({
       pane: document.createElement('div'),
-      renderer,
+      liveContentHeight: () => renderer.liveContentHeight(),
+      cellMetrics: () => ({ cellWidth: renderer.cellWidth, cellHeight: renderer.cellHeight }),
       snapshotStore: new CommandSnapshotStore(),
     })
     controller.scrollbackArea.scrollTo = vi.fn()
@@ -1469,7 +1273,8 @@ describe('ScrollbackController tells the pet a command has started', () => {
     mountWindowPet(document.createElement('div'))
     const controller = new ScrollbackController({
       pane: document.createElement('div'),
-      renderer: makeRenderer(),
+      liveContentHeight: () => null,
+      cellMetrics: () => null,
       snapshotStore: new CommandSnapshotStore(),
     })
     controller.scrollbackArea.scrollTo = vi.fn()
@@ -1484,7 +1289,7 @@ describe('ScrollbackController tells the pet a command has started', () => {
 
   it('tells it whose lane the command is in', () => {
     const { controller, heard } = petController()
-    controller.beginBlock('go test ./...', '~', 0, undefined, 'agent')
+    controller.beginBlock('go test ./...', '~', 0, 'agent')
     expect(heard).toHaveBeenCalledWith('agent')
   })
 
@@ -1493,7 +1298,8 @@ describe('ScrollbackController tells the pet a command has started', () => {
     const heard = vi.spyOn(PetOverlay.prototype, 'attendTo').mockImplementation(() => {})
     const controller = new ScrollbackController({
       pane: document.createElement('div'),
-      renderer: makeRenderer(),
+      liveContentHeight: () => null,
+      cellMetrics: () => null,
       snapshotStore: new CommandSnapshotStore(),
     })
     controller.scrollbackArea.scrollTo = vi.fn()

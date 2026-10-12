@@ -33,9 +33,9 @@ afterEach(() => {
 function newManager(sessionName?: (id: string) => string | null) {
   const inner = document.createElement('div')
   document.body.appendChild(inner)
-  const xtermContainer = document.createElement('div')
-  inner.appendChild(xtermContainer)
-  const manager = new BlockManager(inner, xtermContainer, {
+  const liveContainer = document.createElement('div')
+  inner.appendChild(liveContainer)
+  const manager = new BlockManager(inner, liveContainer, {
     snapshotStore: new CommandSnapshotStore(),
     sessionName,
   })
@@ -87,7 +87,7 @@ describe('a turn draws the blocks it caused, in order', () => {
     turn.append('Сейчас посмотрю.', 'text-1')
     turn.toolCall({ callId: 'c1', tool: 'run', effect: 'mutate-destructive', opensBlock: true })
     // The command really runs, through the ordinary path a person's line takes.
-    const rec = manager.startBlock(COMMAND, '/repo', 0, 0, 'agent')
+    const rec = manager.startBlock(COMMAND, '/repo', 0, 'agent')
     rec.el.appendChild(
       Object.assign(document.createElement('div'), {
         className: 'cmd-output',
@@ -162,7 +162,7 @@ describe('a turn draws the blocks it caused, in order', () => {
     const { inner, manager } = newManager()
     const turn = manager.addAnswerBlock(QUESTION, '/repo')
     turn.toolCall({ callId: 'c1', tool: 'run', effect: 'mutate-destructive', opensBlock: true })
-    const rec = manager.startBlock(COMMAND, '/repo', 0, 0, 'agent')
+    const rec = manager.startBlock(COMMAND, '/repo', 0, 'agent')
     turn.append('41G free')
     turn.close('success')
 
@@ -226,7 +226,7 @@ describe('a turn draws the blocks it caused, in order', () => {
     turn.el.dataset.entryId = 'turn-1'
     turn.append('first', 'text-1')
     turn.toolCall({ callId: 'c1', tool: 'run', effect: 'mutate-destructive', opensBlock: true })
-    manager.startBlock(COMMAND, '/repo', 0, 0, 'agent')
+    manager.startBlock(COMMAND, '/repo', 0, 'agent')
     turn.append('second', 'text-2')
     turn.close('success')
 
@@ -244,7 +244,7 @@ describe('a turn draws the blocks it caused, in order', () => {
     const { inner, manager } = newManager()
     const turn = manager.addAnswerBlock(QUESTION, '/repo')
     turn.toolCall({ callId: 'c1', tool: 'run', effect: 'mutate-destructive', opensBlock: true })
-    manager.startBlock(COMMAND, '/repo', 0, 0, 'agent')
+    manager.startBlock(COMMAND, '/repo', 0, 'agent')
     turn.append('41G free')
     turn.close('success')
 
@@ -299,7 +299,7 @@ describe('a turn draws the blocks it caused, in order', () => {
     }
     turn.toolCall(call)
     turn.toolCall(call)
-    manager.startBlock(COMMAND, '/repo', 0, 0, 'agent')
+    manager.startBlock(COMMAND, '/repo', 0, 'agent')
     turn.close('success')
 
     expect(childrenOf(turn.el)).toEqual([`command:${COMMAND}`])
@@ -360,7 +360,7 @@ describe('a turn draws the blocks it caused, in order', () => {
     const turn = manager.addAnswerBlock(QUESTION, '/repo')
     turn.append('before the call', 'text-1')
     turn.toolCall({ callId: 'c1', tool: 'run', effect: 'mutate-destructive', opensBlock: true })
-    manager.startBlock(COMMAND, '/repo', 0, 0, 'agent')
+    manager.startBlock(COMMAND, '/repo', 0, 'agent')
     turn.append('while it was still running', 'text-2')
     turn.append(' and after', 'text-2')
     turn.close('success')
@@ -392,7 +392,7 @@ describe('a turn draws the blocks it caused, in order', () => {
     const { inner, manager } = newManager()
     const turn = manager.addAnswerBlock(QUESTION, '/repo')
     turn.toolCall({ callId: 'c1', tool: 'run', effect: 'mutate-destructive', opensBlock: true })
-    manager.startBlock(COMMAND, '/repo', 0, 0, 'agent')
+    manager.startBlock(COMMAND, '/repo', 0, 'agent')
     turn.append('41G free')
     turn.close('success')
     // The TURN's dots are gone with the turn. The query is scoped to the
@@ -410,7 +410,7 @@ describe('a turn draws the blocks it caused, in order', () => {
     // The call was announced and the command never arrived — the run failed
     // between the two. The turn closes, and the claim dies with it.
     turn.close('failure', 'the run tool could not reach the session')
-    manager.startBlock('ls', '/repo', 0, 0, 'shell')
+    manager.startBlock('ls', '/repo', 0, 'shell')
 
     expect(topLevel(inner)).toEqual([`ask:${QUESTION}`, 'command:ls'])
     expect(childrenOf(turn.el)).toEqual(['cmd-answer-error'])
@@ -421,7 +421,7 @@ describe('a turn draws the blocks it caused, in order', () => {
     const turn = manager.addAnswerBlock(QUESTION, '/repo')
     turn.append('some prose', 'text-1')
     turn.toolCall({ callId: 'c1', tool: 'run', effect: 'mutate-destructive', opensBlock: true })
-    manager.startBlock(COMMAND, '/repo', 0, 0, 'agent')
+    manager.startBlock(COMMAND, '/repo', 0, 'agent')
     turn.close('success')
 
     manager.clearAll()

@@ -39,6 +39,28 @@ type OutputStartMarker interface {
 	OutputStartRow(from uint64)
 }
 
+// ScreenRowAnchor names one row in the backend's absolute screen coordinate.
+// It is intentionally separate from the row stream's FromRow index: the two
+// counters diverge when boundary rows are withheld from the stream.
+type ScreenRowAnchor struct {
+	Row      uint64
+	Revision Revision
+	Identity ScreenIdentity
+}
+
+// OutputStartAnchorMarker is the richer form of OutputStartMarker used by
+// transports that can carry the screen coordinate alongside the row-stream
+// mark. Older/internal row sinks may continue to implement OutputStartMarker.
+type OutputStartAnchorMarker interface {
+	OutputStartRowWithAnchor(from uint64, anchor ScreenRowAnchor)
+}
+
+// IntervalEndAnchorMarker is the richer end-marker form. The anchor names the
+// cursor from the exact closing screen snapshot; nil means no readable screen.
+type IntervalEndAnchorMarker interface {
+	IntervalEndWithAnchor(nonce FenceNonce, endRow uint64, closing []emulator.Row, anchor *ScreenRowAnchor, settledWithoutFence bool)
+}
+
 type RowStream interface {
 	// OutputRows carries one feed's departed rows, oldest first, with the
 	// absolute index of the first and the struck-feed count immediately
@@ -96,11 +118,23 @@ func (s *Session) SetRowStream(r RowStream) {
 	defer s.mu.Unlock()
 	s.rowStream = r
 	// A replacement reader needs the current output boundary before its
-	// resend rows. Re-emitting the mark on the newly bound ordered stream
-	// keeps position recoverable without making the lifecycle frame carry it.
-	if r != nil {
-		if marker, ok := r.(OutputStartMarker); ok && s.observation != nil && s.observation.OutputMarked {
-			marker.OutputStartRow(s.observation.OutputMarkDeparted)
+	// resend rows. Re-emit the stream position and screen anchor together;
+	// they are different coordinates with different owners.
+	if r != nil && s.observation != nil && s.observation.OutputMarked {
+		s.emitOutputStartLocked(s.observation.OutputStartStreamRow, s.observation.OutputScreenAnchor)
+	}
+}
+
+// emitOutputStartLocked preserves the helper's ordered stream coordinate and,
+// when captured, attaches the shared absolute screen-row identity.
+func (s *Session) emitOutputStartLocked(from uint64, anchor *ScreenRowAnchor) {
+	if anchor != nil {
+		if marker, ok := s.rowStream.(OutputStartAnchorMarker); ok {
+			marker.OutputStartRowWithAnchor(from, *anchor)
+			return
 		}
+	}
+	if marker, ok := s.rowStream.(OutputStartMarker); ok {
+		marker.OutputStartRow(from)
 	}
 }

@@ -896,7 +896,7 @@ export class PaneManager {
    *  subscription and not a single slot like the callbacks above. */
   private readonly paneSetListeners = new Set<() => void>()
   /** The snippet palette chord (⌥⌘P) was pressed in the active pane —
-   *  forwarded from the pane's TerminalContent, whose xterm boundary and
+   *  forwarded from the pane's TerminalContent, whose terminal input and
    *  editor arbiter both land here. The composition root opens the
    *  palette (design §10.1). */
   onSnippetChord?: () => void
@@ -1558,7 +1558,7 @@ export class PaneManager {
       (tooltip) => paneRef.current?.updateTooltip(tooltip),
       // The alt-screen callback that used to sit here is gone with the
       // parameter. It toggled `#app.alt-screen`, which emptied the tab strip so
-      // a viewport-sized fullscreen xterm would not paint through it; the
+      // a viewport-sized fullscreen terminal grid would not paint through it; the
       // fullscreen region lives inside its pane now (nocx-6w4z).
       undefined,
       {
@@ -2649,9 +2649,9 @@ export class PaneManager {
     return this.findBySession(LOCAL_BACKEND_ID, sessionId) ?? null
   }
 
-  /** The terminal content whose session matches, when any pane holds it —
-   *  the readScreen pull's lookup (nocx-ljfwz): the renderer answers a
-   *  screen request only for the pane that owns the session's grid. */
+  /** The terminal content whose session matches, when any pane holds it.
+   *  sessionWhere uses this to read the active origin and host label from
+   *  the same pane that owns the session. */
   terminalContentForSession(sessionId: string): TerminalContent | null {
     const content = this.paneForSession(sessionId)?.content
     return content instanceof TerminalContent ? content : null

@@ -1,9 +1,9 @@
 // The composer's cursor is the TERMINAL's cursor, drawn by the same rules.
 //
-// One row above the composer, xterm draws a block: filled with
+// One row above the composer, the painter draws a block: filled with
 // `--terminal-cursor`, the glyph under it painted in
 // `--terminal-cursor-accent`, and nothing at all when the surface is not
-// focused (`cursorInactiveStyle: 'none'`, renderers/xterm.ts). "What a cursor
+// focused. "What a cursor
 // looks like here" therefore already had an owner and two tokens before this
 // module existed; this is that answer extended to the prompt, not a second one
 // beside it. A bar caret in the composer and a block in the scrollback were
@@ -75,7 +75,7 @@ const MARK = Decoration.mark({ class: BLOCK_CURSOR_MARK })
 /**
  * The character the block covers, or nothing when there is none to cover.
  *
- * Unfocused draws nothing, which is xterm's `cursorInactiveStyle: 'none'`
+ * Unfocused draws nothing, matching the terminal's inactive cursor style
  * stated a second time because it is the same claim: a cursor says where YOUR
  * typing goes, and in a surface that is not taking your typing it says
  * something false. Two composers are on screen whenever a pane is split.
