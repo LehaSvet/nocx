@@ -135,8 +135,8 @@ func TestARealRemoteCDReachesTheAttachedRendererAsCwdMetadata(t *testing.T) {
 	)
 	helperReg.publishScreen = ws.PublishScreenFrame
 	lifePub.SetEmitter(ws)
-	if err := ws.Start(context.Background()); err != nil {
-		t.Fatalf("start WSServer: %v", err)
+	if startErr := ws.Start(context.Background()); startErr != nil {
+		t.Fatalf("start WSServer: %v", startErr)
 	}
 	t.Cleanup(func() { _ = ws.Stop(context.Background()) })
 
@@ -238,8 +238,8 @@ func attachAndAckRenderer(t *testing.T, conn *websocket.Conn, sid string) {
 	if err != nil {
 		t.Fatalf("marshal attach: %v", err)
 	}
-	if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
-		t.Fatalf("send attach: %v", err)
+	if writeErr := conn.WriteMessage(websocket.TextMessage, request); writeErr != nil {
+		t.Fatalf("send attach: %v", writeErr)
 	}
 	sidBytes, err := hex.DecodeString(sid)
 	if err != nil {
