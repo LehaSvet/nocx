@@ -111,12 +111,18 @@ func (r *Repo) AddWorktree(ctx context.Context, branch, base, path string) (git.
 	if !ok {
 		return git.WorktreeAdded{}, &git.ErrBaseUnresolved{Base: base}
 	}
-	if err := r.mutateArgv(ctx, env, spawn.WorktreeCreateArgs(path, branch, base)); err != nil {
-		// git may have created the branch before failing to prepare the
-		// worktree, so the branch is removed here — by the same narrow rule,
-		// and in the same code, the caller's compensation drives. Leaving it
-		// would put a ref in the repository that only this call knows about,
-		// and the call is returning an error.
+	// Claim the absent branch with update-ref's expected-old zero oid. This
+	// create is atomic: if another caller wins after the absence read, this
+	// fails without taking ownership of or cleaning up their ref. Only after
+	// this succeeds may a failed checkout compensate by deleting the branch.
+	zeroOID := strings.Repeat("0", len(baseOID))
+	if err := r.mutateArgv(ctx, env, spawn.CreateRefArgs("refs/heads/"+branch, baseOID, zeroOID)); err != nil {
+		return git.WorktreeAdded{}, err
+	}
+	if err := r.mutateArgv(ctx, env, spawn.WorktreeCheckoutArgs(path, branch)); err != nil {
+		// This call created the ref atomically above, so on checkout failure
+		// the same narrow branch rule the caller's compensation drives can
+		// clean it up. The ref deletion is still guarded by the observed tip.
 		//
 		// ON A CONTEXT THE CALLER'S CANCELLATION CANNOT REACH (nocx-tlfoj).
 		// Git may have registered and populated the worktree before a hook or

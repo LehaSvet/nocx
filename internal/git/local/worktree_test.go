@@ -32,6 +32,64 @@ func worktreeRepo(t *testing.T) (repoDir, wtHome string) {
 	return dir, t.TempDir()
 }
 
+// TestAddWorktreePreservesABranchCreatedAfterTheAbsenceRead fixes the race
+// between the branch existence check and git's create-on-add operation. The
+// wrapper creates the branch only after the real rev-parse has answered that
+// it is absent, then returns that absence to this invocation. The old `add -b`
+// path fails because the ref now exists and its cleanup incorrectly deletes it.
+func TestAddWorktreePreservesABranchCreatedAfterTheAbsenceRead(t *testing.T) {
+	dir, home := worktreeRepo(t)
+	branch := "feat/race"
+	marker := filepath.Join(t.TempDir(), "competitor-created-branch")
+	wrapperDir := t.TempDir()
+	wrapper := filepath.Join(wrapperDir, "git")
+	zeroOID := strings.Repeat("0", len(gitOut(t, dir, "rev-parse", "HEAD")))
+	realGit := realGitPath(t)
+	script := "#!/bin/sh\n" +
+		"if [ \"$1 $2 $3 $4\" = \"rev-parse --verify --quiet refs/heads/" + branch + "\" ]; then\n" +
+		"  \"$NOCX_REAL_GIT\" \"$@\"\n" +
+		"  status=$?\n" +
+		"  if [ \"$status\" -eq 1 ]; then\n" +
+		"    \"$NOCX_REAL_GIT\" update-ref refs/heads/" + branch + " \"$NOCX_RACE_OID\" \"$NOCX_ZERO_OID\" || exit $?\n" +
+		"    : > \"$NOCX_RACE_MARKER\"\n" +
+		"  fi\n" +
+		"  exit \"$status\"\n" +
+		"fi\n" +
+		"exec \"$NOCX_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil { //nolint:gosec // G306: controlled test executable.
+		t.Fatal(err)
+	}
+	env := gitEnv(t)
+	for i, value := range env {
+		if strings.HasPrefix(value, "PATH=") {
+			env[i] = "PATH=" + wrapperDir + string(os.PathListSeparator) + strings.TrimPrefix(value, "PATH=")
+		}
+	}
+	env = append(env,
+		"NOCX_REAL_GIT="+realGit,
+		"NOCX_RACE_OID="+gitOut(t, dir, "rev-parse", "master"),
+		"NOCX_ZERO_OID="+zeroOID,
+		"NOCX_RACE_MARKER="+marker,
+	)
+	repo := openRepo(t, env, dir)
+
+	path := filepath.Join(home, "worker")
+	if _, err := repo.AddWorktree(context.Background(), branch, "master", path); err == nil {
+		t.Fatal("AddWorktree succeeded after the branch appeared between its absence read and creation")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the competing branch was not created after the absence read: %v", err)
+	}
+	want := gitOut(t, dir, "rev-parse", "master")
+	got, err := commandIn(dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch).Output()
+	if err != nil {
+		t.Fatalf("failed add removed the competing branch: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != want {
+		t.Fatalf("competing branch tip = %s, want master %s", strings.TrimSpace(string(got)), want)
+	}
+}
+
 // TestAddWorktreeCreatesTheBranchAtBase is criterion 1: a branch that does
 // not exist is created at base and checked out at path, git agrees, and the
 // result says the branch was created — the fact the caller's compensation

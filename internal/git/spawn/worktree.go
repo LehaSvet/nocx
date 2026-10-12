@@ -63,20 +63,6 @@ func WorktreeCheckoutArgs(path, branch string) []string {
 	return []string{"worktree", "add", "--", path, branch}
 }
 
-// WorktreeCreateArgs creates the branch at base and places it in a new
-// worktree in one invocation: git worktree add -b <branch> <path> <base>.
-//
-// -b is what makes this one command rather than a branch followed by a
-// checkout, and it matters for the interval the caller depends on: measured
-// on git 2.55, git validates the base BEFORE it creates the branch (a bad
-// base leaves nothing behind) but creates the branch BEFORE it prepares the
-// worktree (an occupied path leaves the branch behind). The caller therefore
-// resolves the base itself and refuses an occupied path itself, rather than
-// letting git find either after it has already written a ref.
-func WorktreeCreateArgs(path, branch, base string) []string {
-	return []string{"worktree", "add", "-b", branch, "--", path, base}
-}
-
 // WorktreeRemoveArgs removes one linked worktree: git worktree remove <path>.
 // There is no --force form here and no argument that adds one (brief
 // nocx-xn63t.1.1): removing a worktree that holds work is refused by the
@@ -120,6 +106,14 @@ func RefTipArgs(ref string) []string {
 // in StatusArgs, in one place).
 func RevListCountArgs(from, to string) []string {
 	return []string{"--no-optional-locks", "rev-list", "--count", from + ".." + to}
+}
+
+// CreateRefArgs creates one ref only while it does not already exist:
+// git update-ref <ref> <new-oid> <zero-oid>. The expected-old zero value is
+// the atomic ownership check; a caller may clean up this ref only when this
+// command succeeds. zeroOID has the repository's object-id width.
+func CreateRefArgs(ref, newOID, zeroOID string) []string {
+	return []string{"update-ref", ref, newOID, zeroOID}
 }
 
 // DeleteRefArgs removes one ref only while it still points at the commit the

@@ -155,7 +155,7 @@ prunable gitdir file points to non-existent location
 
 // TestWorktreeArgsPlaceThePathAfterDashes: the path is the one value these
 // invocations take that a caller could begin with '-'. Measured on git 2.55:
-// `worktree add -b <br> -- <path> <base>` and `worktree remove -- <path>` are
+// `worktree add -- <path> <br>` and `worktree remove -- <path>` are
 // both accepted and act on the path as written, so the guard costs nothing.
 // The two listing forms are pinned too, because which one is asked for is a
 // version decision the caller makes and this is the only place it is visible.
@@ -168,7 +168,7 @@ func TestWorktreeArgsPlaceThePathAfterDashes(t *testing.T) {
 		{"list, NUL form", WorktreeListArgs(), []string{"--no-optional-locks", "worktree", "list", "--porcelain", "-z"}},
 		{"list, line form", WorktreeListLinesArgs(), []string{"--no-optional-locks", "worktree", "list", "--porcelain"}},
 		{"checkout", WorktreeCheckoutArgs("/tmp/wt", "br"), []string{"worktree", "add", "--", "/tmp/wt", "br"}},
-		{"create", WorktreeCreateArgs("/tmp/wt", "br", "main"), []string{"worktree", "add", "-b", "br", "--", "/tmp/wt", "main"}},
+		{"create ref", CreateRefArgs("refs/heads/br", "abc", "000"), []string{"update-ref", "refs/heads/br", "abc", "000"}},
 		{"remove", WorktreeRemoveArgs("/tmp/wt"), []string{"worktree", "remove", "--", "/tmp/wt"}},
 		{"verify", VerifyCommitArgs("main"), []string{"rev-parse", "--verify", "--quiet", "main^{commit}"}},
 		{"tip", RefTipArgs("refs/heads/br"), []string{"rev-parse", "--verify", "--quiet", "refs/heads/br"}},

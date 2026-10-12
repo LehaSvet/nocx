@@ -78,6 +78,14 @@ func TestAddWorktreeReportsAFailedInvocation(t *testing.T) {
 			what: "the mutation fails, so nothing may be reported as placed",
 		},
 		{
+			name: "the atomic branch claim",
+			fake: map[string]string{
+				"FAKE_BRANCH_TIP": "fail",
+				"FAKE_FAIL":       "update-ref refs/heads/worker-1",
+			},
+			what: "the atomic ref creation did not prove ownership, so this call must stop without cleanup",
+		},
+		{
 			name: "the worktree add, creating the branch",
 			fake: map[string]string{
 				"FAKE_BRANCH_TIP": "fail",
@@ -358,7 +366,8 @@ func TestWorktreeInvocationArgv(t *testing.T) {
 		t.Errorf("no invocation %q among %v", joined, calls)
 	}
 	assertArgv("--no-optional-locks", "worktree", "list", "--porcelain", "-z")
-	assertArgv("worktree", "add", "-b", "worker-1", "--", wtPath, "master")
+	assertArgv("update-ref", "refs/heads/worker-1", oid, strings.Repeat("0", len(oid)))
+	assertArgv("worktree", "add", "--", wtPath, "worker-1")
 	assertArgv("worktree", "remove", "--", wtPath)
 	assertArgv("--no-optional-locks", "rev-list", "--count", oid+".."+oid)
 	assertArgv("update-ref", "-d", "refs/heads/worker-1", oid)
