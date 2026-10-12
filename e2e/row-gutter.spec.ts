@@ -19,32 +19,32 @@ async function measure(page: Page) {
     const area = pane.querySelector<HTMLElement>('.scrollback-area')!
     const inner = pane.querySelector<HTMLElement>('.scrollback-inner')!
     const live = pane.querySelector<HTMLElement>('.terminal-live-container')!
-    // THE LIVE COLUMN IS THE PAINTED GRID since the cutover (nocx-zg3k3.2.5):
-    // this ASCII probe fills the model's full row, including blank cells, so
-    // its text length is the grid's column count. Use a Range only for the
-    // painted content's left edge: Range width is browser layout output, not
-    // an independent source of the accepted grid geometry. Scoped to
-    // `.term-grid`, the live painter's own container (painter.ts GRID_CLASS):
-    // a frozen block's rows carry the same `.term-grid-row` class since the
-    // block-rows painter cutover (nocx-2v80t.3.18), and an unscoped query
-    // would find whichever comes first in DOM order — a settled block above
-    // the live region — rather than the live row this measurement wants.
-    const row = pane.querySelector<HTMLElement>('.term-grid .term-grid-row')!
+    // The live painter publishes the accepted model width as aria-colcount.
+    // Do not infer it from text length: a wide grapheme occupies two model
+    // columns but one UTF-16 code unit. Use Range only for painted geometry.
+    // Scope to the live painter: frozen rows share the same row class.
+    const grid = pane.querySelector<HTMLElement>('.term-grid')!
+    const row = grid.querySelector<HTMLElement>('.term-grid-row')!
     const rowRange = document.createRange()
     rowRange.selectNodeContents(row)
     const blocks = pane.querySelectorAll<HTMLElement>('.scrollback-inner > .cmd-block')
     const block = blocks[blocks.length - 1] ?? null
     const line = block?.querySelector<HTMLElement>('.cmd-output .term-grid-row') ?? null
     const cs = getComputedStyle(live)
-    const liveContent = live.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)
+    const inlineInset = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight)
+    const liveContent = live.clientWidth - inlineInset
+    // Match terminal-content.ts `usableViewport`: fitting starts at the
+    // scroller's clientWidth and subtracts the live row's inset. The live
+    // container can have a different box width while its layout is changing.
+    const fitContent = area.clientWidth - inlineInset
     const cellWidth = parseFloat(getComputedStyle(inner).getPropertyValue('--term-cell-width'))
     const areaRect = area.getBoundingClientRect()
     const rangeRect = rowRange.getBoundingClientRect()
     return {
       frozenLeft: line ? line.getBoundingClientRect().left : null,
       liveLeft: rangeRect.left,
-      cols: row.textContent?.length ?? 0,
-      expectedCols: Math.floor(liveContent / cellWidth),
+      cols: Number(grid.getAttribute('aria-colcount')),
+      expectedCols: Math.floor(fitContent / cellWidth),
       rangeCols: Math.round(rangeRect.width / cellWidth),
       // Keep the independent model and owner facts beside the rendered Range
       // width: when the session owns its accepted grid, it may be narrower than
@@ -53,6 +53,8 @@ async function measure(page: Page) {
       rowTextLength: row.textContent?.length ?? 0,
       rangeWidth: rangeRect.width,
       liveContentWidth: liveContent,
+      fitContentWidth: fitContent,
+      overflowX: getComputedStyle(area).overflowX,
       cellWidth,
       blockWidth: block ? block.getBoundingClientRect().width : null,
       areaContentWidth: area.clientWidth,
@@ -65,8 +67,9 @@ async function measure(page: Page) {
 }
 
 async function settled(page: Page, previousCols: number | null) {
-  // Settled = a cell width is published and the grid fills its box exactly
-  // as the fit computes it; after a resize, also that the cols moved.
+  // Settled = a cell width is published and either the local fit fills its
+  // box, or the session-owned narrower grid remains scrollable. After a resize,
+  // also require that the painted grid's column count moved.
   let lastMeasurement: Awaited<ReturnType<typeof measure>> | null = null
   try {
     await expect
@@ -74,10 +77,13 @@ async function settled(page: Page, previousCols: number | null) {
         async () => {
           const m = await measure(page)
           lastMeasurement = m
+          const localFit = m.gridOwner === 'local' && m.cols === m.expectedCols
+          const narrowerSessionGrid =
+            m.gridOwner === 'session' && m.cols < m.expectedCols && m.overflowX === 'auto'
           return (
             m.cellWidth > 0 &&
             m.frozenLeft !== null &&
-            m.cols === m.expectedCols &&
+            (localFit || narrowerSessionGrid) &&
             (previousCols === null || m.cols !== previousCols)
           )
         },
@@ -93,7 +99,16 @@ async function settled(page: Page, previousCols: number | null) {
 
 function assertAligned(m: Awaited<ReturnType<typeof measure>>) {
   expect(Math.abs((m.frozenLeft ?? NaN) - m.liveLeft)).toBeLessThanOrEqual(GUTTER_TOLERANCE)
-  expect(m.cols).toBe(m.expectedCols)
+  if (m.gridOwner === 'session' && m.cols < m.expectedCols) {
+    // An accepted session grid is not resized to fit this window. A narrower
+    // grid is valid only while the scroller preserves it as a whole, and its
+    // rendered Range must still span the model's full columns.
+    expect(m.overflowX).toBe('auto')
+    expect(m.cols).toBeLessThan(m.expectedCols)
+  } else {
+    expect(m.cols).toBe(m.expectedCols)
+  }
+  expect(m.rangeCols).toBe(m.cols)
   // The row spans the scroller's content box: its tint can reach the edge.
   expect(Math.abs((m.blockLeft ?? NaN) - m.areaLeft)).toBeLessThanOrEqual(GUTTER_TOLERANCE)
   expect(Math.abs((m.blockWidth ?? NaN) - m.areaContentWidth)).toBeLessThanOrEqual(GUTTER_TOLERANCE)

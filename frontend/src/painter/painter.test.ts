@@ -103,6 +103,13 @@ describe('one owner of run geometry (the acceptance test)', () => {
 })
 
 describe('rows and runs', () => {
+  it('publishes the accepted model column count on the grid', () => {
+    const { painter, surface } = mount(() => M1)
+    const snapshot = snapshotOf(frameOf(1, [MERGE_ROW]))
+    painter.apply(snapshot)
+    expect(surface.getAttribute('aria-colcount')).toBe(String(snapshot.geometry.cols))
+  })
+
   it('carries the wide run spacing as letter-spacing, so each cell contributes columns × cellWidth (rule 3)', () => {
     const { painter, surface } = mount(() => M1)
     painter.apply(snapshotOf(frameOf(1, [MERGE_ROW])))
