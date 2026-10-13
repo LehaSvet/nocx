@@ -2,6 +2,8 @@ package local
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -113,10 +115,21 @@ func (r *Repo) AddWorktree(ctx context.Context, branch, base, path string) (git.
 	}
 	// Claim the absent branch with update-ref's expected-old zero oid. This
 	// create is atomic: if another caller wins after the absence read, this
-	// fails without taking ownership of or cleaning up their ref. Only after
-	// this succeeds may a failed checkout compensate by deleting the branch.
+	// fails without taking ownership of their ref. The unique reflog message
+	// also resolves the ambiguous case where Git committed the ref but the
+	// caller's context expired before the command result arrived.
 	zeroOID := strings.Repeat("0", len(baseOID))
-	if err := r.mutateArgv(ctx, env, spawn.CreateRefArgs("refs/heads/"+branch, baseOID, zeroOID)); err != nil {
+	claimMessage, err := newWorktreeClaimMessage()
+	if err != nil {
+		return git.WorktreeAdded{}, fmt.Errorf("git: make a worktree branch claim: %w", err)
+	}
+	if err := r.mutateArgv(ctx, env, spawn.CreateRefArgs("refs/heads/"+branch, baseOID, zeroOID, claimMessage)); err != nil {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), worktreeAddCleanupTimeout)
+		cleanupErr := r.discardBranch(cleanupCtx, env, branch, base, baseOID, claimMessage)
+		cancelCleanup()
+		if cleanupErr != nil {
+			return git.WorktreeAdded{}, errors.Join(err, fmt.Errorf("reconcile failed branch claim: %w", cleanupErr))
+		}
 		return git.WorktreeAdded{}, err
 	}
 	if err := r.mutateArgv(ctx, env, spawn.WorktreeCheckoutArgs(path, branch)); err != nil {
@@ -132,7 +145,7 @@ func (r *Repo) AddWorktree(ctx context.Context, branch, base, path string) (git.
 		// caller's values without its cancellation and bounds both operations.
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), worktreeAddCleanupTimeout)
 		worktreeErr := r.removePartialWorktree(cleanupCtx, env, path, records)
-		branchErr := r.discardBranch(cleanupCtx, env, branch, base, baseOID)
+		branchErr := r.discardBranch(cleanupCtx, env, branch, base, baseOID, "")
 		cancelCleanup()
 		var cleanupErrs []error
 		if worktreeErr != nil {
@@ -263,16 +276,28 @@ func (r *Repo) DeleteWorktreeBranch(ctx context.Context, branch, base string) er
 	if !ok {
 		return &git.ErrBaseUnresolved{Base: base}
 	}
-	return r.discardBranch(ctx, env, branch, base, baseOID)
+	return r.discardBranch(ctx, env, branch, base, baseOID, "")
+}
+
+// newWorktreeClaimMessage mints a per-call reflog subject. A branch tip equal
+// to baseOID is not ownership proof: another caller may have created it after
+// our absence read. The token lets cleanup identify only our atomic ref write.
+func newWorktreeClaimMessage() (string, error) {
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return "", err
+	}
+	return "nocx-worktree-claim:" + hex.EncodeToString(token[:]), nil
 }
 
 // discardBranch is the one owner of "delete a branch that is safe to delete":
-// not checked out anywhere, and reaching no commit beyond baseOID. It is
-// driven by the compensation's public call and by AddWorktree's own failure
-// path, so both act on the same rule. A branch that is not there is not an
-// error — the caller's goal state holds, and a compensation that ran twice
-// must not fail on the second run.
-func (r *Repo) discardBranch(ctx context.Context, env []string, branch, base, baseOID string) error {
+// not checked out anywhere, and reaching no commit beyond baseOID. When
+// claimMessage is non-empty, the latest reflog entry must also prove this call
+// created the ref and its tip must remain the original base. It is driven by
+// compensation's public call and AddWorktree's own failure path, so both use
+// the same cleanup rule. A branch that is not there is not an error — the
+// caller's goal state holds, and a compensation that ran twice must not fail.
+func (r *Repo) discardBranch(ctx context.Context, env []string, branch, base, baseOID, claimMessage string) error {
 	records, err := r.worktreeRecords(ctx, env)
 	if err != nil {
 		return err
@@ -295,6 +320,21 @@ func (r *Repo) discardBranch(ctx context.Context, env []string, branch, base, ba
 	}
 	if ahead > 0 {
 		return &git.ErrBranchHasCommits{Branch: branch, Base: base, Ahead: ahead}
+	}
+	if claimMessage != "" {
+		if tip != baseOID {
+			return fmt.Errorf("git: branch %q moved from the claimed base; leaving it intact", branch)
+		}
+		out, err := r.gitReadOut(ctx, env, r.toplevel, spawn.RefLogSubjectArgs("refs/heads/"+branch), 4096)
+		if err != nil {
+			return fmt.Errorf("read claim for branch %q before cleanup: %w", branch, err)
+		}
+		if out.exit != 0 {
+			return fmt.Errorf("read claim for branch %q before cleanup: git reflog exited %d: %s", branch, out.exit, out.stderr)
+		}
+		if strings.TrimSpace(string(out.out)) != claimMessage {
+			return fmt.Errorf("git: branch %q no longer has this call's claim; leaving it intact", branch)
+		}
 	}
 	// The delete is guarded by the oid the count was made about: a ref that
 	// moved between the two invocations is refused by git, so a commit that

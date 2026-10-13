@@ -78,7 +78,8 @@ while [ $# -gt 0 ]; do
 done
 # FAKE_FAIL names ONE invocation to fail, matched as a PREFIX of the whole
 # argv tail: "worktree list", "worktree add", "rev-list --count",
-# "rev-parse --verify refs/heads/worker-1", "update-ref -d". It lets a test
+# "rev-parse --verify refs/heads/worker-1",
+# "update-ref --create-reflog -m nocx-worktree-claim:", "update-ref -d". It lets a test
 # drive the invocation it is about to failure while the ones before it
 # succeed, and it distinguishes two reads of the same command (the base and
 # the branch tip are both rev-parse --verify) — which the only reachable
