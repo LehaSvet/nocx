@@ -148,8 +148,15 @@ async function openEndpointEditor(page: Page): Promise<void> {
  *  The test below owns the assertion that it asks; here the point is to get
  *  past it, so what follows measures the Test button and nothing else. */
 async function openEndpointEditorDecliningTheUnlock(page: Page): Promise<void> {
-  await openEndpointEditor(page)
   const unlock = unlockSheet(page)
+  // A prior vault read can leave its unlock sheet on top of the endpoints
+  // page. It intercepts the Edit click, so dismiss that outstanding request
+  // before opening the editor; opening the bound key then asks again below.
+  if (await unlock.isVisible()) {
+    await unlock.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await expect(unlock).not.toBeVisible({ timeout: 10_000 })
+  }
+  await openEndpointEditor(page)
   await expect(unlock).toBeVisible({ timeout: 10_000 })
   await unlock.getByRole('button', { name: 'Cancel', exact: true }).click()
   await expect(unlock).not.toBeVisible({ timeout: 10_000 })

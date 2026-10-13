@@ -107,6 +107,29 @@ export function recordRowsCensusForTest(testId: string, label: string, text: str
   rowsCensusByTestId.set(testId, list)
 }
 
+export interface ClipboardWriteObservation {
+  generation: string | null
+  effectId: string | null
+  source: 'live-effect' | 'explicit-replay' | 'unattributed'
+}
+
+const clipboardWritesByTestId = new Map<string, ClipboardWriteObservation[]>()
+
+/** Start an explicit clipboard-write record for a test, including the zero-write case. */
+export function beginClipboardWriteCaptureForTest(testId: string): void {
+  if (!clipboardWritesByTestId.has(testId)) clipboardWritesByTestId.set(testId, [])
+}
+
+/** Record one browser clipboard write with the identity and delivery source the spec observed. */
+export function recordClipboardWriteForTest(
+  testId: string,
+  observation: ClipboardWriteObservation,
+): void {
+  const list = clipboardWritesByTestId.get(testId) ?? []
+  list.push(observation)
+  clipboardWritesByTestId.set(testId, list)
+}
+
 /** Attribute a backend a spec started for itself to the test running right
  *  now, so a failure's printed block finds it without the spec having to say
  *  anything. Idempotent per (testId, backend) pair — a restart calls this
@@ -311,9 +334,11 @@ export async function reportFailureContext(info: TestInfo, traceId: string): Pro
   const pages = pagesByTestId.get(info.testId) ?? []
   const backends = backendsByTestId.get(info.testId) ?? []
   const censuses = rowsCensusByTestId.get(info.testId) ?? []
+  const clipboardWrites = clipboardWritesByTestId.get(info.testId)
   pagesByTestId.delete(info.testId)
   backendsByTestId.delete(info.testId)
   rowsCensusByTestId.delete(info.testId)
+  clipboardWritesByTestId.delete(info.testId)
   try {
     if (info.status === info.expectedStatus) return
 
@@ -366,6 +391,14 @@ export async function reportFailureContext(info: TestInfo, traceId: string): Pro
       sections.push(
         '-- page: block DOM --\n(no browser page was on this report — the DOM was not read)',
       )
+    }
+
+    if (clipboardWrites !== undefined) {
+      const lines = clipboardWrites.map(
+        ({ generation, effectId, source }, index) =>
+          `${index + 1}. generation=${generation ?? '(unknown)'} effectId=${effectId ?? '(unknown)'} source=${source}`,
+      )
+      sections.push(linesSection('clipboard writes observed by spec', lines))
     }
 
     // The store's own answer about the rows the spec was comparing (nocx-rb4ca),
