@@ -1,8 +1,16 @@
 import { clickIntoEditor, expect, promptReady, test } from './harness'
+import {
+  beginClipboardWriteCaptureForTest,
+  recordClipboardWriteForTest,
+  type ClipboardWriteObservation,
+} from './failure-context'
 
 type EffectRecord = {
   effects: number
   effectPayloads: Array<{ kind?: string; title?: string; body?: string }>
+  clipboardWriteEffects: ClipboardWriteObservation[]
+  activeClipboardWrite?: ClipboardWriteObservation | null
+  pendingClipboardWrite?: ClipboardWriteObservation | null
   replayedFrames: number
   raises: Array<{ title: string; body: string }>
   clipboardWrites: string[]
@@ -80,11 +88,18 @@ async function cancelComposition(
   }, provisional)
 }
 
-async function recordAndReplayEffects(page: import('./harness').Page): Promise<void> {
+async function recordAndReplayEffects(
+  page: import('./harness').Page,
+  testId: string,
+): Promise<void> {
+  beginClipboardWriteCaptureForTest(testId)
   await page.addInitScript(() => {
     const state: EffectRecord = {
       effects: 0,
       effectPayloads: [],
+      clipboardWriteEffects: [],
+      activeClipboardWrite: null,
+      pendingClipboardWrite: null,
       replayedFrames: 0,
       raises: [],
       clipboardWrites: [],
@@ -103,14 +118,25 @@ async function recordAndReplayEffects(page: import('./harness').Page): Promise<v
       value: {
         readText: async () => (nativeClipboard ? nativeClipboard.readText() : ''),
         writeText: async (text: string) => {
+          const observation: ClipboardWriteObservation = state.activeClipboardWrite ??
+            state.pendingClipboardWrite ?? {
+              generation: null,
+              effectId: null,
+              source: 'unattributed',
+            }
+          if (!state.activeClipboardWrite) state.pendingClipboardWrite = null
+          state.clipboardWriteEffects.push(observation)
           state.clipboardWrites.push(text)
         },
       },
     })
 
-    // Duplicate each arriving metadata screen frame after its first delivery,
-    // and each identity-bearing effect notification. This models the replay
-    // boundary the frontend must tolerate, without fabricating either payload.
+    // Duplicate each arriving metadata screen frame after its first delivery.
+    // Browser frame byte 1 == 0x02 is MSG_TYPE_METADATA, not helper
+    // TypeSessionEffect (0x12, on the helper connection). Effects reach this
+    // page as JSON-RPC session.effect and ipc.ts deduplicates their identities.
+    // Capture real effect events for explicit replay after clipboard permission
+    // is granted; this does not replay effects automatically.
     const descriptor = Object.getOwnPropertyDescriptor(WebSocket.prototype, 'onmessage')
     if (descriptor?.get && descriptor.set) {
       Object.defineProperty(WebSocket.prototype, 'onmessage', {
@@ -146,6 +172,7 @@ async function recordAndReplayEffects(page: import('./harness').Page): Promise<v
         type,
         function (this: WebSocket, event: Event) {
           const message = event as MessageEvent
+          let liveClipboardWrite: ClipboardWriteObservation | null = null
           if (message.data instanceof ArrayBuffer && new Uint8Array(message.data)[1] === 2) {
             state.replayFrame = () => listener.call(this, event)
           }
@@ -153,7 +180,13 @@ async function recordAndReplayEffects(page: import('./harness').Page): Promise<v
             try {
               const frame = JSON.parse(message.data) as {
                 method?: string
-                params?: { kind?: string; title?: string; body?: string }
+                params?: {
+                  kind?: string
+                  title?: string
+                  body?: string
+                  generation?: string
+                  effectId?: string
+                }
               }
               if (frame.method === 'session.effect') {
                 state.effects++
@@ -164,17 +197,52 @@ async function recordAndReplayEffects(page: import('./harness').Page): Promise<v
                     title: params.title,
                     body: params.body,
                   })
+                  if (
+                    params.kind === 'clipboard' &&
+                    typeof params.generation === 'string' &&
+                    typeof params.effectId === 'string'
+                  ) {
+                    const { generation, effectId } = params
+                    liveClipboardWrite = { generation, effectId, source: 'live-effect' }
+                    if (!state.replayClipboard) {
+                      state.replayClipboard = () => {
+                        const previous = state.activeClipboardWrite
+                        state.activeClipboardWrite = {
+                          generation,
+                          effectId,
+                          source: 'explicit-replay',
+                        }
+                        try {
+                          listener.call(this, event)
+                        } finally {
+                          state.activeClipboardWrite = previous
+                        }
+                      }
+                    }
+                  }
                   if (params.kind === 'notification' && !state.replayNotification)
                     state.replayNotification = () => listener.call(this, event)
-                  if (params.kind === 'clipboard' && !state.replayClipboard)
-                    state.replayClipboard = () => listener.call(this, event)
                 }
               }
             } catch {
               /* non-JSON control data is not an effect */
             }
           }
-          listener.call(this, event)
+          const hadClipboardBanner = document.querySelector('.clipboard-banner') !== null
+          const previous = state.activeClipboardWrite
+          if (liveClipboardWrite) state.activeClipboardWrite = liveClipboardWrite
+          try {
+            listener.call(this, event)
+          } finally {
+            state.activeClipboardWrite = previous
+          }
+          if (
+            liveClipboardWrite &&
+            !hadClipboardBanner &&
+            document.querySelector('.clipboard-banner') !== null
+          ) {
+            state.pendingClipboardWrite = liveClipboardWrite
+          }
         },
         options,
       )
@@ -202,15 +270,31 @@ async function recordAndReplayEffects(page: import('./harness').Page): Promise<v
   })
 }
 
+async function captureClipboardWritesForFailure(
+  page: import('./harness').Page,
+  testId: string,
+  recorded: { count: number },
+): Promise<{ clipboardWrites: number; notifications: number }> {
+  const snapshot = await page.evaluate(() => ({
+    clipboardWrites: window.__intentAcceptance?.clipboardWrites.length ?? 0,
+    notifications: window.__intentAcceptance?.raises.length ?? 0,
+    observations: window.__intentAcceptance?.clipboardWriteEffects ?? [],
+  }))
+  for (const observation of snapshot.observations.slice(recorded.count))
+    recordClipboardWriteForTest(testId, observation)
+  recorded.count = snapshot.observations.length
+  return { clipboardWrites: snapshot.clipboardWrites, notifications: snapshot.notifications }
+}
+
 test('browser input crosses the session transport once and replayed effects stay once', async ({
   page,
   browserName,
-}) => {
+}, testInfo) => {
   // Playwright exposes native clipboard permissions only in Chromium. The
   // runtime effect API remains stubbed below in both browsers.
   if (browserName === 'chromium')
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
-  await recordAndReplayEffects(page)
+  await recordAndReplayEffects(page, testInfo.testId)
   await page.goto('/')
   await promptReady(page)
 
@@ -307,12 +391,24 @@ test('browser input crosses the session transport once and replayed effects stay
   const clipboardBanner = page.locator('.clipboard-banner')
   await expect(clipboardBanner).toBeVisible()
   await clipboardBanner.getByRole('button', { name: 'Allow clipboard writes' }).click()
+  const recordedClipboardWrites = { count: 0 }
   await expect
-    .poll(() => page.evaluate(() => window.__intentAcceptance?.clipboardWrites.length ?? 0))
+    .poll(
+      async () =>
+        (await captureClipboardWritesForFailure(page, testInfo.testId, recordedClipboardWrites))
+          .clipboardWrites,
+    )
     .toBe(1)
   expect(await page.evaluate(() => window.__intentAcceptance?.clipboardWrites)).toEqual([
     clipboardText,
   ])
+  const clipboardWriteEffects = await page.evaluate(
+    () => window.__intentAcceptance?.clipboardWriteEffects ?? [],
+  )
+  expect(clipboardWriteEffects).toHaveLength(1)
+  expect(clipboardWriteEffects[0]?.source).toBe('live-effect')
+  expect(clipboardWriteEffects[0]?.generation).toMatch(/^[1-9][0-9]*$/)
+  expect(clipboardWriteEffects[0]?.effectId).toMatch(/^[1-9][0-9]*$/)
 
   // Replay the captured real identity-bearing notifications only after the
   // clipboard permission was granted and the first write was observed. Also
@@ -332,12 +428,7 @@ test('browser input crosses the session transport once and replayed effects stay
     state.replayFrame()
   })
   await expect
-    .poll(() =>
-      page.evaluate(() => ({
-        clipboardWrites: window.__intentAcceptance?.clipboardWrites.length ?? 0,
-        notifications: window.__intentAcceptance?.raises.length ?? 0,
-      })),
-    )
+    .poll(() => captureClipboardWritesForFailure(page, testInfo.testId, recordedClipboardWrites))
     .toEqual(countsBeforeReplay)
 
   await expect

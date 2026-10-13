@@ -1,4 +1,5 @@
 import { expect, promptReady, test } from './harness'
+import { beginClipboardWriteCaptureForTest, recordClipboardWriteForTest } from './failure-context'
 
 /**
  * PROOF SPEC for nocx-n14oo.11 — deliberately fails, to demonstrate the
@@ -19,7 +20,8 @@ import { expect, promptReady, test } from './harness'
  *     the section is never empty even on a quiet page),
  *   - the control-plane's own JSON-RPC frames (method, id, error — the
  *     bootstrap alone produces several: layout, session and UI state reads),
- *   - the page's accessibility snapshot.
+ *   - the page's accessibility snapshot, plus the spec-recorded clipboard effect
+ *     identity for each write (generation, effectId and source).
  *
  * Gated behind an env var so CI's default run never sees a test written to
  * fail. To run it and read the block:
@@ -35,7 +37,13 @@ test.skip(
   'proof-only spec for nocx-n14oo.11; set NOCX_PROVE_FAILURE_CONTEXT=1 to run it',
 )
 
-test('deliberately fails, to print the failure-context block', async ({ page }) => {
+test('deliberately fails, to print the failure-context block', async ({ page }, testInfo) => {
+  beginClipboardWriteCaptureForTest(testInfo.testId)
+  recordClipboardWriteForTest(testInfo.testId, {
+    generation: '14',
+    effectId: '22',
+    source: 'live-effect',
+  })
   await page.goto('/')
   await promptReady(page)
 
