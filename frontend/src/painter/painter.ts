@@ -227,6 +227,7 @@ export function createCellPainter(opts: CellPainterOptions): CellPainter {
   }
 
   function apply(snapshot: ScreenSnapshot): void {
+    surface.setAttribute('aria-colcount', String(snapshot.geometry.cols))
     // The metric first: reading it is what begins the fit's row context,
     // which its warm() measures against.
     const metric = opts.metric?.() ?? null

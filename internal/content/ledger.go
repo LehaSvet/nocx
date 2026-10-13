@@ -578,8 +578,10 @@ type FinishExecution struct {
 	// row that already knows its start keeps it — the close never overwrites
 	// a fact the ledger already held.
 	StartedAt *int64
-	// DurationMs is the renderer's measured duration. Nil leaves whatever the
-	// row already carries: a close with no measurement erases nothing.
+	// DurationMs is the measured run interval. The renderer supplies it on
+	// ledger.close; the lifecycle path may measure it from its own start and
+	// completion timestamps when no renderer is attached. Nil leaves whatever
+	// the row already carries: a close with no measurement erases nothing.
 	DurationMs *int64
 	// Payload is the entry's kind payload (design §3.3) — for a shell entry
 	// the exit code. Nil leaves the column untouched, which is what a close

@@ -40,6 +40,7 @@ import (
 	"github.com/shady2k/nocx/internal/lifecycle"
 	"github.com/shady2k/nocx/internal/lifecyclepub"
 	"github.com/shady2k/nocx/internal/log"
+	"github.com/shady2k/nocx/internal/log/logtest"
 	"github.com/shady2k/nocx/internal/profile"
 	"github.com/shady2k/nocx/internal/session"
 	"github.com/shady2k/nocx/internal/ssh"
@@ -432,7 +433,8 @@ func newRunLeaseHarness(t *testing.T, leaseCfg RunLeaseConfig, extra ...WSServer
 
 	kernel := lifecycle.New(lifecycle.Options{})
 	pub := lifecyclepub.New(kernel)
-	ws := NewWSServer(log.NewSlogAdapter(nil), newRegWithReal(log.NewSlogAdapter(nil)),
+	_, transportLogger := logtest.New(t)
+	ws := NewWSServer(transportLogger, newRegWithReal(log.NewSlogAdapter(nil)),
 		WithProfileRepository(ps), WithGroupRepository(ps),
 		WithCredentialStore(v), WithVaultLifecycle(v),
 		WithAgentKnownMaterial(adapterKnownMaterial(v)),
@@ -551,12 +553,14 @@ func terminationReasonOfRun(t *testing.T, h *runLeaseHarness) *content.Terminati
 	return e.Executions[0].TerminationReason
 }
 
-// waitChildDead polls pid until the process is gone (ESRCH) — the
-// observable of the escalation having reached it.
+// waitChildDead observes execution exit, not parent reaping. On Linux an
+// exited zombie still answers kill(pid, 0), so inspect its process state.
 func waitChildDead(t *testing.T, pid int) {
 	t.Helper()
-	waittest.WaitForTimeout(t, fmt.Sprintf("child %d to exit", pid), 10*time.Second, func() bool {
-		return errors.Is(unix.Kill(pid, 0), unix.ESRCH)
+	waittest.WaitForTimeoutDetail(t, fmt.Sprintf("child %d to exit", pid), 10*time.Second, func() string {
+		return processExitDetail(pid)
+	}, func() bool {
+		return processExited(pid)
 	})
 }
 

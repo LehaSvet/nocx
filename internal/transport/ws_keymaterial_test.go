@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/pem"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -30,17 +32,49 @@ func testPrivateKeyPEM(t *testing.T) (pemOut, fingerprint string) {
 	return string(pem.EncodeToMemory(block)), fingerprint
 }
 
-// testEncryptedKeyPEM generates an ed25519 key, encrypts it with the given
-// passphrase, and returns the PEM text and its SHA256 fingerprint.
+// encryptedKeyPEMFixture caches immutable encrypted test material by
+// passphrase. `go test -count=N` reruns tests in one process, and generating
+// this fixture invokes bcrypt_pbkdf; the source key is not part of the test.
+type encryptedKeyPEMFixture struct {
+	once        sync.Once
+	pem         string
+	fingerprint string
+	err         error
+}
+
+var encryptedKeyPEMFixtures = struct {
+	sync.Mutex
+	byPassphrase map[string]*encryptedKeyPEMFixture
+}{byPassphrase: make(map[string]*encryptedKeyPEMFixture)}
+
+// testEncryptedKeyPEM returns a stable fixture for a passphrase so repeated
+// test runs do not redo expensive OpenSSH encryption.
 func testEncryptedKeyPEM(t *testing.T, passphrase string) (pemOut, fingerprint string) {
 	t.Helper()
+	encryptedKeyPEMFixtures.Lock()
+	fixture := encryptedKeyPEMFixtures.byPassphrase[passphrase]
+	if fixture == nil {
+		fixture = &encryptedKeyPEMFixture{}
+		encryptedKeyPEMFixtures.byPassphrase[passphrase] = fixture
+	}
+	encryptedKeyPEMFixtures.Unlock()
+	fixture.once.Do(func() {
+		fixture.pem, fixture.fingerprint, fixture.err = generateEncryptedKeyPEM(passphrase)
+	})
+	if fixture.err != nil {
+		t.Fatalf("generate encrypted key fixture: %v", fixture.err)
+	}
+	return fixture.pem, fixture.fingerprint
+}
+
+func generateEncryptedKeyPEM(passphrase string) (pemOut, fingerprint string, err error) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("generate key: %v", err)
+		return "", "", fmt.Errorf("generate key: %w", err)
 	}
 	signer, err := gossh.NewSignerFromKey(priv)
 	if err != nil {
-		t.Fatalf("create signer: %v", err)
+		return "", "", fmt.Errorf("create signer: %w", err)
 	}
 	fingerprint = gossh.FingerprintSHA256(signer.PublicKey())
 
@@ -48,9 +82,17 @@ func testEncryptedKeyPEM(t *testing.T, passphrase string) (pemOut, fingerprint s
 	// public key unencrypted, so ParseRawPrivateKey can extract it.
 	block, err := gossh.MarshalPrivateKeyWithPassphrase(priv, "", []byte(passphrase))
 	if err != nil {
-		t.Fatalf("marshal encrypted key: %v", err)
+		return "", "", fmt.Errorf("marshal encrypted key: %w", err)
 	}
-	return string(pem.EncodeToMemory(block)), fingerprint
+	return string(pem.EncodeToMemory(block)), fingerprint, nil
+}
+
+func TestEncryptedKeyPEM_CachesFixturePerPassphrase(t *testing.T) {
+	firstPEM, firstFingerprint := testEncryptedKeyPEM(t, "fixture-cache-test")
+	secondPEM, secondFingerprint := testEncryptedKeyPEM(t, "fixture-cache-test")
+	if secondPEM != firstPEM || secondFingerprint != firstFingerprint {
+		t.Fatal("encrypted key fixture was regenerated for the same passphrase")
+	}
 }
 
 // --- parsePrivateKeyMaterial tests ---
