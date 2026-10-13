@@ -6,6 +6,10 @@ type EffectRecord = {
   replayedFrames: number
   raises: Array<{ title: string; body: string }>
   clipboardWrites: string[]
+  replayNotification?: () => void
+  replayClipboard?: () => void
+  replayFrame?: () => void
+  seedClipboard?: (text: string) => Promise<void>
 }
 
 declare global {
@@ -89,10 +93,15 @@ async function recordAndReplayEffects(page: import('./harness').Page): Promise<v
     // This spec checks effect dispatch and replay deduplication, not browser
     // permission UI or the OS clipboard. Stub the browser API at its seam so
     // Chromium and WebKit observe the same write calls.
+    const nativeClipboard = navigator.clipboard
+    state.seedClipboard = async (text: string) => {
+      if (!nativeClipboard) throw new Error('browser clipboard API is unavailable')
+      await nativeClipboard.writeText(text)
+    }
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: {
-        readText: async () => '',
+        readText: async () => (nativeClipboard ? nativeClipboard.readText() : ''),
         writeText: async (text: string) => {
           state.clipboardWrites.push(text)
         },
@@ -116,6 +125,7 @@ async function recordAndReplayEffects(page: import('./harness').Page): Promise<v
           descriptor.set!.call(this, function (this: WebSocket, event: MessageEvent) {
             handler.call(this, event)
             if (event.data instanceof ArrayBuffer && new Uint8Array(event.data)[1] === 2) {
+              state.replayFrame = () => handler.call(this, event)
               state.replayedFrames++
               handler.call(this, event)
             }
@@ -135,29 +145,36 @@ async function recordAndReplayEffects(page: import('./harness').Page): Promise<v
         this,
         type,
         function (this: WebSocket, event: Event) {
-          listener.call(this, event)
-          const data = (event as MessageEvent).data
-          if (typeof data !== 'string') return
-          try {
-            const frame = JSON.parse(data) as {
-              method?: string
-              params?: { kind?: string; title?: string; body?: string }
-            }
-            if (frame.method === 'session.effect') {
-              state.effects++
-              if (frame.params && typeof frame.params === 'object') {
-                const params = frame.params as { kind?: string; title?: string; body?: string }
-                state.effectPayloads.push({
-                  kind: params.kind,
-                  title: params.title,
-                  body: params.body,
-                })
-              }
-              listener.call(this, event)
-            }
-          } catch {
-            /* non-JSON control data is not an effect */
+          const message = event as MessageEvent
+          if (message.data instanceof ArrayBuffer && new Uint8Array(message.data)[1] === 2) {
+            state.replayFrame = () => listener.call(this, event)
           }
+          if (typeof message.data === 'string') {
+            try {
+              const frame = JSON.parse(message.data) as {
+                method?: string
+                params?: { kind?: string; title?: string; body?: string }
+              }
+              if (frame.method === 'session.effect') {
+                state.effects++
+                if (frame.params && typeof frame.params === 'object') {
+                  const params = frame.params
+                  state.effectPayloads.push({
+                    kind: params.kind,
+                    title: params.title,
+                    body: params.body,
+                  })
+                  if (params.kind === 'notification' && !state.replayNotification)
+                    state.replayNotification = () => listener.call(this, event)
+                  if (params.kind === 'clipboard' && !state.replayClipboard)
+                    state.replayClipboard = () => listener.call(this, event)
+                }
+              }
+            } catch {
+              /* non-JSON control data is not an effect */
+            }
+          }
+          listener.call(this, event)
         },
         options,
       )
@@ -187,7 +204,12 @@ async function recordAndReplayEffects(page: import('./harness').Page): Promise<v
 
 test('browser input crosses the session transport once and replayed effects stay once', async ({
   page,
+  browserName,
 }) => {
+  // Playwright exposes native clipboard permissions only in Chromium. The
+  // runtime effect API remains stubbed below in both browsers.
+  if (browserName === 'chromium')
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
   await recordAndReplayEffects(page)
   await page.goto('/')
   await promptReady(page)
@@ -213,6 +235,27 @@ test('browser input crosses the session transport once and replayed effects stay
   await page.keyboard.press('ArrowUp')
   await outputContains(page, normalMode)
   await promptReady(page)
+
+  if (browserName === 'chromium') {
+    // Paste through the focused terminal input while the running program has
+    // enabled bracketed-paste mode. The program reads and prints the bytes it
+    // receives, so this checks the browser-to-helper route and the framing.
+    const pasteText = 'BROWSER-PASTE'
+    const pasteBytes = '1b 5b 32 30 30 7e 42 52 4f 57 53 45 52 2d 50 41 53 54 45 1b 5b 32 30 31 7e'
+    await command(
+      page,
+      "printf '\\033[?2004h'; stty -echo -icanon; dd bs=1 count=25 2>/dev/null | od -An -tx1; stty sane",
+    )
+    await focusLiveGrid(page)
+    await page.evaluate(async (text) => {
+      const seed = window.__intentAcceptance?.seedClipboard
+      if (!seed) throw new Error('test clipboard seeding hook is unavailable')
+      await seed(text)
+    }, pasteText)
+    await page.keyboard.press('Control+V')
+    await outputContains(page, pasteBytes)
+    await promptReady(page)
+  }
 
   const committed = 'IME-COMMIT-世界'
   await command(page, 'IFS= read -r value; printf \'IME-RESULT=<%s>\\n\' "$value"')
@@ -270,6 +313,32 @@ test('browser input crosses the session transport once and replayed effects stay
   expect(await page.evaluate(() => window.__intentAcceptance?.clipboardWrites)).toEqual([
     clipboardText,
   ])
+
+  // Replay the captured real identity-bearing notifications only after the
+  // clipboard permission was granted and the first write was observed. Also
+  // replay a captured runtime frame through the same WebSocket listener.
+  const countsBeforeReplay = await page.evaluate(() => ({
+    clipboardWrites: window.__intentAcceptance?.clipboardWrites.length ?? 0,
+    notifications: window.__intentAcceptance?.raises.length ?? 0,
+  }))
+  await page.evaluate(() => {
+    const state = window.__intentAcceptance
+    if (!state?.replayClipboard || !state.replayNotification || !state.replayFrame)
+      throw new Error(
+        'real clipboard, notification, and runtime-frame deliveries were not captured',
+      )
+    state.replayClipboard()
+    state.replayNotification()
+    state.replayFrame()
+  })
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        clipboardWrites: window.__intentAcceptance?.clipboardWrites.length ?? 0,
+        notifications: window.__intentAcceptance?.raises.length ?? 0,
+      })),
+    )
+    .toEqual(countsBeforeReplay)
 
   await expect
     .poll(() => page.evaluate(() => window.__intentAcceptance?.replayedFrames ?? 0))
