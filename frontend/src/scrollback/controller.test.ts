@@ -1,5 +1,14 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+  type MockInstance,
+} from 'vitest'
 import { ScrollbackController } from './controller'
 import { CommandSnapshotStore } from '../command-snapshot'
 import type { LiveContentHeightSpy } from '../test-support/panes-fixtures'
@@ -1170,7 +1179,7 @@ describe('ScrollbackController tells the pet how the command went', () => {
 
   function petController(): {
     controller: ScrollbackController
-    heard: ReturnType<typeof vi.spyOn>
+    heard: MockInstance<PetOverlay['reactTo']>
   } {
     const renderer = makeRenderer()
     // Spied on the prototype: the overlay is built inside the controller, so
@@ -1267,7 +1276,7 @@ describe('ScrollbackController tells the pet a command has started', () => {
 
   function petController(): {
     controller: ScrollbackController
-    heard: ReturnType<typeof vi.spyOn>
+    heard: MockInstance<PetOverlay['attendTo']>
   } {
     const heard = vi.spyOn(PetOverlay.prototype, 'attendTo').mockImplementation(() => {})
     mountWindowPet(document.createElement('div'))

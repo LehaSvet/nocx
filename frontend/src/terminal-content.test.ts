@@ -76,6 +76,8 @@ import { ProfileClient, type SSHProfile } from './profiles'
 import { Dispatcher, RpcError } from './dispatcher'
 import { fixedEndpoint } from './endpoint'
 import type { SessionHandle, SessionRecovery, WSClient } from './ipc'
+import type { SessionIntentResult } from './generated/session.intent'
+import type { SessionSignal } from './generated/session.signal'
 import { blockOutputText, createCommandBlock, type RunningBlockActions } from './scrollback/blocks'
 import type { AgentRunCompletion } from './run-command'
 import { CommandSnapshotStore } from './command-snapshot'
@@ -130,10 +132,16 @@ beforeEach(() => {
  * command's exit status to another command's row (nocx-td6d4.10).
  */
 function submitToken(client: ClientFake): string {
-  const calls = client.dispatcher.call.mock.calls as Array<[string, Record<string, unknown>?]>
+  const calls = client.dispatcher.call.mock.calls
   for (let i = calls.length - 1; i >= 0; i--) {
     const [method, params] = calls[i]
-    if (method === 'lifecycle.submitAttempt' && typeof params?.submitId === 'string') {
+    if (
+      method === 'lifecycle.submitAttempt' &&
+      typeof params === 'object' &&
+      params !== null &&
+      'submitId' in params &&
+      typeof params.submitId === 'string'
+    ) {
       return params.submitId
     }
   }
@@ -6144,8 +6152,8 @@ describe('the projections consume the kernel through the composition root (ADR-0
     const { content, teardown } = await mountTerminal(makeClipboard())
     try {
       const session = sessionOf(content)
-      let finishFirst!: (result: unknown) => void
-      const first = new Promise<unknown>((resolve) => {
+      let finishFirst!: (result: SessionIntentResult) => void
+      const first = new Promise<SessionIntentResult>((resolve) => {
         finishFirst = resolve
       })
       session.intent.mockImplementationOnce(() => first)
@@ -6154,7 +6162,7 @@ describe('the projections consume the kernel through the composition root (ADR-0
       await vi.waitFor(() => expect(session.intent).toHaveBeenCalledTimes(1))
       expect(session.intent.mock.calls).toEqual([['text', 'a']])
 
-      finishFirst({ state: 'executed' })
+      finishFirst({ state: 'executed', bytesWritten: 1, fenceAfter: 0 })
       await vi.waitFor(() => expect(session.intent).toHaveBeenCalledTimes(3))
       expect(session.intent.mock.calls).toEqual([
         ['text', 'a'],
@@ -8156,7 +8164,7 @@ describe('shell submit input intent ordering (nocx-zg3k3.3.1)', () => {
     const pasteGate = new Promise<void>((resolve) => {
       releasePaste = resolve
     })
-    const result = { state: 'executed', bytesWritten: 1, fenceAfter: 0 }
+    const result: SessionIntentResult = { state: 'executed', bytesWritten: 1, fenceAfter: 0 }
     const delivered: Array<[string, string]> = []
     session.intent.mockImplementation((kind: string, payload: string) => {
       delivered.push([kind, payload])
@@ -11047,10 +11055,8 @@ describe('a pane draws its past (nocx-m3fqk)', () => {
     // is ordinary (AD-9), so "could not ask" must not be recorded as
     // "there was nothing".
     const client = storeWith([entry()], 'output')
-    const live = client.call.getMockImplementation()! as (
-      method: string,
-      params?: unknown,
-    ) => Promise<unknown>
+    const live = client.call.getMockImplementation()
+    if (!live) throw new Error('storeWith must install the initial call handler')
     client.call.mockImplementation((method: string, params?: unknown) => {
       if (method === 'ledger.query') return Promise.reject(new Error('socket is reconnecting'))
       return live(method, params)
@@ -13468,13 +13474,13 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
     const pressGate = new Promise<void>((resolve) => {
       releasePress = resolve
     })
-    const result = { state: 'executed', bytesWritten: 1, fenceAfter: 0 }
+    const result: SessionIntentResult = { state: 'executed', bytesWritten: 1, fenceAfter: 0 }
     const events: string[] = []
     session.intent.mockImplementation((kind: string, payload: string) => {
       events.push(`intent:${payload}`)
       return (payload === 'press left 2 1' ? pressGate : Promise.resolve()).then(() => result)
     })
-    session.signal.mockImplementation((signal: string) => {
+    session.signal.mockImplementation((signal: SessionSignal['signal']) => {
       events.push(`signal:${signal}`)
       return Promise.resolve({ signal, outcome: 'delivered' })
     })
@@ -16797,7 +16803,7 @@ describe('replayed completion restores a durable block outcome (nocx-gm21o)', ()
       resolveQuery = resolve
     })
     const client = makeClient({
-      call: vi.fn((method: string) => {
+      call: vi.fn<WSClient['call']>().mockImplementation((method) => {
         if (method === 'ledger.query') return queryPending
         if (method === 'ledger.get') {
           return Promise.resolve({
