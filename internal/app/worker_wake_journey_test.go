@@ -410,7 +410,32 @@ func (s *s14RealStand) cueAnswer(t *testing.T, sessionID, tool string, args any)
 	return answer
 }
 
-// s14CallLog is every answer a pane's agent has recorded, oldest first.
+func TestS14CallLogWaitsForTheCompleteAnswerLine(t *testing.T) {
+	stateDir := t.TempDir()
+	callLogDir := filepath.Join(stateDir, "calllog")
+	if err := os.MkdirAll(callLogDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(callLogDir, "worker")
+	first := `{"jsonrpc":"2.0","id":"m-call-1","result":{"content":[{"text":"complete"}]}}`
+	partial := `{"jsonrpc":"2.0","id":"m-call-2","result":{"content":[{"text":"screen text`
+	if err := os.WriteFile(path, []byte(first+"\n"+partial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := s14CallLog(t, stateDir, "worker"); len(got) != 1 || got[0] != first {
+		t.Fatalf("call log with a growing second answer = %q, want only %q", got, first)
+	}
+	second := partial + `"}]}}`
+	complete := first + "\n" + second + "\n"
+	if err := os.WriteFile(path, []byte(complete), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := s14CallLog(t, stateDir, "worker"); len(got) != 2 || got[1] != second {
+		t.Fatalf("complete call log = %q, want the completed second answer %q", got, second)
+	}
+}
+
+// s14CallLog is every complete answer a pane's agent has recorded, oldest first.
 func s14CallLog(t *testing.T, stateDir, sessionID string) []string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(stateDir, "calllog", sessionID)) // #nosec G304 -- this test's own state directory
@@ -420,8 +445,15 @@ func s14CallLog(t *testing.T, stateDir, sessionID string) []string {
 	if err != nil {
 		t.Fatalf("read the call log for %s: %v", sessionID, err)
 	}
+	// The mock appends an answer and its newline with one write, but a
+	// concurrent ReadFile may observe the file between those bytes. Do not
+	// let a growing answer escape as a complete session.read result.
+	completeEnd := strings.LastIndexByte(string(raw), '\n')
+	if completeEnd < 0 {
+		return nil
+	}
 	var out []string
-	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(string(raw[:completeEnd])), "\n") {
 		if line != "" {
 			out = append(out, line)
 		}
