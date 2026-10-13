@@ -143,6 +143,7 @@ for f in docs/decisions/0*.md; do n=$(basename $f | cut -c1-4); \
 | 0082 | [The work tracker has one assignment coordinator](0082-the-work-tracker-has-one-assignment-coordinator.md) | Accepted (2026-10-09; owner's workflow decision on nocx-q8yjf.22; no application invariants changed) |
 | 0083 | [Prompt-boundary effects require a locally accepted screen revision](0083-prompt-boundary-effects-require-a-locally-accepted-screen-revision.md) | Accepted (2026-10-10; owner's correctness decision on nocx-zg3k3.8; supplements ADR-0081 with same-session screen correlation, outbound ordering and a local apply gate) |
 | 0084 | [The frontend test runner retires the vulnerable worker pool](0084-the-frontend-test-runner-retires-the-vulnerable-worker-pool.md) | Accepted (2026-10-12; owner's dependency-security decision on nocx-l3pk; Vitest 3 → 4, no overrides) |
+| 0085 | [The exact history horizon uses an `ended_at` index](0085-the-exact-history-horizon-uses-an-ended-at-index.md) | Accepted (2026-10-12; owner's decision on `nocx-zg3k3.14.16`; exact no-evictions coverage, no query-contract change) |
 
 ## Adding one
 
