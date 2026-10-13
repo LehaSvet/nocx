@@ -1038,9 +1038,27 @@ export class WSClient {
       const raw = params as Record<string, unknown>
       const sid = raw.sessionId
       if (typeof sid !== 'string' || typeof raw.shell !== 'string') return
+      // Every refusal says so: a pane left on "Checking this shell…" is
+      // otherwise indistinguishable from one whose fact never arrived.
       const state = this.sessions.get(sid)
-      if (!state) return
-      if (raw.instanceId !== state.instanceId || raw.sessionEpoch !== state.sessionEpoch) return
+      if (!state) {
+        log.debug('nocx: integration fact dropped: unknown session', {
+          sessionId: sid,
+          status: raw.status,
+        })
+        return
+      }
+      if (raw.instanceId !== state.instanceId || raw.sessionEpoch !== state.sessionEpoch) {
+        log.debug('nocx: integration fact dropped: another instance or epoch', {
+          sessionId: sid,
+          status: raw.status,
+          instanceId: raw.instanceId,
+          sessionEpoch: raw.sessionEpoch,
+          heldInstanceId: state.instanceId,
+          heldSessionEpoch: state.sessionEpoch,
+        })
+        return
+      }
       if (
         raw.status !== 'starting' &&
         raw.status !== 'integrated' &&
@@ -1051,6 +1069,11 @@ export class WSClient {
       }
       const fact = raw as unknown as SessionIntegrationChanged
       state.integrationFact = fact
+      log.debug('nocx: integration fact', {
+        sessionId: sid,
+        status: fact.status,
+        delivered: state.integrationChangedCallback !== null,
+      })
       state.integrationChangedCallback?.(fact)
     })
 

@@ -662,7 +662,14 @@ func (s *WSServer) noteIntegrationLive(sid session.ID) {
 // stored, exactly like files.changed and lifecycle.changed — which is what
 // survives an AD-9 reconnect; with no subscriber the notification is dropped
 // and replayIntegration re-sends it on the next attach.
+//
+// Emits are serialized from the read to the write (integrationEmitMu), so the
+// order a subscriber hears them in is the order the axis moved in: every
+// change is followed by an emit, and whichever emit runs last read the axis
+// after the last change.
 func (s *WSServer) emitIntegration(sid session.ID) {
+	s.integrationEmitMu.Lock()
+	defer s.integrationEmitMu.Unlock()
 	s.integrationMu.Lock()
 	st, ok := s.integrations[sid]
 	var snap integrationStatus
@@ -685,12 +692,20 @@ func (s *WSServer) emitIntegration(sid session.ID) {
 	if !ok {
 		return
 	}
+	// Every branch below says what happened to the notification, the way
+	// lifecycle.changed's do (nocx-n14oo.8): a pane left on "Checking this
+	// shell…" otherwise has a log in which "sent", "dropped" and "never
+	// produced" all read as silence.
 	rx := s.getRx(sid)
 	if rx == nil {
+		s.log.Debug("session.integrationChanged dropped: the session has no receiver",
+			"session", string(sid), "status", snap.status)
 		return
 	}
 	wconn, _ := rx.getSubscriber()
 	if wconn == nil {
+		s.log.Debug("session.integrationChanged dropped: no subscriber; the next attach replays it",
+			"session", string(sid), "status", snap.status)
 		return
 	}
 	// The identity the renderer compares observations against (nocx-3oupk):
@@ -700,6 +715,8 @@ func (s *WSServer) emitIntegration(sid session.ID) {
 	// the notification is dropped rather than sent without identity.
 	sess, err := s.registry.Get(sid)
 	if err != nil {
+		s.log.Debug("session.integrationChanged dropped: the session left the registry",
+			"session", string(sid), "status", snap.status)
 		return
 	}
 	ident := sess.Identity()
@@ -724,7 +741,10 @@ func (s *WSServer) emitIntegration(sid session.ID) {
 	}
 	if err := wconn.TryNotify("session.integrationChanged", mustMarshal(params)); err != nil {
 		s.log.Debug("write session.integrationChanged", "session", sid, "error", err)
+		return
 	}
+	s.log.Debug("session.integrationChanged sent", "session", string(sid), "status", snap.status,
+		"instance", params.InstanceID, "epoch", params.SessionEpoch)
 }
 
 // replayIntegration re-sends the session's current integration status on

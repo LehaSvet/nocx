@@ -1151,6 +1151,16 @@ type WSServer struct {
 	// stored answer and this is who is holding for the next revision of it —
 	// and a second lock would let a waiter miss a mutation that raced it.
 	integrationWaiters map[session.ID][]chan struct{}
+	// integrationEmitMu makes emitIntegration's read of the axis and its
+	// write to the subscriber one step (nocx-6h5au). Two emits for one session
+	// race at every open — the handler's re-send after the ack and the
+	// lifecycle goroutine concluding the axis — and with the read and the
+	// write apart, a re-send could read `starting`, lose the CPU, and write it
+	// after `integrated`: the renderer's last word was stale and no later one
+	// was coming. Held across TryNotify, which never blocks. A separate lock
+	// from integrationMu so the axis's mutations and AwaitIntegration's
+	// waiters never wait on a socket enqueue.
+	integrationEmitMu sync.Mutex
 	// toolSurfaces is the retained launch result for the worker tool path.
 	// It is separate from integration because it answers a different question:
 	// whether the external coordinator can actually reach its tools.

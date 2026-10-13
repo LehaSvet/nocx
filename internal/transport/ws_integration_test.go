@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -697,5 +698,61 @@ func TestIntegration_AStoreRefusedLegIsAVisibleLoss(t *testing.T) {
 	got = awaitIntegration(t, before.conn, before.sid, IntegrationConventional)
 	if got.Reason != string(ssh.ReasonChannelUnavailable) {
 		t.Errorf("before establishment: reason = %q, want channel-unavailable", got.Reason)
+	}
+}
+
+// The LAST status a renderer hears must be the axis's current one. The open
+// handler re-sends the current status after its ack while the lifecycle
+// goroutine can conclude the axis at the same moment; a re-send that read
+// `starting` before the conclusion and wrote after it left the pane on
+// "Checking this shell…" for good, because nothing after `integrated` ever
+// speaks again (nocx-6h5au: CI showed the open's ack, the bridge start and
+// the session's prompt_ready inside one millisecond). Re-sending a state is
+// harmless; re-sending a stale one over a newer one is not.
+func TestIntegration_AConcurrentResendNeverOutlivesTheConclusion(t *testing.T) {
+	for trial := 0; trial < 150; trial++ {
+		e := newIntegrationEnv(t)
+		sid := session.ID(e.sid)
+		start := make(chan struct{})
+		var ready, done sync.WaitGroup
+		ready.Add(2)
+		done.Add(2)
+		// The open handler's one re-send and the conclusion, released
+		// together: the defect needs the re-send's snapshot to precede the
+		// conclusion and its write to follow it.
+		go func() {
+			defer done.Done()
+			ready.Done()
+			<-start
+			e.ws.emitIntegration(sid)
+		}()
+		go func() {
+			defer done.Done()
+			ready.Done()
+			<-start
+			e.ws.noteIntegrationLive(sid)
+		}()
+		ready.Wait()
+		close(start)
+		done.Wait()
+
+		last := ""
+		for {
+			raw := tryReadNotification(t, e.conn, "session.integrationChanged", 100*time.Millisecond)
+			if raw == nil {
+				break
+			}
+			var p integrationChangedParams
+			if err := json.Unmarshal(raw, &p); err != nil {
+				t.Fatalf("decode session.integrationChanged: %v\nraw: %s", err, raw)
+			}
+			if p.SessionID == e.sid {
+				last = p.Status
+			}
+		}
+		if last != IntegrationIntegrated {
+			t.Fatalf("trial %d: last status the renderer heard = %q, want %q: a stale re-send outlived the conclusion",
+				trial, last, IntegrationIntegrated)
+		}
 	}
 }
