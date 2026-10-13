@@ -16,8 +16,8 @@ package app
 //     temp dir), for the happy path's end state and for the compensation
 //     the brief words as an interval: the checkout exists from before the
 //     pane opens until either the participant is live or the compensation
-//     has removed it — asserted through the real Registrar with a deadline,
-//     a launcher whose enrolment never arrives, and `git branch` afterwards.
+//     has removed it — asserted through the real Registrar with a controlled
+//     enrolment refusal and `git branch` afterwards.
 
 import (
 	"context"
@@ -28,7 +28,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/shady2k/nocx/internal/content"
 	"github.com/shady2k/nocx/internal/git"
@@ -873,6 +872,14 @@ func (noopSupervisor) Attach(context.Context, workers.Participant) error { retur
 // The pane DOES open in the checkout first (the stand is the real spawner
 // over a real registry), so the checkout existed from before the pane opened
 // — the interval's start — and `git branch` afterwards settles its end.
+type refusedWorktreeEnrolments struct{}
+
+func (refusedWorktreeEnrolments) Await(context.Context, workers.ParticipantID) (workers.Liveness, error) {
+	return workers.Liveness{}, errors.New("test launcher did not enrol")
+}
+
+func (refusedWorktreeEnrolments) Withdraw(context.Context, workers.ParticipantID) error { return nil }
+
 func TestANeverEnrolledWorkerLeavesNeitherCheckoutNorBranchBehind(t *testing.T) {
 	tempParent, err := os.MkdirTemp("", "nocx-bf035-workspace-")
 	if err != nil {
@@ -920,8 +927,7 @@ func TestANeverEnrolledWorkerLeavesNeitherCheckoutNorBranchBehind(t *testing.T) 
 		workspace: "ws-test", repos: factory, worktreeRoot: worktreeRoot, log: logger,
 	}
 	registrar := workers.NewRegistrar(
-		workers.NewMemoryStore(), spawner, enrol, noopSupervisor{},
-		workers.WithEnrolmentDeadline(200*time.Millisecond),
+		workers.NewMemoryStore(), spawner, refusedWorktreeEnrolments{}, noopSupervisor{},
 	)
 
 	seedCoordinator := func(t *testing.T) session.ID {

@@ -688,13 +688,35 @@ func (o *localHelperOpener) toolEndpoint() string {
 // which is now the empty Kind alone. A destination this opener owns is ALWAYS
 // its own, including when it cannot be served — see the file header: answering
 // "not mine" for a broken helper is exactly the fallback ADR-0057 refuses.
+// A helper that retires its last session can close this coordinator's cached
+// connection while a new open is arriving. A spawn already admitted is held by
+// the helper lifecycle; if retirement wins first, wait for that connection to
+// close and make one fresh open against the endpoint. The durable pane claim is
+// reused, so an admitted spawn whose reply was lost returns its original
+// session rather than creating another one.
 func (o *localHelperOpener) OpenHosted(ctx context.Context, cfg session.Config, claim string) (transport.HostedSessionOpen, bool, error) {
 	if o == nil || (cfg.Kind != session.KindLocal && cfg.Kind != session.KindRemote) {
 		return transport.HostedSessionOpen{}, false, nil
 	}
+	for attempt := 0; attempt < 2; attempt++ {
+		opened, selected, client, err := o.openHostedOnce(ctx, cfg, claim)
+		if err == nil || attempt == 1 || !retryableLocalHelperOpen(err) {
+			return opened, selected, err
+		}
+		if err := o.waitForClientLoss(ctx, client); err != nil {
+			return transport.HostedSessionOpen{}, true, fmt.Errorf("wait for the retiring local helper: %w", err)
+		}
+	}
+	return transport.HostedSessionOpen{}, true, errors.New("local helper open retry exhausted")
+}
+
+func (o *localHelperOpener) openHostedOnce(ctx context.Context, cfg session.Config, claim string) (transport.HostedSessionOpen, bool, *helperclient.Client, error) {
+	if o == nil || (cfg.Kind != session.KindLocal && cfg.Kind != session.KindRemote) {
+		return transport.HostedSessionOpen{}, false, nil, nil
+	}
 	c, generation, err := o.connect(ctx)
 	if err != nil {
-		return transport.HostedSessionOpen{}, true, err
+		return transport.HostedSessionOpen{}, true, nil, err
 	}
 	spawn := hostedSpawn{
 		client: c, registry: o.registry,
@@ -754,7 +776,7 @@ func (o *localHelperOpener) OpenHosted(ctx context.Context, cfg session.Config, 
 	}
 	if err != nil {
 		o.dropIfLost(c)
-		return transport.HostedSessionOpen{}, true, fmt.Errorf("open a pane on this machine's helper: %w", err)
+		return transport.HostedSessionOpen{}, true, c, fmt.Errorf("open a pane on this machine's helper: %w", err)
 	}
 	sid := res.Session.ID()
 	if o.registry == nil {
@@ -762,7 +784,7 @@ func (o *localHelperOpener) OpenHosted(ctx context.Context, cfg session.Config, 
 			res.AbortLifecycle()
 		}
 		_ = res.Session.Close()
-		return transport.HostedSessionOpen{}, true, errors.New("local helper opener has no session registry")
+		return transport.HostedSessionOpen{}, true, c, errors.New("local helper opener has no session registry")
 	}
 	// THE THREE THINGS THAT ARE ABOUT A PROCESS ON THIS MACHINE ARE LOCAL ONLY,
 	// and the launch record is what says so: a remote session's branch has no
@@ -796,7 +818,7 @@ func (o *localHelperOpener) OpenHosted(ctx context.Context, cfg session.Config, 
 				res.AbortLifecycle()
 			}
 			_ = res.Session.Close()
-			return transport.HostedSessionOpen{}, true, fmt.Errorf(
+			return transport.HostedSessionOpen{}, true, c, fmt.Errorf(
 				"this machine's helper reported no launch record for session %s", sid)
 		}
 		shell = launch.Shell
@@ -805,7 +827,7 @@ func (o *localHelperOpener) OpenHosted(ctx context.Context, cfg session.Config, 
 				res.AbortLifecycle()
 			}
 			_ = res.Session.Close()
-			return transport.HostedSessionOpen{}, true, fmt.Errorf("recording local helper launch pid: %w", err)
+			return transport.HostedSessionOpen{}, true, c, fmt.Errorf("recording local helper launch pid: %w", err)
 		}
 		status, reason = localIntegrationStatus(shell, res.LifecycleLane)
 		o.watchForReplacement(res.Session, launch.Pid, shell)
@@ -870,7 +892,7 @@ func (o *localHelperOpener) OpenHosted(ctx context.Context, cfg session.Config, 
 		<-res.Session.Done()
 		o.forgetHeld(sid)
 	}()
-	return out, true, nil
+	return out, true, c, nil
 }
 
 // openSSH hosts an ssh pane on this machine's helper: the daemon dials the far
@@ -1405,7 +1427,15 @@ func (o *localHelperOpener) connect(ctx context.Context) (*helperclient.Client, 
 		return nil, "", refuseLocalHelperNotInstalled(installFailure)
 	}
 	if existing != nil {
-		return existing, string(installed.Generation), nil
+		select {
+		case <-existing.Done():
+			// A retired daemon closes every coordinator connection. Forget only
+			// this client, then let endpoint.Ensure reuse a serving daemon or
+			// start the installed generation below.
+			o.dropIfLost(existing)
+		default:
+			return existing, string(installed.Generation), nil
+		}
 	}
 	c, err := helperlocal.Open(ctx, helperlocal.Config{
 		Dir: dir, Generation: installed.Generation, Binary: installed.Binary,
@@ -1626,6 +1656,34 @@ func (o *localHelperOpener) sessionConn(ctx context.Context, generation proto.Ge
 	o.reattached[key] = localSessionConn{client: c, generation: generation}
 	o.mu.Unlock()
 	return c, nil
+}
+
+// retryableLocalHelperOpen is the one refusal that means the helper generation
+// is already retiring, plus transport loss while an open was in flight. A
+// caller retries only after the old client ends; ordinary spawn refusals stay
+// final and keep the shared client.
+func retryableLocalHelperOpen(err error) bool {
+	if errors.Is(err, helperclient.ErrLost) {
+		return true
+	}
+	var refusal *helperclient.RefusalError
+	return errors.As(err, &refusal) && refusal.Code == "draining"
+}
+
+// waitForClientLoss waits for the retiring generation to close its existing
+// connections before the next open calls endpoint.Ensure. This is an event
+// from the helper, not a guessed delay.
+func (o *localHelperOpener) waitForClientLoss(ctx context.Context, c *helperclient.Client) error {
+	if c == nil {
+		return nil
+	}
+	select {
+	case <-c.Done():
+		o.dropIfLost(c)
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // dropIfLost forgets a connection that has ended, so the next open dials

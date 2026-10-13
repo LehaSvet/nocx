@@ -108,12 +108,22 @@ func RevListCountArgs(from, to string) []string {
 	return []string{"--no-optional-locks", "rev-list", "--count", from + ".." + to}
 }
 
-// CreateRefArgs creates one ref only while it does not already exist:
-// git update-ref <ref> <new-oid> <zero-oid>. The expected-old zero value is
-// the atomic ownership check; a caller may clean up this ref only when this
-// command succeeds. zeroOID has the repository's object-id width.
-func CreateRefArgs(ref, newOID, zeroOID string) []string {
-	return []string{"update-ref", ref, newOID, zeroOID}
+// CreateRefArgs creates one ref only while it does not already exist and
+// records message in its reflog:
+// git update-ref --create-reflog -m <message> <ref> <new-oid> <zero-oid>.
+// The expected-old zero value is the atomic ownership check. The unique
+// message lets a caller reconcile an ambiguous command failure without
+// treating a matching ref tip as proof that it created the ref. zeroOID has
+// the repository's object-id width.
+func CreateRefArgs(ref, newOID, zeroOID, message string) []string {
+	return []string{"update-ref", "--create-reflog", "-m", message, ref, newOID, zeroOID}
+}
+
+// RefLogSubjectArgs reads the newest reflog subject for ref. A caller uses a
+// unique message to prove which operation created a ref after an ambiguous
+// update-ref result.
+func RefLogSubjectArgs(ref string) []string {
+	return []string{"reflog", "show", "-1", "--format=%gs", ref}
 }
 
 // DeleteRefArgs removes one ref only while it still points at the commit the

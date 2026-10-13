@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/shady2k/nocx/internal/git"
+	"github.com/shady2k/nocx/internal/waittest"
 )
 
 // The worktree operations (brief nocx-xn63t.1.1) against real repositories in
@@ -87,6 +88,71 @@ func TestAddWorktreePreservesABranchCreatedAfterTheAbsenceRead(t *testing.T) {
 	}
 	if strings.TrimSpace(string(got)) != want {
 		t.Fatalf("competing branch tip = %s, want master %s", strings.TrimSpace(string(got)), want)
+	}
+}
+
+// TestAddWorktreeCleansAnAmbiguousClaimAfterContextCancellation covers the
+// interval where update-ref commits the branch but the caller's context stops
+// the command before its exit status reaches AddWorktree. The claim's unique
+// reflog message proves ownership, so cleanup can remove only that ref.
+func TestAddWorktreeCleansAnAmbiguousClaimAfterContextCancellation(t *testing.T) {
+	dir, home := worktreeRepo(t)
+	if err := commandIn(dir, "config", "core.logAllRefUpdates", "false").Run(); err != nil {
+		t.Fatalf("disable automatic reflogs: %v", err)
+	}
+	marker := filepath.Join(t.TempDir(), "ref-created")
+	wrapperDir := t.TempDir()
+	wrapper := filepath.Join(wrapperDir, "git")
+	realGit := realGitPath(t)
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"update-ref\" ] && { [ \"$2\" = \"--create-reflog\" ] || [ \"$2\" = \"refs/heads/feat/context-cancelled\" ]; }; then\n" +
+		"  \"$NOCX_REAL_GIT\" \"$@\" || exit $?\n" +
+		"  : > \"$NOCX_REF_CREATED\"\n" +
+		"  while [ ! -e \"$NOCX_REF_RELEASED\" ]; do sleep 0.01; done\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"exec \"$NOCX_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil { //nolint:gosec // G306: controlled test executable.
+		t.Fatal(err)
+	}
+	env := gitEnv(t)
+	for i, value := range env {
+		if strings.HasPrefix(value, "PATH=") {
+			env[i] = "PATH=" + wrapperDir + string(os.PathListSeparator) + strings.TrimPrefix(value, "PATH=")
+		}
+	}
+	env = append(env,
+		"NOCX_REAL_GIT="+realGit,
+		"NOCX_REF_CREATED="+marker,
+		"NOCX_REF_RELEASED="+filepath.Join(t.TempDir(), "never-released"),
+	)
+	repo := openRepo(t, env, dir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type addResult struct {
+		added git.WorktreeAdded
+		err   error
+	}
+	result := make(chan addResult, 1)
+	path := filepath.Join(home, "context-cancelled")
+	go func() {
+		added, err := repo.AddWorktree(ctx, "feat/context-cancelled", "master", path)
+		result <- addResult{added: added, err: err}
+	}()
+	waittest.WaitFor(t, "update-ref to commit the new branch before cancellation", func() bool {
+		_, err := os.Stat(marker)
+		return err == nil
+	})
+	cancel()
+	outcome := <-result
+	if outcome.err == nil {
+		t.Fatal("AddWorktree succeeded after its ref command was cancelled")
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the checkout at %q survived: %v", path, err)
+	}
+	if out, err := commandIn(dir, "rev-parse", "--verify", "--quiet", "refs/heads/feat/context-cancelled").CombinedOutput(); err == nil {
+		t.Errorf("the claim created before cancellation survived: %s", strings.TrimSpace(string(out)))
 	}
 }
 

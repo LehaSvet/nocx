@@ -81,7 +81,7 @@ func TestAddWorktreeReportsAFailedInvocation(t *testing.T) {
 			name: "the atomic branch claim",
 			fake: map[string]string{
 				"FAKE_BRANCH_TIP": "fail",
-				"FAKE_FAIL":       "update-ref refs/heads/worker-1",
+				"FAKE_FAIL":       "update-ref --create-reflog -m nocx-worktree-claim:",
 			},
 			what: "the atomic ref creation did not prove ownership, so this call must stop without cleanup",
 		},
@@ -366,7 +366,18 @@ func TestWorktreeInvocationArgv(t *testing.T) {
 		t.Errorf("no invocation %q among %v", joined, calls)
 	}
 	assertArgv("--no-optional-locks", "worktree", "list", "--porcelain", "-z")
-	assertArgv("update-ref", "refs/heads/worker-1", oid, strings.Repeat("0", len(oid)))
+	claimFound := false
+	for _, call := range calls {
+		if len(call) == 7 && call[0] == "update-ref" && call[1] == "--create-reflog" && call[2] == "-m" &&
+			strings.HasPrefix(call[3], "nocx-worktree-claim:") && call[4] == "refs/heads/worker-1" &&
+			call[5] == oid && call[6] == strings.Repeat("0", len(oid)) {
+			claimFound = true
+			break
+		}
+	}
+	if !claimFound {
+		t.Errorf("no atomic branch claim with a unique reflog token among %v", calls)
+	}
 	assertArgv("worktree", "add", "--", wtPath, "worker-1")
 	assertArgv("worktree", "remove", "--", wtPath)
 	assertArgv("--no-optional-locks", "rev-list", "--count", oid+".."+oid)

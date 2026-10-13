@@ -21,11 +21,11 @@ package app
 // stopping a job and watching it die, the exit status by ending the shell and
 // reading what the product concluded.
 //
-// THE DAEMON IS DETACHED BY DESIGN (D1) and nothing retires a generation yet
-// (D2 is unimplemented), so a test that started one and walked away would
-// leave it running on the machine. newLocalPaneApp registers the cleanup that
-// ends it, and it finds it the way anything finds a process on this machine —
-// by asking the OS which process is running that binary.
+// THE DAEMON IS DETACHED BY DESIGN (D1), and D2 now retires it after its last
+// session row closes. The test cleanup still ends a daemon left holding a live
+// session when an assertion fails, and finds it the way anything finds a
+// process on this machine — by asking the OS which process is running that
+// binary.
 
 import (
 	"context"
@@ -161,6 +161,53 @@ func TestAUserOpenedHelperPaneReachesPromptReady(t *testing.T) {
 	state, err := kernel.State(opened.Hosted.LifecycleLane)
 	if err != nil || state.Lifecycle != lifecycle.LifecyclePromptReady {
 		t.Fatalf("helper lifecycle state = %+v, err = %v; want prompt_ready", state, err)
+	}
+}
+
+// TestASecondPaneOpenRelaunchesTheHelperAfterItsLastShellExits is the race
+// D2 introduces at the caller boundary: after the final shell exits, the
+// daemon closes every client connection. The next pane open must not reuse the
+// cached, lost client or make the user retry the open.
+func TestASecondPaneOpenRelaunchesTheHelperAfterItsLastShellExits(t *testing.T) {
+	a := newLocalPaneApp(t)
+	opened, err := a.Transport.OpenSession(t.Context(), transport.OpenSpec{Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatalf("opening the first helper-hosted pane: %v", err)
+	}
+	a.localHelper.mu.Lock()
+	retiredClient := a.localHelper.client
+	a.localHelper.mu.Unlock()
+	if retiredClient == nil {
+		t.Fatal("the local helper client was not retained after the first pane opened")
+	}
+	if _, writeErr := opened.Session.Write([]byte("exit\n")); writeErr != nil {
+		t.Fatalf("ending the last shell: %v", writeErr)
+	}
+	select {
+	case <-opened.Session.Done():
+	case <-t.Context().Done():
+		t.Fatalf("the last helper-hosted shell did not exit: %v", t.Context().Err())
+	}
+	select {
+	case <-retiredClient.Done():
+	case <-t.Context().Done():
+		t.Fatalf("the helper did not retire after its last session ended: %v", t.Context().Err())
+	}
+
+	reopened, err := a.Transport.OpenSession(t.Context(), transport.OpenSpec{Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatalf("opening the next pane after helper retirement: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := reopened.Session.Close(); closeErr != nil {
+			t.Errorf("closing the reopened helper-hosted pane: %v", closeErr)
+		}
+	})
+	a.localHelper.mu.Lock()
+	currentClient := a.localHelper.client
+	a.localHelper.mu.Unlock()
+	if currentClient == nil || currentClient == retiredClient {
+		t.Fatal("the second open did not install a fresh helper client")
 	}
 }
 

@@ -271,6 +271,14 @@ type Options struct {
 	// duration — the interval is real wall-clock time, D5's own clock
 	// seam (Now) is what the sweep still measures a session's age against.
 	SweepInterval time.Duration
+	// StartupGrace bounds a daemon that has never owned a session. The
+	// composition root supplies MeasuredStartupGrace; zero disables the grace
+	// for services used outside the daemon runtime (including unit tests).
+	StartupGrace time.Duration
+	// OnDrained is called once after admission closes because the startup grace
+	// expired empty, or the final session ended. The daemon uses it to stop
+	// accepting before releasing its endpoint.
+	OnDrained func()
 }
 
 // defaultSweepInterval is how often production runs the scheduled sweep. It
@@ -284,6 +292,7 @@ const defaultSweepInterval = 10 * time.Minute
 // Service is the helper's `session` service.
 type Service struct {
 	generation proto.GenerationID
+	lifecycle  *daemonLifecycle
 	spawner    Spawner
 	sshSpawner SSHSpawner
 	inspector  Inspector
@@ -341,6 +350,12 @@ var (
 // New builds the service. It starts nothing: a helper with no sessions holds
 // no PTY, and the first spawn is what makes this generation resident.
 func New(opts Options) *Service {
+	return newWithLifecycleTimer(opts, nil)
+}
+
+// newWithLifecycleTimer is the deterministic constructor seam for daemon
+// lifecycle tests. Production leaves afterFunc nil and uses time.AfterFunc.
+func newWithLifecycleTimer(opts Options, afterFunc lifecycleAfterFunc) *Service {
 	s := &Service{
 		generation: opts.Generation,
 		spawner:    opts.Spawner,
@@ -368,6 +383,11 @@ func New(opts Options) *Service {
 	}
 	if s.newID == nil {
 		s.newID = randomID
+	}
+	if afterFunc == nil {
+		s.lifecycle = newDaemonLifecycle(opts.StartupGrace, opts.OnDrained)
+	} else {
+		s.lifecycle = newDaemonLifecycleWithTimer(opts.StartupGrace, opts.OnDrained, afterFunc)
 	}
 	interval := opts.SweepInterval
 	if interval <= 0 {
@@ -450,6 +470,7 @@ func (s *Service) Bind(sink Sink) (release func()) {
 // running could race a caller's own read of a Service it was just told is
 // finished with.
 func (s *Service) Close() {
+	s.lifecycle.stop()
 	s.sweepStopOnce.Do(func() { close(s.sweepStop) })
 	<-s.sweepDone
 
@@ -606,6 +627,8 @@ func (s *Service) Refusal(err error) (string, json.RawMessage) {
 		return refusal.Code, refusal.Details
 	}
 	switch {
+	case errors.Is(err, ErrDraining):
+		return "draining", nil
 	case errors.Is(err, ErrNoSuchSession):
 		return proto.ErrCodeNoSuchSession, nil
 	case errors.Is(err, ErrNotAttached), errors.Is(err, ErrBadSubscriber),
@@ -908,6 +931,12 @@ func agentSet(set map[string]bool) []string {
 }
 
 func (s *Service) spawn(ctx context.Context, p proto.SpawnParams) (_ proto.SpawnResult, err error) {
+	finishAdmission, admissionErr := s.lifecycle.admit()
+	if admissionErr != nil {
+		return proto.SpawnResult{}, admissionErr
+	}
+	defer finishAdmission()
+
 	// THE PANE LAUNCH, SAID OUT LOUD (nocx-n14oo.2). This is where a pane's
 	// shell is actually started, and the three ways it can fail below used to
 	// return an ErrSpawn that named a cause nowhere. A backend waiting thirty
@@ -1056,6 +1085,12 @@ func (s *Service) spawn(ctx context.Context, p proto.SpawnParams) (_ proto.Spawn
 // code on purpose: a second copy of "a session is registered once its process
 // exists" is where the two kinds of session would start disagreeing.
 func (s *Service) spawnSSH(ctx context.Context, p proto.SSHSpawnParams) (_ proto.SpawnResult, err error) {
+	finishAdmission, admissionErr := s.lifecycle.admit()
+	if admissionErr != nil {
+		return proto.SpawnResult{}, admissionErr
+	}
+	defer finishAdmission()
+
 	ctx, lg, end := nocxlog.Start(ctx, nocxlog.NewSlogAdapter(s.log), "helper.session.spawn-ssh",
 		"host", p.Destination.Host, "port", p.Destination.Port, "user", p.Destination.User,
 		"cols", p.Cols, "rows", p.Rows, "mode", p.DesiredMode, "lifecycle_requested", p.Lifecycle != nil)
@@ -1423,6 +1458,11 @@ func (s *Service) finishSpawn(claim *keyClaim, proc Process, launch proto.Launch
 	// and "the emulator refused" is a sentence about this pane, not a
 	// default to run under.
 	if err := rt.ApplyScrollback(shape.scrollback); err != nil {
+		// The screen/runtime were created, but no session was registered and
+		// no reader owns the terminal yet. Release the emulator as well as the
+		// process and budget so this failed spawn leaves no setup resources
+		// behind.
+		screen.Close()
 		release()
 		lg.Error("helper: the session's scrollback budget could not be applied", "error", err)
 		return proto.SpawnResult{}, fmt.Errorf("%w: %v", ErrSpawn, err)
@@ -1503,7 +1543,9 @@ func (s *Service) finishSpawn(claim *keyClaim, proc Process, launch proto.Launch
 	rt.SetRowStream(&rowBridge{hs: hs})
 
 	s.mu.Lock()
+	hs.lifecycleCounted = true
 	s.sessions[hs.id.Session] = hs
+	s.lifecycle.sessionStarted()
 	// The claim resolves onto the row in the SAME critical section that adds
 	// it, so no reader can ever see a resolved claim naming a session the
 	// inventory does not hold.
@@ -1678,7 +1720,12 @@ func (s *Service) removeSession(hs *hostSession, reason string) {
 	hs.stop()
 
 	s.mu.Lock()
+	removed := false
+	endedLifetime := false
 	if current, ok := s.sessions[hs.id.Session]; ok && current == hs {
+		removed = true
+		endedLifetime = hs.lifecycleCounted
+		hs.lifecycleCounted = false
 		delete(s.sessions, hs.id.Session)
 		if hs.key != "" {
 			if claim, held := s.keys[hs.key]; held && claim.session == hs.id.Session {
@@ -1687,7 +1734,9 @@ func (s *Service) removeSession(hs *hostSession, reason string) {
 		}
 		s.budget -= hs.launch.WindowBytes() + hs.lifecycleBudget + hs.rowBufferBytes
 	}
+	shouldDrain := removed && endedLifetime && s.lifecycle.markSessionEnded()
 	s.mu.Unlock()
+	s.lifecycle.fireDrained(shouldDrain)
 }
 
 // sweepExpired closes every exited, unattached session whose exit is at
@@ -1915,11 +1964,12 @@ func (s *Service) mintAttachment() proto.AttachmentID {
 	return proto.AttachmentID(fmt.Sprintf("att-%d", s.attachSeq))
 }
 
-// notifyExit tells EVERY bound connection that a session ended. An exit is a
-// fact about a session, not about one attachment, and a coordinator that is
-// watching it must hear it whether or not another coordinator is also
-// watching. With nobody connected the status is not lost: it is in the entry,
-// and the inventory is what a replacing coordinator asks first.
+// notifyExit publishes the final process status to EVERY bound connection.
+// Process exit is not the end of the helper's session record: the daemon keeps
+// that record, and its lifecycle count, until removeSession closes the row
+// after coordinator close-session or bounded unclaimed-session eviction. With
+// nobody connected the status is not lost: it is in the entry, and the
+// inventory is what a replacing coordinator asks first.
 func (s *Service) notifyExit(e proto.SessionExit) {
 	s.mu.Lock()
 	sinks := make([]Sink, 0, len(s.sinks))
