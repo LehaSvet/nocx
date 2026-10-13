@@ -30,7 +30,7 @@ func TestDaemonLifecycleDeadlineAdmissionWinsAtomically(t *testing.T) {
 		t.Fatal("daemon drained despite winning admission")
 	default:
 	}
-	l.sessionEnded()
+	l.fireDrained(l.markSessionEnded())
 	select {
 	case <-drained:
 	default:
@@ -141,7 +141,7 @@ func TestDaemonLifecycleDeadlineRacesAdmission(t *testing.T) {
 			t.Fatalf("iteration %d: acknowledged session but daemon drained", i)
 		}
 		if admitted {
-			l.sessionEnded()
+			l.fireDrained(l.markSessionEnded())
 		}
 		if refused && !d {
 			t.Fatalf("iteration %d: refused admission but daemon did not drain", i)

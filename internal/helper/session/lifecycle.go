@@ -148,8 +148,6 @@ func (l *daemonLifecycle) fireDrained(shouldFire bool) {
 	}
 }
 
-func (l *daemonLifecycle) sessionEnded() { l.fireDrained(l.markSessionEnded()) }
-
 func (l *daemonLifecycle) maybeDrainLocked() bool {
 	if l.draining || l.admissions != 0 {
 		return false
