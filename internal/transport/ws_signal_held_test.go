@@ -38,6 +38,7 @@ import (
 	"github.com/shady2k/nocx/internal/lifecycle"
 	"github.com/shady2k/nocx/internal/lifecyclepub"
 	"github.com/shady2k/nocx/internal/log"
+	"github.com/shady2k/nocx/internal/log/logtest"
 	"github.com/shady2k/nocx/internal/pty"
 	"github.com/shady2k/nocx/internal/session"
 	"github.com/shady2k/nocx/internal/waittest"
@@ -1060,9 +1061,9 @@ func TestHeldStop_ASessionThatIsGoneSettlesWithoutANotice(t *testing.T) {
 	// The lane task has claimed the hold — the claim comes first, and the
 	// delivery settles what it claimed — and the session goes before it
 	// delivers.
-	sid, ok := stand.ws.claimHeldStop(attempt)
-	if !ok || sid != session.ID(stand.sid) {
-		t.Fatalf("claimHeldStop = (%q, %v), want the stand's session", sid, ok)
+	held, ok := stand.ws.claimHeldStop(attempt)
+	if !ok || held.sid != session.ID(stand.sid) {
+		t.Fatalf("claimHeldStop = (%q, %v), want the stand's session", held.sid, ok)
 	}
 	stand.ws.stopStateMu.Lock()
 	dropped := rec.changed
@@ -1071,7 +1072,7 @@ func TestHeldStop_ASessionThatIsGoneSettlesWithoutANotice(t *testing.T) {
 		t.Fatalf("registry.Close: %v", err)
 	}
 	<-dropped
-	stand.ws.deliverHeldStop(t.Context(), sid, attempt)
+	stand.ws.deliverHeldStop(t.Context(), held, attempt)
 
 	// Nothing claims a Stop landed for a session that no longer exists: the
 	// record went with its session, and no delivery resurrected it.
@@ -1137,17 +1138,44 @@ func TestHeldStop_AnAttemptThatLeavesOpenDropsTheHold(t *testing.T) {
 	// only way the obligation is ever recorded: the read that decided it and
 	// the record must not be separable.
 	ws.heldMu.Lock()
-	ws.armHeldStopAndStateLocked(attempt, session.ID("sid-held"))
+	ws.armHeldStopAndStateLocked(context.Background(), attempt, session.ID("sid-held"))
 	ws.heldMu.Unlock()
 	if _, ok := ws.claimHeldStop(attempt); !ok {
 		t.Fatal("the hold was not recorded")
 	}
 	ws.heldMu.Lock()
-	ws.armHeldStopAndStateLocked(attempt, session.ID("sid-held"))
+	ws.armHeldStopAndStateLocked(context.Background(), attempt, session.ID("sid-held"))
 	ws.heldMu.Unlock()
 	ws.PublishAttemptClosed(context.Background(), attempt)
 	if _, ok := ws.claimHeldStop(attempt); ok {
 		t.Fatal("an attempt that left open left its held Stop behind")
+	}
+}
+
+// TestHeldStop_ItsLinesCarryTheRequestThatAcceptedIt proves a held Stop's
+// lines are written as the request that accepted it, from the arm to the
+// settlement — which runs after that request has answered, on a context of its
+// own. The per-test failure context of the e2e suite finds a backend line by
+// its trace, so a Stop path logging without it was invisible exactly when it
+// failed (nocx-zg3k3.14.16, CI run 38474071176).
+func TestHeldStop_ItsLinesCarryTheRequestThatAcceptedIt(t *testing.T) {
+	ws := NewWSServer(log.NewSlogAdapter(nil), newRegWithStub(log.NewSlogAdapter(nil)))
+	ctx, _ := logtest.New(t)
+	reqCtx, cancel := context.WithCancel(ctx)
+	const attempt = lifecycle.AttemptID("att-traced")
+	ws.heldMu.Lock()
+	ws.armHeldStopAndStateLocked(reqCtx, attempt, session.ID("sid-held"))
+	ws.heldMu.Unlock()
+	// The request answers and its context ends; the hold outlives it.
+	cancel()
+	ws.PublishAttemptClosed(context.Background(), attempt)
+	for _, want := range []string{
+		"foreground signal: stop held until the shell starts the command",
+		"foreground signal: the held Stop did not reach the command",
+	} {
+		if !logtest.WaitFor(ctx, time.Second, func(r logtest.Record) bool { return r.Message == want }) {
+			t.Fatalf("the held Stop did not log %q as the accepting request", want)
+		}
 	}
 }
 

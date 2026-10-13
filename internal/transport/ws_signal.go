@@ -34,6 +34,7 @@ import (
 
 	"github.com/shady2k/nocx/internal/capability"
 	"github.com/shady2k/nocx/internal/lifecycle"
+	"github.com/shady2k/nocx/internal/log"
 	"github.com/shady2k/nocx/internal/session"
 	"github.com/shady2k/nocx/internal/transport/control"
 )
@@ -321,7 +322,7 @@ func (p sessionProtectedForeground) StopTarget() (foregroundTarget, bool) {
 	if !ok || target.Started {
 		return target, ok
 	}
-	p.s.armHeldStopAndStateLocked(target.Attempt, p.sid)
+	p.s.armHeldStopAndStateLocked(p.ctx, target.Attempt, p.sid)
 	return target, true
 }
 
@@ -513,9 +514,9 @@ func (h signalHandlers) answer(ctx context.Context, req jsonrpcRequest, sid sess
 				// (nocx-zas0d, review 3 item 2).
 				fb.recordStop = true
 				ladder := &stopRecordingSignaller{runLeaseSession: sg, s: h.machine, sid: sid, attempt: fb.Attempt}
-				outcome = stopForeground(h.machine.log, sid, ladder, h.machine.effectiveRunLease().SignalGrace, fb)
+				outcome = stopForeground(log.From(ctx), sid, ladder, h.machine.effectiveRunLease().SignalGrace, fb)
 			} else {
-				outcome = interruptForeground(h.machine.log, sid, sg, fb)
+				outcome = interruptForeground(log.From(ctx), sid, sg, fb)
 			}
 		}
 	}
@@ -800,14 +801,22 @@ func (r *stopRecordingSignaller) SignalProcessGroup(pgid int, sig syscall.Signal
 // re-armed (review major 1 of 6830b43d): a hold nobody would discharge, left on
 // an attempt that had already started, is what let a closure report a second
 // failure over a retry that had succeeded.
-func (s *WSServer) settleHeldStop(sid session.ID, attempt lifecycle.AttemptID, delivered bool, reason string) {
+//
+// ctx is the context of the request that accepted the Stop (heldStop.ctx), so
+// these lines carry that request's trace: the delivery runs long after it
+// answered, and a line without the trace is one the per-test failure context
+// cannot find (nocx-zg3k3.14.16).
+func (s *WSServer) settleHeldStop(ctx context.Context, sid session.ID, attempt lifecycle.AttemptID, delivered bool, reason string) {
 	s.settleStopDelivery(attempt, delivered)
 	if delivered {
-		s.log.Info("foreground signal: the held Stop reached the command",
+		// Delivered is what the record can know: the interrupt was written, or
+		// a rung of the ladder was sent. Whether it ended the command is the
+		// attempt's closure, which is a fact of its own.
+		log.From(ctx).Info("foreground signal: the held Stop was delivered",
 			"session_id", string(sid), "attempt", string(attempt))
 		return
 	}
-	s.log.Warn("foreground signal: the held Stop did not reach the command",
+	log.From(ctx).Warn("foreground signal: the held Stop did not reach the command",
 		"session_id", string(sid), "attempt", string(attempt), "reason", reason)
 	s.notifySignalUndelivered(sid, attempt, reason)
 }
@@ -817,11 +826,11 @@ func (s *WSServer) settleHeldStop(sid session.ID, attempt lifecycle.AttemptID, d
 // the attempt's closure, a lane that refused the task — ends a hold: finding
 // nothing to take means the delivery has it, and the delivery settles.
 func (s *WSServer) discardHeldStop(attempt lifecycle.AttemptID, reason string) {
-	sid, ok := s.claimHeldStop(attempt)
+	held, ok := s.claimHeldStop(attempt)
 	if !ok {
 		return
 	}
-	s.settleHeldStop(sid, attempt, false, reason)
+	s.settleHeldStop(held.ctx, held.sid, attempt, false, reason)
 }
 
 // notifySignalUndelivered tells the session's current subscriber that a Stop it
@@ -867,17 +876,29 @@ type signalUndeliveredParams struct {
 // closure must see the hold as a delivery on its way. The caller holds heldMu,
 // because StopTarget requires the arm to be one step with the read that decided
 // it.
-func (s *WSServer) armHeldStopAndStateLocked(attempt lifecycle.AttemptID, sid session.ID) {
+func (s *WSServer) armHeldStopAndStateLocked(ctx context.Context, attempt lifecycle.AttemptID, sid session.ID) {
 	if s.heldStops == nil {
-		s.heldStops = make(map[lifecycle.AttemptID]session.ID)
+		s.heldStops = make(map[lifecycle.AttemptID]heldStop)
 	}
 	// Idempotent by construction: a second Stop while one is held is the SAME
 	// obligation, not a second interrupt, and not a second delivery either.
 	if _, ok := s.heldStops[attempt]; ok {
 		return
 	}
-	s.heldStops[attempt] = sid
+	s.heldStops[attempt] = heldStop{sid: sid, ctx: context.WithoutCancel(ctx)}
+	log.From(ctx).Info("foreground signal: stop held until the shell starts the command",
+		"session_id", string(sid), "attempt", string(attempt))
 	s.beginStopDelivery(sid, attempt)
+}
+
+// heldStop is one accepted Stop waiting for its attempt's start: the session it
+// was accepted on, and the context of the request that accepted it. The context
+// is kept for its values only — the request's trace, which the delivery's log
+// lines carry — with its cancellation removed, because the delivery runs after
+// that request has answered.
+type heldStop struct {
+	sid session.ID
+	ctx context.Context
 }
 
 // heldStopArmed reports whether a hold is waiting for this attempt, WITHOUT
@@ -894,14 +915,14 @@ func (s *WSServer) heldStopArmed(attempt lifecycle.AttemptID) bool {
 // is the one that settles it. Taking removes it, so a start reported twice (a
 // publisher replay, a second snapshot naming a started attempt) can never
 // produce a second byte.
-func (s *WSServer) claimHeldStop(attempt lifecycle.AttemptID) (session.ID, bool) {
+func (s *WSServer) claimHeldStop(attempt lifecycle.AttemptID) (heldStop, bool) {
 	s.heldMu.Lock()
 	defer s.heldMu.Unlock()
-	sid, ok := s.heldStops[attempt]
+	held, ok := s.heldStops[attempt]
 	if ok {
 		delete(s.heldStops, attempt)
 	}
-	return sid, ok
+	return held, ok
 }
 
 // dropHeldStopsFor discards every held Stop of one session. The session is the
@@ -910,8 +931,8 @@ func (s *WSServer) claimHeldStop(attempt lifecycle.AttemptID) (session.ID, bool)
 func (s *WSServer) dropHeldStopsFor(sid session.ID) {
 	s.heldMu.Lock()
 	defer s.heldMu.Unlock()
-	for attempt, owner := range s.heldStops {
-		if owner == sid {
+	for attempt, held := range s.heldStops {
+		if held.sid == sid {
 			delete(s.heldStops, attempt)
 		}
 	}
@@ -952,13 +973,13 @@ func (s *WSServer) submitHeldStop(attempt lifecycle.AttemptID) {
 	// run-signal grace the ladder itself waits.
 	ctx := context.Background()
 	rej := s.signalSub.TrySubmit(ctx, control.Task{Run: func(taskCtx context.Context) {
-		sid, ok := s.claimHeldStop(attempt)
+		held, ok := s.claimHeldStop(attempt)
 		if !ok {
 			// Someone else has it: the attempt has closed and its hold was
 			// discarded.
 			return
 		}
-		s.deliverHeldStop(taskCtx, sid, attempt)
+		s.deliverHeldStop(taskCtx, held, attempt)
 	}})
 	if rej != nil {
 		// The signal lane refused the task: the same refusal a person's own
@@ -980,7 +1001,10 @@ func (s *WSServer) submitHeldStop(attempt lifecycle.AttemptID) {
 // the writer settles it, later, through fb.settled — so once Interrupt has
 // handed the verdict over, nothing here may settle it again. Every other exit
 // settles here.
-func (s *WSServer) deliverHeldStop(ctx context.Context, sid session.ID, attempt lifecycle.AttemptID) {
+func (s *WSServer) deliverHeldStop(ctx context.Context, held heldStop, attempt lifecycle.AttemptID) {
+	sid, lg := held.sid, log.From(held.ctx)
+	lg.Info("foreground signal: delivering the held Stop, the shell has started the command",
+		"session_id", string(sid), "attempt", string(attempt))
 	op, err := s.signalOps.ForSession(sid)
 	if err != nil {
 		// ForSession refuses only when the registry has no such session, so
@@ -989,7 +1013,7 @@ func (s *WSServer) deliverHeldStop(ctx context.Context, sid session.ID, attempt 
 		// subscriber, and a session that is not in the registry has none), and
 		// the record dies with the session at dropStopStatesFor. The delivery
 		// is still settled rather than left counted as on its way.
-		s.log.Info("foreground signal: the held Stop ends with its session",
+		lg.Info("foreground signal: the held Stop ends with its session",
 			"session_id", string(sid), "attempt", string(attempt), "error", err)
 		s.settleStopDelivery(attempt, false)
 		return
@@ -1003,7 +1027,7 @@ func (s *WSServer) deliverHeldStop(ctx context.Context, sid session.ID, attempt 
 		verdictOwned = true
 		sg, ok := sess.(runLeaseSession)
 		if !ok {
-			s.settleHeldStop(sid, attempt, false, undeliveredUnsupported)
+			s.settleHeldStop(held.ctx, sid, attempt, false, undeliveredUnsupported)
 			return nil
 		}
 		handedOff := false
@@ -1012,30 +1036,30 @@ func (s *WSServer) deliverHeldStop(ctx context.Context, sid session.ID, attempt 
 			exactAttempt: func() (lifecycle.AttemptID, bool) { return attempt, true },
 			handedOff:    &handedOff,
 			settled: func(written bool, werr error) {
-				s.settleHeldStop(sid, attempt, written, undeliveredReasonFor(werr))
+				s.settleHeldStop(held.ctx, sid, attempt, written, undeliveredReasonFor(werr))
 			},
 		}
 		ladder := &stopRecordingSignaller{
 			runLeaseSession: sg, s: s, sid: sid,
 			attempt: func() (lifecycle.AttemptID, bool) { return attempt, true },
 		}
-		outcome := stopForeground(s.log, sid, ladder, s.effectiveRunLease().SignalGrace, fb)
+		outcome := stopForeground(lg, sid, ladder, s.effectiveRunLease().SignalGrace, fb)
 		if handedOff {
 			return nil // the writer settles it, or already has
 		}
 		if outcome == foregroundDelivered {
-			s.settleHeldStop(sid, attempt, true, "")
+			s.settleHeldStop(held.ctx, sid, attempt, true, "")
 			return nil
 		}
-		s.settleHeldStop(sid, attempt, false, undeliveredReasonForOutcome(outcome))
+		s.settleHeldStop(held.ctx, sid, attempt, false, undeliveredReasonForOutcome(outcome))
 		return nil
 	})
 	if err != nil && !verdictOwned {
 		// The lane or the session gate refused the delivery before the
 		// terminal was reached: nothing was written, so it is settled here.
-		s.log.Warn("foreground signal: the held Stop could not run on the signal lane",
+		lg.Warn("foreground signal: the held Stop could not run on the signal lane",
 			"session_id", string(sid), "attempt", string(attempt), "error", err)
-		s.settleHeldStop(sid, attempt, false, undeliveredLaneRefused)
+		s.settleHeldStop(held.ctx, sid, attempt, false, undeliveredLaneRefused)
 	}
 }
 
