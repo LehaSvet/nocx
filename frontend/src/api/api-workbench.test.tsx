@@ -2323,6 +2323,75 @@ describe('the import ask asks one question', () => {
     await vi.waitFor(() => expect(button('Import').disabled).toBe(false))
   })
 
+  // ── THE FIELD A PERSON IS IN STAYS THEIRS WHEN THE ROOT LANDS ──────────
+  //
+  // The third path of the same interval (nocx-zg3k3.14.10). With the listing
+  // in flight the ask opens with the destination as an empty, open field. A
+  // person clicks into it to type a folder, and the root lands: the ask
+  // proposed a folder into the field under the caret, the field then named
+  // one, so the ask folded it back into a sentence — and the field vanished
+  // from under the person, focus and all, with what they went on typing
+  // going nowhere. The trace of CI run 38443315536 shows exactly that: the
+  // field focused and empty, then 40 ms later hidden and holding the
+  // proposal, and the collection imported where nobody had said.
+  it('a root that lands while the person is in the destination field leaves it to them', async () => {
+    let land: () => void = () => {}
+    const listCollections = vi.fn(
+      () =>
+        new Promise<{ collections: never[]; defaultRoot: string }>((resolve) => {
+          land = () => resolve({ collections: [], defaultRoot: DEFAULT_ROOT })
+        }),
+    )
+    const { bar } = await mountApp({ listCollections })
+    await openImportAsk(bar)
+
+    paste('{"info":{"name":"Acme API"}}')
+    await vi.waitFor(() => expect(sourceLine()).not.toBe(''))
+    const dest = field('api-import-postman-dest')
+    expect(reachable(dest)).toBe(true)
+    fireEvent.focus(dest)
+
+    land()
+    await vi.waitFor(() => expect(listCollections).toHaveBeenCalled())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // Nothing was written under the caret, and the field is still there.
+    expect(field('api-import-postman-dest').value).toBe('')
+    expect(reachable(field('api-import-postman-dest'))).toBe(true)
+
+    fireEvent.input(dest, { target: { value: '/work/chosen' } })
+    fireEvent.blur(dest)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(field('api-import-postman-dest').value).toBe('/work/chosen')
+  })
+
+  // ...and the offer is not lost: a person who looked in the field and left it
+  // without typing is offered the folder once they have left.
+  it('a root that landed while the field was focused is offered once the person leaves it', async () => {
+    let land: () => void = () => {}
+    const listCollections = vi.fn(
+      () =>
+        new Promise<{ collections: never[]; defaultRoot: string }>((resolve) => {
+          land = () => resolve({ collections: [], defaultRoot: DEFAULT_ROOT })
+        }),
+    )
+    const { bar } = await mountApp({ listCollections })
+    await openImportAsk(bar)
+
+    paste('{"info":{"name":"Acme API"}}')
+    await vi.waitFor(() => expect(sourceLine()).not.toBe(''))
+    const dest = field('api-import-postman-dest')
+    fireEvent.focus(dest)
+    land()
+    await vi.waitFor(() => expect(listCollections).toHaveBeenCalled())
+    fireEvent.blur(dest)
+
+    await vi.waitFor(() =>
+      expect(field('api-import-postman-dest').value).toBe(`${DEFAULT_ROOT}/acme-api`),
+    )
+    await vi.waitFor(() => expect(button('Import').disabled).toBe(false))
+  })
+
   it('refuses a curl line here rather than spending a round trip on it', async () => {
     // curl has its own door in the request editor and is deliberately not
     // this ask's question: `parseImport` would hand it to the curl parser,

@@ -284,6 +284,13 @@ function readPaneScreen(model: CellModel, reported: SessionSize | null): PaneScr
   }
 }
 
+/** The text of a whole snapshot, row by row, through the model's own row
+ *  reader. Two snapshots with equal text show a person the same screen,
+ *  whatever their revisions. */
+function screenText(snapshot: ScreenSnapshot): string {
+  return snapshot.rows.map((row) => snapshotRowText(snapshot, row.index) ?? '').join('\n')
+}
+
 // How long the grid must hold still before the PTY is told about it.
 /** The assistant's floor when the seam is dragged down: a question and one
  *  line of answer still have to be readable, or the drag has hidden the
@@ -962,6 +969,12 @@ export class TerminalContent extends BasePaneContent {
   /** The accepted screen revision at the prompt boundary. Only a later
    *  backend frame may attach this screen to the frozen block. */
   private _screenHandbackRevision = -1
+  /** The screen as it stood at that revision, or null when a later frame had
+   *  already been accepted by the time the boundary arrived. A newer revision
+   *  alone is not a write: a resize answers with a new revision of the same
+   *  screen. So the baseline is retaken whenever the geometry moves, and only
+   *  a screen whose text differs from it is one something is still writing. */
+  private _screenHandbackSnapshot: ScreenSnapshot | null = null
   /** A finished block is not a live screen until the following promptBoundary
    *  has been observed. This closes the gap where the shell prompt bytes parse
    *  before their control-plane boundary arrives. */
@@ -1110,8 +1123,17 @@ export class TerminalContent extends BasePaneContent {
   /** True from pointerdown until pointerup: the person is still choosing
    *  what to select. */
   private _selectionGestureLive = false
-  private readonly onSelectionPointerDown = (): void => {
+  /** True when the live gesture began inside this pane's scrollback: the
+   *  gesture, not the element under the pointer when it ends, is what
+   *  copy-on-select answers to. A command that finishes mid-selection freezes
+   *  its block and moves the layout, and the release then lands outside the
+   *  scrollback with the selection intact. */
+  private _selectionGestureInScrollback = false
+  private readonly onSelectionPointerDown = (event: Event): void => {
     this._selectionGestureLive = true
+    const target = event.target
+    this._selectionGestureInScrollback =
+      target instanceof Node && this.scrollback?.scrollbackArea.contains(target) === true
   }
   private readonly onSelectionPointerUp = (): void => {
     if (!this._selectionGestureLive) return
@@ -1119,6 +1141,36 @@ export class TerminalContent extends BasePaneContent {
     // The gesture is over and the range is final: ask the same handler the
     // selection events go through, so there is one place that decides.
     this.onSelectionChange()
+  }
+  /** The copy waits for mouseup rather than pointerup, on the document
+   *  rather than the scrollback: the painter's live-grid gesture
+   *  (painter/selection-gesture.ts) settles a card-to-live drag on pointerup
+   *  and clears the native range before mouseup, so a copy here never
+   *  writes a second value over its own. */
+  private readonly onSelectionMouseUp = (): void => {
+    if (!this._selectionGestureInScrollback) return
+    this._selectionGestureInScrollback = false
+    this.copyScrollbackSelection()
+  }
+  /** DOM block copy-on-select (P0-5). Frozen output only. Copy-on-select is
+   *  the terminal's convention and it belongs to text you can only read:
+   *  selecting output is how you take it. In the EDITOR the same gesture
+   *  means the opposite — you select in order to replace — so copying there
+   *  overwrites the clipboard with the very text about to be deleted. The
+   *  owner selected part of a header to paste a key over it and the key was
+   *  gone. Explicit Ctrl/Cmd+C still copies from the editor; nothing takes
+   *  the clipboard unasked. */
+  private copyScrollbackSelection(): void {
+    const sel = window.getSelection()
+    if (!sel || sel.isCollapsed) return
+    const text = sel.toString()
+    if (!text) return
+    if (!this.scrollback?.scrollbackArea.contains(sel.anchorNode)) return
+    if (shouldCopy(text)) {
+      this.clipboard.writeText(text).catch((e) => {
+        console.warn('nocx: clipboard write failed (block selection)', e)
+      })
+    }
   }
   private readonly onSelectionChange = (): void => {
     const selection = window.getSelection()
@@ -2500,6 +2552,7 @@ export class TerminalContent extends BasePaneContent {
           this._lastFrozenBlock = null
           this._automaticFrameOwner = null
           this._screenHandbackRevision = -1
+          this._screenHandbackSnapshot = null
           this._screenHandbackAwaitingBoundary = false
           this.clearGrants()
         },
@@ -3871,26 +3924,10 @@ export class TerminalContent extends BasePaneContent {
         }
       })
 
-      // ── DOM block copy-on-select (P0-5) ───────────────────────────────
-      // Frozen output only. Copy-on-select is the terminal's convention and it
-      // belongs to text you can only read: selecting output is how you take
-      // it. In the EDITOR the same gesture means the opposite — you select in
-      // order to replace — so copying there overwrites the clipboard with the
-      // very text about to be deleted. The owner selected part of a header to
-      // paste a key over it and the key was gone. Explicit Ctrl/Cmd+C still
-      // copies from the editor; nothing takes the clipboard unasked.
-      this.scrollback?.scrollbackArea.addEventListener('mouseup', () => {
-        const sel = window.getSelection()
-        if (!sel || sel.isCollapsed) return
-        const text = sel.toString()
-        if (!text) return
-        if (!this.scrollback?.scrollbackArea.contains(sel.anchorNode)) return
-        if (shouldCopy(text)) {
-          this.clipboard.writeText(text).catch((e) => {
-            console.warn('nocx: clipboard write failed (block selection)', e)
-          })
-        }
-      })
+      // DOM block copy-on-select runs at the end of the selection gesture
+      // (copyScrollbackSelection, from onSelectionPointerUp), not on a
+      // mouseup here: the release can land outside this area when the layout
+      // moves under a selection in progress.
 
       // ── The authenticated lifecycle (ADR-0024 §6, decision 7) ──────────
       // The published fact is the ONLY input to the lifecycle kernel: no
@@ -4085,6 +4122,7 @@ export class TerminalContent extends BasePaneContent {
       document.addEventListener('pointerdown', this.onSelectionPointerDown, true)
       document.addEventListener('pointerup', this.onSelectionPointerUp, true)
       document.addEventListener('pointercancel', this.onSelectionPointerUp, true)
+      document.addEventListener('mouseup', this.onSelectionMouseUp)
       this._mounted = true
       this._readyResolve(true)
       log.info('nocx: terminal content ready', {
@@ -4623,6 +4661,9 @@ export class TerminalContent extends BasePaneContent {
         }
         if (!this._awaitsIntegration) this._settle()
         this._screenHandbackRevision = requiredScreenRevision
+        const handback = cellModel.current()
+        this._screenHandbackSnapshot =
+          handback?.revision === requiredScreenRevision ? handback : null
         this._screenHandbackAwaitingBoundary = false
       }
       if (effect.kind === 'commandSnapshot') {
@@ -4689,6 +4730,12 @@ export class TerminalContent extends BasePaneContent {
           if (geometryChanged) {
             this.scrollback?.cellMetricsChanged()
             this._scheduleResizeReport()
+            // The same screen on a new grid, and the shell's own redraw
+            // after SIGWINCH, are not something writing: retake the baseline.
+            if (this._screenHandbackSnapshot !== null) {
+              this._screenHandbackSnapshot = result.snapshot
+              this._screenHandbackRevision = result.snapshot.revision
+            }
           }
           this.scrollback?.blockManager.noteCommandOutput()
           this._liveHistory?.noteOutput()
@@ -6865,7 +6912,8 @@ export class TerminalContent extends BasePaneContent {
    * how a person who marked block A was handed block B as well, under the
    * sentence calling it the current screen of a full-screen program
    * (nocx-7l4ex.21). The handback closes on the prompt's own last byte, so
-   * what survives this test is a screen something is still writing. */
+   * what survives this test is a screen something is still writing — and a
+   * newer revision with the same text is not that (_screenWrittenSinceHandback). */
   private automaticAttachmentOwner(frozenOnly = false): BlockRecord | null {
     const scrollback = this.scrollback
     const manager = scrollback?.blockManager
@@ -6879,12 +6927,23 @@ export class TerminalContent extends BasePaneContent {
     if (
       this._screenHandbackAwaitingBoundary ||
       frozen === null ||
-      (this._cellModel?.current()?.revision ?? -1) <= this._screenHandbackRevision ||
+      !this._screenWrittenSinceHandback() ||
       !manager.blocks.includes(frozen) ||
       !scrollback.scrollbackInner.contains(frozen.el)
     )
       return null
     return frozen
+  }
+
+  /** Whether the accepted screen changed after the prompt handed it back.
+   *  Compared as text against the baseline, so a frame that only re-lays the
+   *  same screen (a resize, and the prompt the shell redraws for it) does not
+   *  make the finished command the current screen of a full-screen program. */
+  private _screenWrittenSinceHandback(): boolean {
+    const current = this._cellModel?.current() ?? null
+    if (current === null || current.revision <= this._screenHandbackRevision) return false
+    const baseline = this._screenHandbackSnapshot
+    return baseline === null || screenText(current) !== screenText(baseline)
   }
 
   /** Capture the current screen for a visible-editor Ask transition. Unlike
@@ -8349,6 +8408,7 @@ export class TerminalContent extends BasePaneContent {
     document.removeEventListener('pointerdown', this.onSelectionPointerDown, true)
     document.removeEventListener('pointerup', this.onSelectionPointerUp, true)
     document.removeEventListener('pointercancel', this.onSelectionPointerUp, true)
+    document.removeEventListener('mouseup', this.onSelectionMouseUp)
     this.indicator = null
     this.promptVault?.destroy()
     this.promptVault = null

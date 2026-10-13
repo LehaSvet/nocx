@@ -107,7 +107,10 @@ func (s *service) ListEnvironments(h HandleID) ([]EnvironmentRef, []MalformedRef
 	if err != nil {
 		return nil, nil, err
 	}
-	dir := filepath.Join(hd.root, environmentsDirName)
+	dir, err := resolveWithin(hd.root, environmentsDirName)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	entries, err := os.ReadDir(dir)
 	switch {

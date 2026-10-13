@@ -125,6 +125,10 @@ export interface PostmanImportDialogProps {
    *  something to refuse; see `editing` below. */
   editingDest: boolean
   onEditDest: () => void
+  /** Whether the person is IN the destination field. Entering it is taking
+   *  it over the way the pencil is — it stays a field — and while they are
+   *  in it nothing the ask proposes is written under their caret. */
+  onDestFocus?: (focused: boolean) => void
   /** The place collections go, as the backend gave it, or '' where this
    *  build has none. The ask needs it to recognise its own proposal: the
    *  field opens holding it, and the root by itself names a folder that is
@@ -418,6 +422,11 @@ export function PostmanImportDialog(props: PostmanImportDialogProps) {
           description="Must not exist yet — the import arrives whole or not at all."
           value={props.dest}
           onInput={props.onDest}
+          onFocus={() => {
+            props.onEditDest()
+            props.onDestFocus?.(true)
+          }}
+          onBlur={() => props.onDestFocus?.(false)}
           onCommit={props.onCommitDest}
           required
           trailing={

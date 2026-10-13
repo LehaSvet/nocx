@@ -143,12 +143,21 @@ async function openConnectionDialog(page: Page): Promise<Locator> {
 }
 
 /** Type a bare '@' into a field, the way a person does — never `fill`, which
- *  sets the value without the caret the adapter reads. */
+ *  sets the value without the caret the adapter reads.
+ *
+ *  The panel opens on a "loading secrets…" placeholder, which is a
+ *  `.ui-floating-panel__row` too, and is re-rendered once vault.status
+ *  answers: a taller panel with an offer row and a footer, re-placed above
+ *  its field. Geometry read before that answer is the placeholder's, and a
+ *  press aimed at it lands on whatever the settled panel puts there — the
+ *  footer, as CI saw. So wait, as a person does, for the panel to stop
+ *  loading. */
 async function triggerPanel(page: Page, field: Locator): Promise<Locator> {
   await field.click()
   await field.pressSequentially('@')
   const panel = page.locator(OPEN_PANEL)
   await expect(panel).toBeVisible({ timeout: 10_000 })
+  await expect(panel.getByText('loading secrets…')).toHaveCount(0, { timeout: 10_000 })
   return panel
 }
 

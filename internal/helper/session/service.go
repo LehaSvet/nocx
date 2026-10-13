@@ -342,9 +342,10 @@ type Service struct {
 // Compile-time proof that this satisfies the host's extension points: a
 // service, a coder of its own refusals, and a receiver of data-plane frames.
 var (
-	_ host.Service      = (*Service)(nil)
-	_ host.RefusalCoder = (*Service)(nil)
-	_ host.DataPlane    = (*Service)(nil)
+	_ host.Service          = (*Service)(nil)
+	_ host.RefusalCoder     = (*Service)(nil)
+	_ host.DataPlane        = (*Service)(nil)
+	_ host.ResponseObserver = (*Service)(nil)
 )
 
 // New builds the service. It starts nothing: a helper with no sessions holds
@@ -834,10 +835,11 @@ func (s *Service) Call(ctx context.Context, op string, params json.RawMessage) (
 		if err := decode(params, &p); err != nil {
 			return nil, err
 		}
-		if err := s.closeSession(p); err != nil {
+		drains, err := s.closeSession(p)
+		if err != nil {
 			return nil, err
 		}
-		return proto.CloseSessionResult{}, nil
+		return closedSession{drains: drains}, nil
 	case proto.OpSignal:
 		var p proto.SignalParams
 		if err := decode(params, &p); err != nil {
@@ -1685,13 +1687,15 @@ func (s *Service) releaseKey(c *keyClaim) {
 // It is also the closing end of the idempotency interval: the claim goes with
 // the row, in the same critical section, so the next spawn carrying that key
 // forks a new session instead of being handed one that no longer exists.
-func (s *Service) closeSession(p proto.CloseSessionParams) error {
+//
+// It reports whether this close ended the daemon's last session, and does not
+// drain: that waits for the answer to be written (ResponseWritten).
+func (s *Service) closeSession(p proto.CloseSessionParams) (bool, error) {
 	hs, err := s.find(p.Session)
 	if err != nil {
-		return err
+		return false, err
 	}
-	s.removeSession(hs, "close-session")
-	return nil
+	return s.removeSession(hs, "close-session"), nil
 }
 
 // removeSession is the one closer behind closeSession, the unclaimed-session
@@ -1715,7 +1719,11 @@ func (s *Service) closeSession(p proto.CloseSessionParams) error {
 // side of the wire, because the helper cannot see which of them asked);
 // "unclaimed-ttl" and "budget-pressure" are this helper's own housekeeping,
 // never a coordinator's doing.
-func (s *Service) removeSession(hs *hostSession, reason string) {
+//
+// It returns whether the removal ended the daemon's last session; the caller
+// fires the drain, because only the caller knows whether an answer is still
+// owed to somebody first.
+func (s *Service) removeSession(hs *hostSession, reason string) bool {
 	s.log.Info("helper: ending a host session", "session", hs.id.Session, "reason", reason)
 	hs.stop()
 
@@ -1736,7 +1744,7 @@ func (s *Service) removeSession(hs *hostSession, reason string) {
 	}
 	shouldDrain := removed && endedLifetime && s.lifecycle.markSessionEnded()
 	s.mu.Unlock()
-	s.lifecycle.fireDrained(shouldDrain)
+	return shouldDrain
 }
 
 // sweepExpired closes every exited, unattached session whose exit is at
@@ -1771,7 +1779,7 @@ func (s *Service) sweepExpired() {
 			continue
 		}
 		if now.Sub(at) >= ttl {
-			s.removeSession(hs, "unclaimed-ttl")
+			s.lifecycle.fireDrained(s.removeSession(hs, "unclaimed-ttl"))
 		}
 	}
 }
@@ -1818,7 +1826,7 @@ func (s *Service) evictForBudget(reserved int64) {
 		if fits {
 			return
 		}
-		s.removeSession(c.hs, "budget-pressure")
+		s.lifecycle.fireDrained(s.removeSession(c.hs, "budget-pressure"))
 	}
 }
 
@@ -2199,3 +2207,30 @@ var errBadFence = errors.New("session: the completion's nonce is not a 64-charac
 // from sealing a second interval, so an op without one is malformed wire,
 // not a boundary to seal on trust.
 var errBadEntry = errors.New("session: the environment entry names no entry")
+
+// closedSession is close-session's answer as this service returns it to the
+// host. It marshals exactly as proto.CloseSessionResult — the unexported field
+// never reaches the wire — and carries to ResponseWritten whether this close
+// ended the daemon's last session.
+type closedSession struct {
+	proto.CloseSessionResult
+	drains bool
+}
+
+// ResponseWritten drains the daemon once the answer to the close that ended
+// its last session is on the wire (host.ResponseObserver).
+//
+// The drain stops the daemon, and stopping it closes every connection — the
+// one carrying that answer included. Fired inside the handler, as it once
+// was, it raced the host's write of the answer, and a caller closing its last
+// pane waited for a reply that the closed socket had swallowed. Admission is
+// already shut when the handler returns (markSessionEnded), so deferring the
+// drain to here opens no window in which a spawn could be acknowledged.
+func (s *Service) ResponseWritten(_ context.Context, op string, result any) {
+	if op != proto.OpCloseSession {
+		return
+	}
+	if closed, ok := result.(closedSession); ok {
+		s.lifecycle.fireDrained(closed.drains)
+	}
+}
