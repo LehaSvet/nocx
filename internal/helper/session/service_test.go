@@ -1022,6 +1022,41 @@ func TestCloseSessionEndsTheProcessAndRemovesItsInventoryRow(t *testing.T) {
 	}
 }
 
+// TestExplicitCloseOfLastSessionDrainsDaemon proves close-session ends the
+// daemon's session lifetime, not only its inventory row and PTY.
+func TestExplicitCloseOfLastSessionDrainsDaemon(t *testing.T) {
+	spawner := &fakeSpawner{err: errors.New("spawn failed")}
+	drained := make(chan struct{})
+	svc := session.New(session.Options{
+		Generation: "gen-under-test",
+		Spawner:    spawner,
+		Log:        discardLog(),
+		OnDrained:  func() { close(drained) },
+	})
+	release := bindTo(svc, newSink())
+	t.Cleanup(func() {
+		release()
+		svc.Close()
+	})
+	if _, err := svc.Call(callCtx(), proto.OpSpawn, mustJSON(t, proto.SpawnParams{Cols: 80, Rows: 24})); err == nil {
+		t.Fatal("failed spawn reported success")
+	}
+	spawner.mu.Lock()
+	spawner.err = nil
+	spawner.mu.Unlock()
+	entry := spawnOne(t, svc)
+	call[proto.CloseSessionResult](t, svc, proto.OpCloseSession,
+		proto.CloseSessionParams{Session: entry.Session})
+	select {
+	case <-drained:
+	default:
+		t.Fatal("explicit close of last session did not drain daemon")
+	}
+	if _, err := svc.Call(callCtx(), proto.OpSpawn, mustJSON(t, proto.SpawnParams{Cols: 80, Rows: 24})); !errors.Is(err, session.ErrDraining) {
+		t.Fatalf("spawn after explicit close = %v, want ErrDraining", err)
+	}
+}
+
 // TestSignalSendsTheRequestedSignalToTheOwnedProcessGroup proves the helper,
 // rather than the coordinator, owns the process-group signal operation.
 func TestSignalSendsTheRequestedSignalToTheOwnedProcessGroup(t *testing.T) {

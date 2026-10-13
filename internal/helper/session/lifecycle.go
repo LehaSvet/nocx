@@ -16,6 +16,12 @@ var ErrDraining = errors.New("session: helper generation is draining")
 // test -tags gtk3 -run TestMeasureDaemonLaunchToFirstSpawn -count=3 -v ./cmd/nocx-helper.
 const MeasuredStartupGrace = 250 * time.Millisecond
 
+type lifecycleTimer interface {
+	Stop() bool
+}
+
+type lifecycleAfterFunc func(time.Duration, func()) lifecycleTimer
+
 type daemonLifecycle struct {
 	mu                sync.Mutex
 	enabled           bool
@@ -29,14 +35,22 @@ type daemonLifecycle struct {
 	draining          bool
 	onDrained         func()
 	once              sync.Once
-	timer             *time.Timer
+	timer             lifecycleTimer
 }
 
 func newDaemonLifecycle(grace time.Duration, onDrained func()) *daemonLifecycle {
+	return newDaemonLifecycleWithTimer(grace, onDrained, func(d time.Duration, f func()) lifecycleTimer {
+		return time.AfterFunc(d, f)
+	})
+}
+
+// newDaemonLifecycleWithTimer keeps grace scheduling deterministic in tests;
+// production uses time.AfterFunc through newDaemonLifecycle.
+func newDaemonLifecycleWithTimer(grace time.Duration, onDrained func(), afterFunc lifecycleAfterFunc) *daemonLifecycle {
 	l := &daemonLifecycle{enabled: grace > 0 || onDrained != nil, grace: grace, onDrained: onDrained}
 	if grace > 0 {
 		l.deadline = time.Now().Add(grace)
-		l.timer = time.AfterFunc(grace, l.expire)
+		l.timer = afterFunc(grace, l.expire)
 	}
 	return l
 }

@@ -28,23 +28,77 @@ func TestDaemonLifecycleDeadlineAdmissionWinsAtomically(t *testing.T) {
 	l.sessionEnded()
 	select {
 	case <-drained:
-	case <-time.After(time.Second):
+	default:
 		t.Fatal("last session did not drain daemon")
 	}
 	l.stop()
 }
 
-func TestDaemonLifecycleEmptyGraceExpires(t *testing.T) {
+func TestDaemonLifecycleScheduledGraceExpires(t *testing.T) {
 	drained := make(chan struct{})
-	l := newDaemonLifecycle(time.Hour, func() { close(drained) })
-	l.expire()
+	var scheduled time.Duration
+	var fire func()
+	l := newDaemonLifecycleWithTimer(time.Hour, func() { close(drained) }, func(d time.Duration, f func()) lifecycleTimer {
+		scheduled, fire = d, f
+		return inertLifecycleTimer{}
+	})
+	if scheduled != time.Hour {
+		t.Fatalf("scheduled grace = %s, want %s", scheduled, time.Hour)
+	}
+	if fire == nil {
+		t.Fatal("startup grace did not schedule its expiry")
+	}
+	select {
+	case <-drained:
+		t.Fatal("daemon drained before scheduled grace fired")
+	default:
+	}
+	fire()
 	if _, err := l.admit(); !errors.Is(err, ErrDraining) {
 		t.Fatalf("post-grace admission = %v, want draining", err)
 	}
 	select {
 	case <-drained:
-	case <-time.After(time.Second):
+	default:
 		t.Fatal("empty daemon did not drain")
+	}
+	l.stop()
+}
+
+type inertLifecycleTimer struct{}
+
+func (inertLifecycleTimer) Stop() bool { return true }
+
+func TestDaemonLifecycleFailedAdmittedSpawnReleasesReservation(t *testing.T) {
+	drained := make(chan struct{})
+	var fire func()
+	l := newDaemonLifecycleWithTimer(time.Hour, func() { close(drained) }, func(_ time.Duration, f func()) lifecycleTimer {
+		fire = f
+		return inertLifecycleTimer{}
+	})
+	if fire == nil {
+		t.Fatal("startup grace did not schedule its expiry")
+	}
+	finishAdmission, err := l.admit()
+	if err != nil {
+		t.Fatalf("admit spawn: %v", err)
+	}
+	// The scheduled deadline may arrive while an already-admitted spawn is
+	// failing. Its deferred reservation release must be what lets retirement run.
+	fire()
+	select {
+	case <-drained:
+		t.Fatal("daemon drained while admitted spawn was still in flight")
+	default:
+	}
+	finishAdmission()
+	select {
+	case <-drained:
+	default:
+		t.Fatal("failed admitted spawn kept daemon admission reserved")
+	}
+	if _, err := l.admit(); !errors.Is(err, ErrDraining) {
+		t.Fatalf("admission after failed spawn and grace = %v, want draining", err)
 	}
 	l.stop()
 }
