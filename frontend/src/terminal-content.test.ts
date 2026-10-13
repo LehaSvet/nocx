@@ -12618,6 +12618,42 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       }
     })
 
+    // THE SAME DEFECT, SECOND WAY IN (nocx-7l4ex.21, CI run 38443315536). A
+    // freeze changes the layout, the pane sends a resize, and the backend
+    // answers with a frame at a newer revision — the same prompt, laid out on
+    // a taller grid. Nothing is painting; the geometry moved. Measured in
+    // that run: the resize reached the backend 22 ms before Ctrl+Enter, and
+    // the unmarked `echo` block was attached as "the current screen of the
+    // full-screen program".
+    it('does not attach a finished command when only a resize followed its prompt', async () => {
+      const { ed, content, teardown } = await mountTerminal(makeClipboard(), {
+        attachToDocument: true,
+      })
+      try {
+        content.setVisible(true)
+        ed.show()
+        ed.focus()
+        frozenBlock(content, 'echo beta')
+        await promptPainted(content)
+        sessionOf(content).fireScreenFrame(
+          screenFrame(2, ['$ '], { rows: SCREEN_ROWS + 4, cols: SCREEN_COLS + 10 }),
+        )
+        const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
+        content.captureLiveFrame = captureLiveFrame
+
+        chordOn(viewOf(ed).contentDOM)
+        await settleAttachment()
+
+        expect(targetNamed(ed)).toBe('agent')
+        expect(
+          ed.root.querySelector('[data-control="grant"]')?.getAttribute('aria-label'),
+        ).not.toContain('frozen screen attached automatically')
+        expect(captureLiveFrame).not.toHaveBeenCalled()
+      } finally {
+        teardown()
+      }
+    })
+
     it('keeps the next live repaint eligible when promptBoundary follows parsed prompt bytes', async () => {
       const { ed, content, teardown } = await mountTerminal(makeClipboard(), {
         attachToDocument: true,

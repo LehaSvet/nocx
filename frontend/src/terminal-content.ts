@@ -284,6 +284,13 @@ function readPaneScreen(model: CellModel, reported: SessionSize | null): PaneScr
   }
 }
 
+/** The text of a whole snapshot, row by row, through the model's own row
+ *  reader. Two snapshots with equal text show a person the same screen,
+ *  whatever their revisions. */
+function screenText(snapshot: ScreenSnapshot): string {
+  return snapshot.rows.map((row) => snapshotRowText(snapshot, row.index) ?? '').join('\n')
+}
+
 // How long the grid must hold still before the PTY is told about it.
 /** The assistant's floor when the seam is dragged down: a question and one
  *  line of answer still have to be readable, or the drag has hidden the
@@ -962,6 +969,12 @@ export class TerminalContent extends BasePaneContent {
   /** The accepted screen revision at the prompt boundary. Only a later
    *  backend frame may attach this screen to the frozen block. */
   private _screenHandbackRevision = -1
+  /** The screen as it stood at that revision, or null when a later frame had
+   *  already been accepted by the time the boundary arrived. A newer revision
+   *  alone is not a write: a resize answers with a new revision of the same
+   *  screen. So the baseline is retaken whenever the geometry moves, and only
+   *  a screen whose text differs from it is one something is still writing. */
+  private _screenHandbackSnapshot: ScreenSnapshot | null = null
   /** A finished block is not a live screen until the following promptBoundary
    *  has been observed. This closes the gap where the shell prompt bytes parse
    *  before their control-plane boundary arrives. */
@@ -2539,6 +2552,7 @@ export class TerminalContent extends BasePaneContent {
           this._lastFrozenBlock = null
           this._automaticFrameOwner = null
           this._screenHandbackRevision = -1
+          this._screenHandbackSnapshot = null
           this._screenHandbackAwaitingBoundary = false
           this.clearGrants()
         },
@@ -4647,6 +4661,9 @@ export class TerminalContent extends BasePaneContent {
         }
         if (!this._awaitsIntegration) this._settle()
         this._screenHandbackRevision = requiredScreenRevision
+        const handback = cellModel.current()
+        this._screenHandbackSnapshot =
+          handback?.revision === requiredScreenRevision ? handback : null
         this._screenHandbackAwaitingBoundary = false
       }
       if (effect.kind === 'commandSnapshot') {
@@ -4713,6 +4730,12 @@ export class TerminalContent extends BasePaneContent {
           if (geometryChanged) {
             this.scrollback?.cellMetricsChanged()
             this._scheduleResizeReport()
+            // The same screen on a new grid, and the shell's own redraw
+            // after SIGWINCH, are not something writing: retake the baseline.
+            if (this._screenHandbackSnapshot !== null) {
+              this._screenHandbackSnapshot = result.snapshot
+              this._screenHandbackRevision = result.snapshot.revision
+            }
           }
           this.scrollback?.blockManager.noteCommandOutput()
           this._liveHistory?.noteOutput()
@@ -6889,7 +6912,8 @@ export class TerminalContent extends BasePaneContent {
    * how a person who marked block A was handed block B as well, under the
    * sentence calling it the current screen of a full-screen program
    * (nocx-7l4ex.21). The handback closes on the prompt's own last byte, so
-   * what survives this test is a screen something is still writing. */
+   * what survives this test is a screen something is still writing — and a
+   * newer revision with the same text is not that (_screenWrittenSinceHandback). */
   private automaticAttachmentOwner(frozenOnly = false): BlockRecord | null {
     const scrollback = this.scrollback
     const manager = scrollback?.blockManager
@@ -6903,12 +6927,23 @@ export class TerminalContent extends BasePaneContent {
     if (
       this._screenHandbackAwaitingBoundary ||
       frozen === null ||
-      (this._cellModel?.current()?.revision ?? -1) <= this._screenHandbackRevision ||
+      !this._screenWrittenSinceHandback() ||
       !manager.blocks.includes(frozen) ||
       !scrollback.scrollbackInner.contains(frozen.el)
     )
       return null
     return frozen
+  }
+
+  /** Whether the accepted screen changed after the prompt handed it back.
+   *  Compared as text against the baseline, so a frame that only re-lays the
+   *  same screen (a resize, and the prompt the shell redraws for it) does not
+   *  make the finished command the current screen of a full-screen program. */
+  private _screenWrittenSinceHandback(): boolean {
+    const current = this._cellModel?.current() ?? null
+    if (current === null || current.revision <= this._screenHandbackRevision) return false
+    const baseline = this._screenHandbackSnapshot
+    return baseline === null || screenText(current) !== screenText(baseline)
   }
 
   /** Capture the current screen for a visible-editor Ask transition. Unlike
