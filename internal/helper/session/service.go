@@ -1458,6 +1458,11 @@ func (s *Service) finishSpawn(claim *keyClaim, proc Process, launch proto.Launch
 	// and "the emulator refused" is a sentence about this pane, not a
 	// default to run under.
 	if err := rt.ApplyScrollback(shape.scrollback); err != nil {
+		// The screen/runtime were created, but no session was registered and
+		// no reader owns the terminal yet. Release the emulator as well as the
+		// process and budget so this failed spawn leaves no setup resources
+		// behind.
+		screen.Close()
 		release()
 		lg.Error("helper: the session's scrollback budget could not be applied", "error", err)
 		return proto.SpawnResult{}, fmt.Errorf("%w: %v", ErrSpawn, err)
