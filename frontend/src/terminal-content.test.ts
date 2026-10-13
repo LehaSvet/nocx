@@ -1497,6 +1497,97 @@ describe('clipboard paste into the live terminal uses session intents', () => {
   })
 })
 
+describe('copy-on-select follows the gesture, not the element under the pointer at its end', () => {
+  // A command that finishes while a person is selecting its block freezes
+  // the block and moves the layout under the pointer, so the gesture can end
+  // over something that is not the scrollback. The copy belongs to the
+  // gesture that began in the scrollback; where it ended does not change
+  // what was selected. Measured in the e2e container: clipboard.spec's
+  // copy-on-select failed 2 in 15 on main, each with the command completing
+  // inside the triple-click.
+  const mountBlock = async () => {
+    const clipboard = makeClipboard()
+    const mounted = await mountTerminal(clipboard, { attachToDocument: true })
+    const scrollback = (mounted.content as unknown as { scrollback: ScrollbackController })
+      .scrollback
+    mounted.content.setVisible(true)
+    const block = createCommandBlock(
+      'command',
+      1,
+      'echo marker',
+      '~',
+      '',
+      '<span class="term-line">marker-output</span>',
+      10,
+      0,
+      'success',
+      () => scrollback.scrollbackInner,
+      () => {},
+      new CommandSnapshotStore(),
+      'shell',
+    )
+    scrollback.scrollbackInner.appendChild(block)
+    const line = block.querySelector('.term-line')!
+    const select = () => {
+      const range = document.createRange()
+      range.selectNodeContents(line)
+      const selection = window.getSelection()!
+      selection.removeAllRanges()
+      selection.addRange(range)
+    }
+    return { ...mounted, clipboard, block, select }
+  }
+
+  it('copies when the gesture began on a block and ended outside the scrollback', async () => {
+    const { clipboard, block, select, teardown } = await mountBlock()
+    try {
+      block.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      block.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      select()
+      document.body.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+      document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+      expect(clipboard.writeText).toHaveBeenCalledTimes(1)
+      expect(clipboard.writeText).toHaveBeenCalledWith('marker-output')
+    } finally {
+      teardown()
+    }
+  })
+
+  it('copies once when the gesture began and ended on the block', async () => {
+    const { clipboard, block, select, teardown } = await mountBlock()
+    try {
+      block.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      block.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      select()
+      block.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+      block.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+      expect(clipboard.writeText).toHaveBeenCalledTimes(1)
+      expect(clipboard.writeText).toHaveBeenCalledWith('marker-output')
+    } finally {
+      teardown()
+    }
+  })
+
+  it('does not copy a standing selection again for a gesture that began elsewhere', async () => {
+    const { clipboard, block, select, teardown } = await mountBlock()
+    try {
+      block.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      select()
+      block.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+      clipboard.writeText.mockClear()
+      // A click on something outside the scrollback that leaves the
+      // selection standing: the person copied something else meanwhile, and
+      // this click must not put the old selection back.
+      document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      document.body.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+      document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+      expect(clipboard.writeText).not.toHaveBeenCalled()
+    } finally {
+      teardown()
+    }
+  })
+})
+
 describe('paste with focus on a frozen block (nocx-w7h.9)', () => {
   it('Cmd/Ctrl+V redirects to the editor, deselects the block, and never reaches the session', async () => {
     const { ed, content, teardown } = await mountTerminal(makeClipboard(), {

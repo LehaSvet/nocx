@@ -1110,8 +1110,17 @@ export class TerminalContent extends BasePaneContent {
   /** True from pointerdown until pointerup: the person is still choosing
    *  what to select. */
   private _selectionGestureLive = false
-  private readonly onSelectionPointerDown = (): void => {
+  /** True when the live gesture began inside this pane's scrollback: the
+   *  gesture, not the element under the pointer when it ends, is what
+   *  copy-on-select answers to. A command that finishes mid-selection freezes
+   *  its block and moves the layout, and the release then lands outside the
+   *  scrollback with the selection intact. */
+  private _selectionGestureInScrollback = false
+  private readonly onSelectionPointerDown = (event: Event): void => {
     this._selectionGestureLive = true
+    const target = event.target
+    this._selectionGestureInScrollback =
+      target instanceof Node && this.scrollback?.scrollbackArea.contains(target) === true
   }
   private readonly onSelectionPointerUp = (): void => {
     if (!this._selectionGestureLive) return
@@ -1119,6 +1128,36 @@ export class TerminalContent extends BasePaneContent {
     // The gesture is over and the range is final: ask the same handler the
     // selection events go through, so there is one place that decides.
     this.onSelectionChange()
+  }
+  /** The copy waits for mouseup rather than pointerup, on the document
+   *  rather than the scrollback: the painter's live-grid gesture
+   *  (painter/selection-gesture.ts) settles a card-to-live drag on pointerup
+   *  and clears the native range before mouseup, so a copy here never
+   *  writes a second value over its own. */
+  private readonly onSelectionMouseUp = (): void => {
+    if (!this._selectionGestureInScrollback) return
+    this._selectionGestureInScrollback = false
+    this.copyScrollbackSelection()
+  }
+  /** DOM block copy-on-select (P0-5). Frozen output only. Copy-on-select is
+   *  the terminal's convention and it belongs to text you can only read:
+   *  selecting output is how you take it. In the EDITOR the same gesture
+   *  means the opposite — you select in order to replace — so copying there
+   *  overwrites the clipboard with the very text about to be deleted. The
+   *  owner selected part of a header to paste a key over it and the key was
+   *  gone. Explicit Ctrl/Cmd+C still copies from the editor; nothing takes
+   *  the clipboard unasked. */
+  private copyScrollbackSelection(): void {
+    const sel = window.getSelection()
+    if (!sel || sel.isCollapsed) return
+    const text = sel.toString()
+    if (!text) return
+    if (!this.scrollback?.scrollbackArea.contains(sel.anchorNode)) return
+    if (shouldCopy(text)) {
+      this.clipboard.writeText(text).catch((e) => {
+        console.warn('nocx: clipboard write failed (block selection)', e)
+      })
+    }
   }
   private readonly onSelectionChange = (): void => {
     const selection = window.getSelection()
@@ -3871,26 +3910,10 @@ export class TerminalContent extends BasePaneContent {
         }
       })
 
-      // ── DOM block copy-on-select (P0-5) ───────────────────────────────
-      // Frozen output only. Copy-on-select is the terminal's convention and it
-      // belongs to text you can only read: selecting output is how you take
-      // it. In the EDITOR the same gesture means the opposite — you select in
-      // order to replace — so copying there overwrites the clipboard with the
-      // very text about to be deleted. The owner selected part of a header to
-      // paste a key over it and the key was gone. Explicit Ctrl/Cmd+C still
-      // copies from the editor; nothing takes the clipboard unasked.
-      this.scrollback?.scrollbackArea.addEventListener('mouseup', () => {
-        const sel = window.getSelection()
-        if (!sel || sel.isCollapsed) return
-        const text = sel.toString()
-        if (!text) return
-        if (!this.scrollback?.scrollbackArea.contains(sel.anchorNode)) return
-        if (shouldCopy(text)) {
-          this.clipboard.writeText(text).catch((e) => {
-            console.warn('nocx: clipboard write failed (block selection)', e)
-          })
-        }
-      })
+      // DOM block copy-on-select runs at the end of the selection gesture
+      // (copyScrollbackSelection, from onSelectionPointerUp), not on a
+      // mouseup here: the release can land outside this area when the layout
+      // moves under a selection in progress.
 
       // ── The authenticated lifecycle (ADR-0024 §6, decision 7) ──────────
       // The published fact is the ONLY input to the lifecycle kernel: no
@@ -4085,6 +4108,7 @@ export class TerminalContent extends BasePaneContent {
       document.addEventListener('pointerdown', this.onSelectionPointerDown, true)
       document.addEventListener('pointerup', this.onSelectionPointerUp, true)
       document.addEventListener('pointercancel', this.onSelectionPointerUp, true)
+      document.addEventListener('mouseup', this.onSelectionMouseUp)
       this._mounted = true
       this._readyResolve(true)
       log.info('nocx: terminal content ready', {
@@ -8349,6 +8373,7 @@ export class TerminalContent extends BasePaneContent {
     document.removeEventListener('pointerdown', this.onSelectionPointerDown, true)
     document.removeEventListener('pointerup', this.onSelectionPointerUp, true)
     document.removeEventListener('pointercancel', this.onSelectionPointerUp, true)
+    document.removeEventListener('mouseup', this.onSelectionMouseUp)
     this.indicator = null
     this.promptVault?.destroy()
     this.promptVault = null
