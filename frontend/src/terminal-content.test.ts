@@ -76,6 +76,8 @@ import { ProfileClient, type SSHProfile } from './profiles'
 import { Dispatcher, RpcError } from './dispatcher'
 import { fixedEndpoint } from './endpoint'
 import type { SessionHandle, SessionRecovery, WSClient } from './ipc'
+import type { SessionIntentResult } from './generated/session.intent'
+import type { SessionSignal } from './generated/session.signal'
 import { blockOutputText, createCommandBlock, type RunningBlockActions } from './scrollback/blocks'
 import type { AgentRunCompletion } from './run-command'
 import { CommandSnapshotStore } from './command-snapshot'
@@ -130,10 +132,16 @@ beforeEach(() => {
  * command's exit status to another command's row (nocx-td6d4.10).
  */
 function submitToken(client: ClientFake): string {
-  const calls = client.dispatcher.call.mock.calls as Array<[string, Record<string, unknown>?]>
+  const calls = client.dispatcher.call.mock.calls
   for (let i = calls.length - 1; i >= 0; i--) {
     const [method, params] = calls[i]
-    if (method === 'lifecycle.submitAttempt' && typeof params?.submitId === 'string') {
+    if (
+      method === 'lifecycle.submitAttempt' &&
+      typeof params === 'object' &&
+      params !== null &&
+      'submitId' in params &&
+      typeof params.submitId === 'string'
+    ) {
       return params.submitId
     }
   }
@@ -1483,6 +1491,97 @@ describe('clipboard paste into the live terminal uses session intents', () => {
       await vi.waitFor(() => expect(clipboard.readText).toHaveBeenCalledOnce())
       await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('paste', 'clipboard text'))
       expect(session.send).not.toHaveBeenCalled()
+    } finally {
+      teardown()
+    }
+  })
+})
+
+describe('copy-on-select follows the gesture, not the element under the pointer at its end', () => {
+  // A command that finishes while a person is selecting its block freezes
+  // the block and moves the layout under the pointer, so the gesture can end
+  // over something that is not the scrollback. The copy belongs to the
+  // gesture that began in the scrollback; where it ended does not change
+  // what was selected. Measured in the e2e container: clipboard.spec's
+  // copy-on-select failed 2 in 15 on main, each with the command completing
+  // inside the triple-click.
+  const mountBlock = async () => {
+    const clipboard = makeClipboard()
+    const mounted = await mountTerminal(clipboard, { attachToDocument: true })
+    const scrollback = (mounted.content as unknown as { scrollback: ScrollbackController })
+      .scrollback
+    mounted.content.setVisible(true)
+    const block = createCommandBlock(
+      'command',
+      1,
+      'echo marker',
+      '~',
+      '',
+      '<span class="term-line">marker-output</span>',
+      10,
+      0,
+      'success',
+      () => scrollback.scrollbackInner,
+      () => {},
+      new CommandSnapshotStore(),
+      'shell',
+    )
+    scrollback.scrollbackInner.appendChild(block)
+    const line = block.querySelector('.term-line')!
+    const select = () => {
+      const range = document.createRange()
+      range.selectNodeContents(line)
+      const selection = window.getSelection()!
+      selection.removeAllRanges()
+      selection.addRange(range)
+    }
+    return { ...mounted, clipboard, block, select }
+  }
+
+  it('copies when the gesture began on a block and ended outside the scrollback', async () => {
+    const { clipboard, block, select, teardown } = await mountBlock()
+    try {
+      block.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      block.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      select()
+      document.body.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+      document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+      expect(clipboard.writeText).toHaveBeenCalledTimes(1)
+      expect(clipboard.writeText).toHaveBeenCalledWith('marker-output')
+    } finally {
+      teardown()
+    }
+  })
+
+  it('copies once when the gesture began and ended on the block', async () => {
+    const { clipboard, block, select, teardown } = await mountBlock()
+    try {
+      block.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      block.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      select()
+      block.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+      block.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+      expect(clipboard.writeText).toHaveBeenCalledTimes(1)
+      expect(clipboard.writeText).toHaveBeenCalledWith('marker-output')
+    } finally {
+      teardown()
+    }
+  })
+
+  it('does not copy a standing selection again for a gesture that began elsewhere', async () => {
+    const { clipboard, block, select, teardown } = await mountBlock()
+    try {
+      block.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      select()
+      block.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+      clipboard.writeText.mockClear()
+      // A click on something outside the scrollback that leaves the
+      // selection standing: the person copied something else meanwhile, and
+      // this click must not put the old selection back.
+      document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      document.body.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+      document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+      expect(clipboard.writeText).not.toHaveBeenCalled()
     } finally {
       teardown()
     }
@@ -6144,8 +6243,8 @@ describe('the projections consume the kernel through the composition root (ADR-0
     const { content, teardown } = await mountTerminal(makeClipboard())
     try {
       const session = sessionOf(content)
-      let finishFirst!: (result: unknown) => void
-      const first = new Promise<unknown>((resolve) => {
+      let finishFirst!: (result: SessionIntentResult) => void
+      const first = new Promise<SessionIntentResult>((resolve) => {
         finishFirst = resolve
       })
       session.intent.mockImplementationOnce(() => first)
@@ -6154,7 +6253,7 @@ describe('the projections consume the kernel through the composition root (ADR-0
       await vi.waitFor(() => expect(session.intent).toHaveBeenCalledTimes(1))
       expect(session.intent.mock.calls).toEqual([['text', 'a']])
 
-      finishFirst({ state: 'executed' })
+      finishFirst({ state: 'executed', bytesWritten: 1, fenceAfter: 0 })
       await vi.waitFor(() => expect(session.intent).toHaveBeenCalledTimes(3))
       expect(session.intent.mock.calls).toEqual([
         ['text', 'a'],
@@ -8156,7 +8255,7 @@ describe('shell submit input intent ordering (nocx-zg3k3.3.1)', () => {
     const pasteGate = new Promise<void>((resolve) => {
       releasePaste = resolve
     })
-    const result = { state: 'executed', bytesWritten: 1, fenceAfter: 0 }
+    const result: SessionIntentResult = { state: 'executed', bytesWritten: 1, fenceAfter: 0 }
     const delivered: Array<[string, string]> = []
     session.intent.mockImplementation((kind: string, payload: string) => {
       delivered.push([kind, payload])
@@ -11047,10 +11146,8 @@ describe('a pane draws its past (nocx-m3fqk)', () => {
     // is ordinary (AD-9), so "could not ask" must not be recorded as
     // "there was nothing".
     const client = storeWith([entry()], 'output')
-    const live = client.call.getMockImplementation()! as (
-      method: string,
-      params?: unknown,
-    ) => Promise<unknown>
+    const live = client.call.getMockImplementation()
+    if (!live) throw new Error('storeWith must install the initial call handler')
     client.call.mockImplementation((method: string, params?: unknown) => {
       if (method === 'ledger.query') return Promise.reject(new Error('socket is reconnecting'))
       return live(method, params)
@@ -13468,13 +13565,13 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
     const pressGate = new Promise<void>((resolve) => {
       releasePress = resolve
     })
-    const result = { state: 'executed', bytesWritten: 1, fenceAfter: 0 }
+    const result: SessionIntentResult = { state: 'executed', bytesWritten: 1, fenceAfter: 0 }
     const events: string[] = []
     session.intent.mockImplementation((kind: string, payload: string) => {
       events.push(`intent:${payload}`)
       return (payload === 'press left 2 1' ? pressGate : Promise.resolve()).then(() => result)
     })
-    session.signal.mockImplementation((signal: string) => {
+    session.signal.mockImplementation((signal: SessionSignal['signal']) => {
       events.push(`signal:${signal}`)
       return Promise.resolve({ signal, outcome: 'delivered' })
     })
@@ -16797,7 +16894,7 @@ describe('replayed completion restores a durable block outcome (nocx-gm21o)', ()
       resolveQuery = resolve
     })
     const client = makeClient({
-      call: vi.fn((method: string) => {
+      call: vi.fn<WSClient['call']>().mockImplementation((method) => {
         if (method === 'ledger.query') return queryPending
         if (method === 'ledger.get') {
           return Promise.resolve({
