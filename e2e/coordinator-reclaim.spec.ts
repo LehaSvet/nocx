@@ -40,16 +40,13 @@
  * megabyte as lines would put ~4000 rows in the page for no assertion's
  * benefit.
  *
- * WHERE EACH HALF IS ASSERTED, and why it is not all on screen. The terminal
- * grid is drawn to a CANVAS — there is no DOM text in it, and a locator
- * cannot read a row. What the page does carry is the pane's own statements
- * about itself: `data-session-id` on the pane element (written by the content
- * that holds the session), and the command block with its header and its
- * running mark. Those are what say "this tab is the pane that never stopped",
- * and they are asserted on screen. The BYTES and the MARKERS are read off the
- * backend's recording — which is not a second source: it is exactly what the
- * reclaim renders the backend-owned screen and history, while recovery metadata is read through `session.recoveryStatus`, the method the
- * renderer itself uses for the same purpose.
+ * WHERE EACH HALF IS ASSERTED. The live terminal paints the accepted frame
+ * into accessible DOM grid rows; during a fresh client's reconnect, those rows
+ * may not exist yet even when the pane identity and server attachment do. The
+ * marker reader therefore uses rendered grid rows after the connection overlay
+ * leaves. `data-session-id` and the running block say the tab holds the same
+ * process; `session.recoveryStatus` supplies backend-owned byte counts and gap
+ * metadata while the client is absent.
  *
  * WHY THIS SPEC OWNS ITS BACKEND. It closes and reopens a client against one
  * long-lived server, and it needs a chain holding exactly its own pane — the
@@ -149,7 +146,10 @@ function recoveryStatus(ep: BackendEndpoint, live: LiveSession): Promise<Recover
 }
 
 async function screenText(page: Page): Promise<string> {
-  return (await page.locator('.pane.active .terminal-live-grid').textContent()) ?? ''
+  const rows = await page
+    .locator('.pane.active [role="grid"][aria-label="Terminal output"] .term-grid-row')
+    .allTextContents()
+  return rows.join('\n')
 }
 
 /** Every marker index currently present on the painted screen. */
@@ -283,6 +283,20 @@ test.describe('the coordinator outlives its window', () => {
     expect(after[0].instanceId).toBe(live.instanceId)
     expect(after[0].paneId).toBe(live.paneId)
     expect(after[0].attached).toBe(true)
+
+    // Pane identity and the server's attached flag can arrive before the
+    // fresh renderer has accepted the screen frame. The saved trace showed
+    // the full-screen reconnect overlay over a cursor-only live grid while
+    // the recovered marker rows were present elsewhere in the rendered grid.
+    // Read the rendered rows and wait for the overlay to leave before taking
+    // the return snapshot; do not treat the empty live surface as marker 0.
+    await expect(second.locator('.ui-connection-overlay')).toBeHidden({ timeout: 120_000 })
+    await expect
+      .poll(async () => lastMarker(await screenText(second)), {
+        timeout: 60_000,
+        message: 'the reclaimed terminal grid did not render its recovered markers',
+      })
+      .toBeGreaterThanOrEqual(markerAtDetach)
 
     // ── condition 2: the markers, counted after the return ────────────────
     //

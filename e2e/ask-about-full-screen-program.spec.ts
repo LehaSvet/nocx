@@ -74,6 +74,9 @@ let probeResultPath = ''
 let armPath = ''
 let summonPath = ''
 let summonRequestPath = ''
+let geometryRequestPath = ''
+let geometrySamplePath = ''
+let geometryAcceptedPath = ''
 let baselinePath = ''
 let exitPath = ''
 let resizePath = ''
@@ -91,6 +94,14 @@ function fileText(path: string): string {
   }
 }
 
+async function renderedGridSize(page: Page): Promise<string> {
+  return page.locator(`${GRID} .term-grid-row`).evaluateAll((rows) => {
+    const first = rows[0]
+    if (!first || rows.length === 0) return ''
+    return `${rows.length} ${Array.from(first.textContent ?? '').length}`
+  })
+}
+
 test.beforeAll(async () => {
   fake = new FakeOpenAI()
   await fake.start()
@@ -105,6 +116,9 @@ test.beforeAll(async () => {
   armPath = join(fixtureDir, 'arm')
   summonPath = join(fixtureDir, 'summon')
   summonRequestPath = join(fixtureDir, 'summon-request')
+  geometryRequestPath = join(fixtureDir, 'geometry-request')
+  geometrySamplePath = join(fixtureDir, 'geometry-sample')
+  geometryAcceptedPath = join(fixtureDir, 'geometry-accepted')
   baselinePath = join(fixtureDir, 'resize-baseline')
   exitPath = join(fixtureDir, 'exit')
   resizePath = join(fixtureDir, 'sigwinch')
@@ -128,6 +142,9 @@ test.beforeAll(async () => {
       `printf '\\033]9;%s\\007' '${READY}'`,
       `while [ ! -e '${armPath}' ]; do sleep 0.1; done`,
       `printf '\\033]9;%s\\007' '${ARMED}'`,
+      `while [ ! -e '${geometryRequestPath}' ]; do sleep 0.1; done`,
+      `printf '%s\n' "$(stty size)" > '${geometrySamplePath}'`,
+      `while [ ! -e '${geometryAcceptedPath}' ]; do sleep 0.1; done`,
       `while [ ! -e '${summonRequestPath}' ]; do sleep 0.1; done`,
       `printf '%s\n' "$(stty size)" > '${baselineSizePath}'`,
       `cp '${resizePath}' '${baselinePath}'`,
@@ -170,6 +187,9 @@ test.beforeEach(() => {
     armPath,
     summonPath,
     summonRequestPath,
+    geometryRequestPath,
+    geometrySamplePath,
+    geometryAcceptedPath,
     baselinePath,
     probePath,
     probeResultPath,
@@ -508,10 +528,23 @@ test.describe('asking about a full-screen program without leaving it (nocx-7l4ex
       })
       .toBe(true)
 
+    // ARMED is an OSC notification, not proof the screen frame that follows
+    // it has reached the renderer. Ask the fixture for its current PTY size,
+    // then wait until the accepted, rendered frame has that exact geometry
+    // before letting the fixture capture the comparison baseline. This keeps
+    // a delayed initial fit from straddling the baseline and summon action.
+    writeFileSync(geometryRequestPath, 'geometry-request\n')
+    await expect.poll(() => fileText(geometrySamplePath).trim()).not.toBe('')
+    const sampledGeometry = fileText(geometrySamplePath).trim()
+    await expect
+      .poll(() => renderedGridSize(page), {
+        timeout: 15_000,
+        message: `the rendered screen frame never accepted PTY geometry ${sampledGeometry}`,
+      })
+      .toBe(sampledGeometry)
+    writeFileSync(geometryAcceptedPath, 'geometry-accepted\n')
+
     // Request the geometry snapshot immediately before the summon action.
-    // WebKit may finish an earlier fit after the grid is already visible; a
-    // snapshot taken at arm time would turn that delayed setup work into a
-    // false summon-resize failure.
     writeFileSync(summonRequestPath, 'summon-request\n')
 
     // The user presses the summon chord on the full-screen grid. The overlay
@@ -531,6 +564,7 @@ test.describe('asking about a full-screen program without leaving it (nocx-7l4ex
     await expect.poll(() => fileText(summonedSizePath).trim()).not.toBe('')
     const dimensionsAtSummon = fileText(baselineSizePath).trim()
     expect(dimensionsAtSummon).not.toBe('')
+    expect(dimensionsAtSummon).toBe(sampledGeometry)
     expect(fileText(summonedSizePath).trim()).toBe(dimensionsAtSummon)
     await expect(page.locator(GRID)).toHaveClass(/live-fullscreen/)
 
