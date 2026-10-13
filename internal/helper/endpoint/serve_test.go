@@ -338,21 +338,30 @@ func TestTheSessionOutlivesTheConnectionWhenTheConnectionIsASocket(t *testing.T)
 	}
 }
 
-func TestLastSessionExitDrainsAndUnlinksTheEndpoint(t *testing.T) {
+func TestLastSessionCloseDrainsAndUnlinksTheEndpointAfterProcessExit(t *testing.T) {
 	d := startDaemon(t, session.Shell{Path: "/bin/sh", Args: []string{"-c", "exit 0"}})
 	c := connect(t, d)
 	var spawned proto.SpawnResult
 	c.request(proto.OpSpawn, proto.SpawnParams{Cols: 80, Rows: 24}, &spawned)
+
+	// Process exit records the status but retains the session row. Close that
+	// row explicitly; it is the event that releases the daemon's final owner.
+	var inventory proto.SessionsResult
+	c.await("the last session's exit status", func() bool {
+		c.request(proto.OpSessions, proto.SessionsParams{}, &inventory)
+		return len(inventory.Sessions) == 1 && inventory.Sessions[0].Exit != nil
+	})
+	c.request(proto.OpCloseSession, proto.CloseSessionParams{Session: spawned.Entry.Session}, &proto.CloseSessionResult{})
 	select {
 	case <-d.done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("daemon did not stop after its last session process exited")
+	case <-t.Context().Done():
+		t.Fatalf("daemon did not stop after its last session row was closed: %v", t.Context().Err())
 	}
 	if _, err := os.Stat(mustEndpointPath(t, d.dir)); !os.IsNotExist(err) {
 		t.Fatalf("endpoint still exists after daemon shutdown: err=%v", err)
 	}
 	if _, err := endpoint.Dial(context.Background(), d.dir, gen); err == nil {
-		t.Fatal("endpoint probe reached a daemon after its last session exited")
+		t.Fatal("endpoint probe reached a daemon after its last session row was closed")
 	}
 	select {
 	case <-d.drained:
