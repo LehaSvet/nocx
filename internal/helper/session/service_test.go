@@ -826,8 +826,13 @@ func TestAnExitedUnclaimedSessionKeepsTheDaemonAliveUntilItsRowIsClosed(t *testi
 	default:
 	}
 
-	call[proto.CloseSessionResult](t, svc, proto.OpCloseSession,
-		proto.CloseSessionParams{Session: entry.Session})
+	// What the host does with a close: answer it, then report the answer
+	// written (host.ResponseObserver). The drain belongs to the second step.
+	closed, err := svc.Call(callCtx(), proto.OpCloseSession, mustJSON(t, proto.CloseSessionParams{Session: entry.Session}))
+	if err != nil {
+		t.Fatalf("close-session: %v", err)
+	}
+	svc.ResponseWritten(callCtx(), proto.OpCloseSession, closed)
 	select {
 	case <-drained:
 	default:
@@ -1087,16 +1092,59 @@ func TestExplicitCloseOfLastSessionDrainsDaemon(t *testing.T) {
 	spawner.err = nil
 	spawner.mu.Unlock()
 	entry := spawnOne(t, svc)
-	call[proto.CloseSessionResult](t, svc, proto.OpCloseSession,
-		proto.CloseSessionParams{Session: entry.Session})
-	select {
-	case <-drained:
-	default:
-		t.Fatal("explicit close of last session did not drain daemon")
+	result, err := svc.Call(callCtx(), proto.OpCloseSession, mustJSON(t, proto.CloseSessionParams{Session: entry.Session}))
+	if err != nil {
+		t.Fatalf("close-session: %v", err)
 	}
+	// Admission is already closed between the answer and the drain: a spawn
+	// in that interval is refused, never acknowledged by a daemon about to go.
 	if _, err := svc.Call(callCtx(), proto.OpSpawn, mustJSON(t, proto.SpawnParams{Cols: 80, Rows: 24})); !errors.Is(err, session.ErrDraining) {
 		t.Fatalf("spawn after explicit close = %v, want ErrDraining", err)
 	}
+	// The drain stops the daemon, and stopping it closes the connection the
+	// close-session answer travels on. So it waits until that answer is on the
+	// wire: the host says so through ResponseWritten.
+	select {
+	case <-drained:
+		t.Fatal("the daemon drained before the close-session answer was written; its caller never hears it")
+	default:
+	}
+	svc.ResponseWritten(callCtx(), proto.OpCloseSession, result)
+	select {
+	case <-drained:
+	default:
+		t.Fatal("explicit close of last session did not drain daemon once its answer was written")
+	}
+}
+
+// TestCloseSessionOfANonFinalSessionDoesNotDrainWhenAnswered proves the
+// answer hook drains only for the close that ended the daemon's last session.
+func TestCloseSessionOfANonFinalSessionDoesNotDrainWhenAnswered(t *testing.T) {
+	drained := make(chan struct{})
+	svc := session.New(session.Options{
+		Generation: "gen-under-test",
+		Spawner:    &fakeSpawner{},
+		Log:        discardLog(),
+		OnDrained:  func() { close(drained) },
+	})
+	release := bindTo(svc, newSink())
+	t.Cleanup(func() {
+		release()
+		svc.Close()
+	})
+	first := spawnOne(t, svc)
+	spawnOne(t, svc)
+	result, err := svc.Call(callCtx(), proto.OpCloseSession, mustJSON(t, proto.CloseSessionParams{Session: first.Session}))
+	if err != nil {
+		t.Fatalf("close-session: %v", err)
+	}
+	svc.ResponseWritten(callCtx(), proto.OpCloseSession, result)
+	select {
+	case <-drained:
+		t.Fatal("closing one of two sessions drained the daemon")
+	default:
+	}
+	spawnOne(t, svc)
 }
 
 // TestSignalSendsTheRequestedSignalToTheOwnedProcessGroup proves the helper,
