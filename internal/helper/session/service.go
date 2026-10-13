@@ -350,6 +350,12 @@ var (
 // New builds the service. It starts nothing: a helper with no sessions holds
 // no PTY, and the first spawn is what makes this generation resident.
 func New(opts Options) *Service {
+	return newWithLifecycleTimer(opts, nil)
+}
+
+// newWithLifecycleTimer is the deterministic constructor seam for daemon
+// lifecycle tests. Production leaves afterFunc nil and uses time.AfterFunc.
+func newWithLifecycleTimer(opts Options, afterFunc lifecycleAfterFunc) *Service {
 	s := &Service{
 		generation: opts.Generation,
 		spawner:    opts.Spawner,
@@ -378,7 +384,11 @@ func New(opts Options) *Service {
 	if s.newID == nil {
 		s.newID = randomID
 	}
-	s.lifecycle = newDaemonLifecycle(opts.StartupGrace, opts.OnDrained)
+	if afterFunc == nil {
+		s.lifecycle = newDaemonLifecycle(opts.StartupGrace, opts.OnDrained)
+	} else {
+		s.lifecycle = newDaemonLifecycleWithTimer(opts.StartupGrace, opts.OnDrained, afterFunc)
+	}
 	interval := opts.SweepInterval
 	if interval <= 0 {
 		interval = defaultSweepInterval
