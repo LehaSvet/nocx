@@ -888,6 +888,15 @@ export function ApiPane(props: ApiPaneProps) {
    * value this surface wrote is not a value the person chose.
    */
   const [destTyped, setDestTyped] = createSignal(false)
+  /**
+   * Whether the person is in the destination field now. An offer that lands
+   * then is held, not written: text replaced under a caret is text the next
+   * keystroke lands after, and an offer that names a folder folds the field
+   * back into a sentence, focus and all (nocx-zg3k3.14.10). The effect that
+   * proposes on the root's landing re-runs when they leave, so a held offer
+   * is made then.
+   */
+  const [destFocused, setDestFocused] = createSignal(false)
   /** Whether an IMPORT is in flight — the one thing that refuses a second
    *  press of Import. Reading is not: see previewSource. */
   const [importingBusy, setImportingBusy] = createSignal(false)
@@ -1770,7 +1779,7 @@ export function ApiPane(props: ApiPaneProps) {
    */
   createEffect(() => {
     const root = store.defaultRoot()
-    if (root === '') return
+    if (root === '' || destFocused()) return
     untrack(() => {
       if (!importing() || destTyped()) return
       const dest = postmanDest().trim()
@@ -1852,7 +1861,7 @@ export function ApiPane(props: ApiPaneProps) {
    * person who has said where the folder goes has said it.
    */
   const offerDestination = (proposal: string): void => {
-    if (untrack(destTyped)) return
+    if (untrack(destTyped) || untrack(destFocused)) return
     if (proposal !== '') setPostmanDest(proposal)
   }
 
@@ -2231,6 +2240,7 @@ export function ApiPane(props: ApiPaneProps) {
     const root = store.defaultRoot()
     setPostmanDest(root === '' ? '' : `${root.replace(/[\\/]+$/, '')}/`)
     setDestTyped(false)
+    setDestFocused(false)
     clearImportRefusal()
     setImporting(true)
   }
@@ -3222,6 +3232,7 @@ export function ApiPane(props: ApiPaneProps) {
           dest={postmanDest()}
           editingDest={editingDest()}
           onEditDest={() => setEditingDest(true)}
+          onDestFocus={setDestFocused}
           onFile={chooseExport}
           onDest={(value) => {
             setDestTyped(true)
