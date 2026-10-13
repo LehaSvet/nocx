@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -201,7 +202,13 @@ func TestAppRestartRestoresEveryRecordedAgentInItsPaneAndRefusesALazyID(t *testi
 		if !found {
 			t.Fatalf("%s pane %q has no session after restart", agent.name, agent.pane)
 		}
-		waittest.WaitForTimeout(t, agent.name+" resume invocation or explicit restore refusal", 15*time.Second, func() bool {
+		waittest.WaitForTimeoutDetail(t, agent.name+" resume invocation or explicit restore refusal", 15*time.Second, func() string {
+			raw, readErr := os.ReadFile(logPath) //nolint:gosec // test-owned temporary path
+			if readErr != nil {
+				return fmt.Sprintf("invocation log unavailable: %v", readErr)
+			}
+			return fmt.Sprintf("invocation log contents: %q", string(raw))
+		}, func() bool {
 			if hasRestartInvocation(logPath, agent.cwd, agent.args) {
 				return true
 			}
@@ -264,9 +271,17 @@ func hasRestartInvocation(logPath, cwd string, wantArgs []string) bool {
 	if err != nil {
 		return false
 	}
+	wantCWD, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return false
+	}
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		fields := strings.Split(line, "\t")
-		if len(fields) < len(wantArgs)+1 || fields[0] != cwd {
+		if len(fields) < len(wantArgs)+1 {
+			continue
+		}
+		gotCWD, resolveErr := filepath.EvalSymlinks(fields[0])
+		if resolveErr != nil || gotCWD != wantCWD {
 			continue
 		}
 		if reflect.DeepEqual(fields[1:1+len(wantArgs)], wantArgs) {
@@ -274,6 +289,27 @@ func hasRestartInvocation(logPath, cwd string, wantArgs []string) bool {
 		}
 	}
 	return false
+}
+
+func TestHasRestartInvocationMatchesTheSameDirectoryThroughASymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "checkout")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "checkout-alias")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(root, "invocation.log")
+	wantArgs := []string{"claude", "--resume", "resume-id"}
+	line := strings.Join(append([]string{target}, wantArgs...), "\t") + "\n"
+	if err := os.WriteFile(logPath, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !hasRestartInvocation(logPath, alias, wantArgs) {
+		t.Fatalf("invocation in %q was not matched to its symlinked spelling %q", target, alias)
+	}
 }
 
 func createRestartAcceptanceWorktrees(t *testing.T) []string {
