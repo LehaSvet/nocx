@@ -180,7 +180,7 @@ keeps every later change.
   here — AGENTS.md, README.md, `docs/architecture.md`, `docs/agents/`, the frontend state
   ownership and lifecycle protocol documents, `contracts/README.md` and the UI kit's README.
   `presentIgnores` holds what those documents name that is not a path of this tree (Go's
-  `log/slog`, deja's `internal/policy`, the plugin's own paths, the `docs/adr` this repository
+  `log/slog`, the plugin's own paths, the `docs/adr` this repository
   forbids). The check runs in CI's `ci-backlog` on every pull request, including
   drafts, from the merge base to the PR's head, and by hand before a pull request is opened:
   `node .githooks/backlog-gate/check-present.mjs --config .githooks/backlog-gate/config.json --base "$(git merge-base origin/main HEAD)"`.

@@ -115,7 +115,7 @@
     "frontend/src/ui/README.md"
   ],
   "presentAreas": [""],
-  "presentIgnores": ["log/slog", "internal/policy", "skills/backlog/**", "docs/adr"],
+  "presentIgnores": ["log/slog", "skills/backlog/**", "docs/adr"],
   "presentChurnCommits": 20,
   "scope": "team",
   "artifactLanguage": "en",
