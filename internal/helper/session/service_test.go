@@ -793,6 +793,48 @@ func TestTheExitStatusIsOwnedByTheHelperAndSurvivesInTheInventory(t *testing.T) 
 	}
 }
 
+// TestAnExitedUnclaimedSessionKeepsTheDaemonAliveUntilItsRowIsClosed protects
+// the interval in D2: process exit makes the final status available, but the
+// daemon still owns that row until a coordinator closes it or the unclaimed
+// TTL evicts it. Process exit alone is not the lifecycle's closing event.
+func TestAnExitedUnclaimedSessionKeepsTheDaemonAliveUntilItsRowIsClosed(t *testing.T) {
+	spawner := &fakeSpawner{}
+	sink := newSink()
+	drained := make(chan struct{})
+	svc := session.New(session.Options{
+		Generation: "gen-under-test",
+		Spawner:    spawner,
+		Log:        discardLog(),
+		OnDrained:  func() { close(drained) },
+	})
+	release := bindTo(svc, sink)
+	t.Cleanup(func() {
+		release()
+		svc.Close()
+	})
+
+	entry := spawnOne(t, svc)
+	spawner.last().exit(nil)
+	awaitExitCount(t, sink, 1)
+	inventory := call[proto.SessionsResult](t, svc, proto.OpSessions, proto.SessionsParams{})
+	if len(inventory.Sessions) != 1 || inventory.Sessions[0].Exit == nil {
+		t.Fatalf("the exited session was not retained with its final status: %+v", inventory.Sessions)
+	}
+	select {
+	case <-drained:
+		t.Fatal("daemon retired on process exit before a coordinator could claim the retained status")
+	default:
+	}
+
+	call[proto.CloseSessionResult](t, svc, proto.OpCloseSession,
+		proto.CloseSessionParams{Session: entry.Session})
+	select {
+	case <-drained:
+	default:
+		t.Fatal("closing the retained session did not drain the daemon")
+	}
+}
+
 // TestTheSessionIsInTheInventoryButTheProcessIsGone is the third partial
 // failure the spawn procedure owes an answer to. What is true afterwards: the
 // entry is still there and still carries its exit status and its window, a

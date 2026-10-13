@@ -1543,7 +1543,7 @@ func (s *Service) finishSpawn(claim *keyClaim, proc Process, launch proto.Launch
 	rt.SetRowStream(&rowBridge{hs: hs})
 
 	s.mu.Lock()
-	hs.lifetimeCounted = true
+	hs.lifecycleCounted = true
 	s.sessions[hs.id.Session] = hs
 	s.lifecycle.sessionStarted()
 	// The claim resolves onto the row in the SAME critical section that adds
@@ -1724,8 +1724,8 @@ func (s *Service) removeSession(hs *hostSession, reason string) {
 	endedLifetime := false
 	if current, ok := s.sessions[hs.id.Session]; ok && current == hs {
 		removed = true
-		endedLifetime = hs.lifetimeCounted
-		hs.lifetimeCounted = false
+		endedLifetime = hs.lifecycleCounted
+		hs.lifecycleCounted = false
 		delete(s.sessions, hs.id.Session)
 		if hs.key != "" {
 			if claim, held := s.keys[hs.key]; held && claim.session == hs.id.Session {
@@ -1964,25 +1964,19 @@ func (s *Service) mintAttachment() proto.AttachmentID {
 	return proto.AttachmentID(fmt.Sprintf("att-%d", s.attachSeq))
 }
 
-// notifyExit tells EVERY bound connection that a session ended. An exit is a
-// fact about a session, not about one attachment, and a coordinator that is
-// watching it must hear it whether or not another coordinator is also
-// watching. With nobody connected the status is not lost: it is in the entry,
-// and the inventory is what a replacing coordinator asks first.
+// notifyExit publishes the final process status to EVERY bound connection.
+// Process exit is not the end of the helper's session record: the daemon keeps
+// that record, and its lifecycle count, until removeSession closes the row
+// after coordinator close-session or bounded unclaimed-session eviction. With
+// nobody connected the status is not lost: it is in the entry, and the
+// inventory is what a replacing coordinator asks first.
 func (s *Service) notifyExit(e proto.SessionExit) {
 	s.mu.Lock()
-	var endedLifetime bool
-	if hs := s.sessions[e.Session.Session]; hs != nil && hs.lifetimeCounted {
-		hs.lifetimeCounted = false
-		endedLifetime = true
-	}
 	sinks := make([]Sink, 0, len(s.sinks))
 	for sink := range s.sinks {
 		sinks = append(sinks, sink)
 	}
-	shouldDrain := endedLifetime && s.lifecycle.markSessionEnded()
 	s.mu.Unlock()
-	s.lifecycle.fireDrained(shouldDrain)
 	for _, sink := range sinks {
 		if err := sink.SendNotification(proto.Notification{
 			Service: proto.ServiceSession, Event: proto.EventSessionExit, Params: e,

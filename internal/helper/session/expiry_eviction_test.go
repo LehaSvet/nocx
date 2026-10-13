@@ -130,6 +130,62 @@ func TestAnExitedUnattachedSessionExpiresAfterItsTTLAndNotBefore(t *testing.T) {
 	}
 }
 
+// TestUnclaimedTTLClosesTheLastSessionAndDrainsDaemon proves the bounded
+// absence path: without a coordinator to claim the exit, the helper keeps its
+// session row and daemon alive until the configured TTL, then removes the row
+// with the same closer that ends daemon lifetime.
+func TestUnclaimedTTLClosesTheLastSessionAndDrainsDaemon(t *testing.T) {
+	spawner := &fakeSpawner{}
+	sink := newSink()
+	clock := newFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	ttl := time.Hour
+	drained := make(chan struct{})
+	svc := session.New(session.Options{
+		Generation: "gen-under-test",
+		Spawner:    spawner,
+		Log:        discardLog(),
+		Limits:     session.Limits{UnclaimedSessionTTL: ttl},
+		Now:        clock.Now,
+		OnDrained:  func() { close(drained) },
+	})
+	release := bindTo(svc, sink)
+	t.Cleanup(func() {
+		release()
+		svc.Close()
+	})
+
+	spawnOne(t, svc)
+	spawner.last().exit(nil)
+	awaitExitCount(t, sink, 1)
+	select {
+	case <-drained:
+		t.Fatal("daemon retired before the absent coordinator's TTL elapsed")
+	default:
+	}
+
+	clock.Advance(ttl - time.Nanosecond)
+	inv := call[proto.SessionsResult](t, svc, proto.OpSessions, proto.SessionsParams{})
+	if len(inv.Sessions) != 1 {
+		t.Fatalf("session left inventory before TTL: %+v", inv.Sessions)
+	}
+	select {
+	case <-drained:
+		t.Fatal("daemon retired before the unclaimed-session closing event")
+	default:
+	}
+
+	clock.Advance(time.Nanosecond)
+	inv = call[proto.SessionsResult](t, svc, proto.OpSessions, proto.SessionsParams{})
+	if len(inv.Sessions) != 0 {
+		t.Fatalf("session survived the unclaimed-session TTL: %+v", inv.Sessions)
+	}
+	select {
+	case <-drained:
+	default:
+		t.Fatal("unclaimed-ttl row removal did not drain the daemon")
+	}
+}
+
 // TestASpawnEvictsExitedUnattachedSessionsOldestExitFirst is acceptance test
 // (b): the budget is filled with exited, unattached sessions and the next
 // spawn succeeds anyway — the OLDEST exit is the one evicted, never the
