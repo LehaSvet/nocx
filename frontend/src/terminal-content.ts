@@ -152,8 +152,8 @@ import { blockColumnsOf, paintStoredRows } from './scrollback/block-rows'
 import { recordStoredBlock } from './scrollback/cell-drift'
 import { toolCallTitle } from './scrollback/tool-call-title'
 import { TailFollow } from './scrollback/tail-follow'
-import { fromITheme } from './scrollback/serializer'
-import { getCurrentTheme } from './renderers/theme-adapter'
+import { fromITheme, type TerminalSnapshot } from './scrollback/serializer'
+import { getCurrentTheme, subscribeThemeChanges } from './renderers/theme-adapter'
 import { log, logDecision, isDecisionTracing } from './log'
 import type { BlockClosed } from './generated/block.closed'
 import type { WSClient, SessionHandle, OpenAnchor, SessionSize } from './ipc'
@@ -863,6 +863,19 @@ type PendingSessionCall =
       reject: (reason?: unknown) => void
     }
 
+/** The live surfaces' palette: the current theme as a snapshot, one object
+ *  per theme, so the painter can tell a theme change from a repeat read by
+ *  identity (nocx-zg3k3.28). */
+let livePaletteFor: {
+  theme: ReturnType<typeof getCurrentTheme>
+  snapshot: TerminalSnapshot
+} | null = null
+function livePalette(): TerminalSnapshot {
+  const theme = getCurrentTheme()
+  if (livePaletteFor?.theme !== theme) livePaletteFor = { theme, snapshot: fromITheme(theme) }
+  return livePaletteFor.snapshot
+}
+
 export class TerminalContent extends BasePaneContent {
   // The live terminal is painted from accepted backend frames; no renderer
   // adapter is injected, and the backend remains authoritative for buffer kind.
@@ -1442,6 +1455,7 @@ export class TerminalContent extends BasePaneContent {
   /** Unsubscribe from the CURRENT session's home — torn down and
    *  re-registered whenever `_homeWiredSession` changes underneath it. */
   private _homeUnsub: (() => void) | null = null
+  private _themeUnsub: (() => void) | null = null
   /** The session `sessionHome.ensure`/`.subscribe` have already been
    *  asked for (spec §3: "opened when the session first reports a
    *  verified cwd", not on every environment view). Null until then;
@@ -2697,6 +2711,13 @@ export class TerminalContent extends BasePaneContent {
         // one owner of "where is the caret", two readers. Read lazily, because
         // the painter is built before the element is.
         onCaretPlaced: (at) => this._intentInput?.placeAt(at.left, at.top, at.height),
+        palette: livePalette,
+      })
+      // A theme switch repaints the live grid in place (nocx-zg3k3.28); the
+      // painter sees the new palette and repaints every row.
+      this._themeUnsub = subscribeThemeChanges(() => {
+        const current = this._cellModel?.current()
+        if (current) this._paintFrame(current)
       })
 
       // ── THE LIVE TIER'S SCROLLBACK SURFACE (nocx-zg3k3.10.4) ───────────
@@ -2717,6 +2738,7 @@ export class TerminalContent extends BasePaneContent {
           return metricOf(fit)
         },
         warm: (candidates) => this._cellFit?.warm(candidates),
+        palette: livePalette,
       })
       this._liveHistory = liveHistory
 
@@ -8356,6 +8378,8 @@ export class TerminalContent extends BasePaneContent {
     this._detachLinks?.()
     this._detachLinks = null
     this._homeUnsub?.()
+    this._themeUnsub?.()
+    this._themeUnsub = null
     this._historyRecordedUnsub?.()
     this._historyRecordedUnsub = null
     this._homeUnsub = null

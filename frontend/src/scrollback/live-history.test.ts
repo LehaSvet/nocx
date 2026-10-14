@@ -13,6 +13,7 @@ import {
 import type { SessionHistoryPage } from '../generated/session.historyPage'
 import type { SessionHistoryPageRows } from '../generated/session.historyPageRows'
 import { styleOf, wireRowOf, type CellSpec } from '../painter/fixtures'
+import { DEFAULT_SNAPSHOT } from './serializer'
 
 const STYLE = styleOf({ foreground: { kind: 1, palette: 7, rgb: { r: 0, g: 0, b: 0 } } })
 
@@ -137,6 +138,7 @@ function mount(): {
     stack,
     columns: () => 80,
     metric: () => null,
+    palette: () => DEFAULT_SNAPSHOT,
   })
   // jsdom lays nothing out; the surface reads exactly three numbers off
   // the scroller, so the geometry the anchor math needs is named here:

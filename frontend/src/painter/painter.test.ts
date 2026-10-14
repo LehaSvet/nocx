@@ -11,7 +11,12 @@
 // @vitest-environment jsdom
 
 import { describe, it, expect, vi } from 'vitest'
-import { DEFAULT_SNAPSHOT, serializeLine } from '../scrollback/serializer'
+import {
+  DEFAULT_SNAPSHOT,
+  serializeLine,
+  type AnsiPalette,
+  type TerminalSnapshot,
+} from '../scrollback/serializer'
 import { lineWith } from '../scrollback/test-helpers'
 import type { RunMetric } from '../scrollback/run-geometry'
 import { createCellPainter, metricOf } from './painter'
@@ -38,7 +43,7 @@ const M2 = metricWhere(16)
 function mount(metric: () => RunMetric | null) {
   const surface = document.createElement('div')
   document.body.appendChild(surface)
-  const painter = createCellPainter({ surface, metric, palette: DEFAULT_SNAPSHOT })
+  const painter = createCellPainter({ surface, metric, palette: () => DEFAULT_SNAPSHOT })
   return { painter, surface }
 }
 
@@ -376,7 +381,7 @@ describe('metricOf — the CellFit → RunMetric seam the cutover calls', () => 
       surface,
       metric: () => metricOf(fit),
       warm: (candidates) => fit.warm(candidates),
-      palette: DEFAULT_SNAPSHOT,
+      palette: () => DEFAULT_SNAPSHOT,
     })
     painter.apply(snapshotOf(frameOf(1, [MERGE_ROW])))
     expect(warmed).toContain('漢/2')
@@ -391,7 +396,7 @@ describe('metricOf — the CellFit → RunMetric seam the cutover calls', () => 
     const painter = createCellPainter({
       surface,
       metric: () => metricOf(fit),
-      palette: DEFAULT_SNAPSHOT,
+      palette: () => DEFAULT_SNAPSHOT,
     })
     const first: CellSpec[] = [['x', 1, true]]
     painter.apply(snapshotOf(frameOf(1, [MERGE_ROW, first])))
@@ -414,13 +419,58 @@ describe('metricOf — the CellFit → RunMetric seam the cutover calls', () => 
     const painter = createCellPainter({
       surface,
       metric: () => metricOf(shifting),
-      palette: DEFAULT_SNAPSHOT,
+      palette: () => DEFAULT_SNAPSHOT,
     })
     painter.apply(snapshotOf(frameOf(1, [MERGE_ROW])))
     const before = liveRow(surface)
     signature = 'after-font-load'
     painter.apply(snapshotOf(frameOf(2, [MERGE_ROW])))
     expect(liveRow(surface)).not.toBe(before)
+  })
+})
+
+describe('the live grid wears the theme (nocx-zg3k3.28)', () => {
+  it('paints a palette colour from the theme it is given, and repaints when the theme changes', () => {
+    // mc's panels are palette 4. Built without the theme, the live grid fell
+    // back to Tokyo Night's #7aa2f7 under every theme, and no theme switch
+    // ever reached it.
+    const withBlue = (blue: string): TerminalSnapshot => {
+      const p = DEFAULT_SNAPSHOT.palette
+      const palette: AnsiPalette = [
+        p[0],
+        p[1],
+        p[2],
+        p[3],
+        blue,
+        p[5],
+        p[6],
+        p[7],
+        p[8],
+        p[9],
+        p[10],
+        p[11],
+        p[12],
+        p[13],
+        p[14],
+        p[15],
+      ]
+      return { ...DEFAULT_SNAPSHOT, palette }
+    }
+    const graphite = withBlue('#2b64c8')
+    const dracula = withBlue('#bd93f9')
+    let theme = graphite
+    const surface = document.createElement('div')
+    document.body.appendChild(surface)
+    const painter = createCellPainter({ surface, metric: () => null, palette: () => theme })
+    const blue = styleOf({ background: { kind: 1, palette: 4, rgb: { r: 0, g: 0, b: 0 } } })
+    const snapshot = snapshotOf(frameOf(1, [[['x', 1, true, blue]]]))
+    const background = (): string =>
+      (liveRow(surface).querySelector('span') as HTMLElement).style.backgroundColor
+    painter.apply(snapshot)
+    expect(background()).toBe('rgb(43, 100, 200)')
+    theme = dracula
+    painter.apply(snapshot)
+    expect(background()).toBe('rgb(189, 147, 249)')
   })
 })
 

@@ -1,4 +1,4 @@
-import { appReadyForInput, test, expect } from './harness'
+import { appReadyForInput, promptReady, test, expect } from './harness'
 
 test.describe('theme switching', () => {
   const THEME_ROW = '.ui-settings-row[data-key="ui.theme"]'
@@ -108,5 +108,62 @@ test.describe('theme switching', () => {
       () => document.documentElement.getAttribute('data-theme') === 'tokyo-night',
       { timeout: 5000 },
     )
+  })
+  /**
+   * The live grid paints a program's palette colours from the CHOSEN theme,
+   * and a theme switch repaints it in place (nocx-zg3k3.28). Built without the
+   * theme, the painter fell back to Tokyo Night under every theme: mc's
+   * panels came out #7aa2f7 under Graphite, and the contrast floor then
+   * darkened mc's marked and unmarked names alike into one colour.
+   */
+  test('the live grid wears the theme’s palette and follows a switch', async ({ page }) => {
+    await page.goto('/')
+    await promptReady(page)
+    await page.keyboard.type("printf '\\033[44m PANEL \\033[0m\\n'; read x")
+    await page.keyboard.press('Enter')
+    const grid = page.locator('.pane.active .terminal-live-grid')
+    await expect(grid).toContainText('PANEL', { timeout: 15_000 })
+    const panel = (): Promise<{ painted: string; token: string }> =>
+      page.evaluate(() => {
+        const span = [
+          ...document.querySelectorAll<HTMLElement>(
+            '.pane.active .terminal-live-grid .term-grid-row span',
+          ),
+        ].find((s) => (s.textContent ?? '').includes('PANEL'))!
+        const probe = document.createElement('div')
+        probe.style.color = getComputedStyle(document.documentElement)
+          .getPropertyValue('--terminal-ansi-4')
+          .trim()
+        document.body.appendChild(probe)
+        const token = getComputedStyle(probe).color
+        probe.remove()
+        return { painted: getComputedStyle(span).backgroundColor, token }
+      })
+    const before = await panel()
+    expect(before.painted).toBe(before.token)
+
+    await page.keyboard.press('Meta+,')
+    await page.locator('.ui-grouped-nav__item[data-item="Interface"] button').click()
+    await expect(page.locator(THEME_SELECT)).toBeVisible({ timeout: 5000 })
+    await page.selectOption(THEME_SELECT, 'dracula')
+    await page.waitForFunction(
+      () => document.documentElement.getAttribute('data-theme') === 'dracula',
+      { timeout: 5000 },
+    )
+    await page.keyboard.press('Meta+w')
+    // Dracula's ansi-4, #bd93f9: the row repainted without new output.
+    await expect
+      .poll(async () => (await panel()).painted, { timeout: 5000 })
+      .toBe('rgb(189, 147, 249)')
+
+    await page.keyboard.press('Meta+,')
+    await page.locator('.ui-grouped-nav__item[data-item="Interface"] button').click()
+    await page.selectOption(THEME_SELECT, 'tokyo-night')
+    await page.waitForFunction(
+      () => document.documentElement.getAttribute('data-theme') === 'tokyo-night',
+      { timeout: 5000 },
+    )
+    await page.keyboard.press('Meta+w')
+    await page.keyboard.press('Enter')
   })
 })
