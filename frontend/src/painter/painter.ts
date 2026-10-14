@@ -319,6 +319,14 @@ export function createCellPainter(opts: CellPainterOptions): CellPainter {
     cursor.style.top = `${position.y}px`
     cursor.style.width = `${devicePxToCssPx(snapshot.geometry.cellWidthPx, displayDpr())}px`
     cursor.style.height = `${height}px`
+    // A solid block covers its cell, so it draws the character it covers in
+    // the cursor's accent colour (nocx-zg3k3.24): without it the letter about
+    // to be overwritten disappears under the block. A row-tall line box puts
+    // the glyph where the row's own glyph is.
+    cursor.style.lineHeight = `${height}px`
+    const covered = snapshot.rows[snapshot.cursor.y]?.cells[snapshot.cursor.x]
+    const text = covered?.hasText ? covered.grapheme : ''
+    if (cursor.textContent !== text) cursor.textContent = text
   }
 
   return {

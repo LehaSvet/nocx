@@ -231,6 +231,27 @@ describe('the cursor overlay', () => {
     expect(cursor.style.height).toBe('20px')
   })
 
+  // A block cursor covers its cell, so it draws the character it covers in the
+  // accent colour (nocx-zg3k3.24) — an opaque block without it hides the
+  // letter the person is about to overwrite. The overlay follows the cell's
+  // text as the cursor moves and as the cell changes under it.
+  it('carries the character of the cell it covers, and a row-tall line box', () => {
+    const { painter, surface } = mount(() => null)
+    const row: CellSpec[] = [
+      ['a', 1, true],
+      ['b', 1, true],
+      ['', 1, false],
+      ['d', 1, true],
+    ]
+    painter.apply(snapshotOf(frameOf(1, [row, row, row], { x: 1, y: 2, visible: true }, GEOMETRY)))
+    const cursor = surface.querySelector('.term-grid-cursor')
+    if (!(cursor instanceof HTMLElement)) throw new Error('no cursor overlay')
+    expect(cursor.textContent).toBe('b')
+    expect(cursor.style.lineHeight).toBe('20px')
+    painter.apply(snapshotOf(frameOf(2, [row, row, row], { x: 2, y: 0, visible: true }, GEOMETRY)))
+    expect(cursor.textContent).toBe('')
+  })
+
   it('sizes the cursor in CSS pixels on a dense display: device 17x34 at dpr 2 is 8.5x17', () => {
     vi.stubGlobal('devicePixelRatio', 2)
     try {

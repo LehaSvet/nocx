@@ -932,7 +932,37 @@
   position: absolute;
   pointer-events: none;
   box-sizing: border-box;
-  background: color-mix(in srgb, currentColor, transparent 75%);
+  overflow: hidden;
+  white-space: pre;
+  font-size: var(--font-size-terminal);
+  /* Without the keyboard the cursor is an outline, as in every terminal: it
+     still says where typing would go, and that typing is elsewhere. */
+  border: 1px solid var(--terminal-cursor);
+  color: transparent;
+  background: transparent;
+}
+
+/* With the keyboard (the pane's input element sits beside the painted
+   surface, in the same live inner) the cursor is a solid block in the theme's
+   cursor colour, the covered character in its accent, and it blinks
+   (nocx-zg3k3.24). The off phase shows the row's own character beneath. */
+.terminal-live-inner:focus-within .term-grid-cursor {
+  border-color: transparent;
+  background: var(--terminal-cursor);
+  color: var(--terminal-cursor-accent);
+  animation: term-cursor-blink 1.2s step-end infinite;
+}
+
+@keyframes term-cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-live-inner:focus-within .term-grid-cursor {
+    animation: none;
+  }
 }
 
 /* A whole-block grant fills the block; a row grant fills only its selected
