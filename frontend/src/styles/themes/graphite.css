@@ -89,7 +89,16 @@
      which is the point of the token layer.
 
      ANSI 0-15 are theme colours. Indices 16-255 and truecolor stay
-     algorithmic in the terminal itself: those are content, not theme. */
+     algorithmic in the terminal itself: those are content, not theme.
+
+     The normal colours 1-7 are Graphite's own, and they are deeper than the
+     bright ones on purpose (nocx-zg3k3.22). A 16-colour program paints
+     BACKGROUNDS with them — mc's panels are blue under light gray, its cursor
+     row cyan under black — and Tokyo Night's accents, which this theme used
+     for both halves, made blue and cyan two light periwinkles: the cursor row
+     disappeared into the panel. The bright colours 9-15 keep those accents,
+     which is where text that wants to be light asks for it. Floors in
+     theme-catalogue.test.ts. */
   --terminal-background: #111316;
   --terminal-foreground: #d8dce5;
   --terminal-cursor: #d8dce5;
@@ -97,13 +106,13 @@
   --terminal-selection: #364a82;
 
   --terminal-ansi-0: #111316;
-  --terminal-ansi-1: #f7768e;
-  --terminal-ansi-2: #9ece6a;
-  --terminal-ansi-3: #e0af68;
-  --terminal-ansi-4: #7aa2f7;
-  --terminal-ansi-5: #bb9af7;
-  --terminal-ansi-6: #7dcfff;
-  --terminal-ansi-7: #979fac;
+  --terminal-ansi-1: #d9485f;
+  --terminal-ansi-2: #5fae4a;
+  --terminal-ansi-3: #d19a3d;
+  --terminal-ansi-4: #2b64c8;
+  --terminal-ansi-5: #9a5fd8;
+  --terminal-ansi-6: #2ab0c8;
+  --terminal-ansi-7: #c0c6cf;
   --terminal-ansi-8: #414868;
   --terminal-ansi-9: #f7768e;
   --terminal-ansi-10: #9ece6a;
