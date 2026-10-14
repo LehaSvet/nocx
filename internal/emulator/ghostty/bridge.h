@@ -153,8 +153,9 @@ GhosttyResult nocxTrackRowAt(GhosttyTerminal terminal, GhosttyPointTag tag,
 uint64_t nocxGridResolveCount(void);
 GhosttyResult nocxKeyEncode(GhosttyKeyEncoder encoder, GhosttyKey key,
                             GhosttyMods mods, GhosttyKeyAction action,
-                            const char *utf8, size_t utf8_len, char *out,
-                            size_t out_len, size_t *out_written);
+                            const char *utf8, size_t utf8_len,
+                            uint32_t unshifted, char *out, size_t out_len,
+                            size_t *out_written);
 
 /*
  * Encodes one mouse event. The event is built and freed here for the same

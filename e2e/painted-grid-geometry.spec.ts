@@ -112,3 +112,32 @@ async function measure(page: Page): Promise<{
     return { rows, cursorTop: cursor.getBoundingClientRect().top - origin }
   }, LIVE)
 }
+
+// The cursor is a solid block in the theme's cursor colour that blinks while
+// the terminal has the keyboard, and an outline while it does not
+// (nocx-zg3k3.24) — it had been a faint translucent block either way.
+test('the cursor is a blinking block with the keyboard, and an outline without it', async ({
+  page,
+}) => {
+  await page.goto('/')
+  await promptReady(page)
+  await page.keyboard.type("printf '\\033[?1049h\\033[3;3HX\\033[3;3H\\033[?25h'; sleep 60")
+  await page.keyboard.press('Enter')
+  await expect.poll(() => cursorRow(page)).not.toBeNull()
+  const cursor = page.locator(`${LIVE} .term-grid-cursor`)
+
+  await page.locator(LIVE).click()
+  await expect(cursor).toHaveCSS('animation-name', 'term-cursor-blink')
+  await expect(cursor).toHaveText('X')
+  const solid = await cursor.evaluate((el) => getComputedStyle(el).backgroundColor)
+  expect(solid).not.toBe('rgba(0, 0, 0, 0)')
+
+  await page
+    .locator('.pane.active .nocx-editor, .pane.active .tab-chrome')
+    .first()
+    .evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  await expect(cursor).toHaveCSS('animation-name', 'none')
+  await expect(cursor).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+  await page.locator(LIVE).click()
+  await page.keyboard.press('Control+C')
+})

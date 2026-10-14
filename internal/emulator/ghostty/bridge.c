@@ -426,8 +426,9 @@ uint64_t nocxGridResolveCount(void) {
 
 GhosttyResult nocxKeyEncode(GhosttyKeyEncoder encoder, GhosttyKey key,
                             GhosttyMods mods, GhosttyKeyAction action,
-                            const char *utf8, size_t utf8_len, char *out,
-                            size_t out_len, size_t *out_written) {
+                            const char *utf8, size_t utf8_len,
+                            uint32_t unshifted, char *out, size_t out_len,
+                            size_t *out_written) {
   GhosttyKeyEvent event = NULL;
   GhosttyResult r = ghostty_key_event_new(NULL, &event);
   if (r != GHOSTTY_SUCCESS) return r;
@@ -438,6 +439,10 @@ GhosttyResult nocxKeyEncode(GhosttyKeyEncoder encoder, GhosttyKey key,
      rather than across two calls from Go. */
   if (utf8 != NULL && utf8_len > 0)
     ghostty_key_event_set_utf8(event, utf8, utf8_len);
+  /* The Kitty keyboard protocol names a key by its unshifted codepoint; with
+     none set the encoder has only the text to go on, and a chord such as
+     Ctrl+C went out as the letter (nocx-zg3k3.14.20). */
+  if (unshifted != 0) ghostty_key_event_set_unshifted_codepoint(event, unshifted);
   r = ghostty_key_encoder_encode(encoder, event, out, out_len, out_written);
   ghostty_key_event_free(event);
   return r;
