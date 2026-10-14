@@ -9,8 +9,16 @@
 // ensureContrastRatio), so the painter renders what 0.4 rendered. Only pairs
 // below the floor change; a palette that is already legible renders exactly
 // as declared.
+//
+// The floor is 3:1, not 0.4's 4.5 (the owner's report, 2026-10-15). The step moves a colour
+// toward white or black, so at 4.5 it lifted mc's marked names (bright yellow,
+// 2.79:1 on Graphite's blue) and its other names (bright white, 4.07:1) to
+// the same near-white, and nobody could see which files were marked. 3:1
+// still rescues what the floor was for — grey on Tokyo Night's light blue
+// (1.19:1, nocx-3lrm) and htop's green on green (1:1) — and leaves a colour
+// that is merely not AA its hue.
 
-const MINIMUM_CONTRAST_RATIO = 4.5
+const MINIMUM_CONTRAST_RATIO = 3
 
 type RGB = readonly [number, number, number]
 
