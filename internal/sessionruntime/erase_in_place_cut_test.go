@@ -96,3 +96,25 @@ func TestAPrimaryEraseFollowedByTheAlternateScreenInOneFeedStillCounts(t *testin
 		t.Fatalf("the block stored %q, want exactly the reprinted line and OUT-002", got)
 	}
 }
+
+// A COMMAND THAT REWRITES ROWS ABOVE ITS START KEEPS ONLY WHAT IT REWROTE
+// (nocx-zg3k3.23). An inline TUI erasing its frame on the way out (claude
+// does) moves the cursor up past its own first row and rewrites from there.
+// The rows above the first one it touched are the prior blocks', untouched,
+// and are not this block's: measured before the fix, one rewritten row made
+// the whole prefix count as output, so the block carried the previous
+// program's screen.
+func TestACommandThatRewritesAboveItsStartKeepsOnlyWhatItRewrote(t *testing.T) {
+	s, rs := streamSession(t, harnessGeometry(80, 24))
+	if err := s.Ingest([]byte("prev-1\r\nprev-2\r\nprev-3\r\n$ cmd\r\n" + outputMarkerFixed + "\x1b[2A\x1b[2KUP\r\n\x1b[2KOUT\r\n")); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	nonce := obsNonce(0x75)
+	s.Completed(s.Incarnation(), nonce, 0)
+	if err := s.Ingest([]byte(fenceFor(0x75))); err != nil {
+		t.Fatalf("ingest the fence: %v", err)
+	}
+	if got := storedRowsFor(t, rs, nonce); strings.Join(got, "|") != "UP|OUT" {
+		t.Fatalf("the block stored %q, want exactly UP, OUT: prev-1 and prev-2 were never rewritten", got)
+	}
+}

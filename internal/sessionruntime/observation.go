@@ -1222,9 +1222,40 @@ func (s *Session) outputStartSkipLocked(pin emulator.RowTrack, prefix []emulator
 		}
 	}
 	if skip > 0 && !outputPrefixStands(boundaryRowsThatLeave(scr), skip, prefix) {
-		return 0
+		return untouchedPrefixRows(boundaryRowsThatLeave(scr), skip, prefix)
 	}
 	return skip
+}
+
+// untouchedPrefixRows is how many of a no-longer-standing prefix's leading
+// rows are still exactly what the output mark saw, so they stay cut. A
+// program that moves the cursor up past its own first row and rewrites from
+// there (an inline TUI erasing its frame on the way out — claude does) touched
+// only the rows from that one down; the rows above it are the prior blocks'
+// and were never this interval's output (nocx-zg3k3.23). An in-place erase
+// from the top (nocx-2v80t.7) rewrites row 0, so it still answers zero and
+// keeps the whole screen.
+//
+// Compared row by row against the prefix's tail at the same positions, which
+// is what skip already assumes: when a commit re-laid the rows the prefix
+// tail no longer lines up, and the answer is zero, as before this function.
+func untouchedPrefixRows(rows []emulator.Row, skip int, prefix []emulator.Row) int {
+	skip = min(skip, len(rows))
+	if skip > len(prefix) {
+		return 0
+	}
+	tail := prefix[len(prefix)-skip:]
+	n := 0
+	for n < skip && sameRowText(rows[n], tail[n]) {
+		n++
+	}
+	return n
+}
+
+// sameRowText reports whether two rows read the same, trailing blanks aside,
+// with the same wrap.
+func sameRowText(a, b emulator.Row) bool {
+	return a.Wrap == b.Wrap && logicalText([]emulator.Row{a}) == logicalText([]emulator.Row{b})
 }
 
 // outputPrefixStands says the first skip rows of a closing screen are still
