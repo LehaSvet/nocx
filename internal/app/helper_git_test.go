@@ -260,6 +260,27 @@ type fakeLaneProvider struct {
 	install *fakeInstallConn
 }
 
+// awaitClosedPeers waits until every lane somebody has closed has had its
+// helper end — the moment the helper's connection handler has returned and
+// released what that connection held, which a real host reaches when the
+// process on the other end of the lane is gone.
+func (p *fakeLaneProvider) awaitClosedPeers(t *testing.T) {
+	t.Helper()
+	p.mu.Lock()
+	conns := append([]*fakeLaneConn(nil), p.conns...)
+	p.mu.Unlock()
+	for _, c := range conns {
+		if c.closeCount() == 0 {
+			continue
+		}
+		select {
+		case <-c.exited:
+		case <-t.Context().Done():
+			t.Fatalf("a closed lane's helper never ended: %v", t.Context().Err())
+		}
+	}
+}
+
 func (p *fakeLaneProvider) LaneConn(ctx context.Context, _ string, machine proto.Machine, generation proto.GenerationID, _ ...ssh.ConnectOption) (helperclient.HelperConn, error) {
 	if p.laneErr != nil {
 		return nil, p.laneErr

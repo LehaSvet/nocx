@@ -257,7 +257,11 @@ func TestAppRestartRestoresEveryRecordedAgentInItsPaneAndRefusesALazyID(t *testi
 
 func writeRestartFakeCLI(t *testing.T, path, logDir string) {
 	t.Helper()
-	script := "#!/bin/sh\nlog=\"$NOCX_RESTART_LOG_DIR/${0##*/}.log\"\nprintf '%s' \"$PWD\" >> \"$log\"\nfor arg do printf '\\t%s' \"$arg\" >> \"$log\"; done\nprintf '\\n' >> \"$log\"\nexec cat >/dev/null\n"
+	// The line is built first and appended with ONE printf: two panes of one
+	// agent resume concurrently and share <agent>.log, and appending it piece
+	// by piece interleaved their invocations into lines that match neither.
+	tab := "\t"
+	script := "#!/bin/sh\nlog=\"$NOCX_RESTART_LOG_DIR/${0##*/}.log\"\nline=\"$PWD\"\nfor arg do line=\"$line" + tab + "$arg\"; done\nprintf '%s\\n' \"$line\" >> \"$log\"\nexec cat >/dev/null\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // test executable
 		t.Fatalf("write fake CLI %s: %v", path, err)
 	}
@@ -309,6 +313,51 @@ func TestHasRestartInvocationMatchesTheSameDirectoryThroughASymlink(t *testing.T
 	}
 	if !hasRestartInvocation(logPath, alias, wantArgs) {
 		t.Fatalf("invocation in %q was not matched to its symlinked spelling %q", target, alias)
+	}
+}
+
+// Two panes of one agent resume at once after a restart, and both fake CLIs
+// append to the same <agent>.log. Each invocation must land as one whole line,
+// or the acceptance above cannot find an invocation that did happen.
+func TestRestartFakeCLIRecordsConcurrentInvocationsAsWholeLines(t *testing.T) {
+	root := t.TempDir()
+	fake := filepath.Join(root, "bin", "codex")
+	if err := os.MkdirAll(filepath.Dir(fake), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	logDir := filepath.Join(root, "log")
+	writeRestartFakeCLI(t, fake, logDir)
+
+	const n = 32
+	cmds := make([]*exec.Cmd, n)
+	for i := range cmds {
+		cwd := filepath.Join(root, fmt.Sprintf("pane-%02d", i))
+		if err := os.Mkdir(cwd, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(fake, "resume", fmt.Sprintf("session-%02d", i), "--flag") //nolint:gosec // test-owned fake CLI
+		cmd.Dir = cwd
+		cmd.Env = append(os.Environ(), "NOCX_RESTART_LOG_DIR="+logDir)
+		cmds[i] = cmd
+	}
+	for _, cmd := range cmds {
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, cmd := range cmds {
+		if err := cmd.Wait(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	logPath := filepath.Join(logDir, "codex.log")
+	for i := range n {
+		cwd := filepath.Join(root, fmt.Sprintf("pane-%02d", i))
+		if !hasRestartInvocation(logPath, cwd, []string{"resume", fmt.Sprintf("session-%02d", i), "--flag"}) {
+			raw, _ := os.ReadFile(logPath) //nolint:gosec // test-owned temporary path
+			t.Fatalf("invocation %d is not one whole line in the shared log:\n%s", i, raw)
+		}
 	}
 }
 
