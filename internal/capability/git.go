@@ -38,18 +38,40 @@ type GitOpenService interface {
 	// Acquire takes the use-guard for one binding — the same per-call
 	// authorisation every git.* method applies (D15).
 	Acquire(id string, caller registry.Caller) (registry.Handle, func(), error)
+	// Close closes one binding — the opener's own cleanup when the session
+	// it opened for closed while the open was in flight.
+	Close(id string) error
 }
 
-// GitOpenOperation is the typed operation for git.open. Its gates are
-// [session, git]: opening resolves the session and registers the
-// repository.
+// GitOpenOperation is the typed operation for git.open, and it is two-phase
+// for the reason OpenOperation is (nocx-l21ib.1, nocx-zg3k3.14.17): Resolve
+// runs under the session gate alone, Open under the git gate and the
+// execution lane. On an ssh session the open is a helper round trip — a
+// lease, a uname, the open, the first status — and the session gate is
+// capacity one for every session request of every pane. Held across that, a
+// reloaded window's few ssh panes filled its wait queue and every resize,
+// sessions.live and shell request on the server was refused "Control plane
+// busy" for as long as the opens took. Resolving is a registry read; it is
+// the only part the session gate has any business excluding.
+//
+// What the gate used to buy, and what replaces it: under it an open could
+// not interleave with a session close, so it never registered a binding for
+// a session already torn down. Now one can, and the handler closes it: the
+// registry forgets a session before its bindings are swept, so an opener
+// that finds its session gone after recording the binding is the one that
+// must close it, and one that finds it present can leave it to the sweep.
 type GitOpenOperation interface {
 	AssistantOperation
-	Run(context.Context, func(context.Context, GitOpenService) error) error
+	// Resolve runs fn under the session gate and nothing else.
+	Resolve(context.Context, func(context.Context, GitOpenService) error) error
+	// Open runs fn under [git] and the execution lane, no session gate held.
+	Open(context.Context, func(context.Context, GitOpenService) error) error
 }
 
-// NewGitOpenOperation builds the git.open operation, acquiring sessionGate
-// before gitGate (the canonical order), then the execution lane.
+// NewGitOpenOperation builds the git.open operation. Its phases acquire the
+// session gate, then — after releasing it — the git gate and the execution
+// lane, so the canonical order holds and no phase waits on a domain gate
+// while holding the lane.
 func NewGitOpenOperation(
 	sessionGate, gitGate, lane control.Admission,
 	registry session.Registry,
@@ -57,12 +79,31 @@ func NewGitOpenOperation(
 	reg *registry.Registry,
 ) GitOpenOperation {
 	g := &guard{}
-	return newOperation[GitOpenService](
-		Adapted("git.open", "opening a repository resolves a session and selects its helper or local binding"),
-		control.NewComposite(sessionGate, gitGate, lane),
-		g,
-		newGitOpenService(g, registry, factory, reg),
-	)
+	svc := newGitOpenService(g, registry, factory, reg)
+	disposition := Adapted("git.open", "opening a repository resolves a session and selects its helper or local binding")
+	return &gitOpenOperation{
+		resolve: newOperation[GitOpenService](disposition, control.NewComposite(sessionGate), g, svc),
+		open:    newOperation[GitOpenService](disposition, control.NewComposite(gitGate, lane), g, svc),
+	}
+}
+
+// gitOpenOperation is the two admissions over ONE guard and ONE service, as
+// openOperation is: a handle captured in one phase is refused outside every
+// in-flight phase.
+type gitOpenOperation struct {
+	resolve, open *operation[GitOpenService]
+}
+
+func (o *gitOpenOperation) Disposition() Disposition {
+	return o.open.Disposition()
+}
+
+func (o *gitOpenOperation) Resolve(ctx context.Context, fn func(context.Context, GitOpenService) error) error {
+	return o.resolve.Run(ctx, fn)
+}
+
+func (o *gitOpenOperation) Open(ctx context.Context, fn func(context.Context, GitOpenService) error) error {
+	return o.open.Run(ctx, fn)
 }
 
 // newGitOpenService builds the concrete git.open service bound to guard g.
@@ -134,6 +175,13 @@ func (s *gitOpenService) Acquire(id string, caller registry.Caller) (registry.Ha
 		return nil, nil, err
 	}
 	return s.reg.Acquire(id, caller)
+}
+
+func (s *gitOpenService) Close(id string) error {
+	if err := s.guard.check(); err != nil {
+		return err
+	}
+	return s.reg.Close(id)
 }
 
 // GitBindingService is the per-binding git surface: every git.* method

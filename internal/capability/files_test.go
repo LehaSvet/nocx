@@ -94,7 +94,7 @@ func openBindingHarness(t *testing.T, factory capability.ProviderFactory) (
 		registry, factory, filesystem.New(),
 	)
 	return func(fn func(context.Context, capability.FilesystemOpenService) error) error {
-		return op.Run(context.Background(), fn)
+		return op.Open(context.Background(), fn)
 	}, s
 }
 

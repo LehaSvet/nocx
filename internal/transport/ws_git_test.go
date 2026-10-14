@@ -1702,3 +1702,124 @@ func TestGitErrorReasonMapping(t *testing.T) {
 		t.Fatalf("gitErrorReason(arbitrary error) = %+v, want nil", got)
 	}
 }
+
+// ── AN OPEN IN FLIGHT HOLDS NO SESSION GATE (nocx-zg3k3.14.17) ────────────
+//
+// On an ssh pane git.open is a helper round trip. It used to run with the
+// session gate held — capacity one, for every session request of every pane —
+// so a reloaded window's few ssh panes filled the gate's queue and the server
+// refused resize, sessions.live and the shell requests "Control plane busy"
+// for as long as the opens took. Written as the user's sentence: while a
+// repository is opening, the terminal still answers.
+
+// blockingGitFactory blocks its first Open until released, and answers every
+// later one at once.
+type blockingGitFactory struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	first   *stubGitRepo // the repository the blocked Open answered
+}
+
+func newBlockingGitFactory(t *testing.T) *blockingGitFactory {
+	f := &blockingGitFactory{started: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(f.unblock)
+	return f
+}
+
+func (f *blockingGitFactory) unblock() {
+	select {
+	case <-f.release:
+	default:
+		close(f.release)
+	}
+}
+
+func (f *blockingGitFactory) Open(ctx context.Context, _ string) (git.Repo, git.OpenOutcome, error) {
+	first := false
+	f.once.Do(func() { first = true })
+	if first {
+		close(f.started)
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+			return nil, git.OpenOutcome{}, ctx.Err()
+		}
+		repo := newStubGitRepo()
+		f.mu.Lock()
+		f.first = repo
+		f.mu.Unlock()
+		return repo, stubOpenOutcome(), nil
+	}
+	return newStubGitRepo(), stubOpenOutcome(), nil
+}
+
+func TestGitOpen_InFlightOpenRefusesNoSessionRequest(t *testing.T) {
+	factory := newBlockingGitFactory(t)
+	// The PRODUCTION wait bound: the refusal this is about is that bound
+	// expiring, so a widened one could not fail.
+	e := newGitTestEnv(t, WithGitRepoFactory(factory),
+		WithDomainConflictWaitTimeout(DefaultDomainConflictWaitTimeout))
+	sid := e.openSession(t, 1)
+
+	sendControl(t, e.conn, "git.open", map[string]any{"sessionId": sid, "cwd": "/tmp/repo"}, 2)
+	select {
+	case <-factory.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("git.open never reached the repository factory")
+	}
+
+	resized := jsonrpcCallWithID(t, e.conn, "resize", map[string]any{"sessionId": sid, "cols": 100, "rows": 30}, 3)
+	assertNotRefused(t, resized, "resize during an in-flight git.open")
+	live := jsonrpcCallWithID(t, e.conn, "sessions.live", map[string]any{}, 4)
+	assertNotRefused(t, live, "sessions.live during an in-flight git.open")
+
+	factory.unblock()
+	opened := readResponseFor(t, e.conn, 2, 10*time.Second)
+	assertNotRefused(t, opened, "the git.open itself")
+}
+
+// A session that closes while its repository is opening leaves no binding:
+// the close's sweep ran before the binding existed, so the opener closes it.
+func TestGitOpen_SessionClosedDuringTheOpenLeavesNoBinding(t *testing.T) {
+	factory := newBlockingGitFactory(t)
+	e := newGitTestEnv(t, WithGitRepoFactory(factory))
+	sid := e.openSession(t, 1)
+
+	sendControl(t, e.conn, "git.open", map[string]any{"sessionId": sid, "cwd": "/tmp/repo"}, 2)
+	select {
+	case <-factory.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("git.open never reached the repository factory")
+	}
+	closed := jsonrpcCallWithID(t, e.conn, "close", map[string]any{"sessionId": sid}, 3)
+	assertNotRefused(t, closed, "close during an in-flight git.open")
+
+	factory.unblock()
+	resp := readResponseFor(t, e.conn, 2, 10*time.Second)
+	var got struct {
+		Result *struct {
+			BindingID string `json:"bindingId"`
+		} `json:"result"`
+		Error *jsonrpcErrorObj `json:"error"`
+	}
+	if err := json.Unmarshal(resp, &got); err != nil {
+		t.Fatalf("git.open: unmarshal: %v\nraw: %s", err, resp)
+	}
+	if got.Result != nil && got.Result.BindingID != "" {
+		t.Fatalf("git.open answered binding %q for a session closed during the open", got.Result.BindingID)
+	}
+	if n := e.gitBindingCount(sid); n != 0 {
+		t.Fatalf("%d binding(s) left in the transport for a closed session, want 0", n)
+	}
+	factory.mu.Lock()
+	repo := factory.first
+	factory.mu.Unlock()
+	repo.mu.Lock()
+	repoClosed := repo.closed
+	repo.mu.Unlock()
+	if !repoClosed {
+		t.Fatal("the repository opened for a closed session was never closed — it leaks")
+	}
+}
