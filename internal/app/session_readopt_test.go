@@ -352,9 +352,11 @@ func (a *stubAdopter) failure() error {
 // its own helper registry over a shared lane provider. Building a second one
 // against the same provider IS the coordinator replacement.
 type coordinator struct {
-	reg     *helperRegistry
-	sess    *session.Reg
-	consent *consent.Store
+	t        *testing.T
+	provider *fakeLaneProvider
+	reg      *helperRegistry
+	sess     *session.Reg
+	consent  *consent.Store
 	// gitFor is the SAME selection closure ws_git.go's handleOpen would call
 	// (transport.GitFactoryFor), captured from the one helperGitFactory call
 	// that also built reg — a second call would build a second, unrelated
@@ -370,7 +372,7 @@ func newCoordinator(t *testing.T, provider *fakeLaneProvider) *coordinator {
 	gitFor, reg := helperGitFactory(provider, source, store, installs, discardLogger(t))
 	sess := session.New(log.NewSlogAdapter(discardLogger(t)), nil)
 	reg.registry = sess
-	return &coordinator{reg: reg, sess: sess, consent: store, gitFor: gitFor}
+	return &coordinator{t: t, provider: provider, reg: reg, sess: sess, consent: store, gitFor: gitFor}
 }
 
 // helperConnection is a saved connection whose destination mode is an explicit
@@ -388,6 +390,15 @@ func helperConnection(user string) *ssh.ConnectConfig {
 // what lets a replacement take the keyboard without arbitration. A test that
 // skipped it would be modelling two nocx running at once, which is a different
 // scenario with a different right answer (see the test that asserts it).
+//
+// AND IT RETURNS ONCE THE HELPER HAS SEEN IT. The lease is released by the
+// helper's own connection handler as it returns, which is concurrent with
+// anything that dials next; a replacement that attached before that return
+// was refused the keyboard ("another nocx already holds the keyboard"), which
+// is two nocx at once again, reached by scheduling rather than by intent (CI
+// run 38482127202, TestConsentStandingLetsTheSameBindingBeTakenBack). The wait
+// is on the fact — every lane this quit closed has had its helper end — never
+// on a duration.
 func (c *coordinator) quit() {
 	c.reg.mu.Lock()
 	helpers := make([]*hostHelper, 0, len(c.reg.hosts))
@@ -400,6 +411,7 @@ func (c *coordinator) quit() {
 		h.closeLocked()
 		h.mu.Unlock()
 	}
+	c.provider.awaitClosedPeers(c.t)
 }
 
 // openHostedFixture opens one helper-hosted session and returns the durable
