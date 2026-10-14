@@ -5290,7 +5290,7 @@ export class TerminalContent extends BasePaneContent {
       // viewportChanged, which never runs through here.
       const cap = sb.runningLiveCap
       const last = this.lastFitGeometry
-      if (cap !== null && last && last.height <= cap) return
+      if (cap !== null && last && last.height <= cap - sb.runningBodyPaddingPx) return
     }
     this.fitUsableViewport(this.usableViewport(v))
   }
@@ -5422,13 +5422,19 @@ export class TerminalContent extends BasePaneContent {
   ): number {
     const scroller = area && area.clientHeight > 0 ? area.clientHeight : viewport.height
     const sb = this.scrollback
-    if (!sb || !area || area.clientHeight <= 0) return sb?.runningLiveCap ?? scroller
+    if (!sb || !area || area.clientHeight <= 0) {
+      const cap = sb?.runningLiveCap ?? null
+      return cap === null ? scroller : cap - sb!.runningBodyPaddingPx
+    }
     const mode = sb.mode
     if (mode !== 'running' && mode !== 'idle') return scroller
     const cap = sb.runningLiveCap
     if (cap !== null) {
-      this._runningChromePx = this._terminalAreaPx(area) - cap
-      return cap
+      // The grid lives INSIDE the running body's padding (nocx-g6hnk): the
+      // cap is a ceiling on the whole box, rows and padding together.
+      const grid = cap - sb.runningBodyPaddingPx
+      this._runningChromePx = this._terminalAreaPx(area) - grid
+      return grid
     }
     if (mode === 'idle') {
       // The prediction is the owner of the prompt height; the learned
@@ -5517,7 +5523,7 @@ export class TerminalContent extends BasePaneContent {
     )
     const headerPx = this._offFlowHeightPx(probe, sb.scrollbackInner)
     if (headerPx === null) return null
-    return this._terminalAreaPx(area) - barPx - headerPx
+    return this._terminalAreaPx(area) - barPx - headerPx - sb.runningBodyPaddingPx
   }
 
   /**

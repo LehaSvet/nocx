@@ -185,6 +185,44 @@ test.describe('copy-on-select', () => {
     await page.keyboard.type('x')
     await expect(page.locator('.pane.active .nocx-editor .cm-content')).toContainText('x')
   })
+
+  // A double click on a word in the live terminal selects that word and copies
+  // it, by the frozen block's own word rule (nocx-zg3k3.15.4).
+  test('double-clicking a word in a running program copies the word', async ({ page }) => {
+    await disableWailsRuntime(page)
+    await page.goto('/')
+    await expect(page.locator('.nocx-tab')).toHaveCount(1)
+    await promptReady(page)
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+    const word = `~/dbl-${Date.now().toString(36)}.txt`
+    await page.keyboard.type(`printf 'before ${word} after'; sleep 30`)
+    await page.keyboard.press('Enter')
+    // The command's own echo holds the word too; the output row is the one
+    // without the printf.
+    const row = page
+      .locator('.pane.active .terminal-live-grid .term-grid-row', { hasText: word })
+      .filter({ hasNotText: 'printf' })
+    await expect(row).toHaveCount(1, { timeout: 15_000 })
+    const at = await row.evaluate((el, w) => {
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const i = n.textContent?.indexOf(w) ?? -1
+        if (i < 0) continue
+        const r = document.createRange()
+        r.setStart(n, i + 3)
+        r.setEnd(n, i + 4)
+        const box = r.getBoundingClientRect()
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 }
+      }
+      return null
+    }, word)
+    if (!at) throw new Error('the word is not on the painted row')
+    await page.mouse.dblclick(at.x, at.y)
+    await expect
+      .poll(() => page.evaluate(() => navigator.clipboard.readText()), { timeout: 3000 })
+      .toBe(word)
+    await page.keyboard.press('Control+C')
+  })
 })
 
 // ── paste ───────────────────────────────────────────────────────────────

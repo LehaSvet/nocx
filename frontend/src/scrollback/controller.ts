@@ -501,6 +501,26 @@ export class ScrollbackController {
     return (Number.isFinite(top) ? top : 0) + (Number.isFinite(bottom) ? bottom : 0)
   }
 
+  /** The vertical padding the live region wears as the running block's body,
+   *  answered in any mode (nocx-g6hnk). The grid's rows must fit INSIDE that
+   *  padding: the region is sized to content + padding under the running cap
+   *  (sizeRunningLive), so a grid fitted to the whole cap had about a row and
+   *  a half below the clip — the bottom of an inline TUI such as omp was cut
+   *  off. At the prompt the region is not wearing the running class yet, so
+   *  the answer is read off a hidden clone that is. */
+  get runningBodyPaddingPx(): number {
+    if (this._mode === 'running') return this._bodyPaddingPx()
+    const probe = this.terminalLiveContainer.ownerDocument.createElement('div')
+    probe.className = 'terminal-live-container live-running'
+    probe.style.cssText = 'position:absolute;visibility:hidden;left:-9999px;height:0'
+    this.scrollbackInner.appendChild(probe)
+    const cs = getComputedStyle(probe)
+    const top = parseFloat(cs.paddingTop)
+    const bottom = parseFloat(cs.paddingBottom)
+    probe.remove()
+    return (Number.isFinite(top) ? top : 0) + (Number.isFinite(bottom) ? bottom : 0)
+  }
+
   /** The inline inset the live region wears as a ROW of the ledger
    *  (nocx-9bpeq.8): the pane gutter moved from `.pane` into every row so a
    *  row can paint to the edge. The grid is drawn inside that inset, so the fit
