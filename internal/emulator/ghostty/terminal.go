@@ -44,6 +44,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/shady2k/nocx/internal/emulator"
@@ -1655,10 +1657,11 @@ func (t *terminal) EncodeKey(ev emulator.KeyEvent) ([]byte, error) {
 	if len(ev.Text) > 0 {
 		text = (*C.char)(unsafe.Pointer(unsafe.StringData(ev.Text)))
 	}
+	unshifted := C.uint32_t(unshiftedCodepoint(ev.Text))
 	var buf [maxEncodedKey]C.char
 	var n C.size_t
 	r := C.nocxKeyEncode(t.enc, key, mods, action, text, C.size_t(len(ev.Text)),
-		&buf[0], C.size_t(len(buf)), &n)
+		unshifted, &buf[0], C.size_t(len(buf)), &n)
 	if r == C.GHOSTTY_OUT_OF_SPACE {
 		// As in readGrapheme: out of space with nothing required is a
 		// contradiction, and it is reported rather than answered with no bytes.
@@ -1667,7 +1670,7 @@ func (t *terminal) EncodeKey(ev emulator.KeyEvent) ([]byte, error) {
 		}
 		grown := make([]C.char, n)
 		r = C.nocxKeyEncode(t.enc, key, mods, action, text, C.size_t(len(ev.Text)),
-			&grown[0], C.size_t(len(grown)), &n)
+			unshifted, &grown[0], C.size_t(len(grown)), &n)
 		if r != C.GHOSTTY_SUCCESS {
 			return nil, resultError("key_encode", r)
 		}
@@ -1677,6 +1680,20 @@ func (t *terminal) EncodeKey(ev emulator.KeyEvent) ([]byte, error) {
 		return nil, resultError("key_encode", r)
 	}
 	return goBytes(buf[:int(n)]), nil
+}
+
+// unshiftedCodepoint is the codepoint the Kitty keyboard protocol names a key
+// by: the key's own character without Shift. The text a key event carries is
+// the layout's unmodified character, upper-cased for a shifted letter
+// (sessionruntime.keyEvent), so its lower case is the key's; a key with no
+// single-character text (an arrow, Enter) has none and answers 0, which leaves
+// the encoder to its functional-key table.
+func unshiftedCodepoint(text string) rune {
+	r, size := utf8.DecodeRuneInString(text)
+	if r == utf8.RuneError || size != len(text) {
+		return 0
+	}
+	return unicode.ToLower(r)
 }
 
 // goBytes copies an encoded sequence out of the C buffer it was written into.

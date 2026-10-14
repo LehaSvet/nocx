@@ -642,3 +642,41 @@ func TestSiblingTerminalsDoNotShareState(t *testing.T) {
 		t.Errorf("the surviving terminal refused output: %v", err)
 	}
 }
+
+// A chord under the Kitty keyboard protocol is the key, not its text
+// (nocx-zg3k3.14.20). The session runtime hands the encoder Ctrl+C with the
+// layout's unmodified text "c", which is what the encoder's contract asks for;
+// codex pushes the Kitty flags, and Ctrl+C reached it as a plain "c" — it
+// could not be interrupted and typed the letter instead.
+func TestEncodeKey_ChordUnderKittyFlagsIsTheKeyNotItsText(t *testing.T) {
+	term := newTerminal(t, 20, 4)
+	ctrlC := emulator.KeyEvent{Key: emulator.KeyC, Mods: emulator.Mods{Ctrl: true}, Text: "c"}
+
+	got, err := term.EncodeKey(ctrlC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "\x03"; string(got) != want {
+		t.Errorf("legacy: Ctrl+C encoded as %q, want %q", got, want)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		ingest string
+		want   string
+	}{
+		{"disambiguate", "\x1b[>1u", "\x1b[99;5u"},
+		// What crossterm (codex) pushes: disambiguate, event types and
+		// alternate keys. A press carries no event type of its own.
+		{"crossterm's flags", "\x1b[>7u", "\x1b[99;5u"},
+	} {
+		ingest(t, term, tc.ingest)
+		got, err := term.EncodeKey(ctrlC)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if string(got) != tc.want {
+			t.Errorf("%s: Ctrl+C encoded as %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
