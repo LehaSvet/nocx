@@ -121,6 +121,70 @@ test.describe('copy-on-select', () => {
       )
       .toContain(marker)
   })
+
+  // A person selects with a drag, not a triple click (nocx-zg3k3.15.3). The
+  // press focuses the block, and the pane's focus bounce sent the focus
+  // straight back to the editor, whose CodeMirror then took the document
+  // selection back: no drag over block output selected anything, while the
+  // triple-click case above, which sets its range itself, stayed green.
+  test('dragging over a finished block selects its text, copies it, and the next key types', async ({
+    page,
+  }) => {
+    await disableWailsRuntime(page)
+    await page.goto('/')
+    await expect(page.locator('.nocx-tab')).toHaveCount(1)
+    await promptReady(page)
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+
+    const marker = `DRAG-${Date.now().toString(36)}`
+    await page.keyboard.type(`echo ${marker}-tail`)
+    await page.keyboard.press('Enter')
+    const output = page.locator('.cmd-block .cmd-output', { hasText: marker }).first()
+    await expect(output).toBeVisible({ timeout: 5000 })
+    await promptReady(page)
+    // A second command moves the marker's block up, clear of the composer.
+    await page.keyboard.type('echo spacer')
+    await page.keyboard.press('Enter')
+    await expect(
+      page.locator('.cmd-block .cmd-output', { hasText: 'spacer' }).first(),
+    ).toBeVisible()
+    await promptReady(page)
+    await output.scrollIntoViewIfNeeded()
+
+    // The drag starts on the marker's first character and ends past its last,
+    // the way a person drags over a word they can see.
+    const text = await output.evaluate((el, m) => {
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const at = n.textContent?.indexOf(m) ?? -1
+        if (at < 0) continue
+        const range = document.createRange()
+        range.setStart(n, at)
+        range.setEnd(n, at + m.length + '-tail'.length)
+        const r = range.getBoundingClientRect()
+        return { x: r.left, y: r.top + r.height / 2, width: r.width }
+      }
+      return null
+    }, marker)
+    if (!text) throw new Error('the marker is not in the block output')
+    await page.mouse.move(text.x + 1, text.y)
+    await page.mouse.down()
+    await page.mouse.move(text.x + text.width / 2, text.y, { steps: 5 })
+    await page.mouse.move(text.x + text.width + 3, text.y, { steps: 5 })
+    await page.mouse.up()
+
+    await expect
+      .poll(() => page.evaluate(() => window.getSelection()?.toString() ?? ''), { timeout: 3000 })
+      .toContain(`${marker}-tail`)
+    await expect
+      .poll(() => page.evaluate(() => navigator.clipboard.readText()), { timeout: 3000 })
+      .toContain(`${marker}-tail`)
+
+    // The selection stays on screen, and the next key still types at the
+    // prompt.
+    await page.keyboard.type('x')
+    await expect(page.locator('.pane.active .nocx-editor .cm-content')).toContainText('x')
+  })
 })
 
 // ── paste ───────────────────────────────────────────────────────────────
