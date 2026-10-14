@@ -1527,6 +1527,16 @@ __nocx_precmd() {
     if [[ -n "$__nocx_first_prompt" ]]; then
         __nocx_marker D "$__nocx_exit"
     fi
+    # The previous program's screen ends here (nocx-zg3k3.23). A program that
+    # parked the cursor above rows it had painted — an inline TUI quitting, as
+    # omp does — left those rows below the prompt, and the next command's
+    # output was written over them: its block began with the leftover row
+    # ("Hi!" on omp's input background) or carried its tail ("NEXT-OUTOW").
+    # Erasing from the cursor to the end of the screen BEFORE the prompt's own
+    # A marker clears exactly what no command wrote; the previous block was
+    # sealed by its fence before this function runs, so nothing it owns moves.
+    # zsh's own line editor does the same on every prompt; bash does not.
+    builtin printf '\e[J'
     __nocx_marker A
     builtin printf '\e]7;file://%s%s\a' \
         "$(__nocx_encode_url "${HOSTNAME%%.*}")" \

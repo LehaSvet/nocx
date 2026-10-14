@@ -1427,6 +1427,11 @@ __nocx_precmd() {
     if [[ -n "$__nocx_first_prompt" ]]; then
         __nocx_marker D "$__nocx_exit_code"
     fi
+    # The previous program's screen ends here (nocx-zg3k3.23): rows a program
+    # left below its parked cursor are erased before the prompt's A marker, so
+    # the next command's block never starts on them. Same rule as nocx.bash;
+    # zle would clear them at its first refresh, but only after this boundary.
+    builtin printf '\e[J'
     __nocx_marker A
     builtin printf '\e]7;file://%s%s\a' \
         "$(__nocx_encode_url "${HOST%%.*}")" \
