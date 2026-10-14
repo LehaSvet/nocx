@@ -485,39 +485,40 @@ func (p sessionProtectedForeground) Ended(attempt lifecycle.AttemptID, grace tim
 	}
 }
 
-// answer runs the intent against the session and writes the result. A remote
-// session stays distinct from nothing-running: this process has no host-side
-// group to reach, while a local prompt has a protected shell group and no
-// authenticated execution. Reaching the far host remains remote-footprint
-// work. The choice between the process-group ladder and the terminal's own
-// interrupt is not made here — it belongs to the one policy in
-// foreground_signal.go, which reads it off the kernel's answer.
+// answer runs the intent against the session and writes the result. The
+// choice between the process-group ladder and the terminal's own interrupt is
+// not made here — it belongs to the one policy in foreground_signal.go, which
+// reads it off the kernel's answer.
+//
+// A REMOTE SESSION IS SIGNALLED TOO (nocx-xn63t.7). This used to answer every
+// remote kind "unsupported" before asking anything, from when an ssh pane was
+// a channel this process dialed and had no group to reach. Since ADR-0057
+// every ssh pane is helper-hosted: the far helper observes the host's own
+// foreground group and signals it (helper/client AttachedSession), and where
+// nobody can look, the policy's fallback is the terminal's interrupt on the
+// session's input path, which reaches any shell. The Stop button on an ssh
+// pane said it stopped nothing, and the remote command ran on.
 func (h signalHandlers) answer(ctx context.Context, req jsonrpcRequest, sid session.ID, sess session.Session, intent string) {
+	// A session whose channel cannot be signalled at all answers unsupported:
+	// this process cannot reach it.
 	outcome := foregroundUnsupported
-	if sess.Kind() != session.KindRemote {
-		sg, ok := sess.(runLeaseSession)
-		if !ok {
-			// A session whose channel cannot be signalled at all. Same
-			// honest answer as a remote one: this process cannot reach it.
-			outcome = foregroundUnsupported
+	if sg, ok := sess.(runLeaseSession); ok {
+		// mayHold: this is a PERSON's gesture, answered here, and a Stop
+		// accepted before the command's start is held for it (nocx-zas0d).
+		// Only the Stop path consults it — an interrupt is about the
+		// present moment and a command that has not begun is not it.
+		fb := sessionProtectedForeground{ctx: ctx, s: h.machine, sid: sid, sess: sess, mayHold: true}
+		if intent == signalStop {
+			// A Stop's outcome is the ATTEMPT's record, whichever mechanism
+			// carries it — the byte (recordStop) or the ladder (the
+			// recording signaller) — so that a Stop that lands after an
+			// earlier one failed is what the block and the ledger say
+			// (nocx-zas0d, review 3 item 2).
+			fb.recordStop = true
+			ladder := &stopRecordingSignaller{runLeaseSession: sg, s: h.machine, sid: sid, attempt: fb.Attempt}
+			outcome = stopForeground(log.From(ctx), sid, ladder, h.machine.effectiveRunLease().SignalGrace, fb)
 		} else {
-			// mayHold: this is a PERSON's gesture, answered here, and a Stop
-			// accepted before the command's start is held for it (nocx-zas0d).
-			// Only the Stop path consults it — an interrupt is about the
-			// present moment and a command that has not begun is not it.
-			fb := sessionProtectedForeground{ctx: ctx, s: h.machine, sid: sid, sess: sess, mayHold: true}
-			if intent == signalStop {
-				// A Stop's outcome is the ATTEMPT's record, whichever mechanism
-				// carries it — the byte (recordStop) or the ladder (the
-				// recording signaller) — so that a Stop that lands after an
-				// earlier one failed is what the block and the ledger say
-				// (nocx-zas0d, review 3 item 2).
-				fb.recordStop = true
-				ladder := &stopRecordingSignaller{runLeaseSession: sg, s: h.machine, sid: sid, attempt: fb.Attempt}
-				outcome = stopForeground(log.From(ctx), sid, ladder, h.machine.effectiveRunLease().SignalGrace, fb)
-			} else {
-				outcome = interruptForeground(log.From(ctx), sid, sg, fb)
-			}
+			outcome = interruptForeground(log.From(ctx), sid, sg, fb)
 		}
 	}
 	result, err := json.Marshal(signalResult{Signal: intent, Outcome: string(outcome)})

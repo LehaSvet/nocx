@@ -280,6 +280,27 @@ test.describe('command editor (nocx-4ff)', () => {
     // A short command starts where the prompt was, not at the top of the pane.
     if (running.blockTop <= running.areaHeight / 2) {
       console.error('running command geometry at failure:', JSON.stringify(running))
+      // The block sits as high as the live region below it is tall, and that
+      // height is the grid's text rows less the echo shift. Six CI failures
+      // since 2026-10-12 put 10-20 extra rows there and none reproduced
+      // locally (nocx-zg3k3.25), so the next one says which half it was:
+      // rows the grid should not have held, or a shift that was not applied.
+      const live = await page.evaluate(() => {
+        const inner = document.querySelector<HTMLElement>('.pane.active .terminal-live-inner')
+        return {
+          transform: inner?.style.transform ?? null,
+          innerHeight: inner ? Math.round(inner.getBoundingClientRect().height) : null,
+          viewportHeight: Math.round(
+            document
+              .querySelector<HTMLElement>('.pane.active .terminal-live-viewport')
+              ?.getBoundingClientRect().height ?? 0,
+          ),
+          rows: [...(inner?.querySelectorAll<HTMLElement>('.term-grid-row') ?? [])].map((row) =>
+            (row.textContent ?? '').trimEnd(),
+          ),
+        }
+      })
+      console.error('live region at failure:', JSON.stringify(live))
     }
     expect(running.blockTop).toBeGreaterThan(running.areaHeight / 2)
 

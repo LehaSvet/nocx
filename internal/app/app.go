@@ -2173,6 +2173,8 @@ func New(opts ...Option) (*App, error) {
 	helperReg.publishScreen = tp.PublishScreenFrame
 	localOpener.publishEffect = tp.PublishSessionEffect
 	localOpener.blockRows = tp
+	helperReg.publishEffect = tp.PublishSessionEffect
+	helperReg.blockRows = tp
 	// The two row buffers are the person's settings (nocx-2v80t.3.36): the
 	// helper's rides each spawn, the coordinator's is the transport's for
 	// every session it attaches next; both follow a change for the NEXT

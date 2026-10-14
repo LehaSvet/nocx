@@ -450,6 +450,14 @@ func (c *Client) forgetChannel(id proto.ChannelID, cause error, end endOfStream)
 // finish closes the stream once, recording why and how.
 func (s *ChannelStream) finish(cause error, end endOfStream) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if end.exit == nil && !end.local {
+		// The transport went: nobody here asked, and no process said it ended.
+		// Published BEFORE done, because done is what wakes a reader: Dial
+		// answers ErrLost from that wake, and a caller then asking the lane's
+		// Done must already find the transport gone, not a moment later.
+		s.goneOnce.Do(func() { close(s.gone) })
+	}
 	if !s.closed {
 		s.closed = true
 		s.lost = cause
@@ -457,10 +465,5 @@ func (s *ChannelStream) finish(cause error, end endOfStream) {
 			s.exit, s.hasExit = int(*end.exit), true
 		}
 		close(s.done)
-	}
-	s.mu.Unlock()
-	if end.exit == nil && !end.local {
-		// The transport went: nobody here asked, and no process said it ended.
-		s.goneOnce.Do(func() { close(s.gone) })
 	}
 }

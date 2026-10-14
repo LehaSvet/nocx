@@ -555,6 +555,15 @@ type helperRegistry struct {
 	// metadata; the far-helper attachment forwards each reassembled snapshot
 	// to that existing screen plane rather than deriving CWD a second time.
 	publishScreen func(sid session.ID, revision uint64, doc []byte) bool
+	// publishEffect and blockRows are the same two transport seams the local
+	// hosted opener binds (helper_hosted.go): a far pane's runtime effects
+	// (notifications, OSC 52) and its streamed block output. The far route
+	// bound neither (nocx-xn63t.7), so the coordinator had no rows source for
+	// a far pane, never sent block.closed, and every block on an ssh pane
+	// stayed "Running" after its command ended — a Stop that had stopped the
+	// command looked as though it had stopped nothing.
+	publishEffect func(sid session.ID, effect proto.EffectFrame) bool
+	blockRows     blockRowsSink
 	log           *slog.Logger
 	consent       *consent.Store
 	registry      *session.Reg
@@ -1077,6 +1086,9 @@ func (r *helperRegistry) openFarHelper(ctx context.Context, cfg session.Config, 
 	if downlink != nil {
 		downlink.Bind(entry.HostSessionID)
 	}
+	// The rows plane is held from the first frame and bound below, as the
+	// local hosted opener does (helper_hosted.go).
+	holdOpt, held := holdRowsBeforeAttach(r.blockRows)
 	attached, err := c.Attach(ctx, proto.AttachParams{
 		Subscriber: subscriber,
 		Session: proto.HostSessionID{
@@ -1085,7 +1097,7 @@ func (r *helperRegistry) openFarHelper(ctx context.Context, cfg session.Config, 
 		},
 		Offset: proto.StreamOffset(entry.Window.Base), Fresh: true,
 		LifecycleOffset: 0, LifecycleFresh: true, RequestWrite: true,
-	})
+	}, holdOpt)
 	if err != nil {
 		endLifecycleLeg()
 		_ = c.CloseSession(ctx, entry.HostSessionID)
@@ -1107,17 +1119,25 @@ func (r *helperRegistry) openFarHelper(ctx context.Context, cfg session.Config, 
 				"session", string(sid), "reason", reason)
 		})
 	}
+	if r.publishEffect != nil {
+		attached.OnEffect(func(effect proto.EffectFrame) { r.publishEffect(sid, effect) })
+	}
 	if cursor != nil {
 		cursor.bind(entry.HostSessionID.Session, attached.LifecycleIngested())
 	}
+	// THE STREAMED BLOCK OUTPUT, registered before the adopt like the screen
+	// drain, so no row is dropped at a door nobody opened yet.
+	stopBlockRows := bindHeldBlockRows(ctx, r.blockRows, sid, attached, held)
 	sess, err := r.registry.Adopt(ctx, cfg, sid, attached)
 	if err != nil {
+		stopBlockRows()
 		_ = attached.Close()
 		endLifecycleLeg()
 		_ = c.CloseSession(ctx, entry.HostSessionID)
 		_ = c.Close()
 		return transport.HostedSessionOpen{}, true, err
 	}
+	bindBlockEndToSession(sess, attached, r.blockRows, sid, stopBlockRows)
 	// THE FINGERPRINT THIS SELECTION ALREADY RESOLVED (ADR-0068), recorded
 	// onto the session Adopt just created (session.Reg.RecordHostKeyFingerprint's
 	// own comment): the adopted session is a data-plane attachment to a
