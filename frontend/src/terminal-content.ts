@@ -5012,12 +5012,14 @@ export class TerminalContent extends BasePaneContent {
     if (deviceCellWidth <= 0 || deviceCellHeight <= 0) return null
     return {
       cellWidth: devicePxToCssPx(deviceCellWidth, dpr),
-      // Existing accepted geometry keeps the painter's row-box correction;
-      // only the bootstrap path uses the integer device metric as its pitch.
-      cellHeight:
-        geometry.cellHeightPx > 0 && rowHeight && rowHeight > 0
-          ? rowHeight
-          : devicePxToCssPx(deviceCellHeight, dpr),
+      // ONE row pitch (nocx-zg3k3.20): the accepted geometry's, the number the
+      // cursor, the selection and hit-testing are placed by (painter/mapping.ts).
+      // It used to be the DOM row's own height whenever geometry existed — the
+      // font's line box, while the geometry is that box rounded UP to device
+      // pixels. At a display ratio of 1.8 that was 16.797px against 17.222px,
+      // and the cursor drifted 0.42px a row: half a row low at the bottom of a
+      // tall pane, and on another row entirely by the fortieth.
+      cellHeight: devicePxToCssPx(deviceCellHeight, dpr),
       deviceCellWidth,
       deviceCellHeight,
     }
