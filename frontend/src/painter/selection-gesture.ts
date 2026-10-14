@@ -257,7 +257,17 @@ export function installLiveSelectionGesture(
     window.removeEventListener('pointermove', move)
     if (!anchor) return
     const focus = endpoint(event) ?? (anchor.kind === 'card' ? livePosition(event) : null)
-    if (focus && (anchor.kind === 'live' || focus.kind === 'live')) {
+    if (
+      anchor.kind === 'live' &&
+      focus?.kind === 'live' &&
+      focus.position.row === anchor.position.row &&
+      focus.position.offset === anchor.position.offset
+    ) {
+      // A press and release on one cell is a click — how a person gives the
+      // terminal focus — not a one-cell selection. Copying it would replace
+      // the clipboard with whatever character sat under the pointer.
+      opts.painter.setSelection(null)
+    } else if (focus && (anchor.kind === 'live' || focus.kind === 'live')) {
       drawLive(focus)
       const text = copyAcross(anchor, focus)
       if (text !== null) opts.copy(text)
