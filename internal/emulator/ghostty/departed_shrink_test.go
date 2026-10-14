@@ -168,3 +168,43 @@ func TestReportedRowsOnScreenIsNothingOnTheAlternateScreen(t *testing.T) {
 		t.Fatalf("after close ReportedRowsOnScreen answered %v, want %v", err, emulator.ErrClosed)
 	}
 }
+
+// A SHRINK REPORTS ONLY THE PRIMARY'S OWN ROWS, NOT THE ALTERNATE SCREEN'S
+// (nocx-zg3k3.23).
+//
+// A resize shrinks both buffers. The alternate one keeps no history, so the
+// rows a shrink takes off its top are erased, and the library reports that
+// erase through the same history-erased callback a primary retention prune
+// uses, naming no buffer. Measured on the owner's pane: claude draws its
+// footer on the alternate screen's last row, exits, and the agent view going
+// away shrinks the pane 39 -> 31; the primary's depth stayed 88 and its cursor
+// stayed on row 15 — nothing left its screen — yet the callback's 8 rows were
+// read as eight pushed off it, and the newest eight history rows, already
+// handed over, were reported again and stored in claude's block.
+func TestAShrinkAfterTheAlternateScreenUsedItsLastRowReportsNothingThePrimaryKept(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		primary []byte
+	}{
+		{"an empty primary", nil},
+		{"history above a blank tail", append(shrinkLines(0, 30), "\x1b[3;1H\x1b[J"...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			term := departedTerm(t, 20, 8)
+			if _, err := term.Ingest(tc.primary); err != nil {
+				t.Fatalf("feed: %v", err)
+			}
+			_ = shrinkReport(t, term)
+			if _, err := term.Ingest([]byte("\x1b[?1049h\x1b[8;1Hfooter\x1b[?1049l")); err != nil {
+				t.Fatalf("alternate screen: %v", err)
+			}
+			_ = shrinkReport(t, term)
+			if _, err := term.Resize(shrinkGeometry(6)); err != nil {
+				t.Fatalf("shrink: %v", err)
+			}
+			if got := shrinkReport(t, term); len(got) != 0 {
+				t.Fatalf("a shrink that moved nothing off the primary reported %q", got)
+			}
+		})
+	}
+}

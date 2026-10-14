@@ -503,6 +503,11 @@ func (t *terminal) Resize(g emulator.Geometry) ([]byte, error) {
 	beforeScreen, beforeScreenErr := t.screenLocked()
 	beforeRows := t.geom.Rows
 	oldGeometry := t.geom
+	// Where the cursor stood, and how long the report was, before the
+	// library moved anything: what a same-width shrink takes off the top of
+	// the primary moves the cursor up by exactly as many rows (see below).
+	beforeCursor, beforeCursorErr := t.cursorLocked()
+	reportedBefore := len(t.departed)
 	t.beginHistoryCaptureLocked()
 	// A resize visits both page lists, but the effect does not identify the
 	// list that owns its span. The HISTORY reader names the active list, so a
@@ -543,6 +548,29 @@ func (t *terminal) Resize(g emulator.Geometry) ([]byte, error) {
 			// would swallow a command's own departures: the frozen count that
 			// hands one command's rows to the next block (nocx-2v80t.3.9).
 			sameBuffer := beforeErr == nil && beforeScreenErr == nil && screen == beforeScreen
+			// THE PRIMARY'S OWN PUSH, MEASURED BY ITS CURSOR (nocx-zg3k3.23).
+			// A resize shrinks both buffers, and the alternate one has no
+			// history: the rows a shrink takes off its top are erased through
+			// the same history-erased callback a primary retention prune
+			// uses, naming no buffer. Read as the primary's, they were the
+			// newest history rows reported a second time. At an unchanged
+			// width nothing re-wraps, so every row that leaves the primary's
+			// top moves the cursor up one row, and nothing else does: that
+			// shift bounds what this shrink may report, from the callback's
+			// copy and from the depth alike. Unbounded (-1) when the width
+			// changed or the cursor cannot be read.
+			pushBound := -1
+			if afterCursor, err := t.cursorLocked(); err == nil && beforeCursorErr == nil &&
+				sameBuffer && screen == emulator.ScreenPrimary && g.Cols == oldGeometry.Cols && g.Rows < beforeRows {
+				pushBound = max(beforeCursor.Y-afterCursor.Y, 0)
+				if excess := len(t.departed) - reportedBefore - pushBound; excess > 0 {
+					// The callback copied rows the primary never pushed: the
+					// oldest of what it copied in this resize, ahead of any
+					// genuinely pushed rows, which are the newest.
+					t.departed = append(t.departed[:reportedBefore], t.departed[reportedBefore+excess:]...)
+					t.departedFrontier -= uint64(excess)
+				}
+			}
 			switch grew := g.Rows - beforeRows; {
 			case !base.valid || !sameBuffer:
 			case grew > 0 && before > after:
@@ -594,6 +622,9 @@ func (t *terminal) Resize(g emulator.Geometry) ([]byte, error) {
 				// a rewrap of history's own line breaks out of it
 				// (nocx-2v80t.3.9).
 				pushed := min(-grew, after+t.historyCapture.prunedRows-before)
+				if pushBound >= 0 {
+					pushed = min(pushed, pushBound)
+				}
 				again := min(pushed, base.owed)
 				base.owed -= again
 				fresh := pushed - again
