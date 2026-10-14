@@ -10,6 +10,7 @@ import {
 import { snapshotForRows, storedBlockRowsForSelection } from '../scrollback/block-rows'
 import type { CellPainter } from './painter'
 import { columnToCell } from './mapping'
+import { WORD_SEPARATORS, wordBounds } from '../word-selection'
 
 export interface LiveSelectionGestureOptions {
   readonly model: CellModel
@@ -285,12 +286,45 @@ export function installLiveSelectionGesture(
     pinnedMapping = opts.painter.mapping()
   }
 
+  // A double click on the live grid selects the token under the pointer by
+  // the frozen block's own rule (word-selection.ts; nocx-zg3k3.15.4), so a
+  // path, a URL or a flag is one word on both surfaces. The token is read
+  // from the cell snapshot, one character per cell: a cell is a separator
+  // only when its whole grapheme is one, and an empty cell is a space.
+  const doubleClick = (event: MouseEvent) => {
+    if (event.button !== 0 || !root.contains(event.target as Node)) return
+    if (opts.mouseReportingActive?.()) return
+    const point = endpoint(event as PointerEvent)
+    if (point?.kind !== 'live') return
+    const cells = point.snapshot.rows[point.position.row]?.cells ?? []
+    const text = cells
+      .map((cell) => {
+        if (!cell.hasText || cell.grapheme === '') return ' '
+        return WORD_SEPARATORS.includes(cell.grapheme) ? cell.grapheme : 'w'
+      })
+      .join('')
+    const { start, end } = wordBounds(text, point.position.offset)
+    if (start === end) return
+    const range = captureLiveSelection(
+      opts.surfaceId,
+      point.snapshot,
+      { row: point.position.row, offset: start },
+      { row: point.position.row, offset: end },
+    )
+    selection = range
+    opts.painter.setSelection({ anchor: range.anchor, focus: range.focus })
+    const copied = range.copy()
+    if (copied !== '') opts.copy(copied)
+  }
+
   root.addEventListener('pointerdown', down)
   root.addEventListener('mousedown', tripleClick)
+  root.addEventListener('dblclick', doubleClick)
   return {
     dispose() {
       root.removeEventListener('pointerdown', down)
       root.removeEventListener('mousedown', tripleClick)
+      root.removeEventListener('dblclick', doubleClick)
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
       anchor = null

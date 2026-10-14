@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCellModel } from '../cell-model'
 import { DEFAULT_SNAPSHOT } from '../scrollback/serializer'
-import { frameOf, snapshotOf } from './fixtures'
+import { frameOf, snapshotOf, type CellSpec } from './fixtures'
 import { createCellPainter } from './painter'
 import { installLiveSelectionGesture } from './selection-gesture'
 import { paintStoredRows, type StoredBlockRows } from '../scrollback/block-rows'
@@ -128,6 +128,58 @@ describe('live selection gesture', () => {
     window.dispatchEvent(event('pointerup', 12))
     expect(copy).not.toHaveBeenCalled()
     expect(surface.querySelector('.term-grid-selection')).toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+
+  it('a double click selects the word under the pointer and copies it', () => {
+    const model = createCellModel()
+    const root = document.createElement('div')
+    const surface = document.createElement('div')
+    root.append(surface)
+    document.body.append(root)
+    const text = 'ls ~/a-b.txt (x)'
+    const frame = frameOf(
+      1,
+      [[...text].map((ch) => (ch === ' ' ? ['', 1, false] : [ch, 1, true]) as CellSpec)],
+      { x: 0, y: 0, visible: false },
+      { cols: text.length, rows: 1, cellWidthPx: 8, cellHeightPx: 20 },
+    )
+    model.apply(frame)
+    const painter = createCellPainter({ surface, palette: DEFAULT_SNAPSHOT })
+    painter.apply(snapshotOf(frame))
+    vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      right: text.length * 8,
+      bottom: 20,
+      width: text.length * 8,
+      height: 20,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    })
+    const copy = vi.fn()
+    const gesture = installLiveSelectionGesture({
+      model,
+      painter,
+      surface,
+      gestureRoot: root,
+      surfaceId: 'live',
+      copy,
+    })
+    // Column 6 is inside "~/a-b.txt": a path is one word, as in the frozen
+    // block's rule (word-selection.ts) — '-', '.', '/' do not separate.
+    const at = (type: string, detail: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: 6 * 8 + 2, clientY: 5, detail })
+    root.dispatchEvent(at('pointerdown', 1))
+    window.dispatchEvent(at('pointerup', 1))
+    root.dispatchEvent(at('pointerdown', 2))
+    window.dispatchEvent(at('pointerup', 2))
+    root.dispatchEvent(at('dblclick', 2))
+    expect(copy).toHaveBeenCalledWith('~/a-b.txt')
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
     gesture.dispose()
     painter.dispose()
     root.remove()
