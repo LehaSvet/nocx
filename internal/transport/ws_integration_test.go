@@ -15,6 +15,8 @@ import (
 	"github.com/shady2k/nocx/internal/pty"
 	"github.com/shady2k/nocx/internal/session"
 	"github.com/shady2k/nocx/internal/ssh"
+	"github.com/shady2k/nocx/internal/transport/outbound"
+	"github.com/shady2k/nocx/internal/waittest"
 )
 
 // The session integration axis (nocx-dvql). The contract tests prove the
@@ -755,4 +757,86 @@ func TestIntegration_AConcurrentResendNeverOutlivesTheConclusion(t *testing.T) {
 				trial, last, IntegrationIntegrated)
 		}
 	}
+}
+
+// A full outbound queue drops a refreshable notification, and the integration
+// axis has no later notification once it reaches integrated — so a drop at
+// that moment would be the renderer's last word for good (nocx-zg3k3.14.13).
+// What prevents that is a chain, asserted here end to end: the drop puts the
+// stall notice on the connection's reserved slot, the renderer answers that
+// notice by reconnecting (dispatcher.ts, nocx-mrtvy), and the reconnect's
+// attach replays the CURRENT status. The final state reaches the renderer on
+// the next connection, never on none.
+func TestIntegration_AFinalStatusDroppedOnAFullQueueArrivesOnTheReconnect(t *testing.T) {
+	e := newIntegrationEnv(t)
+
+	// The attached connection stops draining: the pump is held mid-write and
+	// the refreshable queue behind it is filled to its depth.
+	sock := &blockingSocket{released: make(chan struct{}), writeStarted: make(chan struct{})}
+	stalledOut := outbound.New(sock, outbound.Config{})
+	t.Cleanup(stalledOut.Close)
+	t.Cleanup(func() {
+		select {
+		case <-sock.released:
+		default:
+			close(sock.released)
+		}
+	})
+	filler := notificationPayload("test.filler", json.RawMessage(`{}`))
+	if err := stalledOut.TryEnqueue(outbound.TextMessage, filler); err != nil {
+		t.Fatalf("first frame: %v", err)
+	}
+	select {
+	case <-sock.writeStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pump never reached the stopped consumer")
+	}
+	for i := 0; i < outbound.DefaultQueueDepth; i++ {
+		if err := stalledOut.TryEnqueue(outbound.TextMessage, filler); err != nil {
+			t.Fatalf("filling the queue, frame %d: %v", i, err)
+		}
+	}
+	rx := e.ws.getRx(session.ID(e.sid))
+	_, state := rx.getSubscriber()
+	rx.setSubscriber(&wsConn{out: stalledOut, log: e.ws.log}, state)
+
+	// The shell integrates while nothing can be written: the final status is
+	// dropped, and the connection says so.
+	mustLifecycleIngest(t, e.pub, "T", lifecycleEnv(e.lane, e.h, 1, lifecycleHelloEvt()))
+	waittest.WaitForTimeout(t, "the integrated status to overflow the stopped queue", 5*time.Second,
+		stalledOut.Stalled)
+	close(sock.released)
+	waittest.WaitForTimeout(t, "the stall notice on the wire", 5*time.Second, func() bool {
+		sock.mu.Lock()
+		defer sock.mu.Unlock()
+		for _, f := range sock.frames {
+			if _, ok := notificationParams(f.Data, outbound.StallNoticeMethod); ok {
+				return true
+			}
+		}
+		return false
+	})
+	sock.mu.Lock()
+	for _, f := range sock.frames {
+		if params, ok := notificationParams(f.Data, "session.integrationChanged"); ok {
+			t.Fatalf("the stopped connection received the status after all (%s); this test no longer exercises the drop", params)
+		}
+	}
+	sock.mu.Unlock()
+
+	// The renderer reconnects on that notice, and the attach replays the
+	// status it missed.
+	connB := connectWS(t, e.ws)
+	defer func() { _ = connB.Close() }()
+	resp := jsonrpcCallWithID(t, connB, "attach", map[string]any{"sessionId": e.sid, "offset": 0}, 2)
+	var envelope struct {
+		Error *jsonrpcErrorObj `json:"error"`
+	}
+	if err := json.Unmarshal(resp, &envelope); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("attach: %+v", envelope.Error)
+	}
+	awaitIntegration(t, connB, e.sid, IntegrationIntegrated)
 }
