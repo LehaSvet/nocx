@@ -46,6 +46,7 @@ export function metricOf(fit: Measurer): RunMetric | null {
     cellWidth: g.cellWidth,
     defaultSpacing: g.rowDelta,
     signature: g.signature,
+    ...(g.padY === undefined ? {} : { padY: g.padY }),
     ...measurersOf(fit),
   }
 }

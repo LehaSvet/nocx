@@ -63,7 +63,7 @@ export interface CellFit {
   /** The row context begin() took: the cell width and the published
    *  correction (--term-cell-delta) — the default spacing for runs whose
    *  ink nobody measured. null — there is nowhere to measure. */
-  geometry(): { cellWidth: number; rowDelta: number; signature: string } | null
+  geometry(): { cellWidth: number; rowDelta: number; signature: string; padY?: number } | null
   /** Убрать зонд из DOM. */
   dispose(): void
   /** Размер кэша. Для тестов границы. */
@@ -129,6 +129,27 @@ function signatureWitness(host: HTMLElement): HTMLElement {
   witness.style.display = 'inline-block'
   host.appendChild(witness)
   return witness
+}
+
+/** Rule 4's vertical padding (ADR-0009, run-geometry RunMetric.padY): half
+ *  the difference between the published row pitch (--term-cell-height) and
+ *  the content box an inline run of this font actually gets. A background
+ *  painted on an inline run covers the content box only, so without it every
+ *  coloured row stopped short of the next and full-screen programs that fill
+ *  rows with colour (mc's panels) were striped (nocx-zg3k3.21). undefined
+ *  while the pitch is not published yet: the background then covers the
+ *  content box, the old degrade. */
+function padYOf(host: HTMLElement): number | undefined {
+  const witness = signatureWitness(host)
+  const pitch = Number.parseFloat(getComputedStyle(witness).getPropertyValue('--term-cell-height'))
+  if (!Number.isFinite(pitch) || pitch <= 0) return undefined
+  const run = host.ownerDocument.createElement('span')
+  run.textContent = 'M'
+  witness.appendChild(run)
+  const content = run.getBoundingClientRect().height
+  run.remove()
+  if (!Number.isFinite(content) || content <= 0) return undefined
+  return Math.max(0, Math.round(((pitch - content) / 2) * 1e4) / 1e4)
 }
 
 /** ВСЕ ЗАПИСИ, ПОТОМ ВСЕ ЧТЕНИЯ — в этом весь смысл пакета. Меряется ОДИН
@@ -200,6 +221,7 @@ export function createCellFit(
   let signature = ''
   let cellWidth = 0
   let rowDelta = 0
+  let padY: number | undefined
 
   // A loaded font face can change glyph advances without changing the CSS
   // signature. Record the font-loading epoch and invalidate measurements when
@@ -240,6 +262,7 @@ export function createCellFit(
         getComputedStyle(signatureWitness(probe)).getPropertyValue('--term-cell-delta'),
       )
       rowDelta = Number.isFinite(published) ? published : 0
+      padY = padYOf(probe)
       // ВЫТЕСНЕНИЕ ЗДЕСЬ, А НЕ В warm(). Иначе очень пёстрый блок способен
       // вытеснить то, что warm() положил для него же несколькими строками
       // выше, и коробка не появится молча. Между заморозками кэш может
@@ -300,7 +323,9 @@ export function createCellFit(
 
     geometry() {
       if (signature === '' || cellWidth === 0) return null
-      return { cellWidth, rowDelta, signature }
+      return padY === undefined
+        ? { cellWidth, rowDelta, signature }
+        : { cellWidth, rowDelta, signature, padY }
     },
 
     dispose() {
@@ -311,6 +336,7 @@ export function createCellFit(
       probe = null
       signature = ''
       rowDelta = 0
+      padY = undefined
       cache.clear()
     },
 

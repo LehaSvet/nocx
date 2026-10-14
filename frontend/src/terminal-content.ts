@@ -1141,6 +1141,7 @@ export class TerminalContent extends BasePaneContent {
     // The gesture is over and the range is final: ask the same handler the
     // selection events go through, so there is one place that decides.
     this.onSelectionChange()
+    this.settleDeferredBounce()
   }
   /** The copy waits for mouseup rather than pointerup, on the document
    *  rather than the scrollback: the painter's live-grid gesture
@@ -1148,9 +1149,70 @@ export class TerminalContent extends BasePaneContent {
    *  and clears the native range before mouseup, so a copy here never
    *  writes a second value over its own. */
   private readonly onSelectionMouseUp = (): void => {
-    if (!this._selectionGestureInScrollback) return
-    this._selectionGestureInScrollback = false
-    this.copyScrollbackSelection()
+    if (this._selectionGestureInScrollback) {
+      this._selectionGestureInScrollback = false
+      this.copyScrollbackSelection()
+    }
+    this.settleDeferredBounce()
+  }
+  /** Set while a focus bounce waits for the pointer gesture that caused it. */
+  private _bounceAfterGesture = false
+  /** Set while a finished selection over frozen output is on screen: the
+   *  focus goes back to the editor on the next key, not before, so the
+   *  selection a person just made stays visible. */
+  private _bounceOnKey = false
+  /** The end of a pointer gesture that moved focus out of the editor. A click
+   *  (nothing selected) bounces at once, as it always did; a selection over
+   *  the scrollback keeps it and bounces on the next key instead. */
+  private settleDeferredBounce(): void {
+    if (!this._bounceAfterGesture) return
+    this._bounceAfterGesture = false
+    const sel = window.getSelection()
+    if (
+      sel &&
+      !sel.isCollapsed &&
+      sel.anchorNode !== null &&
+      this.scrollback?.scrollbackArea.contains(sel.anchorNode) === true
+    ) {
+      this._bounceOnKey = true
+      return
+    }
+    this.bounceFocusToEditor()
+  }
+  /** Focus bounce (P0-4): focus that lands in the pane outside the editor goes
+   *  back to the editor, except where it was sent on purpose. */
+  private bounceFocusToEditor(): void {
+    if (!this.editor?.isVisible) return
+    const active = document.activeElement
+    // The receipt's review mode is the ONE place in this design where
+    // focus leaves the editor: ⇧⌘S parks it in the name fields. The
+    // bounce must yield to it, or the caret snaps straight back and the
+    // receipt cannot be edited at all.
+    //
+    // A block's own ⋮ is the other, and so — since nocx-9bpeq.12 round
+    // 4 — is a running block's Stop button: both live inside the pane
+    // like any other scrollback content, so an unconditional bounce
+    // took the caret back the instant either took focus and the
+    // keyboard path to them (ADR-0008) could never land.
+    // `[data-block-control]` is the identity blocks.ts stamps on BOTH
+    // (round 6 — `data-block-actions` names the ⋮ alone, uniquely,
+    // and is not this guard's business; keying this check on it too
+    // is what let Stop and the ⋮ collide under a single-match query
+    // in a dozen other consumers). The ⋮'s menu needs no exception of
+    // its own — ContextMenu renders into document.body through a
+    // Portal, outside this listener's `target`, so a menu item taking
+    // focus never fires this handler at all; when the menu closes it
+    // returns focus to the ⋮ (ContextMenu's own releaseFocus), which
+    // lands here and is covered by the same guard.
+    if (
+      active &&
+      (this.editor.rootContains(active) ||
+        this.scrollback?.terminalLiveContainer.contains(active) ||
+        this.receipt?.root.contains(active) ||
+        active.closest('[data-block-control]'))
+    )
+      return
+    this.editor.focus()
   }
   /** DOM block copy-on-select (P0-5). Frozen output only. Copy-on-select is
    *  the terminal's convention and it belongs to text you can only read:
@@ -3637,36 +3699,16 @@ export class TerminalContent extends BasePaneContent {
       // ── Focus bounce (P0-4) ────────────────────────────────────────────
       target.addEventListener('focusin', () => {
         if (!this.editor?.isVisible) return
-        const active = document.activeElement
-        // The receipt's review mode is the ONE place in this design where
-        // focus leaves the editor: ⇧⌘S parks it in the name fields. The
-        // bounce must yield to it, or the caret snaps straight back and the
-        // receipt cannot be edited at all.
-        //
-        // A block's own ⋮ is the other, and so — since nocx-9bpeq.12 round
-        // 4 — is a running block's Stop button: both live inside the pane
-        // like any other scrollback content, so an unconditional bounce
-        // took the caret back the instant either took focus and the
-        // keyboard path to them (ADR-0008) could never land.
-        // `[data-block-control]` is the identity blocks.ts stamps on BOTH
-        // (round 6 — `data-block-actions` names the ⋮ alone, uniquely,
-        // and is not this guard's business; keying this check on it too
-        // is what let Stop and the ⋮ collide under a single-match query
-        // in a dozen other consumers). The ⋮'s menu needs no exception of
-        // its own — ContextMenu renders into document.body through a
-        // Portal, outside this listener's `target`, so a menu item taking
-        // focus never fires this handler at all; when the menu closes it
-        // returns focus to the ⋮ (ContextMenu's own releaseFocus), which
-        // lands here and is covered by the same guard.
-        if (
-          active &&
-          (this.editor.rootContains(active) ||
-            this.scrollback?.terminalLiveContainer.contains(active) ||
-            this.receipt?.root.contains(active) ||
-            active.closest('[data-block-control]'))
-        )
+        // A press on a frozen block focuses the block (it is a tab stop), and
+        // bouncing the focus back to the editor right then made CodeMirror
+        // reclaim the document selection: no drag over block output could
+        // select anything (nocx-zg3k3.15.3). Inside a pointer gesture the
+        // bounce waits for the gesture's end (settleDeferredBounce).
+        if (this._selectionGestureLive) {
+          this._bounceAfterGesture = true
           return
-        this.editor.focus()
+        }
+        this.bounceFocusToEditor()
       })
 
       // Click anywhere on the editor card and the prompt takes focus — the
@@ -3686,6 +3728,13 @@ export class TerminalContent extends BasePaneContent {
       this._globalKeydown = (e: KeyboardEvent) => {
         // Read the flag the chrome set, not the class it rendered (nocx-fttm).
         if (!target.isConnected || !this._active) return
+        if (this._bounceOnKey && !['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) {
+          const copying = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c'
+          if (!copying) {
+            this._bounceOnKey = false
+            this.bounceFocusToEditor()
+          }
+        }
         if (
           (e.ctrlKey || e.metaKey) &&
           e.shiftKey &&
@@ -4963,12 +5012,14 @@ export class TerminalContent extends BasePaneContent {
     if (deviceCellWidth <= 0 || deviceCellHeight <= 0) return null
     return {
       cellWidth: devicePxToCssPx(deviceCellWidth, dpr),
-      // Existing accepted geometry keeps the painter's row-box correction;
-      // only the bootstrap path uses the integer device metric as its pitch.
-      cellHeight:
-        geometry.cellHeightPx > 0 && rowHeight && rowHeight > 0
-          ? rowHeight
-          : devicePxToCssPx(deviceCellHeight, dpr),
+      // ONE row pitch (nocx-zg3k3.20): the accepted geometry's, the number the
+      // cursor, the selection and hit-testing are placed by (painter/mapping.ts).
+      // It used to be the DOM row's own height whenever geometry existed — the
+      // font's line box, while the geometry is that box rounded UP to device
+      // pixels. At a display ratio of 1.8 that was 16.797px against 17.222px,
+      // and the cursor drifted 0.42px a row: half a row low at the bottom of a
+      // tall pane, and on another row entirely by the fortieth.
+      cellHeight: devicePxToCssPx(deviceCellHeight, dpr),
       deviceCellWidth,
       deviceCellHeight,
     }

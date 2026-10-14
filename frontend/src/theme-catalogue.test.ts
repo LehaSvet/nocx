@@ -291,3 +291,27 @@ describe('theme catalogue', () => {
     expect(t.get('--terminal-foreground')).not.toBe(t.get('--terminal-background'))
   })
 })
+
+// The default theme's normal ANSI colours are BACKGROUNDS as well as text
+// (nocx-zg3k3.22). Full-screen 16-colour programs paint with them: mc's panels
+// are blue (4) under light gray (7), its cursor row is cyan (6) under black
+// (0). Graphite once took Tokyo Night's pastels for both halves of the
+// palette, so blue and cyan were two light periwinkles and mc's cursor row
+// vanished into the panel. The named ports keep their upstream palettes; this
+// is Graphite's own choice, so it is Graphite's floor.
+describe('the default theme paints 16-colour programs legibly', () => {
+  const t = tokensById.get(DEFAULT_THEME_ID)!
+  const ansi = (n: number): string => t.get(`--terminal-ansi-${String(n)}`)!
+
+  it('a cyan row stands out from a blue panel', () => {
+    expect(contrastRatio(ansi(6), ansi(4))).toBeGreaterThanOrEqual(1.8)
+  })
+  it('black reads on cyan, and light gray and white read on blue', () => {
+    expect(contrastRatio(ansi(0), ansi(6))).toBeGreaterThanOrEqual(AA_TEXT)
+    expect(contrastRatio(ansi(7), ansi(4))).toBeGreaterThanOrEqual(AA_NON_TEXT)
+    expect(contrastRatio(ansi(15), ansi(4))).toBeGreaterThanOrEqual(AA_NON_TEXT)
+  })
+  it('blue still reads as text on the terminal background, where ls puts directories', () => {
+    expect(contrastRatio(ansi(4), t.get(GROUND)!)).toBeGreaterThanOrEqual(AA_NON_TEXT)
+  })
+})
