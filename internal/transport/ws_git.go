@@ -585,12 +585,23 @@ func (h gitOpenHandlers) handleOpen(ctx context.Context, state *connState, req j
 		_ = h.r.TryError(req.ID, RPCError{Code: -32602, Message: "Invalid params: unknown sessionId"})
 		return
 	}
-	err := h.op.Run(ctx, func(ctx context.Context, svc capability.GitOpenService) error {
-		sess, err := svc.Get(sid)
-		if err != nil {
-			_ = h.r.TryError(req.ID, RPCError{Code: -32602, Message: "Invalid params: unknown sessionId"})
-			return nil
+	// The session is resolved under the session gate and the gate is let go
+	// before anything reaches a helper (capability.GitOpenOperation says why).
+	var sess session.Session
+	resolveErr := h.op.Resolve(ctx, func(_ context.Context, svc capability.GitOpenService) error {
+		var gerr error
+		sess, gerr = svc.Get(sid)
+		return gerr
+	})
+	if resolveErr != nil {
+		if capability.IsRefused(resolveErr) {
+			answerOperationRefusal(h.r, req, resolveErr)
+			return
 		}
+		_ = h.r.TryError(req.ID, RPCError{Code: -32602, Message: "Invalid params: unknown sessionId"})
+		return
+	}
+	openErr := h.op.Open(ctx, func(ctx context.Context, svc capability.GitOpenService) error {
 		if sess.Kind() != session.KindLocal {
 			// D3 as amended 2026-08-13, superseded by ADR-0068: the
 			// remote case is the helper's, and git.open never asks — the
@@ -647,6 +658,16 @@ func (h gitOpenHandlers) handleOpen(ctx context.Context, state *connState, req j
 		// session it belongs to — the bookkeeping the notification
 		// addressing needs.
 		h.bindings.recordBinding(bid, sid)
+		if _, gerr := svc.Get(sid); gerr != nil {
+			// The session closed while the repository was opening, and its
+			// sweep may already have run without this binding in it. The
+			// registry forgets a session before the sweep, so a session
+			// still present here is one whose sweep is yet to come.
+			h.bindings.forgetBinding(bid)
+			_ = svc.Close(bid)
+			_ = h.r.TryError(req.ID, RPCError{Code: -32602, Message: "Invalid params: unknown sessionId"})
+			return nil
+		}
 
 		// The first status rides the open result (spec §5.2) — otherwise
 		// every open is two round trips and a guaranteed frame of empty
@@ -675,8 +696,8 @@ func (h gitOpenHandlers) handleOpen(ctx context.Context, state *connState, req j
 		}))
 		return nil
 	})
-	if err != nil {
-		answerOperationRefusal(h.r, req, err)
+	if openErr != nil {
+		answerOperationRefusal(h.r, req, openErr)
 	}
 }
 

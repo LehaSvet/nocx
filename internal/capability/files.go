@@ -40,17 +40,25 @@ type FilesystemOpenService interface {
 	Acquire(id string, caller filesystem.Caller) (filesystem.Handle, func(), error)
 }
 
-// FilesystemOpenOperation is the typed operation for files.open. Its gates
-// are [session, filesystem]: opening resolves the session and registers
-// the provider.
+// FilesystemOpenOperation is the typed operation for files.open. It is
+// two-phase for the reason GitOpenOperation is (nocx-zg3k3.14.17): Resolve
+// runs under the session gate alone, Open — which on an ssh session builds
+// a helper-backed provider and reads its root over the wire — under the
+// filesystem gate and the execution lane. A binding registered for a
+// session that closed meanwhile is the handler's to drop, by the rule
+// GitOpenOperation states.
 type FilesystemOpenOperation interface {
 	AssistantOperation
-	Run(context.Context, func(context.Context, FilesystemOpenService) error) error
+	// Resolve runs fn under the session gate and nothing else.
+	Resolve(context.Context, func(context.Context, FilesystemOpenService) error) error
+	// Open runs fn under [filesystem] and the execution lane, no session
+	// gate held.
+	Open(context.Context, func(context.Context, FilesystemOpenService) error) error
 }
 
-// NewFilesystemOpenOperation builds the files.open operation, acquiring
-// sessionGate before filesystemGate (the canonical order), then the
-// execution lane.
+// NewFilesystemOpenOperation builds the files.open operation: the session
+// gate for Resolve, then — after releasing it — the filesystem gate and the
+// execution lane for Open.
 func NewFilesystemOpenOperation(
 	sessionGate, filesystemGate, lane control.Admission,
 	registry session.Registry,
@@ -58,12 +66,30 @@ func NewFilesystemOpenOperation(
 	reg *filesystem.Registry,
 ) FilesystemOpenOperation {
 	g := &guard{}
-	return newOperation[FilesystemOpenService](
-		Adapted("files.browse", "opening a filesystem resolves and registers a connection-bound provider"),
-		control.NewComposite(sessionGate, filesystemGate, lane),
-		g,
-		newFilesystemOpenService(g, registry, factory, reg),
-	)
+	svc := newFilesystemOpenService(g, registry, factory, reg)
+	disposition := Adapted("files.browse", "opening a filesystem resolves and registers a connection-bound provider")
+	return &filesystemOpenOperation{
+		resolve: newOperation[FilesystemOpenService](disposition, control.NewComposite(sessionGate), g, svc),
+		open:    newOperation[FilesystemOpenService](disposition, control.NewComposite(filesystemGate, lane), g, svc),
+	}
+}
+
+// filesystemOpenOperation is the two admissions over ONE guard and ONE
+// service.
+type filesystemOpenOperation struct {
+	resolve, open *operation[FilesystemOpenService]
+}
+
+func (o *filesystemOpenOperation) Disposition() Disposition {
+	return o.open.Disposition()
+}
+
+func (o *filesystemOpenOperation) Resolve(ctx context.Context, fn func(context.Context, FilesystemOpenService) error) error {
+	return o.resolve.Run(ctx, fn)
+}
+
+func (o *filesystemOpenOperation) Open(ctx context.Context, fn func(context.Context, FilesystemOpenService) error) error {
+	return o.open.Run(ctx, fn)
 }
 
 // newFilesystemOpenService builds the concrete files.open service bound to
