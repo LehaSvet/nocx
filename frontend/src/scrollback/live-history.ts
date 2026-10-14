@@ -95,6 +95,9 @@ interface InstalledPage {
    *  inside the page can trim what the emulator no longer holds without a
    *  second decode. */
   readonly rows: readonly ScreenSnapshot['rows'][number][]
+  /** The theme the page was painted in. A trim repaints the surviving rows
+   *  in it, so a theme switch never recolours half of an installed page. */
+  readonly palette: TerminalSnapshot
 }
 
 export class LiveHistorySurface {
@@ -764,7 +767,7 @@ export class LiveHistorySurface {
     el.className = 'live-history-page'
     el.dataset.start = String(floor)
     el.dataset.end = String(oldest.end)
-    const palette = this._palette()
+    const palette = oldest.palette
     for (const row of keep) el.appendChild(paintRow(row, { metric, palette }))
     const before = this._scroller.scrollHeight
     oldest.el.replaceWith(el)
@@ -779,6 +782,7 @@ export class LiveHistorySurface {
       bufferKind: oldest.bufferKind,
       bufferInstance: oldest.bufferInstance,
       rows: keep,
+      palette,
     }
   }
 
@@ -854,6 +858,7 @@ export class LiveHistorySurface {
       bufferKind: page.bufferKind,
       bufferInstance: page.bufferInstance,
       rows: result.snapshot.rows,
+      palette,
     })
   }
 }
