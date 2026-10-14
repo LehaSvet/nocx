@@ -346,6 +346,14 @@ func TestForegroundSignal_TheKernelAnswerChoosesTheMechanism(t *testing.T) {
 			intent: signalInterrupt, want: foregroundUnreconciled, wantSigs: 1, wantBytes: 0,
 		},
 		{
+			// An ssh session the local helper hosts: the shell is on another
+			// machine and nobody here can name its group (nocx-xn63t.7). The
+			// authenticated attempt decides, exactly as over a protected group.
+			name: "a group nobody here can observe, holding a started execution, takes the terminal interrupt",
+			err:  fmt.Errorf("helper: not known: %w", pty.ErrForegroundUnobservable), fb: &fakeProtected{attempt: attempt, accept: true},
+			intent: signalInterrupt, want: foregroundDelivered, wantSigs: 1, wantBytes: 1,
+		},
+		{
 			name: "no group left to signal",
 			err:  pty.ErrNoForeground, fb: &fakeProtected{attempt: attempt, accept: true},
 			intent: signalInterrupt, want: foregroundNothingRunning, wantSigs: 1, wantBytes: 0,
@@ -383,16 +391,21 @@ func TestForegroundSignal_TheKernelAnswerChoosesTheMechanism(t *testing.T) {
 // the shell's whether the program lives or dies — and says so when it cannot.
 func TestForegroundSignal_StopOverAProtectedGroupWaitsForTheExactAttempt(t *testing.T) {
 	const attempt = lifecycle.AttemptID("att-protected")
+	// The unobservable group is an ssh session the local helper hosts
+	// (nocx-xn63t.7): its Stop answered "unreconciled" without writing a byte.
+	unobservable := fmt.Errorf("helper: not known: %w", pty.ErrForegroundUnobservable)
 	for _, tc := range []struct {
 		name string
+		err  error
 		ends bool
 		want foregroundOutcome
 	}{
-		{name: "the attempt closes, so the execution is gone", ends: true, want: foregroundDelivered},
-		{name: "the attempt stays open, so nothing may claim it stopped", ends: false, want: foregroundUnreconciled},
+		{name: "the attempt closes, so the execution is gone", err: pty.ErrProtectedForeground, ends: true, want: foregroundDelivered},
+		{name: "the attempt stays open, so nothing may claim it stopped", err: pty.ErrProtectedForeground, ends: false, want: foregroundUnreconciled},
+		{name: "an unobservable group whose attempt closes is stopped", err: unobservable, ends: true, want: foregroundDelivered},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sess := &fakeForegroundSession{err: pty.ErrProtectedForeground}
+			sess := &fakeForegroundSession{err: tc.err}
 			fb := &fakeProtected{attempt: attempt, accept: true, ends: tc.ends}
 			got := stopForeground(log.NewSlogAdapter(nil), "sid", sess, 10*time.Millisecond, fb)
 			if got != tc.want {

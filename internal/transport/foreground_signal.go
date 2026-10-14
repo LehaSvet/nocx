@@ -203,7 +203,12 @@ func classifyForeground(err error) foregroundReach {
 	switch {
 	case err == nil:
 		return reachDelivered
-	case errors.Is(err, pty.ErrProtectedForeground):
+	case errors.Is(err, pty.ErrProtectedForeground), errors.Is(err, pty.ErrForegroundUnobservable):
+		// An unobservable group is the same decision as a protected one: the
+		// kernel here cannot say what runs, so the authenticated attempt
+		// decides whether the terminal interrupt goes in. An ssh session the
+		// local helper hosts answered this, and Stop on it said
+		// "unreconciled" without writing a byte (nocx-xn63t.7).
 		return reachProtected
 	case errors.Is(err, pty.ErrNoForeground):
 		return reachGone

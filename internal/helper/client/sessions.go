@@ -1411,7 +1411,7 @@ func (a *AttachedSession) EndSession(ctx context.Context) error {
 // no foreground group. It is typed rather than silent so a caller can tell
 // "there is nothing running" from "nobody could look" — the second is a
 // diagnosis and the first is an answer.
-var ErrNoForegroundJob = errors.New("helper: this session's foreground process group is not known")
+var ErrNoForegroundJob = fmt.Errorf("helper: this session's foreground process group is not known: %w", pty.ErrForegroundUnobservable)
 
 // signalTimeout bounds one signal-seam call. It is a REQUEST bound and not a
 // policy: the ladder's own timing is the transport's, and what this stops is a
