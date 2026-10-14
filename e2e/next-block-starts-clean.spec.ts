@@ -30,3 +30,22 @@ test('rows a program left below its parked cursor are not the next command’s o
   await expect(next).not.toHaveClass(/cmd-block-running/, { timeout: 15_000 })
   await expect(next.locator('.cmd-output')).toHaveText('NEXT-OUT')
 })
+
+// An inline TUI that erases its frame on the way out moves the cursor up past
+// its own first row and rewrites from there — claude does — and the block it
+// leaves must not carry the previous command's rows it never touched
+// (nocx-zg3k3.23).
+test('a command that rewrites rows above its start does not carry the rows it left alone', async ({
+  page,
+}) => {
+  await page.goto('/')
+  await promptReady(page)
+  await page.keyboard.type('for i in 1 2 3 4 5 6; do echo PRIOR-$i; done')
+  await page.keyboard.press('Enter')
+  await promptReady(page)
+  await page.keyboard.type("printf '\\033[2A\\033[2KUP-ROW\\n\\033[2KEND-ROW\\n'")
+  await page.keyboard.press('Enter')
+  const block = page.locator('.pane.active .cmd-block', { hasText: 'UP-ROW' }).last()
+  await expect(block).not.toHaveClass(/cmd-block-running/, { timeout: 15_000 })
+  await expect(block.locator('.cmd-output')).toHaveText(/^UP-ROW\s*END-ROW$/)
+})

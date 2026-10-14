@@ -294,12 +294,50 @@ static void color_facts(GhosttyStyleColor color, GhosttyStyleColorTag *tag,
   }
 }
 
+/*
+ * A cell erased under a set background (BCE) holds no text and no style, only
+ * the colour, which the library stores as the cell's CONTENT
+ * (GHOSTTY_CELL_CONTENT_BG_COLOR_*), not in its style. Reading the style alone
+ * lost it: mc's menu bar and htop's header stopped where their text did
+ * (nocx-zg3k3.26). It is folded into the background here, the one place both
+ * read paths take a cell's colours from.
+ */
+static GhosttyResult content_background(GhosttyCell cell, nocxStyleFacts *out,
+                                        bool *found) {
+  *found = false;
+  GhosttyCellContentTag tag;
+  GhosttyResult r = ghostty_cell_get(cell, GHOSTTY_CELL_DATA_CONTENT_TAG, &tag);
+  if (r != GHOSTTY_SUCCESS) return r;
+  if (tag == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE) {
+    GhosttyColorPaletteIndex idx;
+    r = ghostty_cell_get(cell, GHOSTTY_CELL_DATA_COLOR_PALETTE, &idx);
+    if (r != GHOSTTY_SUCCESS) return r;
+    out->bg_tag = GHOSTTY_STYLE_COLOR_PALETTE;
+    out->bg_palette = idx;
+    *found = true;
+  } else if (tag == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB) {
+    GhosttyColorRgb rgb;
+    r = ghostty_cell_get(cell, GHOSTTY_CELL_DATA_COLOR_RGB, &rgb);
+    if (r != GHOSTTY_SUCCESS) return r;
+    out->bg_tag = GHOSTTY_STYLE_COLOR_RGB;
+    out->bg_rgb = rgb;
+    *found = true;
+  }
+  return GHOSTTY_SUCCESS;
+}
+
 GhosttyResult nocxStyleAt(const GhosttyGridRef *ref, nocxStyleFacts *out) {
   GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
   GhosttyResult r = ghostty_grid_ref_style(ref, &style);
   if (r != GHOSTTY_SUCCESS) return r;
   color_facts(style.fg_color, &out->fg_tag, &out->fg_palette, &out->fg_rgb);
   color_facts(style.bg_color, &out->bg_tag, &out->bg_palette, &out->bg_rgb);
+  GhosttyCell cell;
+  r = ghostty_grid_ref_cell(ref, &cell);
+  if (r != GHOSTTY_SUCCESS) return r;
+  bool found;
+  r = content_background(cell, out, &found);
+  if (r != GHOSTTY_SUCCESS) return r;
   color_facts(style.underline_color, &out->ul_tag, &out->ul_palette,
               &out->ul_rgb);
   out->underline = (GhosttySgrUnderline)style.underline;
@@ -391,6 +429,13 @@ GhosttyResult nocxHistoryRow(GhosttyTerminal terminal, uint32_t y,
     if (out->styled) {
       r = nocxStyleAt(&ref, &out->style);
       if (r != GHOSTTY_SUCCESS) return r;
+    } else {
+      /* An unstyled cell can still carry an erased background in its
+         content; then it is styled for the reader's purposes. */
+      bool found;
+      r = content_background(cell, &out->style, &found);
+      if (r != GHOSTTY_SUCCESS) return r;
+      out->styled = found;
     }
     if (out->has_text) {
       uint32_t cps[16];

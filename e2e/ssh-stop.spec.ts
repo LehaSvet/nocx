@@ -144,70 +144,77 @@ async function rpc<T>(
   )
 }
 
-test('Stop ends a command running on an ssh host', async ({ page }) => {
-  test.setTimeout(180_000)
-  const seedRoot = mkdtempSync(join(process.env.NOCX_E2E_HOME_DIR ?? tmpdir(), 'nocx-stop-'))
-  const fixture = startRemoteSshd(seedRoot)
-  try {
-    await fixture._wait
-    trustHostKey(fixture)
-    await page.goto('/')
-    await expect(page.locator(TAB)).toHaveCount(1)
-    await appReadyForInput(page)
-    const wsInfo = await resolveBackend(page)
-    const profileName = `e2e-ssh-stop-${Date.now()}`
-    await rpc(page, wsInfo.port, wsInfo.token, 'profiles.create', {
-      type: 'ssh',
-      name: profileName,
-      options: {
-        host: fixture.addr.split(':')[0],
-        port: Number(fixture.addr.split(':')[1]),
-        user: 'e2e',
-        keyPath: fixture.userKey,
-      },
-    })
-    await page.keyboard.press('Control+Shift+P')
-    const search = page.locator('.quick-connect__search input')
-    await expect(search).toBeVisible()
-    await search.fill(profileName)
-    await expect(page.locator('.quick-connect__item', { hasText: profileName })).toBeVisible({
-      timeout: 10_000,
-    })
-    await page.keyboard.press('Enter')
-    const helperDialog = page.getByRole('dialog').filter({ hasText: 'Choose how nocx connects' })
-    await expect(helperDialog).toBeVisible({ timeout: 30_000 })
-    await helperDialog.getByRole('radio', { name: 'Helper' }).click()
-    await helperDialog.getByRole('button', { name: 'Continue' }).click()
-    await expect(page.locator(TAB)).toHaveCount(2, { timeout: 30_000 })
-    await promptReady(page)
-    await expect(
-      page.locator('.pane.active').getByRole('status', { name: 'Checking this shell…' }),
-    ).toHaveCount(0, { timeout: 30_000 })
+// Both integration methods that give a pane blocks. Helper runs the shell
+// under the far helper, which can name the host's foreground group; Script
+// runs it under the local helper's ssh client, which cannot, and Stop there
+// answered "unreconciled" without writing a byte (nocx-xn63t.7, reported on
+// the owner's own host after the Helper case was green).
+for (const method of ['Helper', 'Script'] as const) {
+  test(`Stop ends a command running on an ssh host (${method})`, async ({ page }) => {
+    test.setTimeout(180_000)
+    const seedRoot = mkdtempSync(join(process.env.NOCX_E2E_HOME_DIR ?? tmpdir(), 'nocx-stop-'))
+    const fixture = startRemoteSshd(seedRoot)
+    try {
+      await fixture._wait
+      trustHostKey(fixture)
+      await page.goto('/')
+      await expect(page.locator(TAB)).toHaveCount(1)
+      await appReadyForInput(page)
+      const wsInfo = await resolveBackend(page)
+      const profileName = `e2e-ssh-stop-${Date.now()}`
+      await rpc(page, wsInfo.port, wsInfo.token, 'profiles.create', {
+        type: 'ssh',
+        name: profileName,
+        options: {
+          host: fixture.addr.split(':')[0],
+          port: Number(fixture.addr.split(':')[1]),
+          user: 'e2e',
+          keyPath: fixture.userKey,
+        },
+      })
+      await page.keyboard.press('Control+Shift+P')
+      const search = page.locator('.quick-connect__search input')
+      await expect(search).toBeVisible()
+      await search.fill(profileName)
+      await expect(page.locator('.quick-connect__item', { hasText: profileName })).toBeVisible({
+        timeout: 10_000,
+      })
+      await page.keyboard.press('Enter')
+      const helperDialog = page.getByRole('dialog').filter({ hasText: 'Choose how nocx connects' })
+      await expect(helperDialog).toBeVisible({ timeout: 30_000 })
+      await helperDialog.getByRole('radio', { name: method }).click()
+      await helperDialog.getByRole('button', { name: 'Continue' }).click()
+      await expect(page.locator(TAB)).toHaveCount(2, { timeout: 30_000 })
+      await promptReady(page)
+      await expect(
+        page.locator('.pane.active').getByRole('status', { name: 'Checking this shell…' }),
+      ).toHaveCount(0, { timeout: 30_000 })
 
-    // A command that ends by itself finishes as a block.
-    const done = `DONE-${Date.now().toString(36)}`
-    await page.keyboard.type(`echo ${done}; sleep 1`)
-    await page.keyboard.press('Enter')
-    await expect(page.locator('.pane.active .cmd-block', { hasText: done })).not.toHaveClass(
-      /cmd-block-running/,
-      { timeout: 30_000 },
-    )
-    await promptReady(page)
+      // A command that ends by itself finishes as a block.
+      const done = `DONE-${Date.now().toString(36)}`
+      await page.keyboard.type(`echo ${done}; sleep 1`)
+      await page.keyboard.press('Enter')
+      await expect(page.locator('.pane.active .cmd-block', { hasText: done })).not.toHaveClass(
+        /cmd-block-running/,
+        { timeout: 30_000 },
+      )
+      await promptReady(page)
 
-    // And a long one ends at Stop.
-    const marker = `STOP-${Date.now().toString(36)}`
-    await page.keyboard.type(`echo ${marker}; sleep 300`)
-    await page.keyboard.press('Enter')
-    const running = page.locator('.pane.active .cmd-block-running')
-    await expect(running).toHaveCount(1, { timeout: 30_000 })
-    await expect(page.locator('.pane.active .terminal-live-grid')).toContainText(marker, {
-      timeout: 30_000,
-    })
+      // And a long one ends at Stop.
+      const marker = `STOP-${Date.now().toString(36)}`
+      await page.keyboard.type(`echo ${marker}; sleep 300`)
+      await page.keyboard.press('Enter')
+      const running = page.locator('.pane.active .cmd-block-running')
+      await expect(running).toHaveCount(1, { timeout: 30_000 })
+      await expect(page.locator('.pane.active .terminal-live-grid')).toContainText(marker, {
+        timeout: 30_000,
+      })
 
-    await running.getByRole('button', { name: 'Stop' }).click()
-    await expect(running).toHaveCount(0, { timeout: 15_000 })
-    await promptReady(page)
-  } finally {
-    fixture.proc.kill()
-  }
-})
+      await running.getByRole('button', { name: 'Stop' }).click()
+      await expect(running).toHaveCount(0, { timeout: 15_000 })
+      await promptReady(page)
+    } finally {
+      fixture.proc.kill()
+    }
+  })
+}

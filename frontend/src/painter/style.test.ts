@@ -9,8 +9,8 @@
 // @vitest-environment jsdom
 
 import { describe, it, expect } from 'vitest'
-import { DEFAULT_SNAPSHOT } from '../scrollback/serializer'
-import { colorEquals, faceOf, resolveInk, styleEquals } from './style'
+import { DEFAULT_SNAPSHOT, paletteToRGB, type TerminalSnapshot } from '../scrollback/serializer'
+import { cellAttrsOf, colorEquals, faceOf, resolveInk, styleEquals } from './style'
 import { DEFAULT_COLOR, styleOf } from './fixtures'
 
 const rgb = (r: number, g: number, b: number) => ({
@@ -63,11 +63,11 @@ describe('resolveInk — the wire vocabulary to CSS', () => {
   })
 
   it('resolves exact rgb and palette colours', () => {
-    expect(resolveInk(styleOf({ foreground: rgb(10, 20, 30) }), DEFAULT_SNAPSHOT).css).toContain(
-      'color:rgb(10, 20, 30)',
+    expect(resolveInk(styleOf({ foreground: rgb(250, 240, 230) }), DEFAULT_SNAPSHOT).css).toContain(
+      'color:rgb(250, 240, 230)',
     )
-    expect(resolveInk(styleOf({ foreground: paletteOf(1) }), DEFAULT_SNAPSHOT).css).toContain(
-      'color:#f7768e',
+    expect(resolveInk(styleOf({ foreground: paletteOf(2) }), DEFAULT_SNAPSHOT).css).toContain(
+      'color:#9ece6a',
     )
     const bg = resolveInk(styleOf({ background: rgb(0, 1, 2) }), DEFAULT_SNAPSHOT)
     expect(bg.css).toContain('background:rgb(0, 1, 2)')
@@ -75,14 +75,14 @@ describe('resolveInk — the wire vocabulary to CSS', () => {
   })
   it('swaps the resolved colours on inverse: an inverse cell asks for both', () => {
     const ink = resolveInk(
-      styleOf({ foreground: rgb(255, 0, 0), attributes: 16 }),
+      styleOf({ foreground: rgb(255, 255, 255), attributes: 16 }),
       DEFAULT_SNAPSHOT,
     )
     // The swapped-in foreground is the theme's own background colour — an
     // explicit ask, painted as such, exactly as the frozen path's
     // attrsToStyle resolves an inverse cell (nocx-6w4z omits what a cell
     // never asked for; this one asked).
-    expect(ink.css).toContain('background:rgb(255, 0, 0)')
+    expect(ink.css).toContain('background:rgb(255, 255, 255)')
     expect(ink.css).toContain(`color:${DEFAULT_SNAPSHOT.defaultBg}`)
     expect(ink.hasBackground).toBe(true)
   })
@@ -101,6 +101,65 @@ describe('resolveInk — the wire vocabulary to CSS', () => {
       'font-style:italic',
     )
     expect(resolveInk(styleOf({ attributes: 4 }), DEFAULT_SNAPSHOT).css).toContain('opacity:0.5')
+  })
+
+  // xterm's drawBoldTextInBrightColors, on by default in the 0.4 renderer:
+  // bold text in one of the eight base colours is drawn in its bright twin.
+  // Programs rely on it — htop's "[Main]" brackets are bold green on green,
+  // and without it they vanished (nocx-zg3k3.27).
+  it('draws bold text in the base eight colours in their bright twins', () => {
+    // Distinct twins, and every colour legible on the default background, so
+    // the floor below changes none of them and the brightening is all that is
+    // asserted.
+    const SNAP: TerminalSnapshot = {
+      ...DEFAULT_SNAPSHOT,
+      defaultBg: '#000000',
+      palette: [
+        '#80ffff',
+        '#84ffff',
+        '#88ffff',
+        '#8cffff',
+        '#90ffff',
+        '#94ffff',
+        '#98ffff',
+        '#9cffff',
+        '#a0ffff',
+        '#a4ffff',
+        '#a8ffff',
+        '#acffff',
+        '#b0ffff',
+        '#b4ffff',
+        '#b8ffff',
+        '#bcffff',
+      ],
+    }
+    const bright = paletteToRGB(SNAP, 10)
+    expect(resolveInk(styleOf({ attributes: 1, foreground: paletteOf(2) }), SNAP).css).toContain(
+      `color:${bright}`,
+    )
+    expect(cellAttrsOf(styleOf({ attributes: 1, foreground: paletteOf(2) }), SNAP).fg).toBe(bright)
+    // Not bold, or a 256-colour index: as asked.
+    expect(resolveInk(styleOf({ foreground: paletteOf(2) }), SNAP).css).toContain(
+      `color:${paletteToRGB(SNAP, 2)}`,
+    )
+    expect(resolveInk(styleOf({ attributes: 1, foreground: paletteOf(196) }), SNAP).css).toContain(
+      `color:${paletteToRGB(SNAP, 196)}`,
+    )
+    // The background is never brightened.
+    expect(resolveInk(styleOf({ attributes: 1, background: paletteOf(2) }), SNAP).css).toContain(
+      `background:${paletteToRGB(SNAP, 2)}`,
+    )
+  })
+
+  // The readability floor (nocx-zg3k3.27): text the same colour as its
+  // background is drawn readable, as 0.4's xterm drew it.
+  it('raises a foreground that would vanish into its background', () => {
+    const css = resolveInk(
+      styleOf({ foreground: paletteOf(2), background: paletteOf(2) }),
+      DEFAULT_SNAPSHOT,
+    ).css
+    expect(css).not.toContain(`color:${paletteToRGB(DEFAULT_SNAPSHOT, 2)}`)
+    expect(css).toMatch(/color:rgb\(/)
   })
 
   it('maps the underline shapes the wire enumerates', () => {

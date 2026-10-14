@@ -17,6 +17,7 @@
 import type { ModelColor as Color, ModelStyle as Style } from '../cell-model'
 import type { FitFace } from '../scrollback/cell-fit'
 import { paletteToRGB, type CellAttrs, type TerminalSnapshot } from '../scrollback/serializer'
+import { legibleForeground } from './contrast'
 
 // emulator.Attributes: bit 0 bold, 1 italic, 2 faint, 3 blink, 4 inverse,
 // 5 invisible, 6 strikethrough, 7 overline. The set is closed — a terminal
@@ -62,6 +63,17 @@ function colorCSS(color: Color, palette: TerminalSnapshot): string | null {
   return null
 }
 
+/** The foreground as a terminal draws it: bold text in one of the eight base
+ *  colours takes its bright twin — xterm's drawBoldTextInBrightColors, on in
+ *  0.4's renderer (nocx-zg3k3.27). The background is never brightened. */
+function foregroundCSS(style: Style, palette: TerminalSnapshot): string | null {
+  const color = style.foreground
+  if (color.kind === 1 && color.palette < 8 && (style.attributes & BOLD) !== 0) {
+    return paletteToRGB(palette, color.palette + 8)
+  }
+  return colorCSS(color, palette)
+}
+
 export interface ResolvedInk {
   /** The CSS declarations for the run; empty when the cell asked for
    *  nothing and a bare text node may carry it. */
@@ -77,12 +89,18 @@ export interface ResolvedInk {
  *  CSS. */
 export function resolveInk(style: Style, palette: TerminalSnapshot): ResolvedInk {
   const parts: string[] = []
-  let fg = colorCSS(style.foreground, palette) ?? palette.defaultFg
+  let fg = foregroundCSS(style, palette) ?? palette.defaultFg
   let bg = colorCSS(style.background, palette) ?? palette.defaultBg
   const attrs = style.attributes
   if ((attrs & INVERSE) !== 0) [fg, bg] = [bg, fg]
-  // Invisible suppresses the ink, never the background.
-  const ink = (attrs & INVISIBLE) !== 0 ? 'transparent' : fg
+  // Invisible suppresses the ink, never the background. Otherwise the ink
+  // meets the readability floor against the background it sits on.
+  // A cell that asked for no colour at all inherits the surface (nocx-6w4z)
+  // and is left out of the floor, which would otherwise write the theme's own
+  // pair onto it.
+  const asked =
+    style.foreground.kind !== 0 || style.background.kind !== 0 || (attrs & INVERSE) !== 0
+  const ink = (attrs & INVISIBLE) !== 0 ? 'transparent' : asked ? legibleForeground(fg, bg) : fg
   if (ink !== palette.defaultFg) parts.push(`color:${ink}`)
   if (bg !== palette.defaultBg) parts.push(`background:${bg}`)
   if ((attrs & BOLD) !== 0) parts.push('font-weight:bold')
@@ -118,7 +136,7 @@ export function resolveInk(style: Style, palette: TerminalSnapshot): ResolvedInk
 export function cellAttrsOf(style: Style, palette: TerminalSnapshot): CellAttrs {
   const attributes = style.attributes
   return {
-    fg: colorCSS(style.foreground, palette),
+    fg: foregroundCSS(style, palette),
     bg: colorCSS(style.background, palette),
     bold: (attributes & BOLD) !== 0,
     italic: (attributes & ITALIC) !== 0,

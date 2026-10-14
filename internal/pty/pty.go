@@ -37,6 +37,15 @@ var ErrNoForeground = errors.New("pty: no foreground process to signal")
 // arrive and nothing may claim otherwise.
 var ErrProtectedForeground = fmt.Errorf("%w: the foreground group is the launcher shell's own", ErrNoForeground)
 
+// ErrForegroundUnobservable is a foreground group nobody on this side can
+// name: the shell runs on another machine (an ssh session the local helper
+// hosts) or the operating system could not be asked. It deliberately does NOT
+// wrap ErrNoForeground — it is not evidence that nothing runs — and a caller
+// deciding on a mechanism treats it as it treats ErrProtectedForeground: the
+// authenticated lifecycle, never the kernel, says whether the terminal's own
+// interrupt may be written (nocx-xn63t.7).
+var ErrForegroundUnobservable = errors.New("pty: the foreground process group cannot be observed from here")
+
 type Pty interface {
 	io.ReadWriteCloser
 	Resize(ctx context.Context, cols, rows, xpixel, ypixel uint16) error

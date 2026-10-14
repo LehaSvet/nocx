@@ -680,3 +680,43 @@ func TestEncodeKey_ChordUnderKittyFlagsIsTheKeyNotItsText(t *testing.T) {
 		}
 	}
 }
+
+// TestAnErasedCellKeepsTheBackgroundItWasErasedWith: an erase under a set
+// background (BCE) leaves cells that carry no text and no style, only a
+// background colour, which the library stores as the cell's CONTENT rather
+// than its style. Reading only the style lost it, so mc's menu bar and
+// htop's header stopped where their text did (nocx-zg3k3.26). Both read
+// paths are asserted: the screen's own cell and a row read from history.
+func TestAnErasedCellKeepsTheBackgroundItWasErasedWith(t *testing.T) {
+	term := newTerminal(t, 10, 2)
+	ingest(t, term, "\x1b[44mAB\x1b[K\x1b[0m\r\n\x1b[48;2;1;2;3mC\x1b[K\x1b[0m")
+	palette := emulator.Color{Kind: emulator.ColorPalette, Palette: 4}
+	rgb := emulator.Color{Kind: emulator.ColorRGB, RGB: emulator.RGB{R: 1, G: 2, B: 3}}
+	for _, tc := range []struct {
+		x, y int
+		want emulator.Color
+	}{{5, 0, palette}, {9, 0, palette}, {5, 1, rgb}} {
+		got, err := term.Cell(tc.x, tc.y)
+		if err != nil {
+			t.Fatalf("cell %d,%d: %v", tc.x, tc.y, err)
+		}
+		if got.HasText || got.Style.Background != tc.want {
+			t.Errorf("screen cell %d,%d = text %v background %+v, want no text on %+v", tc.x, tc.y, got.HasText, got.Style.Background, tc.want)
+		}
+	}
+	// Push both rows into history and read them back there.
+	ingest(t, term, "\r\n\r\n\r\n")
+	page, err := term.HistoryRows(0, 2)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if len(page.Rows) < 2 {
+		t.Fatalf("history rows = %d, want 2", len(page.Rows))
+	}
+	if got := page.Rows[0].Cells[7].Style.Background; got != palette {
+		t.Errorf("history row 0 cell 7 background = %+v, want %+v", got, palette)
+	}
+	if got := page.Rows[1].Cells[7].Style.Background; got != rgb {
+		t.Errorf("history row 1 cell 7 background = %+v, want %+v", got, rgb)
+	}
+}
