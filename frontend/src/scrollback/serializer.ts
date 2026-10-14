@@ -12,6 +12,7 @@
 // palette and the default foreground/background used for mode-0 (inherit)
 // cells — critical for correct inverse-video fallback.
 
+import { legibleForeground } from '../painter/contrast'
 import type { TerminalBufferLine, TerminalTheme } from '../terminal-types'
 // TYPES ONLY, and taken from their owners rather than redeclared here:
 // FitFace is the face the measuring authority measures with, and its answer
@@ -289,6 +290,10 @@ export function attrsToStyle(snapshot: TerminalSnapshot, a: CellAttrs): string {
   // nothing, sat on the app's own background. A block should inherit
   // `.cmd-output`'s colours and override only where the program said so
   // (nocx-6w4z).
+  // The readability floor the live painter applies (nocx-zg3k3.27), so a
+  // frozen block reads exactly as the live one it froze from.
+  if (effectiveFg && effectiveBg && (a.fg !== null || a.bg !== null || a.inverse))
+    effectiveFg = legibleForeground(effectiveFg, effectiveBg)
   if (effectiveFg && effectiveFg !== snapshot.defaultFg) parts.push(`color:${effectiveFg}`)
   if (effectiveBg && effectiveBg !== snapshot.defaultBg) parts.push(`background:${effectiveBg}`)
   if (a.bold) parts.push('font-weight:bold')

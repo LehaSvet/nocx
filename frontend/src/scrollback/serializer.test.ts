@@ -151,8 +151,8 @@ describe('attrsToStyle', () => {
   })
 
   it('includes foreground color', () => {
-    const style = attrsToStyle(DEFAULT_SNAPSHOT, { ...emptyAttrs(), fg: '#ff0000' })
-    expect(style).toContain('color:#ff0000')
+    const style = attrsToStyle(DEFAULT_SNAPSHOT, { ...emptyAttrs(), fg: '#ffffff' })
+    expect(style).toContain('color:#ffffff')
     expect(style).not.toContain('background:') // default bg still applied
   })
 
@@ -194,23 +194,23 @@ describe('attrsToStyle', () => {
   it('swaps fg/bg on inverse', () => {
     const style = attrsToStyle(DEFAULT_SNAPSHOT, {
       ...emptyAttrs(),
-      fg: '#ff0000',
-      bg: '#0000ff',
+      fg: '#ffffff',
+      bg: '#000000',
       inverse: true,
     })
-    expect(style).toContain('color:#0000ff')
-    expect(style).toContain('background:#ff0000')
+    expect(style).toContain('color:#000000')
+    expect(style).toContain('background:#ffffff')
   })
 
   it('handles inverse with only fg', () => {
-    const style = attrsToStyle(DEFAULT_SNAPSHOT, { ...emptyAttrs(), fg: '#ff0000', inverse: true })
+    const style = attrsToStyle(DEFAULT_SNAPSHOT, { ...emptyAttrs(), fg: '#ffffff', inverse: true })
     expect(style).toContain('color:#1a1b26') // bg becomes default bg
-    expect(style).toContain('background:#ff0000')
+    expect(style).toContain('background:#ffffff')
   })
 
   it('handles inverse with only bg', () => {
-    const style = attrsToStyle(DEFAULT_SNAPSHOT, { ...emptyAttrs(), bg: '#00ff00', inverse: true })
-    expect(style).toContain('color:#00ff00')
+    const style = attrsToStyle(DEFAULT_SNAPSHOT, { ...emptyAttrs(), bg: '#000000', inverse: true })
+    expect(style).toContain('color:#000000')
     expect(style).toContain('background:#c0caf5') // fg becomes default fg
   })
 
@@ -438,9 +438,9 @@ describe('the colour modes a frozen block preserves (nocx-07o7)', () => {
   })
 
   it('preserves a 256-colour cell (raw CM_P256)', () => {
-    const line = lineWith({ chars: 'X', fg: 196, fgMode: XTERM_CM_P256 }) // cube red
+    const line = lineWith({ chars: 'X', fg: 46, fgMode: XTERM_CM_P256 }) // cube green
     expect(serializeLine(DEFAULT_SNAPSHOT, line)).toBe(
-      '<span class="term-line"><span style="color:rgb(255,0,0)">X</span></span>',
+      '<span class="term-line"><span style="color:rgb(0,255,0)">X</span></span>',
     )
   })
 
@@ -457,10 +457,19 @@ describe('the colour modes a frozen block preserves (nocx-07o7)', () => {
     expect(serializeLine(DEFAULT_SNAPSHOT, line)).toBe('<span class="term-line">X</span>')
   })
 
+  // The readability floor (nocx-zg3k3.27): a frozen block reads as the live
+  // painter drew it, and 0.4's xterm drew text below 4.5:1 raised.
+  it('raises a frozen foreground that would vanish into its background', () => {
+    const style = attrsToStyle(DEFAULT_SNAPSHOT, { ...emptyAttrs(), fg: '#9ece6a', bg: '#9ece6a' })
+    expect(style).toContain('background:#9ece6a')
+    expect(style).not.toContain('color:#9ece6a')
+    expect(style).toMatch(/color:rgb\(/)
+  })
+
   it('preserves a background colour through the same mode path', () => {
-    const line = lineWith({ chars: 'X', fg: 0, fgMode: 0, bg: 1, bgMode: XTERM_CM_P16 }) // red bg
+    const line = lineWith({ chars: 'X', fg: 0, fgMode: 0, bg: 8, bgMode: XTERM_CM_P16 }) // bright-black bg
     expect(serializeLine(DEFAULT_SNAPSHOT, line)).toBe(
-      '<span class="term-line"><span style="background:#f7768e">X</span></span>',
+      '<span class="term-line"><span style="background:#414868">X</span></span>',
     )
   })
 
