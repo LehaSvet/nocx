@@ -1997,3 +1997,49 @@ func TestFilesRefreshState_HiddenTimeDoesNotCount(t *testing.T) {
 		t.Fatalf("fresh visible window = %q/%t, want ok/false", state, changed)
 	}
 }
+
+// files.open builds its provider without the session gate held, for the
+// reason git.open does (nocx-zg3k3.14.17): on an ssh pane building the
+// provider and reading its root are helper round trips, and the gate is
+// every pane's. While a file browser is opening, the terminal still answers.
+func TestFilesOpen_InFlightOpenRefusesNoSessionRequest(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	e := newFilesTestEnv(t,
+		WithFilesystemProviderFactory(func(sess session.Session, rootPath string) (filesystem.Provider, error) {
+			first := false
+			once.Do(func() { first = true })
+			if first {
+				close(started)
+				<-release
+			}
+			return filesLocalFactory(sess, rootPath)
+		}),
+		WithDomainConflictWaitTimeout(DefaultDomainConflictWaitTimeout),
+	)
+	sid := e.openSession(t, 1)
+
+	sendControl(t, e.conn, "files.open", map[string]any{"sessionId": sid, "rootPath": t.TempDir()}, 2)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("files.open never reached the provider factory")
+	}
+
+	resized := jsonrpcCallWithID(t, e.conn, "resize", map[string]any{"sessionId": sid, "cols": 100, "rows": 30}, 3)
+	assertNotRefused(t, resized, "resize during an in-flight files.open")
+	live := jsonrpcCallWithID(t, e.conn, "sessions.live", map[string]any{}, 4)
+	assertNotRefused(t, live, "sessions.live during an in-flight files.open")
+
+	close(release)
+	opened := readResponseFor(t, e.conn, 2, 10*time.Second)
+	assertNotRefused(t, opened, "the files.open itself")
+}

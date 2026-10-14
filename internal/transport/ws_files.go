@@ -869,12 +869,23 @@ func (h filesOpenHandlers) handleOpen(ctx context.Context, state *connState, req
 		_ = h.r.TryError(req.ID, RPCError{Code: -32602, Message: "Invalid params: unknown sessionId"})
 		return
 	}
-	err := h.op.Run(ctx, func(ctx context.Context, svc capability.FilesystemOpenService) error {
-		sess, err := svc.Get(sid)
-		if err != nil {
-			_ = h.r.TryError(req.ID, RPCError{Code: -32602, Message: "Invalid params: unknown sessionId"})
-			return nil
+	// Resolved under the session gate, opened without it
+	// (capability.FilesystemOpenOperation says why).
+	var sess session.Session
+	resolveErr := h.op.Resolve(ctx, func(_ context.Context, svc capability.FilesystemOpenService) error {
+		var gerr error
+		sess, gerr = svc.Get(sid)
+		return gerr
+	})
+	if resolveErr != nil {
+		if capability.IsRefused(resolveErr) {
+			answerOperationRefusal(h.r, req, resolveErr)
+			return
 		}
+		_ = h.r.TryError(req.ID, RPCError{Code: -32602, Message: "Invalid params: unknown sessionId"})
+		return
+	}
+	openErr := h.op.Open(ctx, func(ctx context.Context, svc capability.FilesystemOpenService) error {
 		if h.factory == nil {
 			_ = h.r.TryError(req.ID, RPCError{Code: -32603, Message: "files.open not available (no provider factory wired)"})
 			return nil
@@ -894,6 +905,14 @@ func (h filesOpenHandlers) handleOpen(ctx context.Context, state *connState, req
 			return nil
 		}
 		h.machine.recordFilesBinding(bid, sid, endpointID)
+		if _, gerr := svc.Get(sid); gerr != nil {
+			// The session closed while the provider was opening; the rule is
+			// git.open's (ws_git.go): gone here means the sweep may have
+			// missed this binding, so the opener drops it.
+			h.machine.dropFilesBinding(bid, sid)
+			_ = h.r.TryError(req.ID, RPCError{Code: -32602, Message: "Invalid params: unknown sessionId"})
+			return nil
+		}
 
 		// The root rides the open result — the panel needs a starting
 		// directory before any files.list. The handle is held only for this
@@ -930,8 +949,8 @@ func (h filesOpenHandlers) handleOpen(ctx context.Context, state *connState, req
 		}))
 		return nil
 	})
-	if err != nil {
-		answerOperationRefusal(h.r, req, err)
+	if openErr != nil {
+		answerOperationRefusal(h.r, req, openErr)
 	}
 }
 

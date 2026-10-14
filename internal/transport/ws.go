@@ -1118,7 +1118,7 @@ type WSServer struct {
 	// because the obligation is about one execution: the same Stop arriving
 	// twice is one obligation, and an attempt that never starts takes its
 	// hold with it when the publisher reports it closed.
-	heldStops map[lifecycle.AttemptID]session.ID
+	heldStops map[lifecycle.AttemptID]heldStop
 	// stopStateMu guards stopStates, the transport's record of what each
 	// accepted Stop came to (nocx-zas0d, review of 6830b43d, major 2). It is
 	// separate from heldMu because the two answer different questions — one is

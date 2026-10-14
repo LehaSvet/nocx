@@ -79,6 +79,60 @@ describe('live selection gesture', () => {
     root.remove()
   })
 
+  it('a click without a drag selects nothing and leaves the clipboard alone', () => {
+    const model = createCellModel()
+    const root = document.createElement('div')
+    const surface = document.createElement('div')
+    root.append(surface)
+    document.body.append(root)
+    const frame = frameOf(
+      1,
+      [
+        [
+          ['a', 1, true],
+          ['b', 1, true],
+          ['c', 1, true],
+          ['d', 1, true],
+        ],
+      ],
+      { x: 0, y: 0, visible: false },
+      { cols: 4, rows: 1, cellWidthPx: 8, cellHeightPx: 20 },
+    )
+    model.apply(frame)
+    const painter = createCellPainter({ surface, palette: DEFAULT_SNAPSHOT })
+    painter.apply(snapshotOf(frame))
+    vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 32,
+      bottom: 20,
+      width: 32,
+      height: 20,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    })
+    const copy = vi.fn()
+    const gesture = installLiveSelectionGesture({
+      model,
+      painter,
+      surface,
+      gestureRoot: root,
+      surfaceId: 'live',
+      copy,
+    })
+    const event = (type: string, x: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: 5 })
+    // Focusing the terminal is a click on whatever cell is under the pointer.
+    root.dispatchEvent(event('pointerdown', 12))
+    window.dispatchEvent(event('pointerup', 12))
+    expect(copy).not.toHaveBeenCalled()
+    expect(surface.querySelector('.term-grid-selection')).toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+
   it('copies a drag from live output into a card in display order using stored rows', () => {
     const model = createCellModel()
     const root = document.createElement('div')
