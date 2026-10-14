@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // fixture is a manifest plus the bytes its hashes are about: a directory
@@ -279,5 +281,79 @@ func TestFetchReportsWhatItDid(t *testing.T) {
 	}
 	if !strings.Contains(lines[0], "fetched") {
 		t.Fatalf("the log line %q does not say whether the file was downloaded or verified", lines[0])
+	}
+}
+
+// serveFlaky serves the fixture's directory over HTTP, answering each asset's
+// first `fails` requests with the given status before serving the bytes.
+func serveFlaky(t *testing.T, f *fixture, status, fails int) (*httptest.Server, map[string]int) {
+	t.Helper()
+	seen := map[string]int{}
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/")
+		mu.Lock()
+		seen[name]++
+		n := seen[name]
+		mu.Unlock()
+		if n <= fails {
+			w.WriteHeader(status)
+			return
+		}
+		http.ServeFile(w, r, filepath.Join(f.dir, name))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, seen
+}
+
+// TestFetchRidesOutAServerError is CI's release download answering one 500:
+// GitHub's release CDN does that, and a red job that ran no test is a report
+// about nothing. A 5xx is the server's fault and says nothing about the bytes,
+// so the fetch asks again; the hash check is unchanged by the second ask.
+func TestFetchRidesOutAServerError(t *testing.T) {
+	f := newFixture(t)
+	srv, seen := serveFlaky(t, f, http.StatusInternalServerError, 1)
+	fetcher := NewFetcher(srv.URL)
+	fetcher.Backoff = []time.Duration{0, 0}
+	if err := f.manifest.Fetch(t.TempDir(), fetcher, FetchOptions{}); err != nil {
+		t.Fatalf("a fetch whose server answered 500 once = %v, want it to succeed on the next ask", err)
+	}
+	if got := seen[f.manifest.Licenses.Name]; got != 2 {
+		t.Fatalf("the licences document was requested %d times, want 2 (one 500, one answer)", got)
+	}
+}
+
+// TestFetchGivesUpOnAServerThatKeepsFailing bounds the asking: a release that
+// is down stays a red build, after exactly the attempts Backoff allows.
+func TestFetchGivesUpOnAServerThatKeepsFailing(t *testing.T) {
+	f := newFixture(t)
+	srv, seen := serveFlaky(t, f, http.StatusBadGateway, 1000)
+	fetcher := NewFetcher(srv.URL)
+	fetcher.Backoff = []time.Duration{0, 0}
+	err := f.manifest.Fetch(t.TempDir(), fetcher, FetchOptions{})
+	if err == nil || !strings.Contains(err.Error(), "502") {
+		t.Fatalf("a fetch whose server always answers 502 = %v, want the 502", err)
+	}
+	for name, n := range seen {
+		if n != 3 {
+			t.Fatalf("%s was requested %d times, want 3 (one ask and two retries)", name, n)
+		}
+	}
+}
+
+// TestFetchDoesNotAskAgainForAMissingRelease: a 404 is an answer about the
+// release, not a hiccup, and asking it again only delays the red.
+func TestFetchDoesNotAskAgainForAMissingRelease(t *testing.T) {
+	f := newFixture(t)
+	srv, seen := serveFlaky(t, f, http.StatusNotFound, 1000)
+	fetcher := NewFetcher(srv.URL)
+	fetcher.Backoff = []time.Duration{0, 0}
+	if err := f.manifest.Fetch(t.TempDir(), fetcher, FetchOptions{}); err == nil {
+		t.Fatal("a fetch of a release that answers 404 succeeded")
+	}
+	for name, n := range seen {
+		if n != 1 {
+			t.Fatalf("%s was requested %d times after a 404, want 1", name, n)
+		}
 	}
 }

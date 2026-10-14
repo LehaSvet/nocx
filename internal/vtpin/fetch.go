@@ -45,7 +45,17 @@ type Fetcher struct {
 	// timeout, because a build that hangs on a stalled download is worse
 	// than one that fails.
 	HTTP *http.Client
+	// Backoff is the pause before each retry of a URL fetch, so its length is
+	// the number of retries. Only a transport error or a 5xx is retried: those
+	// are the server's hiccup and say nothing about the release, while a 4xx
+	// is an answer and a wrong hash is the tamper check. Nil means the default.
+	Backoff []time.Duration
 }
+
+// defaultBackoff rides out a release CDN that answers one 500, which GitHub's
+// does: twice on 2026-10-14 a CI job went red on that alone, having run no
+// test at all.
+var defaultBackoff = []time.Duration{2 * time.Second, 10 * time.Second}
 
 // NewFetcher returns a fetcher for a base location.
 func NewFetcher(base string) *Fetcher {
@@ -94,15 +104,17 @@ func (f *Fetcher) open(a Asset) (io.ReadCloser, string, error) {
 		if client == nil {
 			client = &http.Client{Timeout: 10 * time.Minute}
 		}
-		resp, err := client.Get(target)
-		if err != nil {
-			return nil, target, err
+		backoff := f.Backoff
+		if backoff == nil {
+			backoff = defaultBackoff
 		}
-		if resp.StatusCode != http.StatusOK {
-			_ = resp.Body.Close()
-			return nil, target, fmt.Errorf("GET %s: %s", target, resp.Status)
+		for attempt := 0; ; attempt++ {
+			body, retry, err := get(client, target)
+			if err == nil || !retry || attempt == len(backoff) {
+				return body, target, err
+			}
+			time.Sleep(backoff[attempt])
 		}
-		return resp.Body, target, nil
 	}
 	dir, err := localBase(base)
 	if err != nil {
@@ -117,6 +129,19 @@ func (f *Fetcher) open(a Asset) (io.ReadCloser, string, error) {
 		return nil, path, err
 	}
 	return file, path, nil
+}
+
+// get performs one request and says whether a failure is worth asking again.
+func get(client *http.Client, target string) (io.ReadCloser, bool, error) {
+	resp, err := client.Get(target)
+	if err != nil {
+		return nil, true, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		return nil, resp.StatusCode >= 500, fmt.Errorf("GET %s: %s", target, resp.Status)
+	}
+	return resp.Body, false, nil
 }
 
 // EnsureFile makes dest hold exactly the pinned asset, downloading it if it is
