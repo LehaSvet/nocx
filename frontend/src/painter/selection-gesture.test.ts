@@ -30,7 +30,7 @@ describe('live selection gesture', () => {
     )
     const firstSnapshot = snapshotOf(first)
     model.apply(first)
-    const painter = createCellPainter({ surface, palette: DEFAULT_SNAPSHOT })
+    const painter = createCellPainter({ surface, palette: () => DEFAULT_SNAPSHOT })
     painter.apply(firstSnapshot)
     vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
       left: 0,
@@ -99,7 +99,7 @@ describe('live selection gesture', () => {
       { cols: 4, rows: 1, cellWidthPx: 8, cellHeightPx: 20 },
     )
     model.apply(frame)
-    const painter = createCellPainter({ surface, palette: DEFAULT_SNAPSHOT })
+    const painter = createCellPainter({ surface, palette: () => DEFAULT_SNAPSHOT })
     painter.apply(snapshotOf(frame))
     vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
       left: 0,
@@ -147,7 +147,7 @@ describe('live selection gesture', () => {
       { cols: text.length, rows: 1, cellWidthPx: 8, cellHeightPx: 20 },
     )
     model.apply(frame)
-    const painter = createCellPainter({ surface, palette: DEFAULT_SNAPSHOT })
+    const painter = createCellPainter({ surface, palette: () => DEFAULT_SNAPSHOT })
     painter.apply(snapshotOf(frame))
     vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
       left: 0,
@@ -208,7 +208,7 @@ describe('live selection gesture', () => {
       { cols: 4, rows: 1, cellWidthPx: 8, cellHeightPx: 20 },
     )
     model.apply(live)
-    const painter = createCellPainter({ surface, palette: DEFAULT_SNAPSHOT })
+    const painter = createCellPainter({ surface, palette: () => DEFAULT_SNAPSHOT })
     painter.apply(snapshotOf(live))
     vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
       left: 0,

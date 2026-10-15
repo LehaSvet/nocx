@@ -169,6 +169,13 @@ const domBatchMeasure: BatchMeasure = (host, candidates) => {
     // же число для всех, и весь пакет был бы ложью. inline-block
     // сжимается по содержимому, что и есть искомая продвижка.
     span.style.display = 'inline-block'
+    // THE GLYPH'S OWN ADVANCE, NOT ITS WIDTH UNDER THE ROW'S TRACKING
+    // (nocx-zg3k3.29). The span is a .term-line for its type context, and a
+    // .term-line also carries --term-cell-delta as letter-spacing; measured
+    // with it, every glyph read one delta wider than it is, and the spacing
+    // derived from that painted it one delta short of its cell — a run of
+    // dozens of `─` ended a cell before mc's border did.
+    span.style.letterSpacing = '0px'
     if (c.face.bold) span.style.fontWeight = 'bold'
     if (c.face.italic) span.style.fontStyle = 'italic'
     span.textContent = c.chars
@@ -309,7 +316,10 @@ export function createCellFit(
       // спросит. Измеренная продвижка отвечает на оба вопроса сразу.
       if (advance === undefined) return null
       const target = width * cellWidth
-      if (Math.abs(advance - target) < FIT_EPSILON_PX) return null
+      // Lands on its own when it lands under the row's own tracking, as the
+      // calibrated ASCII beside it does: the same verdict the in-flow width
+      // gave before the measurement stopped carrying the tracking.
+      if (Math.abs(advance + rowDelta - target) < FIT_EPSILON_PX) return null
       // МЕНЬШЕ ЕДИНИЦЫ ИЛИ РОВНО ЕДИНИЦА, никогда больше. Глиф у́же своей
       // ячейки уже помещается: растянуть его — значит поменять начертание
       // ради щели, которой никто не видит, а искажённая буква видна сразу.

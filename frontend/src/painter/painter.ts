@@ -23,7 +23,7 @@
 import type { ScreenSnapshot } from '../cell-model'
 import type { CellFit, FitCandidate } from '../scrollback/cell-fit'
 import type { RunMetric } from '../scrollback/run-geometry'
-import { DEFAULT_SNAPSHOT, type TerminalSnapshot } from '../scrollback/serializer'
+import type { TerminalSnapshot } from '../scrollback/serializer'
 import { createMapping, type PixelMapping } from './mapping'
 import { fitCandidatesOf, paintRow } from './paint-row'
 import { styleEquals } from './style'
@@ -84,9 +84,11 @@ export interface CellPainterOptions {
    *  after it (nocx-zg3k3.2.13). Absent, nothing is measured: the degrade
    *  of an absent metric. */
   readonly warm?: (candidates: Iterable<FitCandidate>) => void
-  /** The theme the wire's palette colours resolve against. Defaults to the
-   *  same snapshot the frozen path falls back to. */
-  readonly palette?: TerminalSnapshot
+  /** The theme the wire's palette colours resolve against, read on every
+   *  apply. Required, with no fallback: a default here is how the live grid
+   *  painted Tokyo Night under every theme once (nocx-zg3k3.28). A different
+   *  answer from the last apply repaints every row, as a metric change does. */
+  readonly palette: () => TerminalSnapshot
   /** Told where the caret was just placed, in the surface's own CSS pixels —
    *  the same coordinates the overlay is drawn at.
    *
@@ -125,7 +127,7 @@ const SELECTION_CLASS = 'term-grid-selection'
 
 export function createCellPainter(opts: CellPainterOptions): CellPainter {
   const surface = opts.surface
-  const palette = opts.palette ?? DEFAULT_SNAPSHOT
+  let lastPalette: TerminalSnapshot | null = null
   surface.classList.add(GRID_CLASS)
   surface.setAttribute('role', 'grid')
   surface.setAttribute('aria-label', 'Terminal output')
@@ -232,7 +234,9 @@ export function createCellPainter(opts: CellPainterOptions): CellPainter {
     // The metric first: reading it is what begins the fit's row context,
     // which its warm() measures against.
     const metric = opts.metric?.() ?? null
-    const repaintAll = rows.length !== snapshot.rows.length || metricChanged(metric)
+    const palette = opts.palette()
+    const repaintAll =
+      rows.length !== snapshot.rows.length || metricChanged(metric) || palette !== lastPalette
     const toPaint = repaintAll
       ? snapshot.rows.map((_, r) => r)
       : snapshot.rows.flatMap((row, r) => {
@@ -259,6 +263,7 @@ export function createCellPainter(opts: CellPainterOptions): CellPainter {
       activeRow = rows.length === 0 ? null : rows.length - 1
     updateRowAccessibility()
     lastMetric = metric
+    lastPalette = palette
     installed = snapshot
     placeCursor(snapshot)
     paintSelection(snapshot)

@@ -398,4 +398,44 @@ describe('CellFit measurement handoff', () => {
     expect(fit.geometry()).toBeNull()
     expect(fit.advanceOf('🗑', 1, REGULAR)).toBeNull()
   })
+
+  it('answers a glyph’s own advance, not its width under the row’s tracking (nocx-zg3k3.29)', () => {
+    // The browser's rule, modelled: the probe measures inside a .term-line,
+    // and a .term-line carries the row tracking unless the element says
+    // otherwise. A box-drawing glyph with the calibrated advance then
+    // measured 8 in an 8px cell, landed without a box, and was given
+    // spacing 0 — painting 7.75, a quarter pixel short per cell. mc's frame
+    // rows came out a cell short of their borders on macOS.
+    const NATURAL = 7.75
+    const TRACKING = 0.25
+    const el = containerWith(8)
+    el.style.setProperty('--term-cell-delta', `${TRACKING}px`)
+    const rect = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        const tracked = this.classList.contains('term-line') && this.style.letterSpacing === ''
+        const width = (this.textContent ?? '').length * (NATURAL + (tracked ? TRACKING : 0))
+        return {
+          width,
+          height: 10,
+          top: 0,
+          left: 0,
+          right: width,
+          bottom: 10,
+          x: 0,
+          y: 0,
+        } as DOMRect
+      })
+    try {
+      const fit = createCellFit(() => el)
+      expect(fit.begin()).toBe(true)
+      fit.warm([{ chars: '─', width: 1, face: REGULAR }])
+      expect(fit.boxOf('─', 1, REGULAR)).toBeNull()
+      expect(fit.advanceOf('─', 1, REGULAR)).toBe(NATURAL)
+      // So its run carries the row's own spacing and merges with the text.
+      expect(8 - (fit.advanceOf('─', 1, REGULAR) ?? 0)).toBe(fit.geometry()?.rowDelta)
+    } finally {
+      rect.mockRestore()
+    }
+  })
 })

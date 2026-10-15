@@ -34,7 +34,7 @@ import { fitCandidatesOf, paintRow } from '../painter/paint-row'
 import type { FitCandidate } from './cell-fit'
 import { isAtTail } from './tail-follow'
 import type { RunMetric } from './run-geometry'
-import { DEFAULT_SNAPSHOT, type TerminalSnapshot } from './serializer'
+import type { TerminalSnapshot } from './serializer'
 import { log } from '../log'
 
 /** One page bound. Every layer that spells the request holds the wire's own
@@ -73,10 +73,11 @@ export interface LiveHistoryOptions {
   /** Cell-fit's batch write, run for the whole page before any row paints
    *  (cell-fit.ts's contract, the one the stored rows already keep). */
   readonly warm?: (candidates: Iterable<FitCandidate>) => void
-  /** The theme the wire's palette colours resolve against. Defaults to the
-   *  live painter's own default; the composition site passes nothing, so
-   *  the rows above the fold resolve exactly as the rows below them. */
-  readonly palette?: TerminalSnapshot
+  /** The theme the wire's palette colours resolve against, read per page —
+   *  the same supplier the live painter reads, so the rows above the fold
+   *  resolve exactly as the rows below them (nocx-zg3k3.28). A page already
+   *  painted keeps the theme it was painted in, as a frozen block does. */
+  readonly palette: () => TerminalSnapshot
 }
 
 interface InstalledPage {
@@ -94,6 +95,9 @@ interface InstalledPage {
    *  inside the page can trim what the emulator no longer holds without a
    *  second decode. */
   readonly rows: readonly ScreenSnapshot['rows'][number][]
+  /** The theme the page was painted in. A trim repaints the surviving rows
+   *  in it, so a theme switch never recolours half of an installed page. */
+  readonly palette: TerminalSnapshot
 }
 
 export class LiveHistorySurface {
@@ -102,7 +106,7 @@ export class LiveHistorySurface {
   private readonly _columns: () => number | null
   private readonly _metric: () => RunMetric | null
   private readonly _warm: ((candidates: Iterable<FitCandidate>) => void) | undefined
-  private readonly _palette: TerminalSnapshot
+  private readonly _palette: () => TerminalSnapshot
   private readonly _offScroll: () => void
 
   private _source: LiveHistoryPageSource | null = null
@@ -171,7 +175,7 @@ export class LiveHistorySurface {
     this._columns = opts.columns
     this._metric = opts.metric
     this._warm = opts.warm
-    this._palette = opts.palette ?? DEFAULT_SNAPSHOT
+    this._palette = opts.palette
     this.el = document.createElement('div')
     this.el.className = 'live-history'
     this.el.hidden = true
@@ -763,7 +767,8 @@ export class LiveHistorySurface {
     el.className = 'live-history-page'
     el.dataset.start = String(floor)
     el.dataset.end = String(oldest.end)
-    for (const row of keep) el.appendChild(paintRow(row, { metric, palette: this._palette }))
+    const palette = oldest.palette
+    for (const row of keep) el.appendChild(paintRow(row, { metric, palette }))
     const before = this._scroller.scrollHeight
     oldest.el.replaceWith(el)
     const removed = before - this._scroller.scrollHeight
@@ -777,6 +782,7 @@ export class LiveHistorySurface {
       bufferKind: oldest.bufferKind,
       bufferInstance: oldest.bufferInstance,
       rows: keep,
+      palette,
     }
   }
 
@@ -817,8 +823,9 @@ export class LiveHistorySurface {
     const historyEnd = page.start + historyRows.length
     pageEl.dataset.start = String(page.start)
     pageEl.dataset.end = String(historyEnd)
+    const palette = this._palette()
     for (const row of result.snapshot.rows) {
-      pageEl.appendChild(paintRow(row, { metric, palette: this._palette }))
+      pageEl.appendChild(paintRow(row, { metric, palette }))
     }
     // THE ANCHOR. The page lands above everything, so the rows the reader
     // is looking at would slide down by its height. The scroller owns the
@@ -851,6 +858,7 @@ export class LiveHistorySurface {
       bufferKind: page.bufferKind,
       bufferInstance: page.bufferInstance,
       rows: result.snapshot.rows,
+      palette,
     })
   }
 }

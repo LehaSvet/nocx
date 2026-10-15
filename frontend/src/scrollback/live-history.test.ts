@@ -13,6 +13,7 @@ import {
 import type { SessionHistoryPage } from '../generated/session.historyPage'
 import type { SessionHistoryPageRows } from '../generated/session.historyPageRows'
 import { styleOf, wireRowOf, type CellSpec } from '../painter/fixtures'
+import { DEFAULT_SNAPSHOT, type AnsiPalette, type TerminalSnapshot } from './serializer'
 
 const STYLE = styleOf({ foreground: { kind: 1, palette: 7, rgb: { r: 0, g: 0, b: 0 } } })
 
@@ -122,7 +123,7 @@ function pageOf(
 
 const ROW_PX = 20
 
-function mount(): {
+function mount(palette: () => TerminalSnapshot = () => DEFAULT_SNAPSHOT): {
   surface: LiveHistorySurface
   scroller: HTMLElement
 } {
@@ -137,6 +138,7 @@ function mount(): {
     stack,
     columns: () => 80,
     metric: () => null,
+    palette,
   })
   // jsdom lays nothing out; the surface reads exactly three numbers off
   // the scroller, so the geometry the anchor math needs is named here:
@@ -659,6 +661,62 @@ describe('live-history', () => {
       expect(first.textContent).toContain('L000050')
       expect(surface.el.querySelector('.live-history-page')?.getAttribute('data-start')).toBe('50')
       expect(scroller.scrollTop).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a trimmed page keeps the theme it was painted in (nocx-zg3k3.28)', async () => {
+    // A page already painted keeps its theme, as a frozen block does; a
+    // retention trim repaints its surviving rows, and must not recolour
+    // them with whatever theme is current by then (codex review).
+    vi.useFakeTimers()
+    try {
+      const p = DEFAULT_SNAPSHOT.palette
+      const switched: AnsiPalette = [
+        p[0],
+        p[1],
+        p[2],
+        p[3],
+        p[4],
+        p[5],
+        p[6],
+        '#ff3131',
+        p[8],
+        p[9],
+        p[10],
+        p[11],
+        p[12],
+        p[13],
+        p[14],
+        p[15],
+      ]
+      let theme: TerminalSnapshot = DEFAULT_SNAPSHOT
+      const { surface, scroller } = mount(() => theme)
+      atBottom(scroller)
+      surface.setMode('unstructured')
+      const source = scriptedSource([
+        pageOf('v'.repeat(32), 0, 0, 0, false),
+        pageOf('w'.repeat(32), 30, 64, 0, true),
+        pageOf('x'.repeat(32), 30, 0, 50, false),
+      ])
+      surface.bind(source)
+      await settle()
+      surface.noteOutput()
+      vi.advanceTimersByTime(HEAD_REFRESH_MS)
+      await settle()
+      const colourOf = (): string =>
+        (
+          surface.el
+            .querySelectorAll<HTMLElement>('.term-grid-row')[0]
+            .querySelector('span') as HTMLElement
+        ).style.color
+      const painted = colourOf()
+      theme = { ...DEFAULT_SNAPSHOT, palette: switched }
+      scrollNearTop(scroller, 100)
+      await settle()
+      expect(surface.el.querySelectorAll('.term-grid-row')[0].textContent).toContain('L000050')
+      expect(colourOf()).toBe(painted)
     } finally {
       vi.useRealTimers()
     }

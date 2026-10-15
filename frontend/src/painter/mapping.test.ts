@@ -43,7 +43,7 @@ function mounted(zoom: number) {
   const painter = createCellPainter({
     surface,
     metric: () => metricAt(zoom),
-    palette: DEFAULT_SNAPSHOT,
+    palette: () => DEFAULT_SNAPSHOT,
   })
   const row = (): HTMLElement => {
     const found = surface.querySelector('.term-grid-row')
