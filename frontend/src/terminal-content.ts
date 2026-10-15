@@ -1008,6 +1008,11 @@ export class TerminalContent extends BasePaneContent {
   /** Keeps the frozen screen's box off the assistant's rows: the stack is an
    *  overlay, so without this the screen is not shortened but COVERED. */
   private _summonStackObserver: ResizeObserver | null = null
+  /** Watches the scroller's own content width (nocx-zg3k3.30). */
+  private _scrollerWidthObserver: ResizeObserver | null = null
+  /** The scroller's width moved while a program held the pane; the refit
+   *  waits for the next prompt (nocx-zg3k3.30). */
+  private _scrollerRefitOwed = false
   /** The height the person last dragged the assistant to, in px. Null until
    *  they touch the seam: until then the stylesheet owns the default, so
    *  there is one owner of that number rather than two that drift. */
@@ -2668,8 +2673,19 @@ export class TerminalContent extends BasePaneContent {
         // The live tier's surface follows the pane's hands (nocx-zg3k3.10.4):
         // it is the unstructured mode's alone, and a return to the live end
         // is what drops a stale past so the next scroll-up reads the head.
-        onModeChanged: (mode) =>
-          this._liveHistory?.setMode(mode === 'unstructured' ? 'unstructured' : 'other'),
+        onModeChanged: (mode) => {
+          this._liveHistory?.setMode(mode === 'unstructured' ? 'unstructured' : 'other')
+          // A scroller width that moved under a running program is fitted at
+          // the prompt, where every other width decision is taken.
+          if (
+            (mode === 'idle' || mode === 'unstructured') &&
+            this._scrollerRefitOwed &&
+            !this._summoned
+          ) {
+            this._scrollerRefitOwed = false
+            this.refitIfResized()
+          }
+        },
         onTailFollow: (following) => {
           if (following) this._liveHistory?.tailReengaged()
         },
@@ -2741,6 +2757,38 @@ export class TerminalContent extends BasePaneContent {
         palette: livePalette,
       })
       this._liveHistory = liveHistory
+
+      // THE GRID'S WIDTH IS THE SCROLLER'S, AND THE SCROLLER CAN CHANGE IT
+      // ALONE (nocx-zg3k3.30). usableViewport reads `.scrollback-area`'s
+      // clientWidth, which a classic scrollbar narrows — and WebKitGTK shows
+      // one for a moment while a layout overflows the scroller, gutter rule
+      // or not (measured in the e2e container: 974 against 984, scrollHeight
+      // 799..1238 over a 626 box). The pane's box does not move, so the pane's
+      // observer delivers nothing when the bar goes, and a grid fitted with it
+      // up stayed one column short. Watching the scroller itself refits on the
+      // width it now has; height changes here are the transcript's, and the
+      // width test keeps them out.
+      //
+      // Only at the prompt, or in a session with no prompt to wait for. A running program — a full-screen one frozen
+      // under an Ask above all — is never resized by anything but the pane
+      // (nocx-2v80t.3.50; ask-about-full-screen-program asserts no WINCH),
+      // and the answers it is frozen under are exactly what overflows the
+      // scroller. A move seen then is owed, and the next prompt fits it.
+      if (typeof ResizeObserver !== 'undefined') {
+        const area = this.scrollback.scrollbackArea
+        let seenWidth = area.clientWidth
+        this._scrollerWidthObserver = new ResizeObserver(() => {
+          if (this._disposed || area.clientWidth === seenWidth) return
+          seenWidth = area.clientWidth
+          const mode = this.scrollback?.mode
+          if ((mode !== 'idle' && mode !== 'unstructured') || this._summoned) {
+            this._scrollerRefitOwed = true
+            return
+          }
+          this.refitIfResized()
+        })
+        this._scrollerWidthObserver.observe(area)
+      }
 
       // ── Pane context strip (decision 2026-09-15-terminal-screen-mockup-
       // decision.md §1 item 3) — chrome above the transcript, never a row
@@ -5292,12 +5340,14 @@ export class TerminalContent extends BasePaneContent {
    * the live row's inline inset, and that box is `flex: 1 1 auto` inside the
    * pane — its width comes from the pane, never from the grid drawn in it, and
    * `overflow-x: hidden` keeps a wide grid from widening it. The one thing
-   * that could move it is the vertical scrollbar appearing as rows change,
-   * and neither engine lets it:
+   * that could move it is the vertical scrollbar appearing as rows change:
    * Chromium reserves the gutter (`scrollbar-gutter: stable`, style.css) and
-   * WebKit draws an overlay bar that occupies no width at all. Which is also
-   * why the two engines disagreed by 10px in nocx-vydj and why clientWidth,
-   * not a subtracted constant, is the number read here.
+   * macOS WebKit draws an overlay bar that occupies no width at all, but
+   * WebKitGTK shows a 10px classic bar for a moment while a layout overflows
+   * the scroller. That move is the scroller's alone, so the scroller's own
+   * observer refits on it (nocx-zg3k3.30). Which is also why the two engines
+   * disagreed by 10px in nocx-vydj and why clientWidth, not a subtracted
+   * constant, is the number read here.
    */
   private refitIfResized(): void {
     const v = this._latestViewport
@@ -8378,6 +8428,8 @@ export class TerminalContent extends BasePaneContent {
     this._detachLinks?.()
     this._detachLinks = null
     this._homeUnsub?.()
+    this._scrollerWidthObserver?.disconnect()
+    this._scrollerWidthObserver = null
     this._themeUnsub?.()
     this._themeUnsub = null
     this._historyRecordedUnsub?.()
