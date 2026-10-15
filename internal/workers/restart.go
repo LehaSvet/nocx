@@ -342,6 +342,38 @@ func (DiskProbe) Resume(_ context.Context, agent string, worktree Worktree, resu
 // classified. A nil probe is a refusal for every record rather than a
 // permissive default — a restore that could not look must not claim the pane
 // is fine.
+// RestoreInterruptedForClose rehydrates only the addressable, terminal worker
+// facts needed by workers.close from the durable restart record. It does not
+// claim the old process is live and does not restore authority beyond the
+// coordinator session recorded by the same source of truth.
+func RestoreInterruptedForClose(ctx context.Context, store Store, rec RestartRecord) error {
+	if store == nil {
+		return errors.New("worker: close restore needs a store")
+	}
+	if rec.Participant == "" || rec.Group == "" || rec.CoordinatorSession == "" {
+		return errors.New("worker: close restore needs participant, group and coordinator")
+	}
+	if err := store.EnsureGroup(ctx, rec.Group, rec.CoordinatorSession); err != nil {
+		return err
+	}
+	p := Participant{
+		ID: rec.Participant, Group: rec.Group, Role: RoleWorker, State: StateInterrupted,
+		Task: "", RegisteredAt: rec.RecordedAt, Worktree: rec.Worktree,
+	}
+	if err := store.CommitPrepared(ctx, p); err != nil {
+		return err
+	}
+	// CommitPrepared preserves prepared as the initial state; terminalize it
+	// before installing the expired delegation used only to address cleanup.
+	if err := store.Terminalize(ctx, rec.Participant, StateInterrupted); err != nil {
+		return err
+	}
+	return store.PutDelegation(ctx, Delegation{
+		ControllerSession: rec.CoordinatorSession,
+		Participant:       rec.Participant, Generation: 1, Effects: DefaultBundle(), State: DelegationExpired,
+	})
+}
+
 func Restore(ctx context.Context, records []RestartRecord, probe RestartProbe) []Restoration {
 	out := make([]Restoration, 0, len(records))
 	for _, rec := range records {

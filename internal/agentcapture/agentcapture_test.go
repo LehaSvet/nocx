@@ -82,7 +82,7 @@ func TestPaintReplaysToTheSameFrame(t *testing.T) {
 				Agent: "probe", Argv: []string{"probe"},
 				Cols: want.Cols, Rows: want.Rows,
 			}
-			chunks := []agentcapture.Chunk{{AtMs: 0, Offset: 0, Data: string(agentcapture.Paint(want))}}
+			chunks := []agentcapture.Chunk{{AtMs: 0, Offset: 0, Data: agentcapture.Paint(want)}}
 			moments, err := agentcapture.Frames(context.Background(), replaylocal.Replayer{}, header, chunks, []int64{0})
 			if err != nil {
 				t.Fatalf("frames: %v", err)
@@ -165,6 +165,34 @@ func sameCell(a, b paneview.Cell) bool {
 	return at == bt
 }
 
+func TestSplitUTF8SurvivesCaptureAndReplay(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "capture.jsonl")
+	header := agentcapture.Header{Agent: "omp", Argv: []string{"omp"}, Cols: 20, Rows: 4}
+	want := liveFrame(t, 20, 4, "[H界")
+	chunks := []agentcapture.Chunk{
+		{AtMs: 1, Offset: 0, Data: []byte{0x1b, '[', 'H', 0xe7}},
+		{AtMs: 2, Offset: 4, Data: []byte{0x95, 0x8c}},
+	}
+	if err := agentcapture.Write(path, header, chunks); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	gotHeader, gotChunks, err := agentcapture.Read(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !bytes.Equal(gotChunks[0].Data, chunks[0].Data) || !bytes.Equal(gotChunks[1].Data, chunks[1].Data) {
+		t.Fatalf("capture bytes changed: got %q / %q", gotChunks[0].Data, gotChunks[1].Data)
+	}
+	moments, err := agentcapture.Frames(context.Background(), replaylocal.Replayer{}, gotHeader, gotChunks, []int64{2})
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if diff := frameDiff(moments[0].Frame, want); diff != "" {
+		t.Fatalf("replayed frame differs: %s", diff)
+	}
+}
+
 func TestCaptureJSONLRoundTrip(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "capture.jsonl")
@@ -177,8 +205,8 @@ func TestCaptureJSONLRoundTrip(t *testing.T) {
 		Script:  []string{"+0ms \"\\r\""},
 	}
 	chunks := []agentcapture.Chunk{
-		{AtMs: 3, Offset: 0, Data: "hello\r\n"},
-		{AtMs: 8, Offset: 7, Data: "\x1b[2J"},
+		{AtMs: 3, Offset: 0, Data: []byte("hello\r\n")},
+		{AtMs: 8, Offset: 7, Data: []byte("\x1b[2J")},
 	}
 	if err := agentcapture.Write(path, header, chunks); err != nil {
 		t.Fatalf("writeCapture: %v", err)
@@ -214,10 +242,10 @@ func TestCaptureJSONLRoundTrip(t *testing.T) {
 func TestChunksThroughMarkIncludesExactBoundary(t *testing.T) {
 	t.Parallel()
 	chunks := []agentcapture.Chunk{
-		{AtMs: 10, Offset: 0, Data: "a"},
-		{AtMs: 20, Offset: 1, Data: "b"},
-		{AtMs: 20, Offset: 2, Data: "c"},
-		{AtMs: 21, Offset: 3, Data: "d"},
+		{AtMs: 10, Offset: 0, Data: []byte("a")},
+		{AtMs: 20, Offset: 1, Data: []byte("b")},
+		{AtMs: 20, Offset: 2, Data: []byte("c")},
+		{AtMs: 21, Offset: 3, Data: []byte("d")},
 	}
 	if consumed := agentcapture.ChunksThrough(chunks, 9, 0); consumed != 0 {
 		t.Fatalf("agentcapture.ChunksThrough(..., 9) = %d, want 0", consumed)

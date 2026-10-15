@@ -476,11 +476,10 @@ func readPTY(ptmx io.Reader, started time.Time, done chan<- readResult) {
 	for {
 		n, err := ptmx.Read(buf)
 		if n > 0 {
-			data := string(buf[:n])
 			result.chunks = append(result.chunks, agentcapture.Chunk{
 				AtMs:   time.Since(started).Milliseconds(),
 				Offset: result.bytes,
-				Data:   data,
+				Data:   append([]byte(nil), buf[:n]...),
 			})
 			result.bytes += n
 		}

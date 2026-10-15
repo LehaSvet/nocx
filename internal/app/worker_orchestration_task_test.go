@@ -97,7 +97,7 @@ func happyIdleCaptureBytes(t *testing.T) []byte {
 	}
 	var out []byte
 	for _, c := range chunks {
-		out = append(out, []byte(c.Data)...)
+		out = append(out, c.Data...)
 	}
 	return out
 }

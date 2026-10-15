@@ -36,7 +36,7 @@ var _ agentcapture.Replay = Replayer{}
 func (Replayer) Replay(_ context.Context, header agentcapture.Header, chunks []agentcapture.Chunk, through []int) ([]paneview.Frame, error) {
 	data := make([][]byte, len(chunks))
 	for i, c := range chunks {
-		data[i] = []byte(c.Data)
+		data[i] = c.Data
 	}
 	return paneview.Replay(ghostty.New, emulator.Geometry{Cols: header.Cols, Rows: header.Rows}, data, through)
 }

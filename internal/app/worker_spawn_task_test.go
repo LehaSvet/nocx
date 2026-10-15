@@ -124,7 +124,7 @@ func (s *taskDeliveryStand) feedCapture(t *testing.T, sid session.ID, name strin
 	}
 	through := agentcapture.ChunksThrough(chunks, atMs, 0)
 	for _, c := range chunks[:through] {
-		s.grid.Feed(string(sid), []byte(c.Data))
+		s.grid.Feed(string(sid), c.Data)
 	}
 }
 

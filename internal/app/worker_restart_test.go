@@ -446,3 +446,55 @@ func TestAResumeRecordWithoutItsLazySessionIDIsUnavailable(t *testing.T) {
 		t.Fatalf("lazy-ID failure = %+v, want resume-unavailable naming the missing recorded identity", got[0].Failure)
 	}
 }
+
+// A backend restart discards the in-memory registrar and workerTabs. The ADR-0079
+// record is the one durable source for both; after startup a coordinator must
+// still be able to close the restored worker and remove its tab.
+func TestWorkersCloseClosesRestoredWorkerTabAfterBackendRestart(t *testing.T) {
+	ctx := context.Background()
+	stand := newWorkerStand(t)
+	docs := storage.NewDocumentStore(t.TempDir())
+	restarts := workers.NewFileRestartStore(docs, "worker-restarts.json")
+	stand.record.SetRestartRecords(restarts)
+
+	p := stand.registerWithEnrolment(t, "task survives restart")
+	tabID := stand.tabOfSession(t, p.Liveness.SessionID)
+	// The old backend and its session runtime disappear. The content DB and
+	// ADR-0079 document are reopened, while all in-memory worker state is new.
+	if err := stand.db.Close(); err != nil {
+		t.Fatalf("close old content db: %v", err)
+	}
+	afterDB, err := content.Open(ctx, content.Config{
+		Path:   filepath.Join(stand.dir, "content.db"),
+		Key:    []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31},
+		Budget: content.Budget{RetentionBytes: 1 << 30, DiskCeilingBytes: 2 << 30, CompactionFloor: 0.8},
+		Logger: stand.log,
+	})
+	if err != nil {
+		t.Fatalf("reopen content db: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := afterDB.Close(); closeErr != nil {
+			t.Errorf("close reopened content db: %v", closeErr)
+		}
+	})
+	freshTabs := newWorkerTabs()
+	freshStore := workers.NewMemoryStore()
+	freshSessions := session.New(stand.log, &workerTestPTYFactory{log: stand.log})
+	freshRecord := workers.NewRegistrar(freshStore, nil, nil, &workerSupervisor{sessions: freshSessions, log: stand.log},
+		workers.WithCloser(&workerCloser{sessions: freshSessions, layout: afterDB.Layout(), tabs: freshTabs, announce: stand.tp, log: stand.log}),
+	)
+	records, err := workers.NewFileRestartStore(docs, "worker-restarts.json").Records(ctx)
+	if err != nil {
+		t.Fatalf("read restart records: %v", err)
+	}
+	restored := workers.Restore(ctx, records, workers.DiskProbe{})
+	restoreWorkerCloseRecords(ctx, stand.log, restored, freshStore, freshTabs)
+	// Startup rebuilds close authority and the tab lookup from the one record.
+	if _, err := freshRecord.Close(ctx, "sess-coordinator", p.ID); err != nil {
+		t.Fatalf("workers.close after backend restart: %v", err)
+	}
+	if ids := idsOf(t, stripOf(t, afterDB.Layout(), content.DefaultWorkspaceID)); containsID(ids, tabID) {
+		t.Fatalf("restored worker tab %q remains after workers.close: %v", tabID, ids)
+	}
+}
