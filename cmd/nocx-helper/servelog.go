@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 
 	nocxlog "github.com/shady2k/nocx/internal/log"
 )
@@ -48,7 +50,7 @@ func ServeLogPath(home string) string {
 // serves, and says so on the stderr it may or may not have — refusing to open a
 // pane because a log file could not be created would be the diagnostic costing
 // more than the thing it diagnoses.
-func openServeLog(home string, generation string) (*slog.Logger, io.Closer) {
+func openServeLog(home string, generation string) (*slog.Logger, *os.File) {
 	opts := &slog.HandlerOptions{Level: nocxlog.DefaultLevel(), AddSource: true}
 	stderrOnly := slog.New(slog.NewTextHandler(os.Stderr, opts)).With("generation", generation)
 
@@ -71,4 +73,18 @@ func openServeLog(home string, generation string) (*slog.Logger, io.Closer) {
 	// is by reading its own first line — the same promise the backend's makes.
 	lg.Info("helper log file", "path", path)
 	return lg, file
+}
+
+// keepCrashOutput hands the daemon's log file to the runtime as well
+// (nocx-uo8pf). The runtime writes a panic, a fatal error and the goroutine
+// dump SIGQUIT asks for to fd 2 alone — /dev/null for the daemon — so a helper
+// that stopped answering was a process whose stacks nobody could ever read.
+// A nil file (no log could be opened) leaves the runtime as it was.
+func keepCrashOutput(ctx context.Context, file *os.File) {
+	if file == nil {
+		return
+	}
+	if err := debug.SetCrashOutput(file, debug.CrashOptions{}); err != nil {
+		nocxlog.From(ctx).Warn("helper crash output stays on stderr only", "err", err)
+	}
 }

@@ -565,14 +565,21 @@ test.describe('long transcript scroll budget', () => {
     }
   }
 
-  test('captures backend goroutine stacks before teardown', async () => {
-    await backend.start()
+  test('captures backend and helper goroutine stacks before teardown', async ({ page }) => {
+    const endpoint = await backend.start()
+    // A pane, so a helper daemon serves this home: the backend's stacks can
+    // only show it waiting on the helper (nocx-uo8pf).
+    await bindEndpoint(page, endpoint)
+    await page.goto('/')
+    await appReadyForInput(page)
     const readyLogLine = 'msg="nocx-server ready"'
     const preSignalLog = backend.logTail(40_000)
     expect(preSignalLog).toContain(readyLogLine)
 
     await backend.captureGoroutineDump()
     expect(backend.goroutineDump).toContain('goroutine ')
+    expect(backend.helperGoroutineDump).toContain('SIGQUIT: quit')
+    expect(backend.helperGoroutineDump).toContain('goroutine ')
     expect(backend.logTail(40_000)).toContain(readyLogLine)
     expect(backend.logTail()).not.toContain('SIGQUIT: quit')
 
@@ -585,6 +592,9 @@ test.describe('long transcript scroll budget', () => {
     expect(preservedLogFile).not.toBe('')
     const preservedLog = readFileSync(preservedLogFile, 'utf8')
     expect(preservedLog).toContain(backend.goroutineDump)
+    expect(readFileSync(backend.preservedHelperLogFile, 'utf8')).toContain(
+      backend.helperGoroutineDump,
+    )
 
     const section = formatGoroutineDumpSection(backend.logFile, dump, preservedLogFile)
     expect(section).toContain(`${MAX_GOROUTINE_DUMP_LINES} shown, 1 dropped`)

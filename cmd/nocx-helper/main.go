@@ -122,6 +122,7 @@ func main() {
 		// generation's log file when one opened).
 		ctx = nocxlog.WithLogger(ctx, nocxlog.NewSlogAdapter(serveLog))
 		nocxlog.SetRoot(nocxlog.NewSlogAdapter(serveLog))
+		keepCrashOutput(ctx, logFile)
 		code := serve(ctx, serveLog, dir, generation, contentHash, exe)
 		if logFile != nil {
 			_ = logFile.Close()

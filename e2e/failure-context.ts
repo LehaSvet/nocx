@@ -68,6 +68,8 @@ export interface RegisterableBackend {
   logTail(maxBytes?: number): string
   goroutineDump?: string
   preservedLogFile?: string
+  helperGoroutineDump?: string
+  preservedHelperLogFile?: string
 }
 
 const backendsByTestId = new Map<string, RegisterableBackend[]>()
@@ -363,6 +365,16 @@ export async function reportFailureContext(info: TestInfo, traceId: string): Pro
           ),
         )
       }
+      if (backend.helperGoroutineDump) {
+        sections.push(
+          formatGoroutineDumpSection(
+            'helper daemon',
+            backend.helperGoroutineDump,
+            backend.preservedHelperLogFile,
+            'helper',
+          ),
+        )
+      }
     }
 
     for (const watched of pages) {
@@ -446,14 +458,15 @@ export function formatGoroutineDumpSection(
   logFile: string,
   dump: string,
   preservedLogFile?: string,
+  owner: 'backend' | 'helper' = 'backend',
 ): string {
   const lines = dump.split('\n')
   const shown = lines.slice(0, MAX_GOROUTINE_DUMP_LINES)
   const dropped = lines.length - shown.length
-  const section = linesSection(`backend goroutine dump (${logFile})`, shown, dropped)
+  const section = linesSection(`${owner} goroutine dump (${logFile})`, shown, dropped)
   if (dropped === 0 || !dump.startsWith('SIGQUIT: quit')) return section
   const artifact = preservedLogFile ? `: ${preservedLogFile}` : ''
-  return `${section}\n(full dump is retained in the preserved backend log artifact${artifact})`
+  return `${section}\n(full dump is retained in the preserved ${owner} log artifact${artifact})`
 }
 
 /** How long the block-DOM probe may take before the report moves on without
