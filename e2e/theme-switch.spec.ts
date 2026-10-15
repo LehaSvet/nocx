@@ -121,15 +121,20 @@ test.describe('theme switching', () => {
     await promptReady(page)
     await page.keyboard.type("printf '\\033[44m PANEL \\033[0m\\n'; read x")
     await page.keyboard.press('Enter')
-    const grid = page.locator('.pane.active .terminal-live-grid')
-    await expect(grid).toContainText('PANEL', { timeout: 15_000 })
+    // The coloured run itself, not the grid's text: the echoed command line
+    // already contains PANEL before the output row is painted.
+    await expect(
+      page
+        .locator('.pane.active .terminal-live-grid .term-grid-row span')
+        .filter({ hasText: /^ PANEL $/ }),
+    ).toHaveCount(1, { timeout: 15_000 })
     const panel = (): Promise<{ painted: string; token: string }> =>
       page.evaluate(() => {
         const span = [
           ...document.querySelectorAll<HTMLElement>(
             '.pane.active .terminal-live-grid .term-grid-row span',
           ),
-        ].find((s) => (s.textContent ?? '').includes('PANEL'))!
+        ].find((s) => s.textContent === ' PANEL ')!
         const probe = document.createElement('div')
         probe.style.color = getComputedStyle(document.documentElement)
           .getPropertyValue('--terminal-ansi-4')
