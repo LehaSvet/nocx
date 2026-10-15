@@ -358,7 +358,7 @@ func newS14RealStand(t *testing.T, mockDir, stateDir string, opts ...s14RealOpti
 	// file's own doc already claimed paneScreen/helperPaneClient were in use
 	// (they are, for session.read/session.keys via `screen` below) but
 	// paneobserve and WithPaneScreens were wired to the fake anyway.
-	screen := newPaneScreen(slogger, reg, local, nil)
+	screen := newPaneScreen(slogger, reg, local, &helperRegistry{})
 	// THE STORE'S SOURCE, and the two modes differ here for one reason.
 	//
 	// The COCKPIT journey opens a real helper-hosted pane for its coordinator
