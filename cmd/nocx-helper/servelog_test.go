@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -72,4 +74,35 @@ func TestAnUnopenableLogStillServes(t *testing.T) {
 	}
 	// Usable, not merely non-nil.
 	lg.Info("still serving")
+}
+
+// A DAEMON THAT DIES SAYS WHY, IN ITS FILE (nocx-uo8pf). Its stderr is
+// /dev/null, so a panic, a fatal error or the goroutine dump SIGQUIT asks the
+// runtime for went nowhere: an e2e run whose helper stopped answering could
+// show the backend waiting on it and nothing at all about what the helper
+// was doing. The child here starts the way the daemon does — stderr discarded
+// — and the assertion is on the bytes in the log file.
+func TestADaemonCrashIsWrittenToItsLogFile(t *testing.T) {
+	if home := os.Getenv("NOCX_SERVELOG_CRASH_HOME"); home != "" {
+		_, file := openServeLog(home, "gen-crash")
+		keepCrashOutput(context.Background(), file)
+		panic("the helper daemon panicked on purpose")
+	}
+	home := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestADaemonCrashIsWrittenToItsLogFile$") //nolint:gosec // the test binary itself
+	cmd.Env = append(os.Environ(), "NOCX_SERVELOG_CRASH_HOME="+home)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
+	if err := cmd.Run(); err == nil {
+		t.Fatal("the child did not crash")
+	}
+	written, err := os.ReadFile(ServeLogPath(home)) //nolint:gosec // the path is this test's temp home
+	if err != nil {
+		t.Fatalf("read the helper log: %v", err)
+	}
+	out := string(written)
+	for _, want := range []string{"the helper daemon panicked on purpose", "goroutine "} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("the helper log does not carry %q after the daemon crashed:\n%s", want, out)
+		}
+	}
 }
