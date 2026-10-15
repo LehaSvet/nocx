@@ -477,6 +477,58 @@ describe('TerminalContent geometry follows accepted painter frames', () => {
     }
   })
 
+  it('refits when the scroller alone changes width, as a classic scrollbar does (nocx-zg3k3.30)', async () => {
+    // A transient overflow put WebKitGTK's 10px scrollbar into the scroller
+    // while the grid was fitted; the pane's own box never changed, so nothing
+    // refitted when the bar went, and the grid stayed one column short.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const observed = new Map<Element, ResizeObserverCallback>()
+    class RecordingResizeObserver {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+      observe(el: Element): void {
+        observed.set(el, this.callback)
+      }
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    vi.stubGlobal('ResizeObserver', RecordingResizeObserver)
+    const client = makeClient()
+    const { content, tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    try {
+      tab.pane.classList.add('active')
+      await vi.waitFor(() => expect(paneScreen()).not.toBeNull())
+      const session = sessionOf(content)
+      session.fireScreenFrame(screenFrame(1, ['prompt']))
+      await vi.waitFor(() => expect(paneScreen()?.revision).toBe(1))
+      const area = scrollbackFor(content).scrollbackArea
+      let width = 790
+      Object.defineProperty(area, 'clientWidth', { configurable: true, get: () => width })
+      content.viewportChanged({ width: 800, height: 400 })
+      vi.advanceTimersByTime(80)
+      const first = session.sendResize.mock.calls[session.sendResize.mock.calls.length - 1]?.[0]
+      expect(first).toBeDefined()
+
+      // The bar goes: the scroller is 10px wider, the pane is not.
+      width = 800
+      const onScroller = observed.get(area)
+      expect(onScroller).toBeDefined()
+      onScroller!([], {} as ResizeObserver)
+      vi.advanceTimersByTime(80)
+      const second = session.sendResize.mock.calls[session.sendResize.mock.calls.length - 1]?.[0]
+      // 790px and 800px of 8px cells: 98 columns, then the 100 that fit now.
+      expect(first.cols).toBe(98)
+      expect(second?.cols).toBe(100)
+    } finally {
+      vi.unstubAllGlobals()
+      teardown()
+      vi.useRealTimers()
+    }
+  })
+
   it('coalesces quick pane resizes and sends only the final grid', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const client = makeClient()
