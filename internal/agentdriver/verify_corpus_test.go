@@ -77,7 +77,7 @@ func corpusSet(t *testing.T, moments []corpusMoment) agentcalib.Set {
 		set.Chunks = append(set.Chunks, agentcapture.Chunk{
 			AtMs:   mark,
 			Offset: agentcapture.EndOffset(set.Chunks, len(set.Chunks)),
-			Data:   string(agentcapture.Paint(replay(t, m.capture, m.atMs))),
+			Data:   agentcapture.Paint(replay(t, m.capture, m.atMs)),
 		})
 		at := mark
 		set.Labels = append(set.Labels, agentcalib.Record{Label: m.label, AtMs: &at})

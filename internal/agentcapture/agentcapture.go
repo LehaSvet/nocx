@@ -62,7 +62,17 @@ type Header struct {
 type Chunk struct {
 	AtMs   int64  `json:"atMs"`
 	Offset int    `json:"offset"`
-	Data   string `json:"data"`
+	Data   []byte `json:"data"`
+}
+
+// MarshalJSON marks byte payloads so legacy JSON-string captures remain readable.
+func (c Chunk) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		AtMs     int64  `json:"atMs"`
+		Offset   int    `json:"offset"`
+		Data     []byte `json:"data"`
+		Encoding string `json:"dataEncoding"`
+	}{c.AtMs, c.Offset, c.Data, "base64"})
 }
 
 // Moment is one replayed mark: the screen as it stood there, and how much of
@@ -139,10 +149,30 @@ func Read(path string) (Header, []Chunk, error) {
 	expectedOffset := 0
 	var previousAt int64
 	for lineNumber := 2; scanner.Scan(); lineNumber++ {
-		var chunk Chunk
-		if err := json.Unmarshal(scanner.Bytes(), &chunk); err != nil {
+		var raw struct {
+			AtMs     int64           `json:"atMs"`
+			Offset   int             `json:"offset"`
+			Data     json.RawMessage `json:"data"`
+			Encoding string          `json:"dataEncoding"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
 			return Header{}, nil, fmt.Errorf("decode capture chunk on line %d: %w", lineNumber, err)
 		}
+		var data []byte
+		if raw.Encoding == "base64" {
+			if err := json.Unmarshal(raw.Data, &data); err != nil {
+				return Header{}, nil, fmt.Errorf("decode capture chunk data on line %d: %w", lineNumber, err)
+			}
+		} else if len(raw.Data) > 0 && raw.Data[0] == '"' {
+			var legacy string
+			if err := json.Unmarshal(raw.Data, &legacy); err != nil {
+				return Header{}, nil, fmt.Errorf("decode capture chunk data on line %d: %w", lineNumber, err)
+			}
+			data = []byte(legacy)
+		} else if err := json.Unmarshal(raw.Data, &data); err != nil {
+			return Header{}, nil, fmt.Errorf("decode capture chunk data on line %d: %w", lineNumber, err)
+		}
+		chunk := Chunk{AtMs: raw.AtMs, Offset: raw.Offset, Data: data}
 		if chunk.AtMs < 0 || chunk.AtMs < previousAt {
 			return Header{}, nil, fmt.Errorf("capture chunk on line %d has out-of-order atMs %d", lineNumber, chunk.AtMs)
 		}

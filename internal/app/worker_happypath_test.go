@@ -680,7 +680,7 @@ func newHappyVerifiedClaudeCalibration(t *testing.T) agentcalib.Store {
 		set.Chunks = append(set.Chunks, agentcapture.Chunk{
 			AtMs:   mark,
 			Offset: agentcapture.EndOffset(set.Chunks, len(set.Chunks)),
-			Data:   string(agentcapture.Paint(frame)),
+			Data:   agentcapture.Paint(frame),
 		})
 		at := mark
 		set.Labels = append(set.Labels, agentcalib.Record{Label: m.label, AtMs: &at})

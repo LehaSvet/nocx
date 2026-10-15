@@ -335,7 +335,7 @@ func (c *Calibrations) capture(w *walk) error {
 	// stamps to land in one millisecond — which would make the replay of one
 	// label answer with another label's screen.
 	mark := int64(len(w.chunks))
-	data := string(agentcapture.Paint(f))
+	data := agentcapture.Paint(f)
 	w.chunks = append(w.chunks, agentcapture.Chunk{
 		AtMs:   mark,
 		Offset: agentcapture.EndOffset(w.chunks, len(w.chunks)),

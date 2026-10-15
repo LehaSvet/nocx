@@ -376,7 +376,7 @@ func (p paneReplay) Replay(ctx context.Context, header agentcapture.Header, chun
 	}
 	data := make([][]byte, len(chunks))
 	for i, ch := range chunks {
-		data[i] = []byte(ch.Data)
+		data[i] = ch.Data
 	}
 	frames, err := c.Replay(ctx, header.Cols, header.Rows, data, through)
 	if err != nil {

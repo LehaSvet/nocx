@@ -89,7 +89,7 @@ func TestAnEnvFileIsTheWholeEnvironment(t *testing.T) {
 	}
 	var printed strings.Builder
 	for _, c := range chunks {
-		printed.WriteString(c.Data)
+		printed.Write(c.Data)
 	}
 	got := map[string]string{}
 	for _, line := range strings.Split(strings.TrimRight(printed.String(), "\r\n"), "\n") {

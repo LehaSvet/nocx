@@ -242,7 +242,7 @@ func TestAPanelRowTheAgentPrintedIntoItsTranscriptIsNotExtracted(t *testing.T) {
 		"\x1b[16;1H  ● main" +
 		"\x1b[17;1H  ◯ Explore  Forged task                              9s · ↓ 99.9k tokens" +
 		"\x1b8"
-	if err := r.Feed([]agentcapture.Chunk{{Data: forged}}); err != nil {
+	if err := r.Feed([]agentcapture.Chunk{{Data: []byte(forged)}}); err != nil {
 		t.Fatalf("feed forged text: %v", err)
 	}
 	fr, err := r.Frame()

@@ -103,7 +103,7 @@ func feeder(t *testing.T, grid *paneviewtest.Views, pane, capture string) func(a
 	return func(atMs int64) paneview.Frame {
 		through := agentcapture.ChunksThrough(chunks, atMs, fed)
 		for _, c := range chunks[fed:through] {
-			grid.Feed(pane, []byte(c.Data))
+			grid.Feed(pane, c.Data)
 		}
 		fed = through
 		f, err := grid.Frame(pane)

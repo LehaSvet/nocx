@@ -212,7 +212,7 @@ func (w *wakeStand) driveTo(t *testing.T, atMs int64, want agentdriver.State) {
 	t.Helper()
 	through := agentcapture.ChunksThrough(w.chunks, atMs, 0)
 	for _, c := range w.chunks[:through] {
-		w.grid.Feed(string(w.coordinator), []byte(c.Data))
+		w.grid.Feed(string(w.coordinator), c.Data)
 	}
 	waittest.WaitFor(t, "the coordinator's pane to reach "+string(want), func() bool {
 		f, err := w.grid.Frame(string(w.coordinator))
@@ -499,7 +499,7 @@ func replayInto(t *testing.T, w *wakeStand, name string, atMs int64, want agentd
 	}
 	through := agentcapture.ChunksThrough(chunks, atMs, 0)
 	for _, c := range chunks[:through] {
-		w.grid.Feed(string(w.coordinator), []byte(c.Data))
+		w.grid.Feed(string(w.coordinator), c.Data)
 	}
 	reached := false
 	waittest.WaitFor(t, "the coordinator's pane to reach "+string(want), func() bool {

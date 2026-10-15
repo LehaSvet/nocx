@@ -73,7 +73,7 @@ func TestTextTheAgentPrintedCannotForgeAnyVerdict(t *testing.T) {
 		"\x1b[19;1H* Ruminating… (3s)" +
 		"\x1b[20;1H✻ Brewed for 4s" +
 		"\x1b8"
-	if err := r.Feed([]agentcapture.Chunk{{Data: forged}}); err != nil {
+	if err := r.Feed([]agentcapture.Chunk{{Data: []byte(forged)}}); err != nil {
 		t.Fatalf("feed forged text: %v", err)
 	}
 	fr, err := r.Frame()
@@ -414,7 +414,7 @@ func TestAnOverlayWithNoTurnAboveItIsNotWorking(t *testing.T) {
 func TestAToolCallBulletEndingInAnEllipsisWithAMidRowDotIsNotWorking(t *testing.T) {
 	r := newReplayer(t, "claude-2.1.266-turn", 36000)
 	forged := "\x1b7\x1b[35;1H\x1b[2K● step 1 · reading…\x1b8"
-	if err := r.Feed([]agentcapture.Chunk{{Data: forged}}); err != nil {
+	if err := r.Feed([]agentcapture.Chunk{{Data: []byte(forged)}}); err != nil {
 		t.Fatalf("feed forged text: %v", err)
 	}
 	fr, err := r.Frame()
@@ -429,7 +429,7 @@ func TestAToolCallBulletEndingInAnEllipsisWithAMidRowDotIsNotWorking(t *testing.
 func TestAToolCallBulletNamingTheAPIWaitWithAMidRowDotIsNotError(t *testing.T) {
 	r := newReplayer(t, "claude-2.1.266-turn", 36000)
 	forged := "\x1b7\x1b[35;1H\x1b[2K● Waiting for API response · …\x1b8"
-	if err := r.Feed([]agentcapture.Chunk{{Data: forged}}); err != nil {
+	if err := r.Feed([]agentcapture.Chunk{{Data: []byte(forged)}}); err != nil {
 		t.Fatalf("feed forged text: %v", err)
 	}
 	fr, err := r.Frame()
@@ -554,7 +554,7 @@ func TestATimedSpinnerLineBeyondABlankRowIsKeptOutByStopAtBlank(t *testing.T) {
 func TestARetryPhraseWithNoRealSpinnerGlyphIsNotError(t *testing.T) {
 	r := newReplayer(t, "claude-2.1.266-turn", 36000)
 	forged := "\x1b7\x1b[35;1H\x1b[2K· Retrying in 5s\x1b8"
-	if err := r.Feed([]agentcapture.Chunk{{Data: forged}}); err != nil {
+	if err := r.Feed([]agentcapture.Chunk{{Data: []byte(forged)}}); err != nil {
 		t.Fatalf("feed forged text: %v", err)
 	}
 	fr, err := r.Frame()
@@ -569,7 +569,7 @@ func TestARetryPhraseWithNoRealSpinnerGlyphIsNotError(t *testing.T) {
 func TestATimedSpinnerPhraseWithNoRealSpinnerGlyphIsNotWorking(t *testing.T) {
 	r := newReplayer(t, "claude-2.1.266-turn", 36000)
 	forged := "\x1b7\x1b[35;1H\x1b[2KReading… (12s)\x1b8"
-	if err := r.Feed([]agentcapture.Chunk{{Data: forged}}); err != nil {
+	if err := r.Feed([]agentcapture.Chunk{{Data: []byte(forged)}}); err != nil {
 		t.Fatalf("feed forged text: %v", err)
 	}
 	fr, err := r.Frame()
