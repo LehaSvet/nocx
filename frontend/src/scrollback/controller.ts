@@ -540,9 +540,14 @@ export class ScrollbackController {
   private _echoShiftPx(): number {
     if (this._mode !== 'running') return 0
     const rec = this._blockManager.runningBlock
-    if (!rec || rec.outputAnchorOffset === undefined) return 0
+    if (!rec) return 0
     const cell = this._cellMetrics()?.cellHeight ?? 0
     if (!cell || cell <= 0) return 0
+    // Until the backend's anchor places the output, the row the block opened
+    // on is the bound: the rows above it are the previous command's, still on
+    // a screen nothing clears (nocx-zg3k3.32). The echo itself stays visible
+    // for that moment; the anchor is what knows where it ends.
+    if (rec.outputAnchorOffset === undefined) return (rec.startOffset ?? 0) * cell
     const command = rec.command.trim()
     if (command !== '' && !(rec.outputAnchorText ?? '').endsWith(command)) return 0
     return rec.outputAnchorOffset * cell

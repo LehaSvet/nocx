@@ -6771,10 +6771,13 @@ describe('two attempts and the live region stay separate while running (nocx-m87
       client._sessions[0].fireScreenFrame(wrongInstance)
       expect(block.outputAnchorOffset).toBeUndefined()
 
-      const wrongGeometry = screenFrame(7, ['prompt ls', '', ''], { cols: SCREEN_COLS + 1 })
-      wrongGeometry.state.baseRow = 10
-      client._sessions[0].fireScreenFrame(wrongGeometry)
-      expect(block.outputAnchorOffset).toBeUndefined()
+      // A frame of another width is the estimate a reflow allows, and the
+      // echo row it names is read like any other (nocx-zg3k3.32).
+      const otherWidth = screenFrame(7, ['prompt ls', '', ''], { cols: SCREEN_COLS + 1 })
+      otherWidth.state.baseRow = 10
+      client._sessions[0].fireScreenFrame(otherWidth)
+      expect(block.outputAnchorOffset).toBe(2)
+      expect(block.outputAnchorText).toBe('')
 
       const accepted = screenFrame(8, ['', 'prompt ls', ''])
       accepted.state.baseRow = 10
@@ -6812,6 +6815,99 @@ describe('two attempts and the live region stay separate while running (nocx-m87
       output.state.baseRow = 10
       client._sessions[0].fireScreenFrame(output)
       await vi.waitFor(() => expect(scrollback.terminalLiveViewport.style.height).toBe('16px'))
+    } finally {
+      teardown()
+    }
+  })
+
+  it('keeps a running block on its own rows when the pane loses rows while it runs (nocx-zg3k3.32)', async () => {
+    const client = makeClient()
+    const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    const handler = factHandler(client)
+    const scrollback = (content as unknown as { scrollback: ScrollbackController }).scrollback
+    const anchor = {
+      entryId: 'att-rows',
+      row: 12,
+      screenRevision: 5,
+      bufferKind: 'normal' as const,
+      bufferInstance: '1',
+      cols: SCREEN_COLS,
+      rows: SCREEN_ROWS,
+    }
+    try {
+      handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
+      handler({
+        lane: 'lane-1',
+        lifecycle: 'running',
+        domain: 'd1',
+        epoch: 1,
+        attempt: { id: 'att-rows', state: 'open', origin: 'shell', command: 'ls' },
+      })
+      client._fireBlockOutputStart(anchor)
+      const block = scrollback.blockManager.blockForAttempt('att-rows')!
+
+      // The pane was refitted one row shorter before the anchor's own frame
+      // was accepted: the anchor is an absolute row of the shared screen
+      // coordinate, which a change of row count does not renumber.
+      const shorter = screenFrame(6, ['99', 'prompt ls', ''], { rows: SCREEN_ROWS - 1 })
+      shorter.state.baseRow = 10
+      client._sessions[0].fireScreenFrame(shorter)
+      expect(block.outputAnchorOffset).toBe(2)
+
+      // Shrinking again pushes the top row into history: the same output
+      // start is now one row nearer the top, and the hidden band follows it.
+      const shrunk = screenFrame(7, ['prompt ls', 'out'], { rows: SCREEN_ROWS - 2 })
+      shrunk.state.baseRow = 11
+      client._sessions[0].fireScreenFrame(shrunk)
+      expect(block.outputAnchorOffset).toBe(1)
+      expect(block.outputAnchorText).toBe('prompt ls')
+
+      // A width change on the way (WebKit flashes a scrollbar during a
+      // resize) still moves the band with the base; the echo reading is
+      // kept from the last frame of the anchor's own width.
+      const wider = screenFrame(8, ['out', ''], { cols: SCREEN_COLS + 1, rows: SCREEN_ROWS - 2 })
+      wider.state.baseRow = 12
+      client._sessions[0].fireScreenFrame(wider)
+      expect(block.outputAnchorOffset).toBe(0)
+      expect(block.outputAnchorText).toBe('prompt ls')
+    } finally {
+      teardown()
+    }
+  })
+
+  it('hides the rows above a running block’s start before its output anchor arrives (nocx-zg3k3.32)', async () => {
+    const client = makeClient()
+    const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    const handler = factHandler(client)
+    const scrollback = (content as unknown as { scrollback: ScrollbackController }).scrollback
+    try {
+      handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
+      // The previous command's rows are still on the screen; the cursor
+      // stands on the line the new command is typed on.
+      const before = screenFrame(5, ['98', '99', 'prompt read x', ''])
+      before.state.baseRow = 20
+      before.cursor = { x: 0, y: 2, visible: true }
+      client._sessions[0].fireScreenFrame(before)
+      handler({
+        lane: 'lane-1',
+        lifecycle: 'running',
+        domain: 'd1',
+        epoch: 1,
+        attempt: { id: 'att-early', state: 'open', origin: 'shell', command: 'read x' },
+      })
+      const block = scrollback.blockManager.blockForAttempt('att-early')!
+      expect(block.startLine).toBe(22)
+      // Placed at the open, from the frame it opened on: a command that
+      // prints nothing sends no frame after it.
+      expect(block.startOffset).toBe(2)
+      expect(scrollback.terminalLiveInner.style.transform).toMatch(/^translateY\(-\d/)
+
+      const output = screenFrame(6, ['98', '99', 'prompt read x', 'OWN'])
+      output.state.baseRow = 20
+      client._sessions[0].fireScreenFrame(output)
+      expect(block.outputAnchorOffset).toBeUndefined()
+      expect(block.startOffset).toBe(2)
+      expect(scrollback.terminalLiveInner.style.transform).toMatch(/^translateY\(-\d/)
     } finally {
       teardown()
     }
