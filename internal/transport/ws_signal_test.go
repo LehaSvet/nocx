@@ -254,11 +254,14 @@ type fakeProtected struct {
 	accept   bool // does the input queue take the byte
 	// interrupt forces a specific write outcome; the zero value writes.
 	interrupt interruptResult
-	ends      bool // does the exact attempt leave open within the bound
-	writes    int
-	asked     int
-	held      int
-	waitedFor lifecycle.AttemptID
+	ends      bool // does the exact attempt leave open once the interrupt is written
+	// endedAlready: the attempt left open before anything was written — the
+	// command finished on its own while the Stop was on its way.
+	endedAlready bool
+	writes       int
+	asked        int
+	held         int
+	waitedFor    lifecycle.AttemptID
 }
 
 func (f *fakeProtected) Attempt() (lifecycle.AttemptID, bool) {
@@ -302,7 +305,7 @@ func (f *fakeProtected) Interrupt(lifecycle.AttemptID) interruptResult {
 
 func (f *fakeProtected) Ended(a lifecycle.AttemptID, _ time.Duration) bool {
 	f.waitedFor = a
-	return f.ends
+	return f.endedAlready || (f.ends && f.writes > 0)
 }
 
 // TestForegroundSignal_TheKernelAnswerChoosesTheMechanism is the policy in
@@ -423,8 +426,12 @@ func TestForegroundSignal_StopOverAProtectedGroupWaitsForTheExactAttempt(t *test
 			if len(sess.calls) != 0 {
 				t.Fatalf("signals sent = %v, want none — a protected group is never signalled", sess.calls)
 			}
-			if sess.named != 1 {
-				t.Fatalf("addressee named %d times, want exactly once", sess.named)
+			// Asked more than once now, and only BEFORE anything is sent: with
+			// the shell in front of a started command the policy waits for the
+			// command to become the job (nocx-zg3k3.14.16). What it may never
+			// do is signal — asserted above.
+			if sess.named < 1 {
+				t.Fatalf("addressee named %d times, want it asked", sess.named)
 			}
 			if fb.waitedFor != attempt {
 				t.Fatalf("waited for attempt %q, want the exact one that was named (%q)", fb.waitedFor, attempt)

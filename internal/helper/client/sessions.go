@@ -1468,11 +1468,13 @@ func (a *AttachedSession) ForegroundJob() (int, error) {
 //
 //   - a group that is NOT the shell's own is a job, and it is returned to be
 //     signalled;
-//   - the SHELL'S OWN group in front is protected. It is not an absence: under
-//     ADR-0024 nocx runs commands with job control off, so this is the state a
-//     running command produces for its whole life, and the ladder answers it
-//     by writing the terminal's interrupt rather than by signalling a group
-//     that contains the shell;
+//   - the SHELL'S OWN group in front is protected. It is not an absence: a
+//     command the shell runs itself (a builtin, a loop), one started under
+//     job control off (`set +m`) or `exec`, and one the shell is still
+//     handing the terminal to all look like this — nocx's interactive shells
+//     run with job control ON, so an ordinary program becomes a job of its
+//     own a few milliseconds after its start (measured, nocx-zg3k3.14.16).
+//     The ladder never signals a group that contains the shell;
 //   - no group at all means nobody could look, which is a diagnosis. It must
 //     not read as ErrNoForeground, or a caller reports a quiet pane about a
 //     command that is plainly running.
