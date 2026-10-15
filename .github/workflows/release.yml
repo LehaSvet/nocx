@@ -1382,3 +1382,47 @@ jobs:
             "dist/nocx-helper-${VERSION}-darwin-arm64" \
             "dist/manifest.json" \
             "dist/manifest.json.sig"
+
+      # The release is now public. Only after GitHub accepted every release
+      # asset do we update the separate tap; a failed build or release leaves
+      # its cask untouched. The tap token is used only to push to that repo.
+      - name: Update the Homebrew tap cask
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "$GH_TOKEN" ] || { echo "::error::HOMEBREW_TAP_TOKEN is empty"; exit 1; }
+          version="${VERSION}"
+          url="https://github.com/shady2k/nocx/releases/download/v${version}/nocx-${version}-darwin-universal.zip"
+          sha256="$(curl -fL --retry 3 --retry-all-errors "$url" | sha256sum | awk '{print $1}')"
+          printf '%s\n' "$sha256" | grep -Eq '^[0-9a-f]{64}$' || { echo "::error::invalid macOS bundle sha256"; exit 1; }
+          gh auth setup-git
+          gh repo clone shady2k/homebrew-nocx tap
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cask=Casks/nocx.rb
+          test -f "$cask"
+          python3 - "$cask" "$version" "$sha256" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          path = Path(sys.argv[1])
+          version, sha256 = sys.argv[2:]
+          text = path.read_text()
+          text, versions = re.subn(r'(?m)^(\s*version\s+)["\'][^"\']+["\']', rf'\g<1>"{version}"', text, count=1)
+          text, hashes = re.subn(r'(?m)^(\s*sha256\s+)["\'][0-9a-f]{64}["\']', rf'\g<1>"{sha256}"', text, count=1)
+          if versions != 1 or hashes != 1:
+              raise SystemExit("expected exactly one cask version and sha256")
+          path.write_text(text)
+          PY
+          grep -Fq "version \"${version}\"" "$cask"
+          grep -Fq "sha256 \"${sha256}\"" "$cask"
+          if git diff --exit-code --quiet -- "$cask"; then
+            echo "tap cask already points to v${version} with the published bundle hash"
+            exit 0
+          fi
+          git add "$cask"
+          git commit -m "chore: update nocx cask to v${version}"
+          git push origin HEAD:main
