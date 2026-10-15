@@ -665,7 +665,7 @@ function uuidv7(): string {
 //   const { port: p2, token: t2 } = await backend.restart()
 
 import { spawn, execSync, type ChildProcess } from 'node:child_process'
-import { existsSync, readFileSync, openSync, mkdirSync, copyFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, openSync, mkdirSync, copyFileSync } from 'node:fs'
 import { resolve, basename, join } from 'node:path'
 
 import { awaitCoordinator } from './coordinator.mjs'
@@ -1175,6 +1175,38 @@ export async function setDefaultModel(
   await baseExpect(answering.locator('.roles-role__state')).toHaveCount(0, { timeout: 10_000 })
 }
 
+/** The `nocx-helper serve` processes whose HOME is `home`, read off /proc. */
+function helperDaemonPids(home: string): number[] {
+  let entries: string[]
+  try {
+    entries = readdirSync('/proc')
+  } catch {
+    return []
+  }
+  const pids: number[] = []
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue
+    try {
+      const argv = readFileSync(`/proc/${entry}/cmdline`, 'utf8').split('\0').filter(Boolean)
+      if (argv.length !== 2 || argv[1] !== 'serve' || !argv[0].endsWith('nocx-helper')) continue
+      const env = readFileSync(`/proc/${entry}/environ`, 'utf8').split('\0')
+      if (env.includes(`HOME=${home}`)) pids.push(Number(entry))
+    } catch {
+      /* gone, or not ours to read */
+    }
+  }
+  return pids
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export class VaultBackend {
   private proc: ChildProcess | null = null
   private logPath = ''
@@ -1185,6 +1217,12 @@ export class VaultBackend {
   goroutineDump = ''
   /** Character offset where the Go runtime dump begins in the full backend log. */
   goroutineDumpOffset: number | undefined
+  /** SIGQUIT's dump of the helper daemon serving this backend's home
+   *  (nocx-uo8pf): the backend's stacks show it waiting on the helper, and
+   *  only the helper's own say why the helper stopped answering. */
+  helperGoroutineDump = ''
+  /** Where preserveLog copied the helper daemon's log for this test. */
+  private preservedHelperLogPath = ''
   /** How many times start() has run — names each incarnation's preserved log. */
   private starts = 0
 
@@ -1198,6 +1236,18 @@ export class VaultBackend {
   /** Where preserveLog copied the complete backend log for this test. */
   get preservedLogFile(): string {
     return this.preservedLogPath
+  }
+
+  /** Where preserveLog copied the helper daemon's log, once it had one. */
+  get preservedHelperLogFile(): string {
+    return this.preservedHelperLogPath
+  }
+
+  /** The helper daemon's own log under this backend's home
+   *  (cmd/nocx-helper/servelog.go): the home is the disposable one, so
+   *  without a copy it goes with the temp directory. */
+  get helperLogFile(): string {
+    return this.isolation ? join(this.isolation.isolatedHome, '.nocx', 'helper.log') : ''
   }
 
   /** The canonical home this backend was given, once it has been started. */
@@ -1247,6 +1297,7 @@ export class VaultBackend {
     this.starts++
     this.goroutineDump = ''
     this.goroutineDumpOffset = undefined
+    this.helperGoroutineDump = ''
     this.logPath = resolve(this.disposable.root, 'nocx-server.log')
     const logFd = openSync(this.logPath, 'w')
 
@@ -1335,6 +1386,12 @@ export class VaultBackend {
       const preserved = resolve(dir, name)
       copyFileSync(this.logPath, preserved)
       this.preservedLogPath = preserved
+      const helperLog = this.helperLogFile
+      if (helperLog && existsSync(helperLog)) {
+        const preservedHelper = resolve(dir, 'helper.log')
+        copyFileSync(helperLog, preservedHelper)
+        this.preservedHelperLogPath = preservedHelper
+      }
     } catch {
       /* the log is a courtesy; never fail a run over it */
     }
@@ -1367,6 +1424,9 @@ export class VaultBackend {
    * test-only probe needs no production debug endpoint or additional server surface.
    */
   async captureGoroutineDump(): Promise<void> {
+    // The helper first: the backend's stacks can only show it waiting on the
+    // helper, and the helper's say what it is waiting on in turn.
+    await this.captureHelperGoroutineDump()
     const proc = this.proc
     if (!proc || proc.exitCode !== null) {
       this.goroutineDump = 'not captured: backend was already stopped'
@@ -1411,6 +1471,45 @@ export class VaultBackend {
     } catch (error) {
       if (exitTimer) clearTimeout(exitTimer)
       this.goroutineDump = `not captured: ${String(error)}`
+    }
+  }
+
+  /**
+   * SIGQUIT the helper daemon serving this backend's home and keep its stacks.
+   * The daemon is detached and its stderr is /dev/null, so it writes the dump
+   * to its own log file (servelog.go's crash output) and this reads it back
+   * from there. Found through /proc by its HOME and its `serve` argument —
+   * the daemon was started by the backend, not by this harness, so no handle
+   * to it exists here. Linux only, which is where the suite runs; anywhere
+   * else the section says it was not captured.
+   */
+  private async captureHelperGoroutineDump(): Promise<void> {
+    const home = this.isolation?.isolatedHome
+    const log = this.helperLogFile
+    if (!home || !log) {
+      this.helperGoroutineDump = 'not captured: the backend was never started'
+      return
+    }
+    const pids = helperDaemonPids(home)
+    if (pids.length === 0) {
+      this.helperGoroutineDump = 'not captured: no helper daemon serves this home'
+      return
+    }
+    try {
+      const searchFrom = existsSync(log) ? readFileSync(log, 'utf8').length : 0
+      for (const pid of pids) process.kill(pid, 'SIGQUIT')
+      const deadline = Date.now() + 5_000
+      while (pids.some(isAlive) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 50))
+      }
+      const text = existsSync(log) ? readFileSync(log, 'utf8') : ''
+      const start = text.indexOf('SIGQUIT: quit', searchFrom)
+      this.helperGoroutineDump =
+        start < 0
+          ? `not captured: the helper (pid ${pids.join(', ')}) wrote no Go goroutine dump to ${log}`
+          : text.slice(start).trimEnd()
+    } catch (error) {
+      this.helperGoroutineDump = `not captured: ${String(error)}`
     }
   }
 
