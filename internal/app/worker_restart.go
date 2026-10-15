@@ -128,3 +128,27 @@ func forgetRecordsOfClosedPanes(ctx context.Context, lg log.Logger,
 	}
 	return kept
 }
+
+// restoreWorkerCloseRecords rebuilds the worker-close view from the existing
+// ADR-0079 record. That record is the sole durable owner of participant and tab
+// identity; the live registry remains intentionally in-memory. Restored
+// participants are interrupted (never represented as running) but addressable
+// by their original coordinator so workers.close can remove their tab.
+func restoreWorkerCloseRecords(ctx context.Context, lg log.Logger, restorations []workers.Restoration,
+	store workers.Store, tabs *workerTabs,
+) {
+	for _, restored := range restorations {
+		rec := restored.Record
+		if rec.Participant == "" || rec.Group == "" || rec.CoordinatorSession == "" || rec.TabID == "" {
+			lg.Warn("worker restart: incomplete record cannot be closed by its coordinator",
+				"participant", string(rec.Participant), "tab_id", rec.TabID)
+			continue
+		}
+		if err := workers.RestoreInterruptedForClose(ctx, store, rec); err != nil {
+			lg.Warn("worker restart: participant could not be restored for close",
+				"participant", string(rec.Participant), "error", err)
+			continue
+		}
+		tabs.record(rec.Participant, rec.TabID)
+	}
+}

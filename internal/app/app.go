@@ -2537,6 +2537,10 @@ func New(opts ...Option) (*App, error) {
 	// for Start: local helper installation happens there, and a pane opened
 	// before it would be refused as unavailable.
 	workerRestorations := restoreWorkerRecords(ctx, logger, workerRestarts, contentDB.Layout(), agentProbe{store: agentRecords})
+	// The same ADR-0079 records also rebuild workers.close's addressable participant and tab pairing.
+	// No parallel durable index: startup reads the one restart record once, and close operates on
+	// the interrupted participant plus the layout row it names.
+	restoreWorkerCloseRecords(ctx, logger, workerRestorations, workerStore, workerSeats)
 
 	// THE SWEEP (nocx-xn63t.1.6): the same service, asked on a schedule
 	// instead of by a coordinator, under the same removal refusals. The
