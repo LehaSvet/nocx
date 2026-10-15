@@ -153,7 +153,7 @@ Phases as one-liners. The detailed, executable backlog lives in **beads**, not i
 
 ## 8. Platform & distribution
 
-macOS first (the author's own machine). Windows and Linux later (Phase 3). Builds are produced by GitHub Actions on a version tag and published as GitHub Releases — a `.dmg` to install and a `.zip` the app updates itself from. There is no Apple Developer ID and there will not be one, so builds are unsigned: the first launch needs a one-time manual `xattr` to clear quarantine (see the README), and update integrity is ours rather than Apple's — an ed25519-signed manifest verified against a keyring compiled into the binary. No app store, and no Homebrew cask (Homebrew closed that route for unsigned casks on 2026-09-01), and no formal support. Design: `docs/superpowers/specs/2026-07-22-distribution-and-updates-design.md`; rationale: ADR-0003.
+macOS first (the author's own machine). Windows and Linux later (Phase 3). Builds are produced by GitHub Actions on a version tag and published as GitHub Releases — a `.dmg` to install and a `.zip` the app updates itself from. There is no Apple Developer ID and there will not be one, so builds are unsigned and unnotarized. A direct download needs a one-time manual `xattr` to clear quarantine; a cask in our planned `shady2k/homebrew-nocx` third-party tap will instead clear quarantine after installation and make that trust choice explicit (see the README). Update integrity is ours rather than Apple's — an ed25519-signed manifest verified against a keyring compiled into the binary. No app store and no formal support. Design: `docs/superpowers/specs/2026-07-22-distribution-and-updates-design.md`; rationale: ADR-0003 as superseded in part by ADR-0086.
 
 ## 9. Success criteria
 

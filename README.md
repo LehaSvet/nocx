@@ -40,9 +40,21 @@ completions carried a "(later)" here for two releases after they landed.
 
 ## Install (macOS)
 
-Released builds are on the [Releases page](https://github.com/shady2k/nocx/releases). Download the `.dmg`, open it, and drag **nocx** into Applications.
+Download the `.dmg` from the [Releases page](https://github.com/shady2k/nocx/releases) and drag **nocx** into Applications. A Homebrew cask is planned in our own third-party tap; it is not available until that tap is published.
 
-There is no Apple Developer ID, so the build is ad-hoc signed rather than signed by an identity Apple can attest, and it is not notarized — macOS quarantines it on download. Clear that once, on first install:
+### Homebrew (planned)
+
+Once the tap is published, it will install the same release app:
+
+```bash
+brew install --cask shady2k/nocx/nocx
+```
+
+The planned cask will remove `com.apple.quarantine` from `/Applications/nocx.app` after installation. This is an explicit trust choice: the tap clears macOS quarantine, just as the manual command below does. Read the tap README before installing.
+
+### Direct download
+
+There is no Apple Developer ID, so the build is unsigned and not notarized. macOS quarantines a downloaded app; clear that once, on first install:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/nocx.app
@@ -50,7 +62,7 @@ xattr -dr com.apple.quarantine /Applications/nocx.app
 
 Then open nocx normally. This is required only the first time — later in-app updates fetch the build directly and do not re-quarantine it. Confirm the version any time with `nocx --version`.
 
-> No publisher signature and no notarization; the reasoning is in [ADR-0003](docs/decisions/0003-distribution-without-a-developer-id.md). Update integrity is enforced by an ed25519-signed manifest, not by Gatekeeper.
+> No publisher signature and no notarization; the reasoning is in [ADR-0003](docs/decisions/0003-distribution-without-a-developer-id.md) and [ADR-0086](docs/decisions/0086-a-third-party-homebrew-tap-may-clear-quarantine-for-the-unsigned-cask.md). Update integrity is enforced by an ed25519-signed manifest, not by Gatekeeper.
 
 ## Install (Linux)
 
