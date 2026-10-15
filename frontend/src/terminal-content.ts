@@ -1010,6 +1010,9 @@ export class TerminalContent extends BasePaneContent {
   private _summonStackObserver: ResizeObserver | null = null
   /** Watches the scroller's own content width (nocx-zg3k3.30). */
   private _scrollerWidthObserver: ResizeObserver | null = null
+  /** The scroller's width moved while a program held the pane; the refit
+   *  waits for the next prompt (nocx-zg3k3.30). */
+  private _scrollerRefitOwed = false
   /** The height the person last dragged the assistant to, in px. Null until
    *  they touch the seam: until then the stylesheet owns the default, so
    *  there is one owner of that number rather than two that drift. */
@@ -2670,8 +2673,19 @@ export class TerminalContent extends BasePaneContent {
         // The live tier's surface follows the pane's hands (nocx-zg3k3.10.4):
         // it is the unstructured mode's alone, and a return to the live end
         // is what drops a stale past so the next scroll-up reads the head.
-        onModeChanged: (mode) =>
-          this._liveHistory?.setMode(mode === 'unstructured' ? 'unstructured' : 'other'),
+        onModeChanged: (mode) => {
+          this._liveHistory?.setMode(mode === 'unstructured' ? 'unstructured' : 'other')
+          // A scroller width that moved under a running program is fitted at
+          // the prompt, where every other width decision is taken.
+          if (
+            (mode === 'idle' || mode === 'unstructured') &&
+            this._scrollerRefitOwed &&
+            !this._summoned
+          ) {
+            this._scrollerRefitOwed = false
+            this.refitIfResized()
+          }
+        },
         onTailFollow: (following) => {
           if (following) this._liveHistory?.tailReengaged()
         },
@@ -2754,12 +2768,23 @@ export class TerminalContent extends BasePaneContent {
       // up stayed one column short. Watching the scroller itself refits on the
       // width it now has; height changes here are the transcript's, and the
       // width test keeps them out.
+      //
+      // Only at the prompt, or in a session with no prompt to wait for. A running program — a full-screen one frozen
+      // under an Ask above all — is never resized by anything but the pane
+      // (nocx-2v80t.3.50; ask-about-full-screen-program asserts no WINCH),
+      // and the answers it is frozen under are exactly what overflows the
+      // scroller. A move seen then is owed, and the next prompt fits it.
       if (typeof ResizeObserver !== 'undefined') {
         const area = this.scrollback.scrollbackArea
         let seenWidth = area.clientWidth
         this._scrollerWidthObserver = new ResizeObserver(() => {
           if (this._disposed || area.clientWidth === seenWidth) return
           seenWidth = area.clientWidth
+          const mode = this.scrollback?.mode
+          if ((mode !== 'idle' && mode !== 'unstructured') || this._summoned) {
+            this._scrollerRefitOwed = true
+            return
+          }
           this.refitIfResized()
         })
         this._scrollerWidthObserver.observe(area)
