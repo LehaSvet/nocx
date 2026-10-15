@@ -28,9 +28,11 @@ package transport
 //   - An INDEPENDENT foreground group is the ordinary case. The signal goes
 //     to that group with kill(2), and stop escalates through it.
 //   - A PROTECTED group — the launcher shell's own, which job control off
-//     (`set +m`, ADR-0024) or `exec` produces, and which is also what an
-//     idle prompt looks like — may hold a running program, and it may never
-//     be killed. Over it the mechanism is the terminal's own interrupt byte,
+//     (`set +m`) or `exec` produces, which a builtin runs in, which is in
+//     front for the moment the shell hands a just-started program the
+//     terminal (nocx's shells run with job control on), and which is also
+//     what an idle prompt looks like — may hold a running program, and it
+//     may never be killed. Over it the mechanism is the terminal's own interrupt byte,
 //     0x03, written to the pty exactly as a focused Ctrl+C writes it, and it
 //     is available only while an authenticated lifecycle attempt says a
 //     program is there (protectedForeground below). There is no escalation
@@ -299,7 +301,7 @@ func stopForeground(lg log.Logger, sid session.ID, sess runLeaseSession, grace t
 		// make the fix depend on which side of an unrelated kernel state the
 		// pane happened to be in, so both go where the authenticated attempt
 		// — not the kernel's group — decides what may be done.
-		return stopByTerminalInterrupt(lg, sid, fb, grace)
+		return stopByTerminalInterrupt(lg, sid, sess, errors.Is(err, pty.ErrProtectedForeground), fb, grace)
 	default:
 		// The call itself failed. Something may well be there and nocx
 		// cannot prove it stopped — never nothing-running, which is a
@@ -328,7 +330,21 @@ func stopForeground(lg log.Logger, sid session.ID, sess runLeaseSession, grace t
 // for that attempt (the read in StopTarget armed it), and the transport
 // delivers it when the shell authenticates its start — by then the line is
 // parsed and the program is the one in front.
-func stopByTerminalInterrupt(lg log.Logger, sid session.ID, conv protectedForeground, grace time.Duration) foregroundOutcome {
+//
+// A STARTED COMMAND WITH THE SHELL STILL IN FRONT IS USUALLY ONE THE SHELL IS
+// HANDING THE TERMINAL TO (nocx-zg3k3.14.16). The start is reported from bash's
+// preexec, before the program is forked; interactive bash runs with job control
+// on, so a few milliseconds later the program is the foreground job in a group
+// of its own. An interrupt written in between reaches the shell, not the
+// program, and is lost — measured in CI: written 18 ms after the start, with
+// `sleep 30` still running 15 s later. So when the kernel can SEE the shell in
+// front (shellInFront — not an unobservable group, which says nothing about
+// who is there), the policy first waits for the job: once it is in front the
+// ladder runs against its group, and if the command ends meanwhile nothing is
+// sent. Only a command the shell runs itself — a builtin, a loop, a function,
+// which never becomes a job — keeps the shell in front past the bound, and it
+// is the shell that must then be interrupted, through the terminal.
+func stopByTerminalInterrupt(lg log.Logger, sid session.ID, sess runLeaseSession, shellInFront bool, conv protectedForeground, grace time.Duration) foregroundOutcome {
 	if conv == nil {
 		// A caller holding no lifecycle projection at all (the run lease whose
 		// session carries none). Nothing can say what is in the group, and the
@@ -346,6 +362,18 @@ func stopByTerminalInterrupt(lg log.Logger, sid session.ID, conv protectedForegr
 		return foregroundHeld
 	}
 	attempt := target.Attempt
+	if shellInFront {
+		switch pgid, handover := awaitJobHandover(sess, conv, attempt, grace); handover {
+		case handoverJob:
+			lg.Info("foreground signal: the started command became the foreground job; stopping its group",
+				"session_id", string(sid), "attempt", string(attempt), "pgid", pgid)
+			return stopProcessGroup(lg, sid, sess, pgid, grace)
+		case handoverEnded:
+			lg.Info("foreground signal: the command ended before it could be stopped",
+				"session_id", string(sid), "attempt", string(attempt))
+			return foregroundNothingRunning
+		}
+	}
 	switch conv.Interrupt(attempt) {
 	case interruptDiscarded:
 		// The addressee left `open` between the read that named it and the
@@ -372,6 +400,57 @@ func stopByTerminalInterrupt(lg log.Logger, sid session.ID, conv protectedForegr
 	lg.Warn("foreground signal: the attempt stayed open after the terminal interrupt",
 		"session_id", string(sid), "attempt", string(attempt))
 	return foregroundUnreconciled
+}
+
+// jobHandoverBound is the longest the policy waits for a started command to
+// become the foreground job. The handover itself is a fork and a tcsetpgrp,
+// milliseconds even on a loaded runner; the bound is what a command the shell
+// runs ITSELF pays before its interrupt is written, so it is kept short, and
+// never longer than the caller's own grace.
+const jobHandoverBound = 250 * time.Millisecond
+
+// jobHandoverPoll is how often the foreground is asked again while waiting.
+const jobHandoverPoll = 5 * time.Millisecond
+
+type jobHandover int
+
+const (
+	// handoverNone: the shell kept the terminal for the whole bound.
+	handoverNone jobHandover = iota
+	// handoverJob: a group other than the shell's is in front.
+	handoverJob
+	// handoverEnded: the attempt left open first; there is nothing to stop.
+	handoverEnded
+)
+
+// awaitJobHandover waits, at most min(grace, jobHandoverBound), for the
+// command the shell has started to become the foreground job, and names that
+// job's group. It watches two observable states — the kernel's foreground
+// group and the attempt's own lifecycle — and never a byte (AD-6).
+func awaitJobHandover(sess runLeaseSession, conv protectedForeground, attempt lifecycle.AttemptID, grace time.Duration) (int, jobHandover) {
+	bound := jobHandoverBound
+	if grace > 0 && grace < bound {
+		bound = grace
+	}
+	deadline := time.Now().Add(bound)
+	for {
+		pgid, err := sess.ForegroundJob()
+		switch {
+		case err == nil:
+			return pgid, handoverJob
+		case !errors.Is(err, pty.ErrProtectedForeground):
+			// The group vanished or could not be read: no evidence of a job,
+			// and the terminal interrupt decides as before.
+			return 0, handoverNone
+		}
+		if conv.Ended(attempt, jobHandoverPoll) {
+			return 0, handoverEnded
+		}
+		if !time.Now().Before(deadline) {
+			return 0, handoverNone
+		}
+		time.Sleep(jobHandoverPoll)
+	}
 }
 
 // protectedAttempt asks the caller's projection whether a program is inside

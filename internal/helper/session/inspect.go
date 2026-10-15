@@ -164,9 +164,11 @@ func (i *osInspector) Observe(pid, foregroundPgid int) *proto.Observation {
 	//
 	// This used to omit the group too whenever it was the shell's own, on the
 	// reading that "the shell is in front" means "no job is running". That is
-	// true at a prompt and false for every command nocx starts, because
-	// ADR-0024 runs them with job control off (`set +m`) — the shell and its
-	// foreground command share one group for the whole time the command runs.
+	// true at a prompt and false for a command the shell runs itself, for one
+	// started under job control off (`set +m`) or `exec`, and for the moment
+	// between a command's start and the program taking the terminal — nocx's
+	// interactive shells run with job control on, so an ordinary program is
+	// its own job only a few milliseconds later (nocx-zg3k3.14.16).
 	// So the one state the run-lease ladder most needs to recognise was the
 	// one the wire erased, and the coordinator could not tell it from "nobody
 	// could look": the first wants the terminal's interrupt written, the
