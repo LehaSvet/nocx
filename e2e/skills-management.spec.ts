@@ -59,7 +59,7 @@
  * waitForTimeout.
  */
 import { expect, type Locator, type Page } from '@playwright/test'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
@@ -204,6 +204,22 @@ test.afterAll(async () => {
   backend?.stop()
   await fake?.stop()
 })
+
+/** An editor's save of a skill the product is reading at the same moment
+ *  (nocx-zg3k3.36). A plain write truncates the file and then fills it, and a
+ *  `skills.list` still in flight from the previous click read the empty middle
+ *  as "no complete frontmatter": the row lost its switch and the next click
+ *  waited for a control that was no longer drawn. A rename is one step, so any
+ *  reading sees the old bytes or the new ones — which is what an editor that
+ *  saves through a temporary file gives a person, too. */
+function editInPlace(path: string, text: string): void {
+  // Staged OUTSIDE the skill's directory, which discovery walks and the
+  // digest covers, on the filesystem the disposable home is on (it lives
+  // under tmpdir() as well), so the rename stays one step.
+  const next = join(mkdtempSync(join(tmpdir(), 'nocx-skill-save-')), 'SKILL.md')
+  writeFileSync(next, text)
+  renameSync(next, path)
+}
 
 async function openApp(page: Page): Promise<void> {
   await bindEndpoint(page, endpoint)
@@ -469,7 +485,7 @@ test.describe('a person manages the skills they have (nocx-ojfuc.4)', () => {
     // line to a skill that was approved a moment ago. The switch is what
     // makes the list ask again — the status is computed per call, so the page
     // learns on its next answer rather than by watching the file.
-    writeFileSync(join(skillDir, SKILL_FILE), `${SKILL_DOCUMENT}${EDITED_LINE}\n`)
+    editInPlace(join(skillDir, SKILL_FILE), `${SKILL_DOCUMENT}${EDITED_LINE}\n`)
     await rowSwitch.click()
     await expect(row.locator('.ui-record-row__status')).toContainText(
       'Changed since installation',
@@ -621,7 +637,7 @@ test.describe('a person manages the skills they have (nocx-ojfuc.4)', () => {
     expect(fake.requests().length).toBe(spent)
 
     // ── THE BYTES MOVE, AND THE VERDICT SAYS WHAT IT IS ABOUT ──────────────
-    writeFileSync(join(happyDir, SKILL_FILE), `${HAPPY_SKILL_DOCUMENT}${HAPPY_EDITED_LINE}\n`)
+    editInPlace(join(happyDir, SKILL_FILE), `${HAPPY_SKILL_DOCUMENT}${HAPPY_EDITED_LINE}\n`)
     await page.keyboard.press('Meta+w')
     await row.getByRole('button', { name: `Open ${HAPPY_SKILL_NAME}`, exact: true }).click()
     const reopenedAgain = page.locator('.pane.active .surface-host:has(.skill-view__body)')

@@ -8896,6 +8896,14 @@ export class TerminalContent extends BasePaneContent {
     this.scrollback.blockManager.bindAttempt(attempt.id)
     const opened = this.scrollback.blockManager.runningBlock
     if (!opened) return
+    // Place the block on the frame it opened on (nocx-zg3k3.32): a command
+    // that prints nothing sends no later frame, and until one is accepted
+    // the rows above its start — the previous command's — would show.
+    const openedOn = this._cellModel?.current()
+    if (openedOn) {
+      this.scrollback.blockManager.acceptOutputStartFrame(openedOn)
+      this.scrollback.outputAnchorChanged()
+    }
     // NO fit at the open (nocx-2v80t.3.50): the height a command runs at
     // was settled at the prompt, measured from the typed text, before any
     // bytes moved. The running fact arrives AFTER the command's echo for

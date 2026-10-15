@@ -739,6 +739,12 @@ export interface BlockRecord {
   outputAnchorOffset?: number
   /** Text of the anchor row from the accepted backend frame. */
   outputAnchorText?: string
+  /** Rows of the latest accepted frame above `startLine`, while no output
+   *  anchor has placed the block (nocx-zg3k3.32). Nothing clears the
+   *  terminal between commands, so until the backend's anchor lands those
+   *  rows are the previous command's, and the running block must not show
+   *  them. Undefined when the frame is not the buffer the block opened in. */
+  startOffset?: number
   /** Absolute active-buffer cursor row from the accepted backend frame when
    *  the block closes. */
   endLine: number
@@ -2500,20 +2506,35 @@ export class BlockManager {
   /** Consume only a frame accepted by the pane CellModel and matching every anchor identity field. */
   acceptOutputStartFrame(snapshot: ScreenSnapshot): void {
     for (const rec of this._blocks) {
+      if (rec === this._runningBlock) this._acceptStartFrame(rec, snapshot)
       const anchor = rec.outputAnchor
       if (!anchor) continue
-      // A frame for another buffer or geometry is not evidence about this
-      // anchor. Keep the last matching row, so a transient mismatch cannot
-      // release the echo shift.
+      // A frame for another buffer is not evidence about this anchor. Keep
+      // the last matching row, so a transient mismatch cannot release the
+      // echo shift.
       if (
         snapshot.revision < anchor.screenRevision ||
         snapshot.state.bufferKind !== anchor.bufferKind ||
         snapshot.state.bufferInstance !== anchor.bufferInstance ||
-        snapshot.geometry.cols !== anchor.cols ||
-        snapshot.geometry.rows !== anchor.rows ||
         anchor.bufferKind !== 'normal'
       )
         continue
+      // A frame of another SIZE still is (nocx-zg3k3.32). The anchor is an
+      // absolute row of the shared screen coordinate, and a pane that gets
+      // shorter pushes the top of the screen into history, moving the base
+      // over that row: refusing the frame left the shift at its old value,
+      // and the block hid its own output. A width change reflows wrapped
+      // rows and can renumber them, so there the row is the best estimate
+      // rather than exact. Once the block is placed only the offset follows
+      // it — the echo text keeps its last reading, so a transient width
+      // (WebKit's scrollbar flash during a resize, nocx-zg3k3.30) cannot
+      // release the shift through the echo check. A block not yet placed
+      // takes the estimate whole: its echo check still guards it.
+      if (snapshot.geometry.cols !== anchor.cols && rec.outputAnchorOffset !== undefined) {
+        const index = anchor.row - snapshot.state.baseRow
+        rec.outputAnchorOffset = Math.max(0, Math.min(index, snapshot.geometry.rows - 1))
+        continue
+      }
       rec.outputStart = anchor.row
       const index = anchor.row - snapshot.state.baseRow
       if (index <= 0) {
@@ -2537,6 +2558,26 @@ export class BlockManager {
         .join('')
         .trimEnd()
     }
+  }
+
+  /** Place a running block that has no output anchor yet by the row it
+   *  opened on: every row above `startLine` was on the screen before the
+   *  command started. The start anchor qualifies the row with its buffer, so
+   *  a frame of another buffer places nothing. */
+  private _acceptStartFrame(rec: BlockRecord, snapshot: ScreenSnapshot): void {
+    const start = rec.startAnchor
+    if (
+      !start ||
+      start.bufferKind !== 'normal' ||
+      snapshot.state.bufferKind !== 'normal' ||
+      snapshot.state.bufferInstance !== start.bufferInstance ||
+      snapshot.revision < start.screenRevision
+    ) {
+      rec.startOffset = undefined
+      return
+    }
+    const index = rec.startLine - snapshot.state.baseRow
+    rec.startOffset = index <= 0 ? 0 : Math.min(index, snapshot.geometry.rows - 1)
   }
 
   /** The block bound to an attempt id — running or frozen. */

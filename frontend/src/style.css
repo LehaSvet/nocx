@@ -427,6 +427,18 @@
   overflow: visible;
 }
 
+/* ONLY THE WIDTH IS THE SESSION'S. The viewport still clips vertically: a
+   running block hides the rows above its own output by translating the grid
+   up inside this clip (controller._applyEchoShift), and with the clip gone
+   those rows — the previous command's — were painted over the block's
+   header whenever a frame of another window's size was in front
+   (nocx-zg3k3.32). `clip` rather than `hidden` keeps the visible axis
+   visible: `hidden` on one axis turns the other into `auto`. */
+.scrollback-area[data-grid-owner='session'] .terminal-live-viewport {
+  overflow-x: visible;
+  overflow-y: clip;
+}
+
 /* BOTTOM-ANCHORED: a short transcript hangs from the scroller's bottom edge,
    right above the composer, the way output leaves a terminal. The owner tried
    the top-aligned transcript of the 2026-09-15 mockup pass on the running app
