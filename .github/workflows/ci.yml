@@ -270,9 +270,6 @@ jobs:
       - name: The tagged set has not drifted
         run: make ci-local-ssh-split
 
-      - name: Test Linux installer refusals
-        run: dash scripts/install/test-install.sh
-
       - name: Test (the OS-specific packages)
         env:
           PKGS: ${{ steps.pkgs.outputs.list }}
@@ -512,6 +509,9 @@ jobs:
       # whole Go suite; the split left internal/pty here without it.
       - name: Install zsh (internal/pty closes a real interactive shell)
         run: scripts/install-zsh-ci.sh
+
+      - name: Test Linux installer refusals
+        run: dash scripts/install/test-install.sh
 
       # The Wails v3 module compiles cgo against WebKitGTK; the gtk3 tag
       # selects the 4.1 surface this product ships (ADR-0007). `go build ./...`
