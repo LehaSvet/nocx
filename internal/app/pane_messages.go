@@ -42,7 +42,7 @@ const messagePollInterval = 20 * time.Millisecond
 
 // freeMessageSafetyInterval bounds how long a queued delivery waits before
 // revalidating authority if no pane-observation change arrives.
-const freeMessageSafetyInterval = 30 * time.Second
+const freeMessageSafetyInterval = time.Second
 
 // defaultEchoWait bounds how long a delivery waits for the pasted text to
 // echo into the input box before giving up and reporting partial (design

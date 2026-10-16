@@ -762,18 +762,20 @@ func TestAPendingMessageBehindAMenuLeavesThePanesTargetsForTheCaller(t *testing.
 	if got := reader.readCount(); got > 2 {
 		t.Fatalf("queued delivery took %d snapshots without a pane-change wake; want at most 2", got)
 	}
-	// Advance the injected clock by the full ten-minute acceptance interval.
-	// Only the safety recheck timer fires; no snapshot occurs during the
-	// interval itself.
-	select {
-	case timer := <-timers:
-		timer <- time.Now().Add(10 * time.Minute)
-	case <-time.After(time.Second):
-		t.Fatal("queued delivery did not install its injected safety timer")
-	}
-	waitForCondition(t, "the ten-minute safety recheck", func() bool { return reader.readCount() >= 2 })
-	if got := reader.readCount(); got > 2 {
-		t.Fatalf("10-minute menu wait took %d snapshots, want bounded at 2", got)
+	// Advance the injected clock through ten minutes. Safety rechecks are
+	// bounded to one per second; the menu-change wake below remains the fast
+	// path. Assert the read ceiling rather than relying on wall time.
+	for i := 0; i < 600; i++ {
+		select {
+		case timer := <-timers:
+			timer <- time.Now().Add(time.Duration(i+1) * time.Second)
+		case <-time.After(time.Second):
+			t.Fatalf("queued delivery did not install safety timer %d", i+1)
+		}
+		waitForCondition(t, "the bounded safety recheck", func() bool { return reader.readCount() >= 2+i })
+		if got := reader.readCount(); got > 2+i {
+			t.Fatalf("10-minute menu wait took %d snapshots after %d rechecks, want at most %d", got, i+1, 2+i)
+		}
 	}
 
 	// The defect, in two assertions: the book — three slots, standing in for

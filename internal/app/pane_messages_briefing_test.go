@@ -237,6 +237,7 @@ func TestABriefingBehindAMenuTypesNothingAndThenDeliversOnce(t *testing.T) {
 	// The menu clears — a person answering it, or the coordinator's own
 	// session.keys — and the queue delivers the briefing: one text, one Enter.
 	s.reader.setFrame(boxFrame(""), agentdriver.StateFreeText, sessionruntime.TargetInput)
+	s.pm.PaneChanged(s.sessionID)
 	waitForCondition(t, "the briefing to reach submitted once the menu cleared", func() bool {
 		phase, ok := s.phase()
 		return ok && phase == assistant.PhaseSubmitted
@@ -340,6 +341,8 @@ func TestABriefingForAParticipantThatIsGoneIsRefusedRatherThanDelivered(t *testi
 	// no longer holds authority over — and the queue must refuse rather than
 	// deliver, and must not spin forever either.
 	s.reader.setFrame(boxFrame(""), agentdriver.StateFreeText, sessionruntime.TargetInput)
+	// The authority safety recheck (bounded to one second) observes the close;
+	// no pane-state change is required for this refusal.
 	waitForCondition(t, "the briefing to end refused rather than deliver to a gone participant", func() bool {
 		phase, ok := s.phase()
 		return ok && phase == assistant.PhaseRefused
