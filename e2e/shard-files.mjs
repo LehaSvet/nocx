@@ -103,10 +103,14 @@ function run(project, shardNumber, planOnly = false) {
     `Coverage verified: ${plan.shards.reduce((n, shard) => n + shard.cases, 0)} test cases across ${files.length} spec files; each assigned once.`,
   )
   if (planOnly) return
-  const result = spawnSync('npx', ['playwright', 'test', ...selected.files, '--project', project], {
-    cwd: root,
-    stdio: 'inherit',
-  })
+  const result = spawnSync(
+    'npx',
+    ['playwright', 'test', ...selected.files.slice().sort(), '--project', project],
+    {
+      cwd: root,
+      stdio: 'inherit',
+    },
+  )
   if (result.error) throw result.error
   process.exitCode = result.status ?? 1
 }
