@@ -19,8 +19,11 @@ test('an erased background reaches the row’s end, and same-colour text stays r
     "printf '\\033[44mMENU-BAR\\033[K\\033[0m\\n\\033[32;42m[TAB]\\033[0m\\n'; read x",
   )
   await page.keyboard.press('Enter')
-  const grid = page.locator('.pane.active .terminal-live-grid')
-  await expect(grid).toContainText('MENU-BAR', { timeout: 15_000 })
+  // Wait for the OUTPUT rows, not for the text: the echoed command line holds
+  // `MENU-BAR` too, so a text match can pass before printf has run.
+  const rows = page.locator('.pane.active .terminal-live-grid .term-grid-row')
+  await expect(rows.filter({ hasText: /^MENU-BAR/ })).toHaveCount(1, { timeout: 15_000 })
+  await expect(rows.filter({ hasText: /^\[TAB\]/ })).toHaveCount(1)
   const facts = await page.evaluate(() => {
     const rows = [
       ...document.querySelectorAll<HTMLElement>('.pane.active .terminal-live-grid .term-grid-row'),
