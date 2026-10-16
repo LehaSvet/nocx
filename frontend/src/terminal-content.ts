@@ -1536,6 +1536,12 @@ export class TerminalContent extends BasePaneContent {
    *  or settles as conventional. The promise owns the editor draft; this set
    *  only releases those submits when one of those facts arrives. */
   private readonly _deferredShellSubmissionWaiters = new Set<(resume: boolean) => void>()
+  /** Whether THIS session entered the integration axis at `starting` — the ack
+   *  said so, or a `starting` fact arrived. Set fresh on every bind. It is what
+   *  lets `_awaitsFirstPrompt` tell a session that has just proved itself and
+   *  not yet published its first prompt from one that is integrated and merely
+   *  replaying its status on a reattach. */
+  private _enteredIntegrationStartup = false
   /** The subscription to that status, dropped on dispose. */
   private _integrationUnsub: (() => void) | null = null
   /** Backend block-row notification subscriptions for the current pane. */
@@ -4663,6 +4669,7 @@ export class TerminalContent extends BasePaneContent {
     // answered — the fact just arrives a moment later on the subscription
     // installed next.
     this._awaitsIntegration = session.awaitsIntegration
+    this._enteredIntegrationStartup = session.awaitsIntegration
     this._syncIntegrationWaiting()
     this._syncLifecycleOwnership()
     // The integration axis is a SUBSCRIPTION, not a field of the ack: the
@@ -6223,6 +6230,7 @@ export class TerminalContent extends BasePaneContent {
     // logic or clear the loss mark (nocx-ictcq).
     if (this._sessionExited) return
     this._integration = fact
+    if (fact.status === 'starting') this._enteredIntegrationStartup = true
     this._updateCapability()
     this._syncIntegrationWaiting()
     this._releaseDeferredShellSubmissions()
@@ -6396,7 +6404,7 @@ export class TerminalContent extends BasePaneContent {
     plan: SubmitPlan,
   ): SubmitPlan | Promise<SubmitPlan | false> {
     if (this.inputTargets?.active().routesToShell !== true) return plan
-    if (!isAwaitingIntegration(this._integration, this._awaitsIntegration)) return plan
+    if (!this._awaitsFirstPrompt()) return plan
     if (this.lifecycle.state.kind === 'prompt_ready' || isDegraded(this._integration)) return plan
 
     return new Promise<SubmitPlan | false>((resolve) => {
@@ -6412,6 +6420,33 @@ export class TerminalContent extends BasePaneContent {
       // between the guard above and the waiter being installed.
       this._releaseDeferredShellSubmissions()
     })
+  }
+
+  /** The startup interval the composer belongs to: from the session entering
+   *  the axis at `starting` until its first authenticated prompt — or until
+   *  startup settles some other way (conventional, lost, a domain that came
+   *  and went).
+   *
+   *  `starting` alone is not that interval. The backend publishes
+   *  `integrated` a few milliseconds BEFORE the lifecycle's first
+   *  prompt_ready, and for that gap the lifecycle still reads native over an
+   *  empty stack. Ending the interval at `integrated` took the composer off
+   *  the screen and blurred it in that gap, so a keystroke typed into it
+   *  reached <body> and was lost while the rest of the draft survived and was
+   *  submitted at the prompt — CI typed `echo after-the-reconnect` and the
+   *  shell ran `echo after-the-reconnec` (nocx-xn63t.6.27). The waiting card
+   *  and the dropped grid keystroke still read `isAwaitingIntegration`
+   *  alone: the grid IS live once integration is proven; only the composer
+   *  the person was already typing into stays theirs until its prompt. */
+  private _awaitsFirstPrompt(): boolean {
+    if (isAwaitingIntegration(this._integration, this._awaitsIntegration)) return true
+    return (
+      this._enteredIntegrationStartup &&
+      this._integration?.status === 'integrated' &&
+      this.lifecycle.state.kind === 'native' &&
+      this.lifecycle.domainStack.length === 0 &&
+      this.lifecycle.endedDomains === 0
+    )
   }
 
   private _releaseDeferredShellSubmissions(): void {
@@ -8237,10 +8272,9 @@ export class TerminalContent extends BasePaneContent {
     // waiting card but the ordinary composer remains an app-owned draft
     // surface. Its Enter path is held by deferShellSubmissionUntilReady until
     // the authenticated prompt arrives, so no input lands on a raw startup
-    // prompt.
-    const startupComposer =
-      this.lifecycle.state.kind === 'native' &&
-      isAwaitingIntegration(this._integration, this._awaitsIntegration)
+    // prompt. It stays up until that prompt, not merely until `integrated`
+    // (see _awaitsFirstPrompt).
+    const startupComposer = this.lifecycle.state.kind === 'native' && this._awaitsFirstPrompt()
     const show =
       (shouldShowEditor(this.lifecycle.state) || summoned || startupComposer) &&
       (summoned || this.lifecycle.buffer === 'normal') &&

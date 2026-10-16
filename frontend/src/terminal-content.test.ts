@@ -2645,6 +2645,71 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
     }
   })
 
+  // nocx-xn63t.6.27, CI run 38577867125: a command typed into the startup
+  // composer of a reconnected ssh session reached the shell as
+  // `echo after-the-reconnec`. The integration status reaches `integrated` a
+  // few milliseconds BEFORE the lifecycle publishes the first prompt_ready,
+  // and in that interval the composer was taken off the screen and blurred —
+  // the keystroke typed into it went to <body> and was gone, while the rest of
+  // the draft survived and was submitted at the prompt. The composer the
+  // person is typing into has to stay theirs until the prompt it is waiting
+  // for has arrived.
+  it('keeps the composer, its focus and a held Enter across integrated-before-prompt_ready', async () => {
+    const session = makeSession({ awaitsIntegration: true })
+    const client = makeClient()
+    client.openSession.mockResolvedValue(session)
+    const fireIntegration = integrationHandler(client, session)
+    const { content, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    content.setVisible(true)
+    const lifecycle = lifecycleHandler(client, session.sessionId)
+    const editor = editorOf(content)
+    const view = editorViewOf(editor)
+    const editorHasFocus = (): boolean => editor.rootContains(document.activeElement)
+    try {
+      fireIntegration({ sessionId: session.sessionId, status: 'starting', shell: '/bin/bash' })
+      lifecycle({ lane: 'lane-1', lifecycle: 'native' })
+      editor.insertText('echo after-the-reconnec')
+      expect(editorHasFocus()).toBe(true)
+
+      // The integration is proven; the first prompt is still on its way.
+      fireIntegration({ sessionId: session.sessionId, status: 'integrated', shell: '/bin/bash' })
+      session.intent.mockClear()
+      session.send.mockClear()
+      client.dispatcher.call.mockClear()
+
+      // The next key the person types lands in the draft they are typing.
+      expect(editor.isVisible).toBe(true)
+      expect(editorHasFocus()).toBe(true)
+      editor.insertText('t')
+      view.contentDOM.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+      )
+      // Enter before the prompt is held exactly as it is while `starting`.
+      expect(view.state.doc.toString()).toBe('echo after-the-reconnect')
+      expect(session.intent).not.toHaveBeenCalled()
+
+      lifecycle({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
+      // The grid takes the keyboard at the submit (a `focus` intent, since
+      // this pane is attached to the document); what reaches the shell is
+      // the whole command, then Enter.
+      await vi.waitFor(() =>
+        expect(session.intent.mock.calls.filter((call) => call[0] !== 'focus')).toEqual([
+          ['paste', 'echo after-the-reconnect'],
+          ['key', 'enter'],
+        ]),
+      )
+      expect(
+        client.dispatcher.call.mock.calls.filter((call) => call[0] === 'lifecycle.submitAttempt'),
+      ).toHaveLength(1)
+    } finally {
+      teardown()
+    }
+  })
+
   it('releases a held shell submit as a conventional write when startup settles degraded', async () => {
     const session = makeSession({ awaitsIntegration: true })
     const client = makeClient()
