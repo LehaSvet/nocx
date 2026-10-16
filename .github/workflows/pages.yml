@@ -93,6 +93,9 @@ jobs:
           done
           grep -o 'data-version>[^<]*' site/index.html
 
+      - name: Test Linux installer
+        run: dash scripts/install/test-install.sh
+
       # Keep the public URL in sync with the reviewed installer source. The
       # script itself is byte-for-byte copied; it is not maintained twice.
       - name: stage the installer at the stable public URL

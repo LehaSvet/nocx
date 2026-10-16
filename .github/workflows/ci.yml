@@ -147,6 +147,7 @@ jobs:
               .beads/*|docs/*|.internal/*|.githooks/backlog-gate/*) ;;
               .githooks/pre-commit|.githooks/commit-msg|.githooks/pre-merge-commit|.githooks/pre-push) ;;
               scripts/connect-clone.sh) ;;
+              scripts/install/*) product=true ;;
               */*) product=true ;;
               *.md) ;;
               *) product=true ;;
@@ -268,6 +269,9 @@ jobs:
       # in the first place.
       - name: The tagged set has not drifted
         run: make ci-local-ssh-split
+
+      - name: Test Linux installer refusals
+        run: dash scripts/install/test-install.sh
 
       - name: Test (the OS-specific packages)
         env:
