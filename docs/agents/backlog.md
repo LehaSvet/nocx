@@ -1,7 +1,7 @@
 # Backlog integration
 
 Maintained by `setup-shady2k-skills`. The installed checks carry setup protocol
-0.47.0 after this update lands. Setup task nocx-q8yjf.25 owns the proof
+0.46.0 after this update lands. Setup task nocx-q8yjf.25 owns the proof
 evidence and any unperformed checks. Protocol 0.44.0 was installed by
 nocx-q8yjf.24. A branch alone is not an installed update. The protocol ships
 with the skills and is not restated here. This file holds project facts and
@@ -170,19 +170,20 @@ keeps every later change.
   `document-format.mjs`, in [`.githooks/backlog-gate/`](../../.githooks/backlog-gate/).
   These are byte-for-byte copies of the plugin files under
   `skills/backlog/setup-shady2k-skills/` at source commit
-  `825deed8ccd734148457f75be9cccb316bb39be0` (plugin 0.116.1, setup protocol
-  0.47.0), never edited here. Compare each copy with that source. Run all five `--selftest`
+  `648084b49fc27042a9219c5ec4a400ad00e08046` (plugin 0.115.0, setup protocol
+  0.46.0), never edited here. Compare each copy with that source. Run all five `--selftest`
   commands from the plugin directory, where their fixtures live; `check.mjs`
   additionally takes `--config <repo>/.githooks/backlog-gate/config.json` for
   portability.
   Protocol 0.45.0 adds an optional `check.mjs --at <revision>` guard: the
   input's `source` must end in ` @ <revision>` matching that exact argument.
-  Protocol 0.47.0 also refuses an empty or missing revision argument rather
-  than silently skipping the guard (upstream shady2k/skills PR #33).
-  The adapter already emits that suffix for historical exports. Existing
-  hooks and CI do not pass this optional flag; their revision selection and
-  the in-branch tracker layout remain unchanged. This update does not install
-  the separate off-branch tracker migration.
+  A known 0.46.0 limitation lets an empty or missing `--at` value skip that
+  optional guard; the fix remains in upstream shady2k/skills PR #33.
+  The owner approved using the published version rather than waiting for it.
+  The adapter emits the revision suffix for historical exports, but existing
+  hooks and CI do not pass this optional checker flag; their revision selection
+  and the in-branch tracker layout remain unchanged. This update does not
+  install the separate off-branch tracker migration.
   The commit-link wrapper sets `recordsOnly` for staged changes and historical
   single-parent commits only when `.beads/issues.jsonl` is the sole changed
   path, the same issue ids remain, every other field except `comments` and
