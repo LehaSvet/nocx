@@ -1,0 +1,53 @@
+{
+  "version": "0.4.0",
+  "released": "2026-09-17T07:03:44Z",
+  "notesUrl": "https://github.com/shady2k/nocx/releases/tag/v0.4.0",
+  "artifacts": [
+    {
+      "os": "darwin",
+      "arch": "universal",
+      "format": "zip",
+      "url": "https://github.com/shady2k/nocx/releases/download/v0.4.0/nocx-0.4.0-darwin-universal.zip",
+      "sha256": "a432fa7c2ad263bf82fb3e632b546407697e14507d89309280950d7f798b8f33",
+      "size": 96492685
+    },
+    {
+      "os": "linux",
+      "arch": "amd64",
+      "format": "AppImage",
+      "url": "https://github.com/shady2k/nocx/releases/download/v0.4.0/nocx-0.4.0-linux-amd64.AppImage",
+      "sha256": "f3983256ce678e95c48121bd4a942c4ed37b1ffa009d8d58e793915ba21623bc",
+      "size": 125405688
+    }
+  ],
+  "helpers": [
+    {
+      "os": "darwin",
+      "arch": "amd64",
+      "url": "https://github.com/shady2k/nocx/releases/download/v0.4.0/nocx-helper-0.4.0-darwin-amd64",
+      "sha256": "c4cb2b0598d05c8ecd2a563ec6f6f8095ff0e7fdefebf71c4ac9d9a4b5a91877",
+      "size": 4258656
+    },
+    {
+      "os": "darwin",
+      "arch": "arm64",
+      "url": "https://github.com/shady2k/nocx/releases/download/v0.4.0/nocx-helper-0.4.0-darwin-arm64",
+      "sha256": "5ea68fcbbce086c757cf558027fe89bbec61614bf14364c44b29248beee76c8b",
+      "size": 4048434
+    },
+    {
+      "os": "linux",
+      "arch": "amd64",
+      "url": "https://github.com/shady2k/nocx/releases/download/v0.4.0/nocx-helper-0.4.0-linux-amd64",
+      "sha256": "4ffdaeb14607b73963a1366e0a65e102eeb2e7e910679fad164498d9e45b493f",
+      "size": 4202658
+    },
+    {
+      "os": "linux",
+      "arch": "arm64",
+      "url": "https://github.com/shady2k/nocx/releases/download/v0.4.0/nocx-helper-0.4.0-linux-arm64",
+      "sha256": "35ce82f752150f93fa60b5fdfa326fabdb2e4c6d1726a6666df11234c22aeb70",
+      "size": 3997858
+    }
+  ]
+}

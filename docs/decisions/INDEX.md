@@ -152,3 +152,4 @@ write prose: what was wrong, what is decided, why this rather than the obvious
 alternative, and what the next person inherits. Add the row here in the same commit.
 
 | 0086 | [A third-party Homebrew tap may clear quarantine for the unsigned cask](0086-a-third-party-homebrew-tap-may-clear-quarantine-for-the-unsigned-cask.md) | Accepted (owner decision, 2026-09-30; supersedes in part ADR-0003 and ADR-0052) |
+| 0087 | [Linux user installs verify the signed release manifest](0087-linux-user-installs-use-the-signed-release-manifest.md) | Accepted (owner decision, 2026-10-16) |

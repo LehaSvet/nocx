@@ -9,6 +9,7 @@ on:
     paths:
       - 'site/**'
       - 'scripts/check-site.sh'
+      - 'scripts/install/**'
       - 'scripts/site-forbidden-phrases.txt'
       - '.github/workflows/pages.yml'
   # A release alone must refresh the page: the version and date are written
@@ -91,6 +92,14 @@ jobs:
             perl -0pi -e "s{(<span data-version>)([^v<]*)v[0-9]+\.[0-9]+\.[0-9]+(</span>)}{\${1}\${2}$tag\${3}}g" "$f"
           done
           grep -o 'data-version>[^<]*' site/index.html
+
+      - name: Test Linux installer
+        run: dash scripts/install/test-install.sh
+
+      # Keep the public URL in sync with the reviewed installer source. The
+      # script itself is byte-for-byte copied; it is not maintained twice.
+      - name: stage the installer at the stable public URL
+        run: cp scripts/install/install.sh site/install.sh
 
       # The same gate the pre-commit hook runs. A page that fails it must not
       # reach the public URL just because someone bypassed a local hook.
