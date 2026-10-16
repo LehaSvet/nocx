@@ -2230,7 +2230,8 @@ func New(opts ...Option) (*App, error) {
 	// go on classifying every enrolled pane and telling nobody — which is
 	// precisely the silent degrade AGENTS.md names, so the watcher refuses
 	// to sweep at all until it has a destination.
-	paneWatch.SetEmitter(tp.EmitPaneObservation)
+	// Bound after the message queue exists below, so observation changes can
+	// wake queued deliveries as well as reach the renderer.
 
 	// The liveness projection's watcher (nocx-iarf9), bound here for the same
 	// reason as the emitter above. The registry decides WHEN a session's
@@ -2654,6 +2655,10 @@ func New(opts ...Option) (*App, error) {
 	// two-phase wiring this SetMessages call is for).
 	descendantPaneMessages := newPaneMessages(descendantPaneKeys, descendantPaneReader, accessHub, paneDrivers, time.Now())
 	descendantPaneReader.SetMessages(descendantPaneMessages)
+	paneWatch.SetEmitter(func(o paneobserve.Observation) {
+		descendantPaneMessages.PaneChanged(o.PaneID)
+		tp.EmitPaneObservation(o)
+	})
 	toolAuthorizer.BindSessionMessages(descendantPaneMessages)
 	// The briefing, re-homed (design §9 Task 11 for the task, §6 for the
 	// rules; nocx-luqz9.5, one message since nocx-xn63t.4.16): a spawn that
