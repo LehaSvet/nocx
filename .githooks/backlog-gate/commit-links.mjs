@@ -48,6 +48,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
 import { normalize, readExport } from './adapter.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -68,6 +69,50 @@ export function linkedIds(message) {
   return ids
 }
 
+// Only comments on existing issues are bookkeeping. Queue edits, even when
+// carried by the same JSONL file, are substantive work, as are merged changes.
+function recordsOnly(base, tip = null) {
+  if (!base) return false
+  const path = '.beads/issues.jsonl'
+  const paths = git('diff', '--name-only', '-z', ...(tip ? [base, tip] : ['--cached', base]))
+    .split('\0')
+    .filter(Boolean)
+  if (paths.length !== 1 || paths[0] !== path) return false
+  const parse = (text) => {
+    const issues = new Map()
+    for (const line of text.split('\n').filter((line) => line.trim())) {
+      const issue = JSON.parse(line)
+      if (!issue || typeof issue.id !== 'string' || issues.has(issue.id))
+        throw new Error('records-only classification needs unique issue ids')
+      issues.set(issue.id, issue)
+    }
+    return issues
+  }
+  // A newly added or deleted export is queue work, not a records-only update.
+  if (
+    spawnSync('git', ['cat-file', '-e', `${base}:${path}`]).status !== 0 ||
+    spawnSync('git', ['cat-file', '-e', tip ? `${tip}:${path}` : `:${path}`]).status !== 0
+  )
+    return false
+  const before = parse(git('show', `${base}:${path}`))
+  const after = parse(git('show', tip ? `${tip}:${path}` : `:${path}`))
+  if (before.size !== after.size) return false
+  let changed = false
+  for (const [id, issue] of before) {
+    const next = after.get(id)
+    if (!next) return false
+    const fields = { ...issue }
+    const nextFields = { ...next }
+    delete fields.comments
+    delete fields.updated_at
+    delete nextFields.comments
+    delete nextFields.updated_at
+    if (!isDeepStrictEqual(fields, nextFields)) return false
+    if (!isDeepStrictEqual(issue.comments, next.comments)) changed = true
+  }
+  return changed
+}
+
 // A merge without its own link borrows links from incoming work under the rule.
 // Imported old history is exempt; its newly written merge commit is not.
 function incoming(base, tip, from, self) {
@@ -86,8 +131,8 @@ function incoming(base, tip, from, self) {
 }
 
 // Reconstruct what a push introduces. CI sees the target ref AFTER publication,
-// so exclude that ref and add its advertised old tip explicitly. Every other
-// advertised remote ref counts; local tags and other remotes never count.
+// so exclude that ref and add its advertised old tip explicitly. Only remote
+// objects this clone can read can bound local history; local-only refs never count.
 function introducedBy(tip, ref, before, remote) {
   const advertised = execFileSync('git', ['ls-remote', '--refs', remote], {
     encoding: 'utf8',
@@ -114,35 +159,13 @@ function introducedBy(tip, ref, before, remote) {
         maxBuffer: 1 << 28,
       })
     : ''
-  const missing = checked
+  // An object absent from this clone cannot exclude a locally reachable commit.
+  // Do not fetch unrelated histories just to enumerate what this push introduces.
+  const readable = checked
     .split('\n')
-    .filter((line) => line.endsWith(' missing'))
+    .filter((line) => line && !line.endsWith(' missing'))
     .map((line) => line.split(' ')[0])
-  if (missing.length) {
-    // Fetch exact advertised objects, never move a branch, tag or FETCH_HEAD.
-    execFileSync(
-      'git',
-      [
-        'fetch',
-        '--no-tags',
-        '--no-write-fetch-head',
-        '--no-recurse-submodules',
-        '--no-auto-maintenance',
-        remote,
-        ...missing,
-      ],
-      {
-        encoding: 'utf8',
-        maxBuffer: 1 << 28,
-      },
-    )
-  }
-  if (
-    before &&
-    spawnSync('git', ['rev-parse', '-q', '--verify', `${before}^{commit}`]).status !== 0
-  )
-    throw new Error(`the old tip ${before} is not a commit the remote can provide`)
-  const input = [tip, ...held.map((sha) => `^${sha}`)].join('\n')
+  const input = [tip, ...readable.map((sha) => `^${sha}`)].join('\n')
   return execFileSync('git', ['rev-list', '--reverse', '--format=%H %P%x00%ct', '--stdin'], {
     input: `${input}\n`,
     encoding: 'utf8',
@@ -302,7 +325,13 @@ function main() {
       const head = readFileSync(mergeHead, 'utf8').split('\n')[0].trim()
       taskIds = incoming('HEAD', head, from, null)
     }
-    commits.push({ id: 'pending message', taskIds })
+    const head = spawnSync('git', ['rev-parse', '--verify', 'HEAD'], { encoding: 'utf8' })
+    commits.push({
+      id: 'pending message',
+      taskIds,
+      recordsOnly:
+        !existsSync(mergeHead) && recordsOnly(head.status === 0 ? head.stdout.trim() : null),
+    })
   } else {
     let listed
     if (opt.range) {
@@ -352,7 +381,11 @@ function main() {
       if (!taskIds.length && parents.length > 1) {
         taskIds = incoming(parents[0], sha, from, sha)
       }
-      commits.push({ id: sha, taskIds })
+      commits.push({
+        id: sha,
+        taskIds,
+        recordsOnly: parents.length === 1 && recordsOnly(parents[0], sha),
+      })
     }
     if (!opt['export-at']) opt['export-at'] = opt.introduced || opt.range.split('..')[1]
   }
