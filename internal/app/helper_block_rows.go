@@ -84,6 +84,8 @@ func bindHeldBlockRowsAfter(ctx context.Context, sink blockRowsSink, sid session
 	if held == nil {
 		return bindBlockRowsTo(ctx, sink, sid, attached, attached)
 	}
+	held.ctx = ctx
+	held.sid = sid
 	return held.bindAfter(ctx, sink, sid, attached, replayed)
 }
 
@@ -183,6 +185,8 @@ func bindBlockRowsTo(ctx context.Context, sink blockRowsSink, sid session.ID, sr
 // consumers on it exactly as it would on the attachment.
 type heldRows struct {
 	mu             sync.Mutex
+	ctx            context.Context
+	sid            session.ID
 	bound          bool
 	held           []heldFrame
 	rows           func(client.OutputRows)
@@ -300,6 +304,8 @@ func (h *heldRows) OnClearBoundary(f func()) {
 func (h *heldRows) release() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	nocxlog.From(h.ctx).Debug("re-adopt rows plane: releasing held frames",
+		"session", string(h.sid), "heldFrames", len(h.held))
 	for _, f := range h.held {
 		switch {
 		case f.rows != nil:
