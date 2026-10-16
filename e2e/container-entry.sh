@@ -90,8 +90,16 @@ if command -v dbus-run-session >/dev/null 2>&1; then
     if command -v gnome-keyring-daemon >/dev/null 2>&1; then
       printf "%s" nocx-ci | gnome-keyring-daemon --unlock --daemonize --components=secrets >/dev/null 2>&1 || true
     fi
-    npx playwright test "$@"
+    if [ "${NOCX_E2E_SHARD_FILES:-}" = "1" ]; then
+      node e2e/shard-files.mjs --project "$PW_PROJECTS" --shard "$NOCX_E2E_SHARD"
+    else
+      npx playwright test "$@"
+    fi
   ' bash "$@"
 else
-  npx playwright test "$@"
+  if [ "${NOCX_E2E_SHARD_FILES:-}" = "1" ]; then
+    node e2e/shard-files.mjs --project "$PW_PROJECTS" --shard "$NOCX_E2E_SHARD"
+  else
+    npx playwright test "$@"
+  fi
 fi

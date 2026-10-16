@@ -312,6 +312,8 @@ run_one() {
     -e PW_WORKERS="${PW_WORKERS:-}" \
     -e NOCX_LOG_LEVEL="${NOCX_LOG_LEVEL:-}" \
     -e NOCX_PROVE_FAILURE_CONTEXT="${NOCX_PROVE_FAILURE_CONTEXT:-}" \
+    -e NOCX_E2E_SHARD_FILES="${NOCX_E2E_SHARD_FILES:-}" \
+    -e NOCX_E2E_SHARD="${NOCX_E2E_SHARD:-}" \
     -e NOCX_E2E_HOST_UID="$(id -u)" \
     -e NOCX_E2E_HOST_GID="$(id -g)" \
     -w /work \
