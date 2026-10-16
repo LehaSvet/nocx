@@ -22,7 +22,7 @@ done
 
 # Preserve the tracker warning, but never let it replace the mandatory gates.
 if br --no-auto-import --no-auto-flush where >/dev/null 2>&1; then
-    if ! br --no-auto-import --no-auto-flush sync --status 2>/dev/null | grep -q "Dirty issues: 0"; then
+    if ! br --no-auto-import --no-auto-flush sync --status 2>/dev/null </dev/null | grep -q "Dirty issues: 0"; then
         printf '\nWARN: br has changes that never reached .beads/issues.jsonl.\n' >&2
         printf '      Publish only changes owned by your tracked work; read docs/agents/backlog.md before writing the shared export.\n' >&2
     fi
