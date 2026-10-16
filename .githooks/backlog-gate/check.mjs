@@ -188,6 +188,8 @@ const CHECKS = [
   {
     id: 'idea-blocks-work',
     severity: 'error',
+    // Its verdict reads a config value: a config that changed elsewhere changes it.
+    config: true,
     why: 'An idea that blocks a build is not an idea, it is an undecided question, and it belongs in the work it is blocking.',
     fix: 'Either the question is on the path — file it as work under the epic it gates — or it is not, and the edge goes.',
     run: (m, cfg) =>
@@ -202,6 +204,8 @@ const CHECKS = [
   {
     id: 'idea-in-queue',
     severity: 'error',
+    // Its verdict reads a config value: a config that changed elsewhere changes it.
+    config: true,
     why: 'An idea reachable as work is offered as work. An edge that only records where it came from gates nothing, so it does not stop that.',
     fix: 'Defer it. An idea costs nothing while it waits and is closed without regret when it stops being interesting.',
     run: (m, cfg) =>
@@ -212,6 +216,8 @@ const CHECKS = [
   {
     id: 'stale-edge',
     severity: 'warn',
+    // Its verdict reads a config value: a config that changed elsewhere changes it.
+    config: true,
     why: 'A dependency needs a required result or a conflict, not list order. Its age prompts a review but does not disprove a real prerequisite.',
     fix: 'Verify the required result or conflict. Remove an obsolete edge, or move it onto the actual consuming and producing leaves.',
     run: (m, cfg, ctx) =>
@@ -244,6 +250,8 @@ const CHECKS = [
   {
     id: 'off-milestone-open',
     severity: 'error',
+    // Its verdict reads a config value: a config that changed elsewhere changes it.
+    config: true,
     why: 'Everything live belongs to the current milestone; whatever does not is deferred. Otherwise the queue offers next quarter\'s feature as today\'s work, and a parentless issue filed by hand is how a groomed backlog grows back into a heap of roots while every other check stays green.',
     fix: 'Defer it, with its own milestone label intact if it has one, so it comes back whole. If it is on the current milestone\'s path, give it the parent it serves.',
     run: (m, cfg) =>
@@ -259,6 +267,8 @@ const CHECKS = [
   {
     id: 'stale-hold',
     severity: 'error',
+    // Its verdict reads a config value: a config that changed elsewhere changes it.
+    config: true,
     why: 'Active means somebody is holding it now. An unheld issue left active is invisible to the ready queue and to every colleague looking for work.',
     fix: 'Set it back to open the minute you stop holding it.',
     run: (m, cfg, ctx) =>
@@ -285,6 +295,8 @@ const CHECKS = [
   {
     id: 'label-vocabulary',
     severity: 'error',
+    // Its verdict reads a config value: a config that changed elsewhere changes it.
+    config: true,
     why: 'A vocabulary enforced only by prose drifts. A closed list declared only in a document is soon outgrown by the labels actually used.',
     fix: 'Map it onto a declared label, or add it to the config deliberately.',
     run: (m, cfg) => {
@@ -308,6 +320,8 @@ const CHECKS = [
   {
     id: 'area-label',
     severity: 'error',
+    // Its verdict reads a config value: a config that changed elsewhere changes it.
+    config: true,
     why: 'Exactly one area label, by the area that OWNS the behaviour. None makes it unfindable; two usually means it is two issues.',
     fix: 'Label by the area that owns the behaviour, not every area it touches. If two genuinely own it, file two.',
     run: (m, cfg) =>
@@ -322,6 +336,8 @@ const CHECKS = [
   {
     id: 'finding-budget',
     severity: 'error',
+    // Its verdict reads a config value: a config that changed elsewhere changes it.
+    config: true,
     why: 'Bugs and debt found mid-milestone go to the front one at a time, each reasonable, and push the feature out by a fortnight nobody decided on. The charter declares how many the milestone absorbs.',
     fix: 'The ways that do the work are the owner\'s to give: displace named planned work and raise the budget in config and the charter decision, open the next milestone for it, or hold it knowingly with a review date. Deferring it yourself to make the number fit, dropping its milestone label or narrowing it shrinks the count instead, and leaves a record saying the fault is not there. A repair a required check forced on the way to a merge, and upkeep of the set\'s own checks, hooks and their CI wiring, are not intake at all: file them with the work whose merge they block, or with the setup task (under it where it is a container, beside it where it is a leaf), with no finding label. Deferring planned work alone does not change this count.',
     run: (m, cfg) => {
@@ -453,12 +469,14 @@ const CHECKS = [
     id: 'time-span-unreceipted',
     severity: 'error',
     why: 'A span that has ended with no receipt is time spent and never recorded. Reports then give a total that looks complete and is not.',
-    fix: 'Write its receipt with the run script on the machine that holds the session\'s transcript, with the end it had. Where no machine has it, close the span with the run script\'s receipt of unknown time, the reason in its note, and say so to the owner: the time stays unknown, not zero.',
+    fix: 'The run script\'s `gaps` prints the receipt of every ended span whose transcript is on this machine: post what it prints unchanged. Where no machine has the transcript, close the span with the run script\'s receipt of unknown time, the reason in its note, and say so to the owner: the time stays unknown, not zero.',
     run: (m) => unreceipted(m),
   },
   {
     id: 'time-work-unclaimed',
     severity: 'error',
+    // Its verdict reads a config value: a config that changed elsewhere changes it.
+    config: true,
     why: 'A result handed in with no claim on its task, or on the feature or stage it belongs to, was worked on by nobody the record knows: its time cannot be found, and the gate cannot tell it from work that took none.',
     fix: 'Work a coordinator ran is covered by its claim on the feature or stage: where that claim is missing, recover it. Otherwise, on the machine that holds the session\'s transcript, recover its claim with the run script, at the start the transcript shows, and then its receipt. Where no machine has it, recover the claim at the start another record shows, naming that record, close it with a receipt of unknown time, and say so to the owner. Work in flight when time records were adopted is listed as exempt by setup at that moment, never later to quiet this. Closing the task does not fill the gap.',
     run: (m, cfg) => unclaimedWork(m, cfg),
@@ -482,7 +500,7 @@ function bulkClusters(m, threshold) {
 
 // The version of the set these rules shipped with. A project holds a COPY of
 // this file, and this is how anybody tells that the copy has fallen behind.
-const RULES_VERSION = '0.44.0';
+const RULES_VERSION = '0.47.0';
 
 const STRENGTHS = ['block', 'block-new', 'report'];
 
@@ -574,6 +592,23 @@ function withAgesFrom(backlog, agesFrom, agesThrough) {
   };
 }
 
+/**
+ * A read at a code revision must say which revision it stands for. The store
+ * lives outside the code branches, so "the tracker at this revision" is a read
+ * of the newest snapshot published at or before it, and nothing in the input's
+ * own tree can be checked against the revision. What CAN be checked is that the
+ * state being judged was read for the revision that was asked for: without it a
+ * stale export, or one from another revision, passes silently as this one, and
+ * the gate reports on a state nobody asked about.
+ */
+function atRevision(backlog, at, where) {
+  const said = /@\s*(\S+)\s*$/.exec(String(backlog.source || ''));
+  if (!said)
+    throw new Misuse(`${where}: --at ${at} asks for the tracker at a code revision, and the input does not say which revision it reads; the source names it as "<store> <where it was read> @ <revision>"`);
+  if (said[1] !== at)
+    throw new Misuse(`${where}: --at ${at} asks for the tracker at ${at}, and the input reads it at ${said[1]}; a read at a revision is the newest snapshot published at or before it, and one read for another revision cannot stand for it`);
+}
+
 function evaluate(backlog, cfg, only, clock) {
   const m = index(backlog);
   const now = clock || Date.parse(backlog.generatedAt) || Date.now();
@@ -587,6 +622,7 @@ function evaluate(backlog, cfg, only, clock) {
     results: selected.map((c) => ({
       id: c.id,
       severity: c.severity,
+      config: Boolean(c.config),
       why: c.why,
       fix: c.fix,
       violations: c.run(m, cfg, ctx),
@@ -625,7 +661,7 @@ function judge(report, baseline, strength) {
 function render(report) {
   const lines = [
     `gate ${RULES_VERSION} (${report.strength}) — milestone ${report.milestone}, ${report.live} live of ${report.total}`,
-    `source: ${report.source}`,
+    `source: ${report.source}${report.at ? ` (read at the code revision ${report.at})` : ''}`,
     '',
   ];
   for (const r of report.results) {
@@ -640,6 +676,14 @@ function render(report) {
       if (r.violations.length > 12) lines.push(`      … and ${r.violations.length - 12} more (--json for all)`);
     }
   }
+  // One line for every config-driven rule that fired, never one per rule: the
+  // config a run read is the one in its own checkout, and a value changed on the
+  // main line is not in it. Saying so once is what lets a refusal be read as
+  // "this branch's config", not as "the gate is blocked".
+  if (report.results.some((r) => r.config && r.violations.length))
+    lines.push('',
+      'These read the config of this checkout: a newer one on the main line may differ,',
+      'so bring the branch up to date with the main line where a value was changed there.');
   if (report.clusters.length) {
     lines.push('', 'AGES MAY BE CONTAMINATED — timestamp clusters found:');
     for (const c of report.clusters.slice(0, 5)) lines.push(`      ${c.count} live issues share ${c.minute}`);
@@ -784,6 +828,17 @@ function runSelftest(cfg, projectConfigPath) {
     ['no strength chosen anywhere', 2, ['--config', fixtureCfg, stale]],
     ['an unpaired age snapshot', 2, ['--config', fixtureCfg, '--strength', 'block', '--ages-from', stale, stale]],
     ['a config with only a strength, on a violating backlog', 1, ['--config', put('min.json', { strength: 'block' }), stale]],
+    // The store lives outside the code branches, so a read at a code revision
+    // is the only place the gate can still tell "the tracker at this revision"
+    // from a state that was read for another one or for none. Both failures are
+    // misuse, and the read that does say which revision it stands for passes.
+    ['a read at a revision with no revision in the source', 2, ['--config', fixtureCfg, '--strength', 'block', '--at', 'rev-a', stale]],
+    ['a read at a revision that read another one', 2, ['--config', fixtureCfg, '--strength', 'block', '--at', 'rev-a', put('at-other.json', { ...load('bad', 'stale-hold.json'), source: 'fixture bad/stale-hold @ rev-b' })]],
+    ['a read at the revision it stands for', 1, ['--config', fixtureCfg, '--strength', 'block', '--at', 'rev-a', put('at-same.json', { ...load('bad', 'stale-hold.json'), source: 'fixture bad/stale-hold @ rev-a' })]],
+    ['an empty requested revision', 2, ['--config', fixtureCfg, '--strength', 'report', '--at', '', stale]],
+    ['a whitespace-only requested revision', 2, ['--config', fixtureCfg, '--strength', 'report', '--at', '   ', stale]],
+    ['a missing requested revision', 2, ['--config', fixtureCfg, '--strength', 'report', stale, '--at']],
+    ['an option instead of the requested revision', 2, ['--config', fixtureCfg, '--strength', 'report', stale, '--at', '--json']],
   ]) {
     const got = run(...argv).status;
     say(got === want, `cli: ${what} → exit ${got}${got === want ? '' : `, expected ${want}`}`);
@@ -796,13 +851,26 @@ function runSelftest(cfg, projectConfigPath) {
   const sighted = run('--config', tight, '--baseline', overBudget, '--baseline-config', roomy, overBudget).status;
   say(blind === 0 && sighted === 1, `cli: a lowered budget is old debt without --baseline-config (exit ${blind}) and a new error with it (exit ${sighted})`);
 
+  // What a person reads when a rule refuses: the rule's own fix text has to
+  // name the repair. An unreceipted span's names the run script's `gaps`, the
+  // one command that recovers a receipt this machine can still read.
+  const shown = (name, only) => render(evaluate(load('bad', name), cfg, only));
+  const unreceipted = shown('time-span-unreceipted.json', ['time-span-unreceipted']);
+  say(/fix: .*`gaps`/.test(unreceipted), "an unreceipted span's refusal names the run script's `gaps`, the command that recovers it");
+  // A verdict that read a config value says which config it read: this
+  // checkout's own, which a change on the main line does not reach.
+  const budget = shown('finding-budget.json', ['finding-budget']);
+  say(/config of this checkout/.test(budget) && /main line/.test(budget),
+    'a config-driven refusal says it judged by this checkout\'s config, and that the main line may differ');
+  say(!/config of this checkout/.test(unreceipted), 'a rule whose verdict reads no config carries no such note');
+
   console.log(failures ? `\n${failures} failure(s)` : '\nall fixtures pass');
   return failures ? 1 : 0;
 }
 
 function main() {
   const argv = process.argv.slice(2);
-  const args = { json: false, only: null, input: null, selftest: false, config: null, baseline: null, baselineConfig: null, strength: null, agesFrom: null, agesThrough: null };
+  const args = { json: false, only: null, input: null, selftest: false, config: null, baseline: null, baselineConfig: null, strength: null, agesFrom: null, agesThrough: null, at: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--json') args.json = true;
     else if (argv[i] === '--only') args.only = argv[++i].split(',');
@@ -812,6 +880,12 @@ function main() {
     else if (argv[i] === '--strength') args.strength = argv[++i];
     else if (argv[i] === '--ages-from') args.agesFrom = argv[++i];
     else if (argv[i] === '--ages-through') args.agesThrough = argv[++i];
+    else if (argv[i] === '--at') {
+      const revision = argv[++i];
+      if (!revision?.trim() || revision.startsWith('-'))
+        throw new Misuse('--at needs a nonempty code revision');
+      args.at = revision;
+    }
     else if (argv[i] === '--selftest') args.selftest = true;
     else if (argv[i] === '--help' || argv[i] === '-h') args.help = true;
     else if (argv[i] === '--version') args.version = true;
@@ -826,12 +900,16 @@ function main() {
       'check.mjs --config <project config> [<normalized.json>|-]\n' +
         '          [--baseline <normalized.json> [--baseline-config <config as it was then>]]\n' +
         '          [--strength block|block-new|report] [--ages-from <before.json> --ages-through <after.json>]\n' +
+        '          [--at <code revision>]\n' +
         '          [--only <id,id>] [--json]\n' +
         'check.mjs --selftest [--config <project config>]\n' +
         'check.mjs --version\n\n' +
         'Applies the backlog invariants to the normalized backlog on stdin or at <path>.\n' +
         'Strength comes from the config unless given; block-new needs --baseline.\n' +
         '--ages-from and --ages-through correct only timestamps still matching the bulk edit.\n' +
+        '--at says which code revision the input was read for, and refuses one read\n' +
+        'for another: the store is off the branches, so the input is the only thing\n' +
+        'that can say which revision it stands for.\n' +
         '--baseline-config judges the baseline by the rules of its own day, so a\n' +
         'config change that creates violations shows up as new errors.\n' +
         'Exit 0 green, 1 red, 2 misuse.\n\n' +
@@ -861,7 +939,10 @@ function main() {
   const ages = args.agesFrom ? checkedBacklog(readJson(args.agesFrom, 'the ages snapshot'), 'ages snapshot') : null;
   if (Boolean(args.agesFrom) !== Boolean(args.agesThrough)) throw new Misuse('--ages-from and --ages-through must be supplied together');
   const after = args.agesThrough ? checkedBacklog(readJson(args.agesThrough, 'the after snapshot'), 'after snapshot') : null;
-  const report = evaluate(withAgesFrom(checkedBacklog(readJson(args.input, 'the backlog'), 'backlog'), ages, after), cfg, args.only);
+  const backlog = checkedBacklog(readJson(args.input, 'the backlog'), 'backlog');
+  if (args.at) atRevision(backlog, args.at, 'the backlog');
+  const report = evaluate(withAgesFrom(backlog, ages, after), cfg, args.only);
+  if (args.at) report.at = args.at;
   // The baseline is judged by the config of ITS day when one is given. With
   // the current config, lowering a budget or renaming the milestone creates
   // violations that look like old debt, and block-new waves them through.

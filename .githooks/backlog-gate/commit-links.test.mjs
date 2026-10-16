@@ -223,3 +223,52 @@ test('the first push to an empty remote checks every introduced commit', () => {
   assert.equal(result.status, 0, result.stdout + result.stderr)
   assert.match(result.stdout, /[1-9]\d* commit\(s\) checked, 0 link problem/)
 })
+
+test('records-only classification uses the staged and committed JSONL changes, not the title', () => {
+  const cases = [
+    {
+      name: 'comments only',
+      issues: [{ ...TASK, comments: [{ text: 'accepted evidence' }] }],
+      status: 1,
+    },
+    { name: 'new task', issues: [TASK, { ...TASK, id: 'nocx-t2' }], status: 0 },
+    { name: 'real field update', issues: [{ ...TASK, status: 'closed' }], status: 0 },
+    {
+      name: 'comments with product work',
+      issues: [{ ...TASK, comments: [{ text: 'accepted evidence' }] }],
+      product: true,
+      status: 0,
+    },
+    {
+      name: 'timestamp only',
+      issues: [{ ...TASK, updated_at: '2026-10-01T00:00:00Z' }],
+      status: 0,
+    },
+    { name: 'deleted task', issues: [], status: 0 },
+  ]
+  for (const [index, example] of cases.entries()) {
+    git('checkout', '-q', '-b', `records-proof-${index}`, 'main')
+    const base = git('rev-parse', 'HEAD')
+    writeFileSync(
+      join(work, '.beads/issues.jsonl'),
+      example.issues.map((issue) => JSON.stringify(issue)).join('\n') + '\n',
+    )
+    if (example.product) writeFileSync(join(work, 'product'), 'actual product change\n')
+    git('add', '-A')
+    const message = join(root, 'pending-message')
+    writeFileSync(message, 'fix: ordinary linked work (nocx-t1)\n')
+    // Resolve links from the base so removal of a task tests classification,
+    // rather than independently failing because its task no longer exists.
+    const staged = links('--message', message, '--export-at', base)
+    assert.equal(staged.status, example.status, example.name + staged.stdout + staged.stderr)
+    if (example.status) assert.match(staged.stdout, /carries only records/)
+    git('commit', '-q', '-m', 'fix: ordinary linked work (nocx-t1)')
+    const historical = links('--range', `${base}..HEAD`, '--export-at', base)
+    assert.equal(
+      historical.status,
+      example.status,
+      example.name + historical.stdout + historical.stderr,
+    )
+    if (example.status) assert.match(historical.stdout, /carries only records/)
+  }
+})

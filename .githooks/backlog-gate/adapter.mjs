@@ -45,11 +45,11 @@
  * other status these comments are history and read as nothing: a reopen is a
  * status change, not a comment.
  *
- * WORK RECORDS. A comment whose text starts with `[shady2k-time` is a claim or
- * time record printed by the set's run script. Every one goes out RAW and
- * whole, damaged or not, with the tracker's comment id, time and author: the
- * gate judges a record, and one this file dropped or tidied would be time lost
- * with nothing to say so. Other comments are left out.
+ * WORK RECORDS. Comments starting with `[shady2k-time` carry spans; comments
+ * starting with `<!-- shady2k-exec` carry command durations used by the next
+ * run's bound. Both families go out RAW and whole, damaged or not, with the
+ * tracker's comment id, time and author: their consumers judge them. Dropping
+ * either loses recorded work. Other comments are left out.
  *
  * Usage:
  *   node .githooks/backlog-gate/adapter.mjs [--at <git-rev>] [--export <path>]
@@ -76,10 +76,15 @@ const STATUS = {
 const MARKER = /^(submitted|implemented|accepted):\s*(.*)$/s
 const RECORD = /^(\S+)\s+--\s+(\S[\s\S]*)$/
 const WORK_RECORD = '[shady2k-time'
+const EXEC_RECORD = '<!-- shady2k-exec'
 
 export function workRecords(comments) {
   return (comments || [])
-    .filter((c) => typeof c.text === 'string' && c.text.startsWith(WORK_RECORD))
+    .filter(
+      (c) =>
+        typeof c.text === 'string' &&
+        (c.text.startsWith(WORK_RECORD) || c.text.startsWith(EXEC_RECORD)),
+    )
     .map((c) => ({ id: String(c.id), at: c.created_at, author: c.author, body: c.text }))
 }
 

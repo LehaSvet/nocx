@@ -48,6 +48,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
 import { normalize, readExport } from './adapter.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -66,6 +67,50 @@ export function linkedIds(message) {
     for (const id of group.match(ID) || []) if (!ids.includes(id)) ids.push(id)
   }
   return ids
+}
+
+// Only comments on existing issues are bookkeeping. Queue edits, even when
+// carried by the same JSONL file, are substantive work, as are merged changes.
+function recordsOnly(base, tip = null) {
+  if (!base) return false
+  const path = '.beads/issues.jsonl'
+  const paths = git('diff', '--name-only', '-z', ...(tip ? [base, tip] : ['--cached', base]))
+    .split('\0')
+    .filter(Boolean)
+  if (paths.length !== 1 || paths[0] !== path) return false
+  const parse = (text) => {
+    const issues = new Map()
+    for (const line of text.split('\n').filter((line) => line.trim())) {
+      const issue = JSON.parse(line)
+      if (!issue || typeof issue.id !== 'string' || issues.has(issue.id))
+        throw new Error('records-only classification needs unique issue ids')
+      issues.set(issue.id, issue)
+    }
+    return issues
+  }
+  // A newly added or deleted export is queue work, not a records-only update.
+  if (
+    spawnSync('git', ['cat-file', '-e', `${base}:${path}`]).status !== 0 ||
+    spawnSync('git', ['cat-file', '-e', tip ? `${tip}:${path}` : `:${path}`]).status !== 0
+  )
+    return false
+  const before = parse(git('show', `${base}:${path}`))
+  const after = parse(git('show', tip ? `${tip}:${path}` : `:${path}`))
+  if (before.size !== after.size) return false
+  let changed = false
+  for (const [id, issue] of before) {
+    const next = after.get(id)
+    if (!next) return false
+    const fields = { ...issue }
+    const nextFields = { ...next }
+    delete fields.comments
+    delete fields.updated_at
+    delete nextFields.comments
+    delete nextFields.updated_at
+    if (!isDeepStrictEqual(fields, nextFields)) return false
+    if (!isDeepStrictEqual(issue.comments, next.comments)) changed = true
+  }
+  return changed
 }
 
 // A merge without its own link borrows links from incoming work under the rule.
@@ -302,7 +347,13 @@ function main() {
       const head = readFileSync(mergeHead, 'utf8').split('\n')[0].trim()
       taskIds = incoming('HEAD', head, from, null)
     }
-    commits.push({ id: 'pending message', taskIds })
+    const head = spawnSync('git', ['rev-parse', '--verify', 'HEAD'], { encoding: 'utf8' })
+    commits.push({
+      id: 'pending message',
+      taskIds,
+      recordsOnly:
+        !existsSync(mergeHead) && recordsOnly(head.status === 0 ? head.stdout.trim() : null),
+    })
   } else {
     let listed
     if (opt.range) {
@@ -352,7 +403,11 @@ function main() {
       if (!taskIds.length && parents.length > 1) {
         taskIds = incoming(parents[0], sha, from, sha)
       }
-      commits.push({ id: sha, taskIds })
+      commits.push({
+        id: sha,
+        taskIds,
+        recordsOnly: parents.length === 1 && recordsOnly(parents[0], sha),
+      })
     }
     if (!opt['export-at']) opt['export-at'] = opt.introduced || opt.range.split('..')[1]
   }

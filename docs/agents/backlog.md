@@ -1,10 +1,9 @@
 # Backlog integration
 
 Maintained by `setup-shady2k-skills`. The installed checks carry setup protocol
-0.44.0 after this update lands. Its task, "The setup pull request installs
-shady2k-skills 0.44.0 before it merges" (nocx-q8yjf.24), owns the proof
-evidence and any unperformed checks. Protocol 0.43.0 was installed by PR #280
-(nocx-q8yjf.23). A branch alone is not an installed update. The protocol ships
+0.47.0 after this update lands. Setup task nocx-q8yjf.25 owns the proof
+evidence and any unperformed checks. Protocol 0.44.0 was installed by
+nocx-q8yjf.24. A branch alone is not an installed update. The protocol ships
 with the skills and is not restated here. This file holds project facts and
 commands; changing choices live only in the config. Each person's plugin,
 runtime and connected hooks are checked directly, never represented as shared
@@ -171,11 +170,29 @@ keeps every later change.
   `document-format.mjs`, in [`.githooks/backlog-gate/`](../../.githooks/backlog-gate/).
   These are byte-for-byte copies of the plugin files under
   `skills/backlog/setup-shady2k-skills/` at source commit
-  `3c4e885b2afbe6cf82df1374d346a103b1eafb5e` (setup protocol 0.44.0), never
-  edited here. Compare each copy with that source. Run all five `--selftest`
+  `825deed8ccd734148457f75be9cccb316bb39be0` (plugin 0.116.1, setup protocol
+  0.47.0), never edited here. Compare each copy with that source. Run all five `--selftest`
   commands from the plugin directory, where their fixtures live; `check.mjs`
   additionally takes `--config <repo>/.githooks/backlog-gate/config.json` for
   portability.
+  Protocol 0.45.0 adds an optional `check.mjs --at <revision>` guard: the
+  input's `source` must end in ` @ <revision>` matching that exact argument.
+  Protocol 0.47.0 also refuses an empty or missing revision argument rather
+  than silently skipping the guard (upstream shady2k/skills PR #33).
+  The adapter already emits that suffix for historical exports. Existing
+  hooks and CI do not pass this optional flag; their revision selection and
+  the in-branch tracker layout remain unchanged. This update does not install
+  the separate off-branch tracker migration.
+  The commit-link wrapper sets `recordsOnly` for staged changes and historical
+  single-parent commits only when `.beads/issues.jsonl` is the sole changed
+  path, the same issue ids remain, every other field except `comments` and
+  `updated_at` is unchanged, and at least one issue's comments actually differ.
+  The commit check refuses those commits: records ride with the landing.
+  New or deleted issues, substantive queue edits and changes accompanying any
+  other path are not classified as records-only. Merge commits keep their
+  existing link/incoming-history behavior; older commits retain their date
+  exemption. This is a structural check, not a judgment of comment prose or
+  commit titles, and it does not detect bookkeeping outside that export.
 - **Present documents:** the config's `presentDocuments` lists what describes the present
   here — AGENTS.md, README.md, `docs/architecture.md`, `docs/agents/`, the frontend state
   ownership and lifecycle protocol documents, `contracts/README.md` and the UI kit's README.
@@ -194,13 +211,16 @@ keeps every later change.
   adopted, is a `PRA-NNN` file under `docs/practices/`; this repository has no
   product documents or practice records today, so there is nothing to judge.
   The separate product/feature/acceptance document gate remains uninstalled.
-- **Work records:** a claim, a receipt of the time a session spent, and the other
-  `[shady2k-time v1] …` records are comments on the item, printed by the set's run script
-  (`runs.mjs` in the plugin's `take-task`, `close-out` and `ask-shady2k`). The adapter exports
-  every comment whose text starts with `[shady2k-time`, raw and whole, damaged or not, as
-  `comments: [{ id, at, author, body }]` from beads' comment `id`, `created_at`, `author`
-  and `text`; other comments are left out. `runs.mjs --backlog` reads the adapter's JSON,
-  not the raw JSONL. The adapter emits that JSON on stdout with:
+- **Work records:** session claims and receipts, and command-duration records used
+  to bound later runs, are comments printed by `runs.mjs` in the plugin's
+  `take-task`, `close-out` and `ask-shady2k`. The adapter exports every comment
+  starting with `[shady2k-time` or `<!-- shady2k-exec`, raw and whole, damaged
+  or not, as `comments: [{ id, at, author, body }]` from beads' `id`,
+  `created_at`, `author` and `text`; ordinary comments are left out.
+  `runs.mjs --backlog` reads this normalized JSON, not raw JSONL. Execution
+  records must survive that boundary for the next command's bound to use its
+  recorded durations rather than the first-run default (nocx-q8yjf.26).
+  The adapter emits that JSON on stdout with:
   `node .githooks/backlog-gate/adapter.mjs --export "$(br where --json | jq -r .jsonl_path)"`.
   Capture stdout to a temporary file and pass that file to `--backlog`; `br` keeps the
   main export current. Post a printed record unchanged with
