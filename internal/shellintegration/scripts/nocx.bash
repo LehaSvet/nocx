@@ -657,14 +657,16 @@ __nocx_agent_old_hup=
 #
 # With $2 = wait it has NO deadline, because what it waits for is a person: the
 # frame closing a question nocx is asking (nocx-cyhfw). Only Ctrl+C ends that
-# wait early, and it returns 130 — see __nocx_agent_await_answer.
+# wait early, and it returns 130 — see __nocx_agent_enrol. The bounded read
+# does not stop for Ctrl+C: the answer is already on its way, and the caller
+# needs it to know whether an interval opened that the cancel must close.
 __nocx_lc_read_agent_answer() {
     local __rid="$1" __wait="${2:-}" __t=0 __reason
     __nocx_agent_enrolled=0
     __nocx_agent_pending=0
     __nocx_agent_reason=
     while [[ "$__wait" == wait ]] || (( __t < __nocx_lc_grant_timeout_s )); do
-        (( __nocx_agent_cancelled )) && return 130
+        [[ "$__wait" == wait ]] && (( __nocx_agent_cancelled )) && return 130
         if ! __nocx_lc_probe_readable; then
             sleep 1
             __t=$(( __t + 1 ))
@@ -707,7 +709,7 @@ __nocx_lc_read_agent_answer() {
                 __nocx_agent_reason="$__nocx_lc_json_unescaped"
                 ;;
         esac
-        (( __nocx_agent_cancelled )) && return 130
+        [[ "$__wait" == wait ]] && (( __nocx_agent_cancelled )) && return 130
         return 0
     done
     return 1
@@ -853,29 +855,44 @@ __nocx_agent_restore_traps() {
     __nocx_agent_old_hup=
 }
 
-# Wait for the question raised on request $1 to close. Ctrl+C cancels the
-# launch and returns 130: the question stays on screen and an answer given
+# Enrol this pane for agent $1. Returns 0 when enrolled, with the interval's
+# request id in __nocx_agent_rid; 130 when the person pressed Ctrl+C; 1 for
+# every refusal, with the backend's sentence, if it sent one, in
+# __nocx_agent_reason.
+#
+# CTRL+C CANCELS THE LAUNCH from the moment the enrolment is sent, not only once
+# the question is known to be up. The person cannot tell those moments apart,
+# and an INT this shell has no trap for aborts the wrapper instead: no cancel
+# sentence, no cancelled ticket, and whatever status the shell leaves — zsh
+# left 2 (nocx-xn63t.6.29). The question stays on screen and an answer given
 # later is still kept for the next start, but the agent the person stopped
 # waiting for does not run. The INT trap is this function's alone and the one
-# it replaced is put back, whichever way the wait ends.
-__nocx_agent_await_answer() {
-    local __old_int __rc
+# it replaced is put back, whichever way the enrolment ends.
+#
+# JOB CONTROL IS OFF FOR THE ENROLMENT, because a trap alone is not enough in
+# bash. The reads run children (sleep, dd, the probe helper), and with job
+# control on each child is the terminal's foreground group: the interrupt goes
+# to the child only, and bash answers the child's death by SIGINT by aborting
+# the function without running the trap. Measured: about one Ctrl+C in three
+# aborted the wait that way, reporting 130 with no cancel behind it. With
+# `set +m` the children stay in this shell's group, the shell receives the
+# interrupt too, and the trap runs.
+__nocx_agent_enrol() {
+    local __old_int __rc __monitor=0
     __old_int="$(trap -p INT 2>/dev/null)" || __old_int=
     __nocx_agent_cancelled=0
+    [[ $- == *m* ]] && __monitor=1
+    set +m
     trap '__nocx_agent_cancelled=1' INT
-    __nocx_lc_read_agent_answer "$1" wait
+    __nocx_agent_handshake "$1"
     __rc=$?
     trap - INT
+    (( __monitor )) && set -m
     [[ -z "$__old_int" ]] || eval "$__old_int"
     __nocx_agent_cancelled=0
     return $__rc
 }
 
-# Enrol this pane for agent $1. Returns 0 when enrolled, with the interval's
-# request id in __nocx_agent_rid; 130 when the person pressed Ctrl+C while nocx
-# was asking; 1 for every refusal, with the backend's sentence, if it sent one,
-# in __nocx_agent_reason.
-#
 # THE QUESTION COMES FIRST (nocx-cyhfw). An agent nobody has answered for is not
 # refused: the backend answers "pending" inside the handshake's bound and puts
 # the question on screen. The wait for the answer is HERE, outside the
@@ -884,7 +901,7 @@ __nocx_agent_await_answer() {
 # consent: the enrolment sent after it is what the answer admits or refuses. A
 # question that closes with a sentence was never answered, and is not raised
 # again.
-__nocx_agent_enrol() {
+__nocx_agent_handshake() {
     local __agent="$1" __rc __ticket_field
     __ticket_field=
     if [[ -n "${__nocx_agent_launch_ticket:-}" ]]; then
@@ -896,10 +913,22 @@ __nocx_agent_enrol() {
         __nocx_agent_rid="a-$__nocx_lc_dom-$(( __nocx_agent_n++ ))"
         __nocx_lc_send agent_enrol ',"request":"'"$__nocx_agent_rid"'","agent":"'"$__agent"'","cols":'"$__nocx_agent_cols"',"rows":'"$__nocx_agent_rows""$__ticket_field" \
             || return 1
-        __nocx_lc_read_agent_answer "$__nocx_agent_rid" || return 1
+        if ! __nocx_lc_read_agent_answer "$__nocx_agent_rid"; then
+            (( __nocx_agent_cancelled )) && return 130
+            return 1
+        fi
+        if (( __nocx_agent_cancelled )); then
+            # Admitted before the cancel reached it: close the interval the
+            # answer opened, since no agent will run inside it.
+            if (( __nocx_agent_enrolled == 1 )); then
+                __nocx_lc_send agent_withdraw ',"request":"'"$__nocx_agent_rid"'"' || true
+                __nocx_lc_read_agent_answer "$__nocx_agent_rid" || true
+            fi
+            return 130
+        fi
         (( __nocx_agent_enrolled == 1 )) && return 0
         (( __nocx_agent_pending == 1 )) || return 1
-        __nocx_agent_await_answer "$__nocx_agent_rid"
+        __nocx_lc_read_agent_answer "$__nocx_agent_rid" wait
         __rc=$?
         (( __rc == 0 )) || return $__rc
         [[ -z "$__nocx_agent_reason" ]] || return 1

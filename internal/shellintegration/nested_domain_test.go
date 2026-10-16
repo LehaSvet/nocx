@@ -94,7 +94,14 @@ type nestedKernel struct {
 	// which is what the stored answer makes of the start after a question.
 	pendingEnrolment    bool
 	refuseAfterQuestion bool
-	question            *frame
+	// holdEnrolAnswer keeps the answer to the first enrolment back until the
+	// test calls sendHeldEnrolAnswer, so a test can put the person's Ctrl+C in
+	// the round trip between the shell sending its enrolment and reading the
+	// answer — an interval a person can hit and a test that only waits for the
+	// enrolment hits only sometimes (nocx-xn63t.6.29).
+	holdEnrolAnswer bool
+	held            *frame
+	question        *frame
 	// rejected counts frames the kernel rejects: a wrong addressing tuple,
 	// a stale (non-increasing) sequence, or a frame addressed to the child
 	// domain after the parent restored (the child's interval ended — it
@@ -229,18 +236,18 @@ func (k *nestedKernel) accept(f frame, body []byte) {
 			k.sendMalformedAgentAnswerLocked()
 			return
 		}
+		if k.holdEnrolAnswer && k.held == nil {
+			held := f
+			k.held = &held
+			if k.pendingEnrolment {
+				k.question = &held
+			}
+			return
+		}
 		if k.pendingEnrolment && k.question == nil {
 			raised := f
 			k.question = &raised
-			k.encodeAgentAnswerLocked(f, lifecycle.Event{
-				Kind: lifecycle.KindAgentEnrolled,
-				AgentEnrolled: &lifecycle.AgentEnrolled{
-					RequestID: lifecycle.RequestID(f.Request),
-					Agent:     f.Agent,
-					Pending:   true,
-					Reason:    "nocx is asking whether " + f.Agent + " may use its tools",
-				},
-			})
+			k.sendQuestionLocked()
 			return
 		}
 		k.sendAgentAnswerLocked(f, lifecycle.KindAgentEnrolled)
@@ -353,6 +360,36 @@ func (k *nestedKernel) sendAgentAnswerLocked(f frame, kind lifecycle.EventKind) 
 		}}
 	}
 	k.encodeAgentAnswerLocked(f, evt)
+}
+
+// sendQuestionLocked answers the first enrolment with the verdict that waits
+// on a person: nocx is asking.
+func (k *nestedKernel) sendQuestionLocked() {
+	f := *k.question
+	k.encodeAgentAnswerLocked(f, lifecycle.Event{
+		Kind: lifecycle.KindAgentEnrolled,
+		AgentEnrolled: &lifecycle.AgentEnrolled{
+			RequestID: lifecycle.RequestID(f.Request),
+			Agent:     f.Agent,
+			Pending:   true,
+			Reason:    "nocx is asking whether " + f.Agent + " may use its tools",
+		},
+	})
+}
+
+// sendHeldEnrolAnswer delivers the answer holdEnrolAnswer kept back: the
+// question when one is being raised, the ordinary verdict otherwise.
+func (k *nestedKernel) sendHeldEnrolAnswer() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.held == nil {
+		k.t.Fatal("sendHeldEnrolAnswer before any enrolment was held")
+	}
+	if k.question != nil {
+		k.sendQuestionLocked()
+		return
+	}
+	k.sendAgentAnswerLocked(*k.held, lifecycle.KindAgentEnrolled)
 }
 
 // closeQuestion is the person answering, or nocx failing to put the question:
