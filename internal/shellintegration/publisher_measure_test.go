@@ -209,9 +209,12 @@ import (
 // AND THEY SHRANK by 518 bytes when the redundant waiting question was removed
 // from both wrapper scripts (nocx-xn63t.4.2): 86017, calls unchanged at 63.
 // The updated report records the measured maximum and the reason for this move.
+//
+// AND GREW by 980 bytes when Ctrl+C became the cancel for the whole agent
+// enrolment rather than only its wait (nocx-xn63t.6.29): 86997, calls unchanged.
 const (
 	measuredMaxPublishCalls = 63
-	measuredMaxPublishBytes = 86017
+	measuredMaxPublishBytes = 86997
 
 	// measuredMaxBoundedResidue is the same figure for the worst attempt
 	// that is still inside the residue bounds the design asks P3 to enforce

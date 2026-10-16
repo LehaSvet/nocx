@@ -390,6 +390,11 @@ func agentWrapperCancelsTheLaunchOnCtrlC(t *testing.T, start nestedParentStarter
 		t.Fatalf("type echo: %v", err)
 	}
 	waitForOutput(t, s, "RC=130")
+	// The status alone cannot tell the cancel from a shell that aborted the
+	// wrapper on an untrapped interrupt, which bash also reports as 130.
+	if out := s.output(); !strings.Contains(out, "nocx: cancelled — claude was not started") {
+		t.Errorf("the pane did not say the launch was cancelled; output=%q", out)
+	}
 
 	closeQuestionWith(t, k, flag, "")
 	// Arithmetic in the line, so the pane's echo of what was typed cannot
@@ -408,6 +413,100 @@ func agentWrapperCancelsTheLaunchOnCtrlC(t *testing.T, start nestedParentStarter
 	}
 	if hasEvent(k, "agent_withdraw") {
 		t.Error("a cancelled launch sent a withdrawal for an interval that never opened")
+	}
+}
+
+func TestBashAgentWrapperCancelsTheLaunchOnCtrlCBeforeTheQuestionArrives(t *testing.T) {
+	agentWrapperCancelsTheLaunchOnCtrlCBeforeTheQuestionArrives(t, startNestedBashParent)
+}
+
+func TestZshAgentWrapperCancelsTheLaunchOnCtrlCBeforeTheQuestionArrives(t *testing.T) {
+	agentWrapperCancelsTheLaunchOnCtrlCBeforeTheQuestionArrives(t, startNestedZshParent)
+}
+
+// Ctrl+C pressed after the enrolment left the pane but before nocx's "a
+// question is up" came back is the same cancel as one pressed while the
+// question is up: the person cannot tell the two moments apart, so the pane
+// says the agent was not started and the command reports the interrupt.
+func agentWrapperCancelsTheLaunchOnCtrlCBeforeTheQuestionArrives(t *testing.T, start nestedParentStarter) {
+	t.Helper()
+	k, s, flag := raiseQuestion(t, start, func(k *nestedKernel) { k.holdEnrolAnswer = true })
+	pressCtrlCBeforeTheAnswer(t, k, s)
+
+	closeQuestionWith(t, k, flag, "")
+	if _, err := s.ptmx.Write([]byte("echo \"STILL-HERE-$((20+22))\"\n")); err != nil {
+		t.Fatalf("type echo: %v", err)
+	}
+	waitForOutput(t, s, "STILL-HERE-42")
+
+	out := s.output()
+	if strings.Contains(out, "AGENT-RAN") {
+		t.Fatalf("a cancelled launch started the agent; output=%q", out)
+	}
+	if n := len(eventsOf(k, "agent_enrol")); n != 1 {
+		t.Errorf("the pane sent %d enrolments, want 1 — a cancelled launch enrols nothing more", n)
+	}
+	if hasEvent(k, "agent_withdraw") {
+		t.Error("a cancelled launch sent a withdrawal for an interval that never opened")
+	}
+}
+
+func TestBashAgentWrapperCancelsAnAdmittedLaunchOnCtrlCBeforeTheAnswerArrives(t *testing.T) {
+	agentWrapperCancelsAnAdmittedLaunchOnCtrlCBeforeTheAnswerArrives(t, startNestedBashParent)
+}
+
+func TestZshAgentWrapperCancelsAnAdmittedLaunchOnCtrlCBeforeTheAnswerArrives(t *testing.T) {
+	agentWrapperCancelsAnAdmittedLaunchOnCtrlCBeforeTheAnswerArrives(t, startNestedZshParent)
+}
+
+// The same Ctrl+C when the answer on its way admits the agent: nothing runs,
+// and the interval the admission opened is closed rather than left open with
+// no agent in it.
+func agentWrapperCancelsAnAdmittedLaunchOnCtrlCBeforeTheAnswerArrives(t *testing.T, start nestedParentStarter) {
+	t.Helper()
+	k := newNestedKernel(t)
+	k.holdEnrolAnswer = true
+	flag := filepath.Join(t.TempDir(), "question-closed")
+	s := start(t, k, "claude", questionAgentBody(flag))
+	if _, err := s.ptmx.Write([]byte("claude\n")); err != nil {
+		t.Fatalf("type claude: %v", err)
+	}
+	enrol := waitForEvent(t, k, "agent_enrol")
+	pressCtrlCBeforeTheAnswer(t, k, s)
+
+	withdraw := waitForEvent(t, k, "agent_withdraw")
+	if withdraw.Body["request"] != enrol.Body["request"] {
+		t.Errorf("the withdrawal closed request %v, want the admitted %v", withdraw.Body["request"], enrol.Body["request"])
+	}
+	if out := s.output(); strings.Contains(out, "AGENT-RAN") {
+		t.Fatalf("a cancelled launch started the agent; output=%q", out)
+	}
+}
+
+// pressCtrlCBeforeTheAnswer presses Ctrl+C while the kernel holds its answer to
+// the enrolment, then lets the answer go, and requires the cancel: the
+// interrupt status and the pane's sentence.
+func pressCtrlCBeforeTheAnswer(t *testing.T, k *nestedKernel, s *channelShell) {
+	t.Helper()
+	if _, err := s.ptmx.Write([]byte{0x03}); err != nil {
+		t.Fatalf("press Ctrl+C: %v", err)
+	}
+	// The terminal echoes ^C as it raises the signal, so once it is on screen
+	// the interrupt has reached the shell and the answer can follow it.
+	waitForOutput(t, s, "^C")
+	k.sendHeldEnrolAnswer()
+	// Arithmetic in the line, so the pane's echo of what was typed cannot
+	// satisfy the wait for what the shell printed.
+	if _, err := s.ptmx.Write([]byte("echo \"RC=$(($?+0))-END\"\n")); err != nil {
+		t.Fatalf("type echo: %v", err)
+	}
+	waitForOutput(t, s, "-END\r\n")
+	out := s.output()
+	if !strings.Contains(out, "RC=130-END") {
+		t.Fatalf("the cancelled launch did not report the interrupt; output=%q", out)
+	}
+	if !strings.Contains(out, "nocx: cancelled — claude was not started") {
+		t.Errorf("the pane did not say the launch was cancelled; output=%q", out)
 	}
 }
 

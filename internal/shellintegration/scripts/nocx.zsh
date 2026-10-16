@@ -450,14 +450,16 @@ __nocx_agent_old_hup=
 # has no deadline, because it waits on a person — the frame closing a question
 # nocx is asking (nocx-cyhfw) — and only Ctrl+C ends it early, returning 130.
 # The wait polls with a blocking zselect rather than a sleep, so the interrupt
-# lands on this shell and not on a child.
+# lands on this shell and not on a child. The bounded read does not stop for
+# Ctrl+C: the answer is already on its way, and the caller needs it to know
+# whether an interval opened that the cancel must close.
 __nocx_lc_read_agent_answer() {
     local __rid="$1" __wait="${2:-}" __t=0 __reason
     __nocx_agent_enrolled=0
     __nocx_agent_pending=0
     __nocx_agent_reason=
     while [[ "$__wait" == wait ]] || (( __t < __nocx_lc_grant_timeout_s )); do
-        (( __nocx_agent_cancelled )) && return 130
+        [[ "$__wait" == wait ]] && (( __nocx_agent_cancelled )) && return 130
         if zmodload zsh/zselect 2>/dev/null; then
             if [[ "$__wait" == wait ]]; then
                 zselect -t 100 -r "$__nocx_lc_fd" 2>/dev/null || continue
@@ -499,7 +501,7 @@ __nocx_lc_read_agent_answer() {
                 __nocx_agent_reason="$__nocx_lc_json_unescaped"
                 ;;
         esac
-        (( __nocx_agent_cancelled )) && return 130
+        [[ "$__wait" == wait ]] && (( __nocx_agent_cancelled )) && return 130
         return 0
     done
     return 1
@@ -650,27 +652,29 @@ __nocx_agent_restore_traps() {
     __nocx_agent_old_hup=
 }
 
-# Wait for the question raised on request $1 to close. Ctrl+C cancels the
-# launch and returns 130; the question stays on screen and a later answer is
-# still kept. LOCAL_TRAPS puts back whatever INT trap was there before, however
-# the wait ends.
-__nocx_agent_await_answer() {
+# Enrol this pane for agent $1: 0 when enrolled (request id in
+# __nocx_agent_rid), 130 when the person cancelled with Ctrl+C, 1 for a refusal
+# (the backend's sentence in __nocx_agent_reason). The bash script carries the
+# long form of why the wait for a question is here, outside the handshake
+# (nocx-cyhfw, nocx-t7xds).
+#
+# Ctrl+C is the cancel from the moment the enrolment is sent, not only once the
+# question is known to be up: the person cannot tell those moments apart, and
+# an INT this shell has no trap for aborts the wrapper instead — no cancel
+# sentence, no cancelled ticket, and whatever status zsh leaves (nocx-xn63t.6.29).
+# LOCAL_TRAPS puts back whatever INT trap was there before, however it ends.
+__nocx_agent_enrol() {
     setopt localoptions localtraps
     local __rc
     __nocx_agent_cancelled=0
     trap '__nocx_agent_cancelled=1' INT
-    __nocx_lc_read_agent_answer "$1" wait
+    __nocx_agent_handshake "$1"
     __rc=$?
     __nocx_agent_cancelled=0
     return $__rc
 }
 
-# Enrol this pane for agent $1: 0 when enrolled (request id in
-# __nocx_agent_rid), 130 when the person cancelled while nocx was asking, 1 for
-# a refusal (the backend's sentence in __nocx_agent_reason). The bash script
-# carries the long form of why the wait for a question is here, outside the
-# handshake (nocx-cyhfw, nocx-t7xds).
-__nocx_agent_enrol() {
+__nocx_agent_handshake() {
     local __agent="$1" __rc __ticket_field
     __ticket_field=
     if [[ -n "${__nocx_agent_launch_ticket:-}" ]]; then
@@ -682,10 +686,22 @@ __nocx_agent_enrol() {
         __nocx_agent_rid="a-$__nocx_lc_dom-$(( __nocx_agent_n++ ))"
         __nocx_lc_send agent_enrol ',"request":"'"$__nocx_agent_rid"'","agent":"'"$__agent"'","cols":'"$__nocx_agent_cols"',"rows":'"$__nocx_agent_rows""$__ticket_field" \
             || return 1
-        __nocx_lc_read_agent_answer "$__nocx_agent_rid" || return 1
+        if ! __nocx_lc_read_agent_answer "$__nocx_agent_rid"; then
+            (( __nocx_agent_cancelled )) && return 130
+            return 1
+        fi
+        if (( __nocx_agent_cancelled )); then
+            # Admitted before the cancel reached it: close the interval the
+            # answer opened, since no agent will run inside it.
+            if (( __nocx_agent_enrolled == 1 )); then
+                __nocx_lc_send agent_withdraw ',"request":"'"$__nocx_agent_rid"'"' || true
+                __nocx_lc_read_agent_answer "$__nocx_agent_rid" || true
+            fi
+            return 130
+        fi
         (( __nocx_agent_enrolled == 1 )) && return 0
         (( __nocx_agent_pending == 1 )) || return 1
-        __nocx_agent_await_answer "$__nocx_agent_rid"
+        __nocx_lc_read_agent_answer "$__nocx_agent_rid" wait
         __rc=$?
         (( __rc == 0 )) || return $__rc
         [[ -z "$__nocx_agent_reason" ]] || return 1

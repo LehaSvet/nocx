@@ -296,7 +296,11 @@ var (
 // lifecycle channel and stage its command/arguments/environment as data; a
 // shell still sourcing 57 treats the agent ID as the executable and cannot
 // launch the saved configuration (nocx-h64wy).
-const version = "60"
+// 61: Ctrl+C cancels an agent launch from the moment the enrolment is sent,
+// not only once a question is known to be up; a shell still sourcing 60
+// aborts the wrapper on an interrupt in that round trip, so the ticket is not
+// cancelled and zsh reports status 2 (nocx-xn63t.6.29).
+const version = "61"
 
 // ScriptVersion is the integration script version other packages may read.
 // Command discovery puts it in its cache key (internal/commandnames): the
