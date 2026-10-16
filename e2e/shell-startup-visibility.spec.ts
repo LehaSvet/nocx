@@ -135,6 +135,15 @@ test('a command submitted during shell startup has a visible running block', asy
       }
     }
     fixture.proc.kill('SIGKILL')
-    rmSync(remoteHome, { recursive: true, force: true })
+    // Best effort, like every other cleanup here: the remote shell is a setsid
+    // child of the sshd, not killed with it, and as the closed pty hangs it up
+    // it can still be writing into this home — CI saw ENOTEMPTY replace a
+    // passing result. A leftover temp dir is harmless; a cleanup that throws
+    // reports a failure the test never had.
+    try {
+      rmSync(remoteHome, { recursive: true, force: true })
+    } catch {
+      // Left for the container's tmp to take.
+    }
   }
 })
