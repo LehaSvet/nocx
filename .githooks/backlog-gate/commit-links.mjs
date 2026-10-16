@@ -131,8 +131,8 @@ function incoming(base, tip, from, self) {
 }
 
 // Reconstruct what a push introduces. CI sees the target ref AFTER publication,
-// so exclude that ref and add its advertised old tip explicitly. Every other
-// advertised remote ref counts; local tags and other remotes never count.
+// so exclude that ref and add its advertised old tip explicitly. Only remote
+// objects this clone can read can bound local history; local-only refs never count.
 function introducedBy(tip, ref, before, remote) {
   const advertised = execFileSync('git', ['ls-remote', '--refs', remote], {
     encoding: 'utf8',
@@ -159,35 +159,13 @@ function introducedBy(tip, ref, before, remote) {
         maxBuffer: 1 << 28,
       })
     : ''
-  const missing = checked
+  // An object absent from this clone cannot exclude a locally reachable commit.
+  // Do not fetch unrelated histories just to enumerate what this push introduces.
+  const readable = checked
     .split('\n')
-    .filter((line) => line.endsWith(' missing'))
+    .filter((line) => line && !line.endsWith(' missing'))
     .map((line) => line.split(' ')[0])
-  if (missing.length) {
-    // Fetch exact advertised objects, never move a branch, tag or FETCH_HEAD.
-    execFileSync(
-      'git',
-      [
-        'fetch',
-        '--no-tags',
-        '--no-write-fetch-head',
-        '--no-recurse-submodules',
-        '--no-auto-maintenance',
-        remote,
-        ...missing,
-      ],
-      {
-        encoding: 'utf8',
-        maxBuffer: 1 << 28,
-      },
-    )
-  }
-  if (
-    before &&
-    spawnSync('git', ['rev-parse', '-q', '--verify', `${before}^{commit}`]).status !== 0
-  )
-    throw new Error(`the old tip ${before} is not a commit the remote can provide`)
-  const input = [tip, ...held.map((sha) => `^${sha}`)].join('\n')
+  const input = [tip, ...readable.map((sha) => `^${sha}`)].join('\n')
   return execFileSync('git', ['rev-list', '--reverse', '--format=%H %P%x00%ct', '--stdin'], {
     input: `${input}\n`,
     encoding: 'utf8',

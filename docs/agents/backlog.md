@@ -338,8 +338,10 @@ keeps every later change.
   preceding published state of those introduced commits, never the branch's own
   merge base with itself. Product-document checks read the actual incoming revision.
   The incoming backlog and its configuration both come from that actual revision;
-  the historical baseline is judged by its own configuration. An unfetched advertised
-  remote object is fetched by its exact ID without moving branches, tags or FETCH_HEAD.
+  the historical baseline is judged by its own configuration. An advertised
+  object absent from this clone cannot bound locally reachable history and is
+  skipped, regardless of its ref namespace; range enumeration never downloads
+  unrelated histories merely to exclude them (nocx-q8yjf.27).
   **Pre-push** reads every stdin ref tuple and runs those range checks, preserving
   warnings about unpublished tracker changes. It runs no product suite.
   **CI does not run on a push to `main`** (the triggers are PRs, `release/**`, dispatch and

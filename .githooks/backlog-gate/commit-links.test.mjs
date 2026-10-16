@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { parsePrePush } from './commit-links.mjs'
 import { fileURLToPath } from 'node:url'
 
@@ -103,7 +103,7 @@ test('only refs actually advertised by the target remote suppress introduced com
   assert.match(run.stdout, /1 commit\(s\) checked, 1 link problem/)
 })
 
-test('an unfetched remote branch is included without moving local refs', () => {
+test('unfetchable advertised objects do not prevent checking new local work', () => {
   const other = join(root, 'other')
   execFileSync('git', ['clone', '-q', join(root, 'remote.git'), other])
   const otherGit = (...args) => execFileSync('git', args, { cwd: other, encoding: 'utf8' }).trim()
@@ -117,12 +117,28 @@ test('an unfetched remote branch is included without moving local refs', () => {
   const unseen = otherGit('rev-parse', 'HEAD')
   otherGit('push', '-q', 'origin', 'unseen')
   assert.notEqual(spawnSync('git', ['cat-file', '-e', unseen], { cwd: work }).status, 0)
-  const refs = git('for-each-ref', '--format=%(refname):%(objectname)')
-  const result = links('--introduced', git('rev-parse', 'HEAD'), '--by', 'refs/heads/new')
+  const bin = join(root, 'no-fetch')
+  mkdirSync(bin)
+  writeFileSync(
+    join(bin, 'git'),
+    '#!/bin/sh\nif [ "$1" = fetch ]; then\n  printf "fixture remote refuses downloads\\n" >&2\n  exit 73\nfi\nexec "$PROOF_GIT" "$@"\n',
+    { mode: 0o755 },
+  )
+  const result = spawnSync(
+    process.execPath,
+    [SCRIPT, '--introduced', git('rev-parse', 'HEAD'), '--by', 'refs/heads/new'],
+    {
+      cwd: work,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${bin}${delimiter}${process.env.PATH}`,
+        PROOF_GIT: execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim(),
+      },
+    },
+  )
   assert.equal(result.status, 1, result.stdout + result.stderr)
   assert.match(result.stdout, /1 commit\(s\) checked, 1 link problem/)
-  assert.equal(spawnSync('git', ['cat-file', '-e', unseen], { cwd: work }).status, 0)
-  assert.equal(git('for-each-ref', '--format=%(refname):%(objectname)'), refs)
 })
 
 test('a tip git cannot read, or a push with no ref, is misuse, never a pass', () => {
@@ -188,7 +204,7 @@ test('a real Git revert retains its original task link', () => {
   assert.match(result.stdout, /1 commit\(s\) checked, 0 link problem/)
 })
 
-test('an unfetched advertised old tip can bound a force-update', () => {
+test('an unavailable advertised old tip does not block a valid force-update', () => {
   const other = join(root, 'other')
   const otherGit = (...args) => execFileSync('git', args, { cwd: other, encoding: 'utf8' }).trim()
   writeFileSync(join(other, 'unseen'), 'the remote branch moved again\n')
@@ -206,7 +222,6 @@ test('an unfetched advertised old tip can bound a force-update', () => {
     before,
   )
   assert.equal(result.status, 0, result.stdout + result.stderr)
-  assert.equal(spawnSync('git', ['cat-file', '-e', before], { cwd: work }).status, 0)
 })
 
 test('the first push to an empty remote checks every introduced commit', () => {
