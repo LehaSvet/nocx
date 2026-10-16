@@ -68,6 +68,10 @@ type blockOutputStore interface {
 	// the open block the session still holds, with the artifact's own row
 	// cursor. The zero value (no entry id) means none stands open.
 	OpenBlockRowsForSession(ctx context.Context, sessionID string) (content.OpenBlockRowsEntry, error)
+	// RecordBlockRowsFence keeps a stored completion's fence on the open
+	// block it completes (nocx-zg3k3.35), so a coordinator replaced before
+	// the interval's end marker arrives can still resolve that end.
+	RecordBlockRowsFence(ctx context.Context, in content.RecordBlockRowsFence) error
 }
 
 // maxPendingEnds bounds the interval ends parked while their completion is
@@ -697,6 +701,7 @@ func (s *WSServer) AttachBlockRows(sid session.ID) {
 	found := s.adoptableOpenBlock(sid)
 	s.blockStream.attach(sid, nil, s.blockRowsBuffer())
 	s.blockStream.adoptOpenBlock(sid, found)
+	s.restoreStoredFence(sid, found)
 	// The helper's end fact may have arrived before this lane registered
 	// (the shell exited while the coordinator was away): the adopted
 	// domain's recorded terminal state settles the session now (Round 10).
@@ -720,6 +725,7 @@ func (s *WSServer) AttachBlockRowsWithConfirmation(sid session.ID, confirm func(
 	found := s.adoptableOpenBlock(sid)
 	s.blockStream.attach(sid, confirm, s.blockRowsBuffer())
 	s.blockStream.adoptOpenBlock(sid, found)
+	s.restoreStoredFence(sid, found)
 	// The same boundary consult as AttachBlockRows (Round 10), and the same
 	// end-hold deferral (nocx-zg3k3.5.11 Round 4).
 	if s.settleWhenEndHoldLifts(sid) {
@@ -759,6 +765,26 @@ func (s *WSServer) adoptableOpenBlock(sid session.ID) content.OpenBlockRowsEntry
 			"session", sid)
 	}
 	return found
+}
+
+// restoreStoredFence publishes the fence the store kept on the re-bound
+// block (nocx-zg3k3.35): its completion was applied and stored by a
+// coordinator that went away before the interval's end marker reached it, so
+// the completion is behind the lifecycle cursor and is never offered again
+// (ADR-0077 decision 3), while the helper resends the unconfirmed end. Without
+// the fence that end parks forever, the re-bound block stays current, and
+// every later command's block queues behind it — running on screen for good.
+func (s *WSServer) restoreStoredFence(sid session.ID, found content.OpenBlockRowsEntry) {
+	if found.EntryID == "" || found.Fence == "" {
+		return
+	}
+	// Owner: this stream, at the re-adopting attach, on behalf of the
+	// completion a previous coordinator process stored. Closing event: the
+	// publish's return — any close it resolves is the last write it causes.
+	ctx := log.WithLogger(context.Background(), s.log)
+	s.log.Debug("block rows re-bind: the open block's completion is stored; its fence awaits the resent end",
+		"session", sid, "entry", found.EntryID, "fence", found.Fence)
+	s.blockStream.publishFence(ctx, s, sid, found.Fence, found.EntryID)
 }
 
 // adoptOpenBlock installs the store's open block into a freshly attached
@@ -901,6 +927,7 @@ func (s *WSServer) rebindBlockRowsFromStore(sid session.ID) {
 	bs.detachCoordinator(sid)
 	bs.attach(sid, confirm, budget)
 	bs.adoptOpenBlock(sid, found)
+	s.restoreStoredFence(sid, found)
 	s.log.Warn("block rows: a lifecycle frame failed every attempt; the session's block state is read again from the store",
 		"session", sid, "entry", found.EntryID, "artifact", found.ArtifactID, "cursor", found.NextRow)
 }
@@ -2945,7 +2972,26 @@ func (bs *blockStream) attemptFact(ctx context.Context, s *WSServer, f lifecycle
 				f.Attempt.ID = cur.attempt
 			}
 		}
+		var entry, artifact string
+		if block := bs.open[sid][f.Attempt.ID]; block != nil && block.kept && !block.settled {
+			entry, artifact = block.entry, block.artifactID
+		}
 		bs.mu.Unlock()
+		// The fence is stored with the completion's frame (nocx-zg3k3.35):
+		// that frame moves the lifecycle cursor past the completion, and a
+		// coordinator replaced before the end marker arrives must still be
+		// able to resolve the end the helper resends (restoreStoredFence).
+		if store := s.blockStore(); store != nil && entry != "" && artifact != "" {
+			if err := store.RecordBlockRowsFence(ctx, content.RecordBlockRowsFence{
+				EntryID: entry, ArtifactID: artifact, Fence: f.Attempt.Fence,
+			}); err != nil {
+				if frameFailed(err) {
+					return
+				}
+				s.log.Warn("block rows: the completion's fence was not stored; a coordinator replaced before the end marker cannot resolve it",
+					"session", sid, "entry", entry, "error", err)
+			}
+		}
 		bs.publishFence(ctx, s, sid, f.Attempt.Fence, f.Attempt.ID)
 	case lifecyclepub.AttemptUnknown:
 		bs.forgetEntered(sid, f.Attempt.ID)

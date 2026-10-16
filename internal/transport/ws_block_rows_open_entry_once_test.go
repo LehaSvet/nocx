@@ -50,6 +50,10 @@ func (s *raceOpenStore) OpenBlockRowsForSession(ctx context.Context, sessionID s
 	return s.ledger.OpenBlockRowsForSession(ctx, sessionID)
 }
 
+func (s *raceOpenStore) RecordBlockRowsFence(ctx context.Context, in content.RecordBlockRowsFence) error {
+	return s.ledger.RecordBlockRowsFence(ctx, in)
+}
+
 func (s *raceOpenStore) OpenBlockOutput(ctx context.Context, in content.OpenBlockOutput) (string, error) {
 	select {
 	case <-s.bound:
@@ -256,6 +260,10 @@ type queueingOpenStore struct {
 // session's re-adopt read answers.
 func (s *queueingOpenStore) OpenBlockRowsForSession(context.Context, string) (content.OpenBlockRowsEntry, error) {
 	return content.OpenBlockRowsEntry{}, nil
+}
+
+func (s *queueingOpenStore) RecordBlockRowsFence(context.Context, content.RecordBlockRowsFence) error {
+	return nil
 }
 
 func (s *queueingOpenStore) OpenBlockOutput(_ context.Context, in content.OpenBlockOutput) (string, error) {

@@ -75,6 +75,10 @@ type blockRowsPayload struct {
 	// the middle is gone, and a cursor derived from them alone would exempt
 	// tail chunks that were never head.
 	Appended int64 `json:"appended,omitempty"`
+	// Fence is the completion's fence, once the completion is stored and
+	// before the end marker seals the block (RecordBlockRowsFence). Every
+	// append carries it forward; the seal drops it with the rest.
+	Fence string `json:"fence,omitempty"`
 }
 
 func (s *sqliteContent) OpenBlockOutput(ctx context.Context, in OpenBlockOutput) (string, error) {
@@ -511,6 +515,37 @@ func (s *sqliteContent) CloseBlockRows(ctx context.Context, in CloseBlockRows) (
 	return summary, err
 }
 
+// RecordBlockRowsFence writes the completion's fence into the open block's
+// payload. Inside a lifecycle frame it joins the frame's transaction, so the
+// fence is stored exactly when the cursor past its completion is. A sealed
+// block is answered idempotently: its end already came, and nothing is owed.
+func (s *sqliteContent) RecordBlockRowsFence(ctx context.Context, in RecordBlockRowsFence) error {
+	if in.EntryID == "" || in.ArtifactID == "" || in.Fence == "" {
+		return errors.New("content: block rows: entry id, artifact id and fence are required")
+	}
+	return s.run(ctx, func(ctx context.Context) error {
+		tx, txEnd, err := s.beginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+		if err != nil {
+			return err
+		}
+		defer txEnd.rollback()
+		state, err := blockRowsArtifactFor(ctx, tx, in.EntryID, in.ArtifactID)
+		if err != nil {
+			return err
+		}
+		if state.sealed {
+			return txEnd.commit()
+		}
+		state.payload.Fence = in.Fence
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE artifacts SET payload = ? WHERE id = ?`,
+			state.payload.json(), in.ArtifactID); err != nil {
+			return err
+		}
+		return txEnd.commit()
+	})
+}
+
 // OpenBlockRowsForSession reads the session's newest open rows artifact
 // with its cursor. The join is on the entry's session — the artifact rows
 // carry no session of their own — and the newest wins (entries.ingest_seq,
@@ -548,6 +583,7 @@ func (s *sqliteContent) OpenBlockRowsForSession(ctx context.Context, sessionID s
 			EntryID: entryID, ArtifactID: artifactID,
 			NextRow:  payloadDecoded.NextRow,
 			FirstRow: payloadDecoded.FirstRow,
+			Fence:    payloadDecoded.Fence,
 		}
 		// Probe (nocx-zg3k3.5.3 round 7): what the re-bind read.
 		log.From(ctx).Debug("block rows session read: an open block",
