@@ -1337,6 +1337,25 @@ type OpenBlockRowsEntry struct {
 	// the session's origin), and the re-adopting stream must not trim or
 	// confirm rows the artifact does not hold (nocx-zg3k3.5.3 Round 8).
 	FirstRow uint64
+	// Fence is the hex fence of the block's completion when the completion
+	// is stored and the interval's end marker has not sealed the block yet
+	// (RecordBlockRowsFence); empty while the command is still running. A
+	// re-adopting stream resolves the end the helper resends against it.
+	Fence string
+}
+
+// RecordBlockRowsFence is a completion's fence, kept on the open block it
+// completes (nocx-zg3k3.35). The fence is what authenticates the interval's
+// end marker, and the two arrive on different planes in either order: when
+// the completion comes first the fence waits for the end — and the frame that
+// carried the completion moves the lifecycle cursor past it, so a coordinator
+// replaced before the end arrives would never be offered that completion
+// again (ADR-0077 decision 3). Stored inside that frame, the fence survives
+// with the cursor it belongs to.
+type RecordBlockRowsFence struct {
+	EntryID    string
+	ArtifactID string
+	Fence      string
 }
 
 // LostCauseCoordinatorUnavailable is the lost-rows cause the resend names:
@@ -2061,6 +2080,11 @@ type LedgerRepository interface {
 	// restart in this store, and the session's rows continue them without
 	// waiting for a lifecycle fact.
 	OpenBlockRowsForSession(ctx context.Context, sessionID string) (OpenBlockRowsEntry, error)
+	// RecordBlockRowsFence keeps a stored completion's fence on the open
+	// block it completes, for the end marker still to come (nocx-zg3k3.35);
+	// OpenBlockRowsForSession answers it back. A block already sealed is
+	// left as it is: its end has come.
+	RecordBlockRowsFence(ctx context.Context, in RecordBlockRowsFence) error
 	// RecordClearBoundary records one sighted erase-saved-lines as a cursor
 	// an ordinary read applies rather than a mark on every entry it hides
 	// (nocx-2v80t.3.17, nocx-zg3k3.10.3's decision). Idempotent on nothing:
