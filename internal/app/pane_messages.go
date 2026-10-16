@@ -40,6 +40,10 @@ import (
 // loop (session_keys.go).
 const messagePollInterval = 20 * time.Millisecond
 
+// freeMessageSafetyInterval bounds how long a queued delivery waits before
+// revalidating authority if no pane-observation change arrives.
+const freeMessageSafetyInterval = 30 * time.Second
+
 // defaultEchoWait bounds how long a delivery waits for the pasted text to
 // echo into the input box before giving up and reporting partial (design
 // §8.2 step 2, "wait (bounded)"), and how long confirmSubmission waits for
@@ -130,6 +134,7 @@ type pendingMessage struct {
 	// matches, which is what makes a claim cancel's own linearisation point.
 	generation uint64
 	cancelled  bool
+	cancelWake chan struct{}
 }
 
 func (pm *pendingMessage) view() assistant.MessageView {
@@ -189,6 +194,7 @@ func (pm *pendingMessage) cancel() (result string, phase assistant.MessagePhase)
 	}
 	if pm.phase == assistant.PhaseQueued {
 		pm.cancelled = true
+		close(pm.cancelWake)
 		pm.phase = assistant.PhaseCancelled
 		pm.generation++
 		return "cancelled", assistant.PhaseCancelled
@@ -246,9 +252,12 @@ type paneMessages struct {
 	// defaultEchoWait's own doc for why this is a field rather than a bare
 	// constant.
 	echoWait time.Duration
+	after    func(time.Duration) <-chan time.Time
 
 	mu     sync.Mutex
 	queues map[string]*paneQueue
+	wakeMu sync.Mutex
+	wakes  map[string]chan struct{}
 }
 
 // newPaneMessages builds a PaneMessages over keys and reader (the SAME
@@ -265,11 +274,37 @@ func newPaneMessages(keys assistant.PaneKeys, reader paneKeysReader, hub *paneAc
 	return &paneMessages{
 		keys: keys, reader: reader, hub: hub, rules: rules, startedAt: startedAt,
 		echoWait: defaultEchoWait,
+		after:    time.After,
 		queues:   make(map[string]*paneQueue),
+		wakes:    make(map[string]chan struct{}),
 	}
 }
 
 var _ assistant.PaneMessages = (*paneMessages)(nil)
+
+// PaneChanged wakes queued deliveries after the pane observer publishes a
+// classification change. The channel is coalescing: several changes before a
+// delivery resumes still require only one fresh read.
+func (m *paneMessages) PaneChanged(sessionID string) {
+	m.wakeMu.Lock()
+	wake := m.wakes[sessionID]
+	if wake != nil {
+		close(wake)
+		delete(m.wakes, sessionID)
+	}
+	m.wakeMu.Unlock()
+}
+
+func (m *paneMessages) paneWake(sessionID string) <-chan struct{} {
+	m.wakeMu.Lock()
+	defer m.wakeMu.Unlock()
+	wake := m.wakes[sessionID]
+	if wake == nil {
+		wake = make(chan struct{})
+		m.wakes[sessionID] = wake
+	}
+	return wake
+}
 
 func (m *paneMessages) queueFor(sessionID string) *paneQueue {
 	m.mu.Lock()
@@ -385,6 +420,7 @@ func (m *paneMessages) Send(ctx context.Context, access any, sessionID, text, wh
 	pm := &pendingMessage{
 		key: key, payloadHash: hash, text: text, when: when,
 		access: da, chain: reach.Chain, phase: assistant.PhaseQueued,
+		cancelWake: make(chan struct{}),
 	}
 	q.order = append(q.order, pm)
 	q.byKey[key] = pm
@@ -514,6 +550,7 @@ func (m *paneMessages) EnqueueBriefing(ctx context.Context, coordinatorSession s
 	pm := &pendingMessage{
 		key: key, payloadHash: hash, text: text, when: "free",
 		access: da, chain: reach.Chain, phase: assistant.PhaseQueued,
+		cancelWake: make(chan struct{}),
 	}
 	q.order = append(q.order, pm)
 	q.byKey[key] = pm
@@ -648,19 +685,23 @@ func (m *paneMessages) deliverOne(ctx context.Context, sessionID string, pm *pen
 			m.terminate(pm, assistant.PhaseRefused, 0, "")
 			return
 		}
+		wake := m.paneWake(sessionID)
 		if !m.pasteReady(ctx, pm.access, sessionID) {
 			if pm.when == "now" {
 				m.terminate(pm, assistant.PhaseRefused, 0, "")
 				return
 			}
-			// when=="free": whether the box holds someone else's typing or
-			// the box could not be identified at all (a menu up), the
-			// answer is the same — try again shortly rather than fighting
-			// for it or giving up.
+			// A pane classification change is the normal wake path. The long
+			// safety interval only rechecks authority if a pane goes quiet; it
+			// does not drive menu readiness or spend a helper snapshot every
+			// messagePollInterval.
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(messagePollInterval):
+			case <-pm.cancelWake:
+				return
+			case <-wake:
+			case <-m.after(freeMessageSafetyInterval):
 			}
 			continue
 		}

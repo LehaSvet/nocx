@@ -732,12 +732,22 @@ func TestAPendingMessageBehindAMenuLeavesThePanesTargetsForTheCaller(t *testing.
 		result: proto.IntentResult{State: "executed", BytesWritten: 1},
 	})
 	reader := newFakeMsgReader("")
+	reader.agent = "claude"
 	menuUp(t, reader)
 	reader.chain = chain
 	reader.accessEpoch = 1
 	reader.bookCapacity = 3
 	keys := happyKeys(reader, "hello")
 	pm := newTestPaneMessages(t, hub, reader, keys)
+	timers := make(chan chan time.Time, 2)
+	pm.after = func(d time.Duration) <-chan time.Time {
+		if d != freeMessageSafetyInterval {
+			t.Errorf("safety timer = %s, want %s", d, freeMessageSafetyInterval)
+		}
+		c := make(chan time.Time, 1)
+		timers <- c
+		return c
+	}
 
 	view, err := pm.Send(context.Background(), access, sessionID, "hello", "free", "id-1", "")
 	if err != nil {
@@ -746,9 +756,25 @@ func TestAPendingMessageBehindAMenuLeavesThePanesTargetsForTheCaller(t *testing.
 	if view.Phase != assistant.PhaseQueued {
 		t.Fatalf("immediate phase = %q, want queued (the menu is up, so delivery waits)", view.Phase)
 	}
-	waitForCondition(t, "the queued message to poll the pane while the menu is up", func() bool {
-		return reader.readCount() >= 8
+	waitForCondition(t, "the queued message to take its initial pane snapshot", func() bool {
+		return reader.readCount() >= 1
 	})
+	if got := reader.readCount(); got > 2 {
+		t.Fatalf("queued delivery took %d snapshots without a pane-change wake; want at most 2", got)
+	}
+	// Advance the injected clock by the full ten-minute acceptance interval.
+	// Only the safety recheck timer fires; no snapshot occurs during the
+	// interval itself.
+	select {
+	case timer := <-timers:
+		timer <- time.Now().Add(10 * time.Minute)
+	case <-time.After(time.Second):
+		t.Fatal("queued delivery did not install its injected safety timer")
+	}
+	waitForCondition(t, "the ten-minute safety recheck", func() bool { return reader.readCount() >= 2 })
+	if got := reader.readCount(); got > 2 {
+		t.Fatalf("10-minute menu wait took %d snapshots, want bounded at 2", got)
+	}
 
 	// The defect, in two assertions: the book — three slots, standing in for
 	// the helper's maxLiveTokens, never evicted (spec §6.2) — is exactly what
@@ -777,6 +803,26 @@ func TestAPendingMessageBehindAMenuLeavesThePanesTargetsForTheCaller(t *testing.
 	if result.State != "executed" {
 		t.Fatalf("spend result = %+v, want executed (the coordinator's answer reached the pane)", result)
 	}
+	// A change-only observation wakes this queued delivery; its fresh read
+	// sees the now-free prompt and completes without waiting for the safety
+	// recheck interval.
+	reader.setFrame(boxFrame(""), agentdriver.StateFreeText, sessionruntime.TargetInput)
+	pm.PaneChanged(sessionID)
+	keys.onSend = func(req assistant.KeysRequest) {
+		if req.Text != nil {
+			reader.setBox(pastedEcho(*req.Text))
+		} else if req.Key != nil {
+			reader.setBox("")
+		}
+	}
+	waitForCondition(t, "the queued message to be delivered after the pane-change wake", func() bool {
+		for _, message := range pm.Pending(sessionID) {
+			if message.ID == "id-1" {
+				return message.Phase == assistant.PhaseSubmitted
+			}
+		}
+		return false
+	})
 }
 
 // TestTheDeliveryProbesMintOnlyWhatTheDeliverySpends is the same bead's
@@ -1353,9 +1399,12 @@ func TestCancelBeforeClaimReturnsCancelled(t *testing.T) {
 	// observable state change — the reader's own read count — never a
 	// duration. Without this the cancel below would pass against a delivery
 	// that had not started at all.
-	waitForCondition(t, "the queued delivery to re-check the pane", func() bool {
-		return reader.readCount() >= 4
+	waitForCondition(t, "the queued delivery to take its initial pane snapshot", func() bool {
+		return reader.readCount() >= 2 // readiness assertion above plus one delivery read
 	})
+	if got := reader.readCount(); got > 2 {
+		t.Fatalf("queued delivery took %d snapshots without a pane-change wake; want at most 2", got)
+	}
 	phase := assistant.MessagePhase("")
 	for _, m := range pm.Pending(sessionID) {
 		if m.ID == "id-1" {
