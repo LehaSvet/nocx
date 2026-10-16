@@ -71,19 +71,20 @@ cp "$src" "$out"
 CURL
 chmod +x "$TMP/bin/curl"
 printf 'pngfixture' > "$TMP/release/icon.png"
+REAL_MV=$(command -v mv)
+export REAL_MV
 cat > "$TMP/bin/mv" <<'MV'
 #!/bin/sh
-if [ -z "${MV_COUNT_FILE:-}" ]; then exec /run/current-system/sw/bin/mv "$@"; fi
+if [ -z "${MV_COUNT_FILE:-}" ]; then exec "$REAL_MV" "$@"; fi
 count_file=$MV_COUNT_FILE
 count=0
 [ ! -f "$count_file" ] || count=$(cat "$count_file")
 count=$((count+1))
 printf '%s' "$count" > "$count_file"
 if [ "${MV_FAIL_AT:-0}" = "$count" ]; then exit 1; fi
-exec /run/current-system/sw/bin/mv "$@"
+exec "$REAL_MV" "$@"
 MV
 chmod +x "$TMP/bin/mv"
-REAL_MV=$(command -v mv)
 cat > "$TMP/bin/uname" <<'UNAME'
 
 #!/bin/sh
