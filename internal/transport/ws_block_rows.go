@@ -1964,6 +1964,7 @@ func (s *WSServer) BlockIntervalEndedWithAnchor(sid session.ID, nonce [32]byte, 
 	var resolved bool
 	if nonce != noFenceNonce && bs.forgetLostLocked(sid, hexNonce) {
 		bs.mu.Unlock()
+		s.log.Debug("block interval end ignored: boundary was already lost", "session", sid, "nonce", hexNonce, "endRow", endRow)
 		return
 	}
 	if nonce == noFenceNonce {
@@ -1982,6 +1983,7 @@ func (s *WSServer) BlockIntervalEndedWithAnchor(sid session.ID, nonce [32]byte, 
 	}
 	bs.mu.Unlock()
 	if !sourced {
+		s.log.Debug("block interval end ignored: session has no rows source", "session", sid, "nonce", hexNonce, "endRow", endRow)
 		return
 	}
 	if !resolved {
@@ -1990,6 +1992,7 @@ func (s *WSServer) BlockIntervalEndedWithAnchor(sid session.ID, nonce [32]byte, 
 			// streamed is open, so there is nothing an environment entry
 			// could end. Never parked — a park here would wait forever for a
 			// fence this nonce can never carry.
+			s.log.Debug("block interval end ignored: no-fence end has no current block", "session", sid, "endRow", endRow)
 			return
 		}
 		bs.mu.Lock()
@@ -2002,6 +2005,7 @@ func (s *WSServer) BlockIntervalEndedWithAnchor(sid session.ID, nonce [32]byte, 
 		}
 		bs.ends[sid] = ends
 		bs.mu.Unlock()
+		s.log.Debug("block interval end parked: no matching published fence yet", "session", sid, "nonce", hexNonce, "endRow", endRow, "pending", len(ends))
 		return
 	}
 	s.closeBlockRows(ctx, sid, attempt, endRow, closing, hexNonce, noFence, screenAnchor)
