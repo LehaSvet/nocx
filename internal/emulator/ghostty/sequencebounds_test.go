@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/shady2k/nocx/internal/emulator"
+	"github.com/shady2k/nocx/internal/emulator/ghostty/ghosttytest"
 )
 
 // The library's own bound on an unterminated sequence (nocx-ygxjv.11).
@@ -73,7 +74,7 @@ func settle() { debug.FreeOSMemory() }
 
 // heapKiB measures glibc's allocated-and-in-use bytes, excluding cached free
 // arenas and kernel residency.
-func heapKiB() int64 { return int64(cHeapInUseBytes() / 1024) } // #nosec G115 -- mallinfo2 reports process allocation bytes, far below MaxInt64.
+func heapKiB() int64 { return int64(ghosttytest.HeapInUseBytes() / 1024) } // #nosec G115 -- mallinfo2 reports process allocation bytes, far below MaxInt64.
 
 // feedUnterminated hands the terminal n further bytes in reusable chunks and
 // reports C-heap bytes retained afterwards.
@@ -93,19 +94,19 @@ func feedUnterminated(t *testing.T, term emulator.Terminal, n int) int64 {
 // TestTheResidentReadingSeesWhatIsRetained remains the positive control for
 // the measurement: a retained allocation must move the C-heap reading.
 func TestTheResidentReadingSeesWhatIsRetained(t *testing.T) {
-	if !cHeapSupported() {
+	if !ghosttytest.HeapSupported() {
 		t.Skip("mallinfo2 is available only with the pinned Linux glibc archive")
 	}
 	settle()
 	before := heapKiB()
 
 	const size = 32 << 20
-	retained := cHeapProbeAlloc(size)
+	retained := ghosttytest.HeapProbeAlloc(size)
 	if retained == nil {
 		t.Fatal("allocating retained C-heap control buffer")
 	}
-	defer cHeapProbeFree(retained)
-	cHeapProbeTouch(retained, size)
+	defer ghosttytest.HeapProbeFree(retained)
+	ghosttytest.HeapProbeTouch(retained, size)
 	settle()
 	after := heapKiB()
 	if got := after - before; got < size/1024/2 {
@@ -117,7 +118,7 @@ func TestTheResidentReadingSeesWhatIsRetained(t *testing.T) {
 // parser 1 MiB, 16 MiB and 64 MiB of four sequences that never terminate and
 // holds what it retains to the bound the source states.
 func TestTheLibraryBoundsWhatItHoldsForAnUnterminatedSequence(t *testing.T) {
-	if !cHeapSupported() {
+	if !ghosttytest.HeapSupported() {
 		t.Skip("the pinned Linux glibc archive is required for mallinfo2 heap measurements")
 	}
 
