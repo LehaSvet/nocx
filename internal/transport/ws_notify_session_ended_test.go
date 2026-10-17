@@ -399,6 +399,47 @@ func TestSessionClosedByTheUserRaisesNoEvent(t *testing.T) {
 	}
 }
 
+// THE THIRD ASK (nocx-xn63t.6.38). This server's own close handler is not the
+// only caller that ends a session on purpose: the composition root's worker
+// closer ends a participant by ending its session on the registry directly,
+// and it records the ask through NoteCloseRequested — the ONE exported door
+// onto the marker, so the fact has one owner and three writers rather than
+// two owners.
+//
+// What is asserted is the same interval as the user's own close: no event,
+// the exit notification unchanged, and nothing left keyed by a session that
+// will never be seen again.
+func TestSessionEndAskedForOutsideTheServerRaisesNoEvent(t *testing.T) {
+	fake := newExitFakePTY()
+	raiser := &fakeNotifyRaiser{}
+	ws, reg := newSessionEndedServer(t, fake, raiser)
+	sid, conn := openExitSession(t, ws)
+
+	// The caller's order, exactly as the composition root performs it: the
+	// ask, then the registry close that wakes monitorExit.
+	ws.NoteCloseRequested(session.ID(sid))
+	if err := reg.EndSession(session.ID(sid)); err != nil {
+		t.Fatalf("EndSession: %v", err)
+	}
+
+	got := awaitExit(t, conn)
+	if got.SessionID != sid {
+		t.Errorf("sessionId = %q, want %q", got.SessionID, sid)
+	}
+	if got.Cause != string(session.ExitInterrupted) {
+		t.Errorf("cause = %q, want %q — a forced teardown has no shell report", got.Cause, session.ExitInterrupted)
+	}
+	if evs := raiser.captured(); len(evs) != 0 {
+		t.Fatalf("raised %d events for an end that was asked for, want 0: %+v", len(evs), evs)
+	}
+	ws.ringsMu.Lock()
+	left := len(ws.closeRequested)
+	ws.ringsMu.Unlock()
+	if left != 0 {
+		t.Errorf("closeRequested holds %d entries after the exit consumed the ask, want 0", left)
+	}
+}
+
 // The other end: an end the user did NOT ask for still raises exactly one
 // event, both ways a session can end on its own. A suppression keyed by a
 // marker is only correct if the unmarked paths are unchanged, and the
