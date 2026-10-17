@@ -690,6 +690,8 @@ func (rp *readoptPass) readopt(
 	// pump and nothing reading it: a row a restored pane would claim and then
 	// find silent.
 	adopted := false
+	var replayCursor *lifecycleCursor
+	var reconciledThrough proto.StreamOffset
 	err := rp.adopter.ReadoptHostedSession(ctx, sid, func(ctx context.Context, from uint64) (transport.HostedSessionOpen, error) {
 		var subscriberRaw [16]byte
 		if _, randErr := rand.Read(subscriberRaw[:]); randErr != nil {
@@ -702,6 +704,8 @@ func (rp *readoptPass) readopt(
 		// launch to adopt, "this session is conventional", or a reason the
 		// product will state (nocx-k6p18.31).
 		adoption := rp.adoptLifecycle(ctx, carrier, entry)
+		replayCursor = adoption.cursor
+		reconciledThrough = proto.StreamOffset(entry.LifecycleWindow.Written)
 		lifecycleFrom, lifecycleFresh := lifecycleResumePoint(p, entry)
 		nocxlog.From(ctx).Debug("re-adopt: the lifecycle stream resumes",
 			"session", p.SessionID, "offset", uint64(lifecycleFrom), "storedCursor", !lifecycleFresh,
@@ -942,6 +946,25 @@ func (rp *readoptPass) readopt(
 		adoption.attachTo(&open, attached)
 		return open, nil
 	})
+	if err == nil && adopted && replayCursor != nil && p.LifecycleApplied != nil {
+		// Inventory alone says only that the helper still holds the session.
+		// The stale notice is cleared after the retained lifecycle window has
+		// been applied, which settles completed commands and leaves live ones
+		// open. Wait only within this readopt's bound: an interrupted/failed
+		// replay keeps the honest unknown state, and the renderer cannot query
+		// the ledger until this pre-listen pass returns.
+		select {
+		case <-replayCursor.reached(reconciledThrough):
+			if replayCursor.appliedThrough(reconciledThrough) {
+				if store := rp.registry.lifecycleCursors; store != nil {
+					if clearErr := store.LifecycleReconciled(context.WithoutCancel(ctx), string(sid)); clearErr != nil {
+						nocxlog.From(ctx).Warn("re-adopted lifecycle replay could not settle the restart notice", "session", string(sid), "error", clearErr)
+					}
+				}
+			}
+		case <-ctx.Done():
+		}
+	}
 	if err != nil && adopted {
 		// The transport refused a session the registry already holds. Closing
 		// it here rather than leaving it is the whole of the interval above:

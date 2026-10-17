@@ -642,3 +642,40 @@ func TestLiveInventoryPreservesLifecycleUnreconciledUntilAttemptRecovery(t *test
 		t.Fatal("a host-session answer without replay evidence must keep the block lifecycle-unreconciled rather than render it as running")
 	}
 }
+
+// A successfully re-adopted lifecycle stream settles the restart-only unknown
+// mark without changing the underlying open block.
+func TestLifecycleReconciledClearsRestartNotice(t *testing.T) {
+	const sessionID = "session-re-adopted-lifecycle"
+	const entryID = "00000000-0000-7000-8000-00000000e099"
+	path, _ := aLiveSessionsWork(t, sessionID, entryID)
+	db, err := reopenStore(t, path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	led := db.Ledger()
+	row := entriesForPane(t, led, "pane-1").Entries[0]
+	if row.Unreconciled == nil {
+		t.Fatal("restart marker missing before re-adoption")
+	}
+	// Replay completes inside Readopt before reconcileSessions applies its
+	// live inventory verdict. The marker must remain through that interval.
+	if err := led.LifecycleReconciled(context.Background(), sessionID); err != nil {
+		t.Fatalf("LifecycleReconciled: %v", err)
+	}
+	row = entriesForPane(t, led, "pane-1").Entries[0]
+	if row.Unreconciled == nil {
+		t.Fatal("replay alone cleared the marker before the session was judged live")
+	}
+	if err := db.Reconcile().Apply(context.Background(), content.SessionJudgement{SessionID: sessionID, Verdict: content.VerdictLive}); err != nil {
+		t.Fatalf("Apply(live): %v", err)
+	}
+	row = entriesForPane(t, led, "pane-1").Entries[0]
+	if row.Unreconciled != nil {
+		t.Fatalf("re-adopted row still marked unreconciled: %v", *row.Unreconciled)
+	}
+	if row.Phase != content.PhaseBound {
+		t.Fatalf("still-running command phase = %q, want bound", row.Phase)
+	}
+}

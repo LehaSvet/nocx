@@ -28,6 +28,8 @@ func (c *countingCursorStore) ApplyLifecycleFrame(ctx context.Context, _ string,
 	return c.err
 }
 
+func (c *countingCursorStore) LifecycleReconciled(context.Context, string) error { return nil }
+
 // THE TEARDOWN RULE (ADR-0077). Once the coordinator has begun stopping, a
 // frame is not applied at all — not by the kernel, not by the store — and the
 // cursor stays before it, so the next coordinator applies it; the leg ends as

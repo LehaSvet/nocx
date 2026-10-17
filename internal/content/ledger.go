@@ -1929,6 +1929,9 @@ type LedgerRepository interface {
 	// frame at or behind the stored cursor changes it nothing, and a session
 	// with no binding row records none.
 	ApplyLifecycleFrame(ctx context.Context, sessionID string, offset uint64, apply func(ctx context.Context) error) error
+	// LifecycleReconciled clears this incarnation's restart-unknown marker after
+	// the re-adopted lifecycle stream has been applied through its retained head.
+	LifecycleReconciled(ctx context.Context, sessionID string) error
 	// DeleteSession removes a restore key; entries keep their rows and
 	// lose the reference (ON DELETE SET NULL — an entry outlives its
 	// session, ADR-0019 §5).

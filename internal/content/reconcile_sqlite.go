@@ -23,10 +23,11 @@ type pendingSession struct {
 	id string
 	// sessionExists is the inventory's answer to the host-session question;
 	// it does not clear the lifecycle-unreconciled marker.
-	sessionExists bool
-	host          string
-	account       string
-	generation    string
+	sessionExists       bool
+	lifecycleReconciled bool
+	host                string
+	account             string
+	generation          string
 	// The route back, read off the same payload the binding wrote
 	// (nocx-k6p18.30). Empty means no route was recorded and the session
 	// cannot be taken back — never that it may be reached some other way.
@@ -212,12 +213,17 @@ func (s *sqliteContent) Apply(ctx context.Context, j SessionJudgement) error {
 	case VerdictLive:
 		// Inventory answers only whether the host session exists. The open
 		// attempt still needs replay evidence, so keep the pending marker and
-		// leave the block out of the running presentation.
+		// leave the block out of the running presentation unless the readopt's
+		// lifecycle stream already replayed through the retained head.
 		s.pendingMu.Lock()
 		p.sessionExists = true
 		p.cause = CauseNotYetAsked
 		p.detail = ""
+		reconciled := p.lifecycleReconciled
 		s.pendingMu.Unlock()
+		if reconciled {
+			s.forget(j.SessionID)
+		}
 		return nil
 	case VerdictAbsent:
 		if err := s.run(ctx, func(ctx context.Context) error {
@@ -237,6 +243,24 @@ func (s *sqliteContent) Apply(ctx context.Context, j SessionJudgement) error {
 	default:
 		return fmt.Errorf("content: unknown session verdict %q", j.Verdict)
 	}
+}
+
+// LifecycleReconciled ends the unknown interval once re-adoption has replayed
+// every lifecycle frame the helper retained. The pending marker is memory-only
+// and applies only to this incarnation, so removing it changes no durable fact.
+func (s *sqliteContent) LifecycleReconciled(_ context.Context, id string) error {
+	if s.closed.Load() {
+		return ErrClosed
+	}
+	s.pendingMu.Lock()
+	if p, ok := s.pending[id]; ok {
+		p.lifecycleReconciled = true
+		if p.sessionExists {
+			delete(s.pending, id)
+		}
+	}
+	s.pendingMu.Unlock()
+	return nil
 }
 
 func (s *sqliteContent) forget(id string) {

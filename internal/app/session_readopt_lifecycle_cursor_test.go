@@ -32,10 +32,11 @@ type memCursorStore struct {
 	mu      sync.Mutex
 	cursor  map[string]uint64
 	history map[string][]uint64
+	cleared map[string]bool
 }
 
 func newMemCursorStore() *memCursorStore {
-	return &memCursorStore{cursor: map[string]uint64{}, history: map[string][]uint64{}}
+	return &memCursorStore{cursor: map[string]uint64{}, history: map[string][]uint64{}, cleared: map[string]bool{}}
 }
 
 // ApplyLifecycleFrame applies the frame and then records its cursor — the
@@ -52,6 +53,19 @@ func (m *memCursorStore) ApplyLifecycleFrame(ctx context.Context, sid string, of
 	m.cursor[sid] = offset
 	m.history[sid] = append(m.history[sid], offset)
 	return nil
+}
+
+func (m *memCursorStore) LifecycleReconciled(_ context.Context, sid string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleared[sid] = true
+	return nil
+}
+
+func (m *memCursorStore) wasCleared(sid string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cleared[sid]
 }
 
 func (m *memCursorStore) stored(sid string) int {
@@ -167,6 +181,9 @@ func TestACommandThatEndedWhileNoCoordinatorWasAttachedIsAppliedOnceOnReturn(t *
 	second := newCursorKeepingCoordinator(t, provider, store)
 	takeBack(t, second, store.bindingFor(binding))
 	runBarrier(t, shell, second, "echo after")
+	waittest.WaitFor(t, "re-adoption cleared the restart marker after applying the retained lifecycle stream", func() bool {
+		return store.wasCleared(binding.SessionID)
+	})
 
 	done := completedCommands(second.emitter.completed())
 	if len(done) != 2 || done[1] != "echo after" {
