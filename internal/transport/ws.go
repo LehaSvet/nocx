@@ -4135,6 +4135,15 @@ func (s *WSServer) monitorExit(rx *sessionRx, sess session.Session) {
 	// right to — the difference is intent, which only the handler saw.
 	requested := s.takeCloseRequested(sess.ID())
 
+	// Is this end the coordinator's OWN shutdown? ONE read and ONE verdict,
+	// because two things below speak for the same end — the notification
+	// centre's record and the renderer's exit notification — and they must not
+	// be able to disagree about whether this is an end at all
+	// (nocx-xn63t.6.33). The fence is the one getOrCreateRx and recorder
+	// admission already read under ringsMu, so a shutdown that has begun is
+	// visible here however far Stop has got through its own teardown.
+	shutdown := s.stopping()
+
 	// The feed's first attested source (spec §9). This is a registry fact,
 	// not a parsed byte: AD-6 is untouched because nothing here reads the
 	// stream — the cause comes from the session layer, which is its single
@@ -4148,7 +4157,18 @@ func (s *WSServer) monitorExit(rx *sessionRx, sess session.Session) {
 	// on <host> was interrupted" — on the most ordinary action there is.
 	// The exit notification below is unaffected: the renderer still learns
 	// the session is gone.
-	if s.notifyRaiser != nil && !requested {
+	//
+	// AND A SHUTDOWN RAISES NOTHING EITHER (nocx-xn63t.6.33), one step
+	// stronger than the close above: here the session has not ended at all.
+	// Stop detaches every row with Reg.Close precisely so a later coordinator
+	// can re-adopt the session (internal/session/session.go), and the owner's
+	// own restart filed BOTH "Local session was interrupted" and "Session on
+	// <host> was interrupted" over shells that were still running and were
+	// taken back by the replacement. A warning about an end that did not
+	// happen is the soft degrade AGENTS.md forbids the product to show — and
+	// it is the same verdict the exit notification below reads, from this one
+	// read, so the two halves of one end cannot part company.
+	if s.notifyRaiser != nil && !requested && !shutdown {
 		level := notify.LevelWarning
 		body := ""
 		if cause == session.ExitExited {
@@ -4188,24 +4208,24 @@ func (s *WSServer) monitorExit(rx *sessionRx, sess session.Session) {
 		return
 	}
 
-	// A SHUTDOWN IS NOT A LOSS (nocx-xn63t.6.33), so it states nothing here.
-	// The exit notification is the renderer's one signal that a session
-	// ENDED, and a pane treats it as terminal: cause "interrupted" sets the
-	// pane's lost state for the rest of that tab's life, with the card that
-	// offers "Reconnecting opens a NEW shell" over it. On Stop the session
-	// has not ended — Stop closes every registry row with Reg.Close, the
-	// DETACH verb, chosen precisely so a later coordinator can re-adopt the
-	// session (internal/session/session.go, and the helper adoption the
-	// owner's own run logged), and the page that reconnects reattaches that
-	// same session.
+	// THE SAME SHUTDOWN VERDICT, on the wire (nocx-xn63t.6.33). The exit
+	// notification is the renderer's one signal that a session ENDED, and a
+	// pane treats it as terminal: cause "interrupted" sets the pane's lost
+	// state for the rest of that tab's life, with the card that offers
+	// "Reconnecting opens a NEW shell" over it. On Stop the session has not
+	// ended — Stop closes every registry row with Reg.Close, the DETACH verb,
+	// chosen precisely so a later coordinator can re-adopt the session
+	// (internal/session/session.go, and the helper adoption the owner's own
+	// run logged), and the page that reconnects re-claims that same session
+	// (frontend/src/ipc.ts).
 	//
 	// Nothing is silently dropped by staying quiet, and the alternative was
 	// tried: the client's reconnect pass attaches every session it still
 	// knows, and a session the returning coordinator really does not have
 	// is refused there — which delivers the very same cause to the very
-	// same callback (frontend/src/ipc.ts). So a session that is gone still
-	// reads as gone; one that was re-adopted is no longer slandered.
-	if s.stopping() {
+	// same callback. So a session that is gone still reads as gone; one that
+	// was re-adopted is no longer slandered.
+	if shutdown {
 		return
 	}
 
