@@ -71,7 +71,7 @@ func TestAWorkersDoneReportReachesItsCoordinatorsMailboxOnce(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("the coordinator was typed at %d times, want exactly 1: %+v", len(lines), lines)
 	}
-	const want = "nocx: you have 1 new messages from your workers. Call workers.inbox."
+	const want = "nocx: you have 1 new message from your workers. Call workers.inbox."
 	if lines[0].text != want {
 		t.Fatalf("the wake line is\n  %q\nwant\n  %q", lines[0].text, want)
 	}

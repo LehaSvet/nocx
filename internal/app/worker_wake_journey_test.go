@@ -276,11 +276,19 @@ func s14WakeLines(typed string) int {
 	return n
 }
 
-// s14WakeLine is the whole sentence the wake types for n waiting messages,
-// spelled out here so an assertion on it is an assertion on the product's own
-// words rather than on a fragment a different sentence would also satisfy.
-func s14WakeLine(n int) string {
-	return fmt.Sprintf("nocx: you have %d new messages from your workers. Call workers.inbox.", n)
+// s14WakeMessageAndObservation is the whole sentence for the batch this journey
+// is typed at first: one report and one settled state. Spelled out here so an
+// assertion on it is an assertion on the product's own words rather than on a
+// fragment a different sentence would also satisfy — and since nocx-xn63t.6.39
+// it names the two kinds it counts, because a coordinator told "2 new messages"
+// would open its inbox and find one message and one observation.
+const s14WakeMessageAndObservation = "nocx: you have 1 new message from your workers and 1 new observation of them. Call workers.inbox."
+
+// s14WakeObservations is the whole sentence for a batch of SETTLED STATES and
+// nothing else — what the coordinator comes back to after two of its workers
+// were seen blocked and exited while it was working.
+func s14WakeObservations(n int) string {
+	return fmt.Sprintf("nocx: you have %d new observations of your workers. Call workers.inbox.", n)
 }
 
 // ── the mailbox, read the way the wake reads it ───────────────────────────
@@ -787,8 +795,8 @@ func TestACoordinatorHearsItsWorkersThroughTheRealHelper(t *testing.T) {
 		return s14WakeLines(stand.coordinatorTyped(t)) >= 1
 	})
 	typed := stand.coordinatorTyped(t)
-	if lines := s14WakeTexts(typed); len(lines) != 1 || lines[0] != s14WakeLine(2) {
-		t.Fatalf("the idle coordinator was given %q, want exactly one line naming the two messages waiting when it was typed:\n%q",
+	if lines := s14WakeTexts(typed); len(lines) != 1 || lines[0] != s14WakeMessageAndObservation {
+		t.Fatalf("the idle coordinator was given %q, want exactly one line naming what was waiting when it was typed:\n%q",
 			lines, typed)
 	}
 	// And the line carries nothing but the pointer: no worker's words ever
@@ -938,8 +946,8 @@ func TestACoordinatorHearsItsWorkersThroughTheRealHelper(t *testing.T) {
 	})
 	typed = stand.coordinatorTyped(t)
 	lines := s14WakeTexts(typed)
-	if len(lines) != 2 || lines[0] != s14WakeLine(2) || lines[1] != s14WakeLine(len(batch)) {
-		t.Fatalf("the coordinator was given %q, want the first batch's line and then one naming the %d messages that were waiting while it worked:\n%q",
+	if len(lines) != 2 || lines[0] != s14WakeMessageAndObservation || lines[1] != s14WakeObservations(len(batch)) {
+		t.Fatalf("the coordinator was given %q, want the first batch's line and then one naming the %d observations that were waiting while it worked:\n%q",
 			lines, len(batch), typed)
 	}
 

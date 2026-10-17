@@ -977,7 +977,7 @@ var declarations = []Declaration{
 	},
 	{
 		Name:        "workers.inbox",
-		Description: "Read your own mailbox: the mail your coordinator left you, and — when you are a coordinator — the state changes nocx has seen your workers settle into. It takes no arguments beyond the position you are confirming: the mailbox is yours, and there is no way to name another. Reach for it when you start a turn, when you have finished a piece of work, and whenever nocx tells you that you have new messages. Mail waits, it does not interrupt, so what was said or seen is only told to you when you look.",
+		Description: "Read your own mailbox: the mail your coordinator left you, and — when you are a coordinator — the state changes nocx has seen your workers settle into. It takes no arguments beyond the position you are confirming: the mailbox is yours, and there is no way to name another. Reach for it when you start a turn, when you have finished a piece of work, and whenever nocx tells you that your mailbox has something new. Mail waits, it does not interrupt, so what was said or seen is only told to you when you look.",
 		// OBSERVE, and for workers.say's reason read from the other end. Taking a
 		// message out of your own mailbox exercises no authority over anything
 		// but your own reading position: it starts nothing, ends nothing, and

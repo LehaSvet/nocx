@@ -122,6 +122,13 @@ type Registrar struct {
 	// ids suppress a reading about something else entirely.
 	coordReadings *observedFacts
 
+	// endings is the participants this record is ending RIGHT NOW, and the
+	// coordinator that asked for each (nocx-xn63t.6.39). It is never nil —
+	// NewRegistrar builds it — for the reason observations is not: a nil
+	// machine would silently lose the suppression it exists for on a registrar
+	// a test built by hand, which is a failure with no diagnostic in it.
+	endings *endings
+
 	// wake is the line typed at an idle coordinator when it has unread mail
 	// (nocx-luqz9.3, design §5). It is never nil: an unwired one still counts,
 	// still decides, and says at Error that it has nothing to type with, which
@@ -248,6 +255,7 @@ func NewRegistrar(s Store, sp Spawner, e Enrolments, sup Supervisor, opts ...Opt
 		log:           log.NewSlogAdapter(nil),
 		observations:  newObservedFacts(DefaultSettleWindow),
 		coordReadings: newObservedFacts(DefaultSettleWindow),
+		endings:       newEndings(),
 		// The fact set, minted here so route can always record into one: a nil
 		// set would make an admission panic on a registrar built by hand, which
 		// is a failure mode with no diagnostic in it.
@@ -1082,6 +1090,17 @@ func (r *Registrar) Close(ctx context.Context, coordinatorSession string, id Par
 		// so this remains the ordinary, non-error tidy-up it always was.
 		return r.closer.Close(ctx, p)
 	}
+	// THE RECORD IS ENDING THIS PARTICIPANT, AND IT SAYS SO BEFORE THE PROCESS
+	// GOES (nocx-xn63t.6.39). The closer ends the session, which is what
+	// produces the process exit the supervisor reports on its own goroutine,
+	// while `closed` is written below — after the closer returned — because a
+	// close that failed ended nothing. In that window the record is still
+	// non-terminal, so the exit is admitted and, without this mark, an
+	// observation of it is placed in the coordinator's own mailbox: it is woken
+	// about a worker it had just closed. See endings in observed.go for the
+	// measurement and for why the mark is in memory.
+	r.endings.begin(id, ReaderID(coordinatorSession))
+	defer r.endings.end(id)
 	left, err := r.closer.Close(ctx, p)
 	if err != nil {
 		return CloseResult{}, err

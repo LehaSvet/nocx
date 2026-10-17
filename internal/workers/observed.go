@@ -267,12 +267,73 @@ func (r *Registrar) Observe(ctx context.Context, id ParticipantID, l Liveness, s
 		r.observations.release(id)
 		return err
 	}
+	// NOTHING OBSERVED ABOUT A WORKER THIS COORDINATOR IS ENDING IS NEWS TO IT
+	// (nocx-xn63t.6.39). The close is the coordinator's own act and it answers
+	// for what became of the worker; a reading of the pane it is tearing down
+	// would be one more row about a worker that is already gone.
+	if r.endings.ending(id, coordinator) {
+		r.observations.release(id)
+		return nil
+	}
 	if err := r.placeObservation(ctx, cur, coordinator, Observed{Worker: id, State: state, At: now}); err != nil {
 		r.observations.release(id)
 		return err
 	}
 	r.observations.settle(id)
 	return nil
+}
+
+// endings is which participants this record is ending at this instant, and the
+// coordinator that asked for each.
+//
+// IT IS IN MEMORY, and each reason is the close's own. It lasts exactly as long
+// as the call that writes it (Registrar.Close releases it when it returns), so a
+// durable copy would need a rollback on every failure — and a rollback that
+// itself failed would leave the record saying a live worker had ended, which is
+// the one lie Close's ordering exists to prevent. It describes one call's
+// interval, and no restart resumes a call.
+//
+// WHAT IT CLOSES is a window no ordering can close. Ending the session is what
+// produces the process exit, the supervisor reports that exit on its own
+// goroutine, and the record does not write `closed` until the closer has
+// returned (Store.Closed's own doc says why). In that window the participant is
+// still non-terminal, so the exit is ADMITTED — correctly, it is a real process
+// fact — and without this the record would also place an observation of it in
+// the coordinator's own mailbox, waking it about a worker it had just closed
+// (nocx-xn63t.6.39, measured 2026-10-17: `workers.close: start` 21:45:46.620,
+// the observation in the mailbox 21:45:46.698, `workers.close: ok` 21:45:47.233,
+// and the coordinator typed at 21:48:55 about it).
+type endings struct {
+	mu  sync.Mutex
+	who map[ParticipantID]ReaderID
+}
+
+func newEndings() *endings { return &endings{who: make(map[ParticipantID]ReaderID)} }
+
+// begin records that this session is ending this participant.
+func (e *endings) begin(id ParticipantID, by ReaderID) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.who[id] = by
+}
+
+// end forgets it, on EVERY way out of the close — a close that failed ended
+// nothing, and a mark kept after it would suppress the next fact about a worker
+// that is still running.
+func (e *endings) end(id ParticipantID) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.who, id)
+}
+
+// ending reports whether by is the session ending id right now. It is asked
+// with the coordinator the observation would be ADDRESSED to, so an observation
+// about a worker somebody else's coordinator is ending stays their news.
+func (e *endings) ending(id ParticipantID, by ReaderID) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	who, ok := e.who[id]
+	return ok && who == by
 }
 
 // observeExit places the one observed fact that is about a PROCESS.
@@ -305,6 +366,17 @@ func (r *Registrar) observeExit(ctx context.Context, p Participant) {
 	if err != nil {
 		r.observations.release(p.ID)
 		r.logExitLoss(ctx, p.ID, err)
+		return
+	}
+	// AN EXIT THE CLOSE CAUSED IS NOT AN OBSERVATION FOR THE COORDINATOR THAT
+	// CAUSED IT (nocx-xn63t.6.39). See endings above: the exit is admitted while the
+	// close is still in flight, so the terminal guard in admit — which is what
+	// refuses the exit of a worker whose close has already RETURNED — cannot
+	// see it. The claim is released rather than settled, because a close that
+	// then FAILED leaves the record non-terminal and that exit is news after
+	// all.
+	if r.endings.ending(p.ID, coordinator) {
+		r.observations.release(p.ID)
 		return
 	}
 	if err := r.placeObservation(ctx, p, coordinator, Observed{

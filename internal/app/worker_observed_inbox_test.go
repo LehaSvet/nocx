@@ -168,7 +168,8 @@ func TestACoordinatorReadsObservedStatesFromItsOwnInboxOverTheSocket(t *testing.
 	}
 
 	// Asking again hands nothing over, which is the mailbox's own rule and the
-	// reason the wake (nocx-luqz9.3) can say "you have N new messages".
+	// reason the wake (nocx-luqz9.3) can count what is waiting (nocx-xn63t.6.39:
+	// as two counts, one per kind, because they are two things to be told).
 	again := decodeInbox(t, callExternally(t, s.socket, "workers.inbox", `{}`).Result)
 	if len(*again.Observations) != 0 {
 		t.Fatalf("the observations were handed over twice: %+v", *again.Observations)
