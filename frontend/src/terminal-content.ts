@@ -8087,6 +8087,37 @@ export class TerminalContent extends BasePaneContent {
     this._intentInput?.focus()
   }
 
+  /** The same handoff, one round trip later — where it is a REPAIR and not a
+   *  claim (nocx-xn63t.6.37).
+   *
+   *  The call at commit is unconditional, and it has to be: the editor has
+   *  just been emptied and hidden, and a key typed in the gap reaches nobody
+   *  (takeKeyboardToGrid). The deferred `focusGrid` is that same window's
+   *  repair — nobody owned the keyboard for the whole
+   *  lifecycle.submitAttempt round trip — and a repair must not take what
+   *  somebody else holds.
+   *
+   *  Somebody else does hold it. The backend publishes the running fact
+   *  BEFORE the RPC response, inside SubmitAttempt, so the row with its
+   *  always-visible Stop button is on screen while the answer is still in
+   *  flight (see `write`). A person tabbing to that Stop in the window had the
+   *  keyboard taken back the instant the answer landed, and on webkit the
+   *  button was then not keyboard-reachable at all (CI shard 1, run
+   *  39052926672: `stop.focus()` followed by 'inactive' for the whole 5 s of
+   *  the assertion).
+   *
+   *  <body> — or the grid itself, which is what "idempotent" was ever about —
+   *  is exactly the state this repair exists for. Every other holder is
+   *  somebody's, and the intent element's own contract already says so: "a
+   *  pane that does not have the keyboard must not take it"
+   *  (IntentInput.focus). */
+  private takeKeyboardToGridAfterSubmit(): void {
+    const holder = document.activeElement
+    const grid = this._intentInput?.element ?? null
+    if (holder !== null && holder !== document.body && holder !== grid) return
+    this.takeKeyboardToGrid()
+  }
+
   /** Raw bytes the grid produced after the keyboard changed hands but before
    *  the submitted command reached the pty — null when nothing is in flight,
    *  which is the ordinary state.
@@ -8819,7 +8850,11 @@ export class TerminalContent extends BasePaneContent {
           return
         }
         submitCommand(doc, {
-          focusGrid: () => this.takeKeyboardToGrid(),
+          // The deferred half of the handoff to the grid: the synchronous call
+          // above already took the keyboard at commit, and this one only
+          // repairs it if the round trip left it on nobody
+          // (takeKeyboardToGridAfterSubmit).
+          focusGrid: () => this.takeKeyboardToGridAfterSubmit(),
           sendDoc: sendLine,
         })
       } finally {
