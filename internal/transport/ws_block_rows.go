@@ -2467,6 +2467,7 @@ func (s *WSServer) closeBlockRows(ctx context.Context, sid session.ID, attempt s
 		if len(toFlush) > 0 {
 			s.holdEndLocked(sid, &end)
 			bs.pendingCloses[sid] = append(bs.pendingCloses[sid], end)
+			log.From(ctx).Debug("block rows close queued behind pending append", "session", sid, "attempt", attempt, "endRow", endRow, "pending", len(bs.pendingCloses[sid]))
 			bs.flushing[sid] = true
 			confirm := bs.confirmers[sid]
 			bs.mu.Unlock()
@@ -2481,12 +2482,27 @@ func (s *WSServer) closeBlockRows(ctx context.Context, sid session.ID, attempt s
 	if bs.flushing[sid] || bs.closing[sid] || len(bs.pending[sid]) > 0 {
 		s.holdEndLocked(sid, &end)
 		bs.pendingCloses[sid] = append(bs.pendingCloses[sid], end)
+		log.From(ctx).Debug("block rows close queued behind stream activity", "session", sid, "attempt", attempt, "endRow", endRow, "flushing", bs.flushing[sid], "closing", bs.closing[sid], "pendingRows", len(bs.pending[sid]), "pendingCloses", len(bs.pendingCloses[sid]))
 		bs.mu.Unlock()
 		return
 	}
 	if bs.queued[sid] == attempt && current != nil && current.attempt != attempt {
+		prior := current
 		s.holdEndLocked(sid, &end)
 		bs.queuedEnds[sid] = append(bs.queuedEnds[sid], end)
+		log.From(ctx).Debug("block rows close queued behind prior interval", "session", sid, "attempt", attempt, "currentAttempt", current.attempt, "endRow", endRow, "queuedEnds", len(bs.queuedEnds[sid]))
+		// A later interval has reached its authenticated end, but the block
+		// still current has no end to release it. The lifecycle has moved
+		// beyond that interval, so settle the recovered predecessor at its
+		// stored cursor as a gap. Its promotion drains this queued end.
+		if prior.recoveredOutputInterval {
+			priorEndRow := prior.rows
+			priorAttempt := prior.attempt
+			bs.closing[sid] = true
+			bs.mu.Unlock()
+			s.closeBlockRowsNow(ctx, sid, priorAttempt, priorEndRow, nil, "", true, false, nil)
+			return
+		}
 		bs.mu.Unlock()
 		return
 	}
