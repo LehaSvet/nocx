@@ -29,6 +29,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/shady2k/nocx/internal/assistant"
 	"github.com/shady2k/nocx/internal/content"
 	"github.com/shady2k/nocx/internal/git"
 	gitlocal "github.com/shady2k/nocx/internal/git/local"
@@ -491,8 +492,9 @@ func TestAWorktreeSpawnOutsideARepositoryIsRefused(t *testing.T) {
 		Participant: "p-norepo", Group: "worker-1", Task: "t", Command: "run-agent",
 		CoordinatorSession: string(coord), Worktree: anAsk("feat/one"),
 	})
-	if err == nil || !strings.Contains(err.Error(), "not a repository") {
-		t.Fatalf("err = %v, want the not-a-repository refusal", err)
+	var refusal *assistant.DispatchRefusalError
+	if !errors.As(err, &refusal) || !strings.Contains(refusal.Reason, "not a repository") || !strings.Contains(refusal.Reason, "there is nothing to create a worktree") {
+		t.Fatalf("err = %v, want a classified refusal naming no repository", err)
 	}
 	if len(stand.tabs.created) != 0 {
 		t.Fatalf("a refusal minted a tab: %v", stand.tabs.created)

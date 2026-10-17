@@ -223,3 +223,14 @@ func TestAnEndedPaneAndAnEndedReportDoNotShareASentence(t *testing.T) {
 		t.Errorf("the ended-pane refusal lost its next step: %q", pane)
 	}
 }
+
+func TestDispatchRefusalIsClassifiedAndNamesItsCause(t *testing.T) {
+	const cause = "the coordinator's pane is not a repository, so no repository is available"
+	code, message, reason := rpcErrorFor(&assistant.DispatchRefusalError{Method: "workers.spawn", Reason: cause})
+	if code == rpcInternalError || code != rpcDomainError || message == "internal error" {
+		t.Fatalf("refusal classification = (%d, %q), want named domain refusal", code, message)
+	}
+	if !strings.Contains(reason, "no repository") {
+		t.Fatalf("reason = %q, want it to name no repository", reason)
+	}
+}

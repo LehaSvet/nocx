@@ -27,6 +27,7 @@ import (
 
 	"github.com/shady2k/nocx/internal/agentdriver"
 	"github.com/shady2k/nocx/internal/agenttyping"
+	"github.com/shady2k/nocx/internal/assistant"
 	"github.com/shady2k/nocx/internal/commandnames"
 	"github.com/shady2k/nocx/internal/content"
 	"github.com/shady2k/nocx/internal/git"
@@ -872,7 +873,11 @@ func (s *workerSpawner) Spawn(ctx context.Context, req workers.SpawnRequest) (_ 
 	if req.Worktree != nil {
 		undo, err = s.planWorktree(ctx, lg, coordPane, cwd, req.Worktree)
 		if err != nil {
-			return nil, err
+			return nil, &assistant.DispatchRefusalError{
+				Method: "workers.spawn",
+				Reason: fmt.Sprintf("%v", err),
+				Cause:  err,
+			}
 		}
 		paneCwd = undo.path
 		// THE RECORD, AT THE MOMENT THE CHECKOUT EXISTS (nocx-xn63t.1.4).

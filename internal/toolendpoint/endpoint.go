@@ -883,6 +883,10 @@ func (e *Endpoint) log() *slog.Logger {
 }
 
 func rpcErrorFor(err error) (code int, message, reason string) {
+	var refusal *assistant.DispatchRefusalError
+	if errors.As(err, &refusal) {
+		return rpcDomainError, "worker request refused", refusal.Reason
+	}
 	switch {
 	case errors.Is(err, assistant.ErrUnknownMethod):
 		return rpcMethodNotFound, "method not found",

@@ -239,6 +239,9 @@ func TestToolAuthorizerAdmitsEnrolledOwnedTreeThroughRealWorkerRecord(t *testing
 	if inv.Context == nil {
 		t.Fatal("admitted invocation has nil context")
 	}
+	if got := inv.Grant.Policy.DecisionFor(content.EffectMutateReversible); got != content.DecisionPermit {
+		t.Fatalf("coordinator grant's mutate-reversible decision = %q, want permit for workers.spawn worktrees", got)
+	}
 	if got := inv.RunContext.Session; got != string(sess.ID()) {
 		t.Fatalf("invocation session = %q, want %q", got, sess.ID())
 	}
