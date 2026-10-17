@@ -1029,10 +1029,12 @@ jobs:
       # shard that failed. The shard belongs in the name for the same reason
       # the project did — without it the four legs are two pairs fighting over
       # two names.
-      - name: Upload traces
+      - name: Upload traces and duration report
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: playwright-traces-${{ matrix.project }}-${{ matrix.shard }}
-          path: test-results/
+          path: |
+            test-results/
+            test-results/playwright-${{ matrix.project }}-${{ matrix.shard }}.json
           retention-days: 7

@@ -8,16 +8,39 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 const manifest = JSON.parse(readFileSync(join(here, 'shard-duration-seconds.json'), 'utf8'))
 
-export function planShards(project, files, durations, caseCounts = {}) {
+export function planShards(project, files, measured, caseCounts = {}) {
   if (!['chromium', 'webkit'].includes(project))
     throw new Error(`unknown browser project: ${project}`)
   if (new Set(files).size !== files.length)
     throw new Error('duplicate spec file in collected tests')
-  const missing = files.filter((file) => !Object.hasOwn(durations, file))
-  if (missing.length) throw new Error(`missing duration measurement for ${missing.join(', ')}`)
-  const unexpected = Object.keys(durations).filter((file) => !files.includes(file))
-  if (unexpected.length)
-    throw new Error(`duration manifest names uncollected spec file(s): ${unexpected.join(', ')}`)
+  const priorCases = measured.case_counts ?? {}
+  const totalPriorCases = Object.values(priorCases).reduce((total, count) => total + count, 0)
+  const meanSecondsPerCase = totalPriorCases
+    ? Object.values(measured.seconds).reduce((total, seconds) => total + seconds, 0) /
+      totalPriorCases
+    : 0
+  const estimates = []
+  const durations = {}
+  for (const file of files) {
+    const currentCases = caseCounts[file] ?? 0
+    const oldSeconds = measured.seconds[file]
+    const oldCases = priorCases[file] ?? 0
+    if (oldSeconds > 0 && oldCases > 0 && currentCases === oldCases) {
+      durations[file] = oldSeconds
+    } else if (oldSeconds === undefined || oldCases === 0) {
+      durations[file] = currentCases * meanSecondsPerCase
+      estimates.push({ file, seconds: durations[file], reason: 'no measured spec duration' })
+    } else if (currentCases !== oldCases) {
+      durations[file] = (oldSeconds * currentCases) / oldCases
+      estimates.push({
+        file,
+        seconds: durations[file],
+        reason: `case count changed ${oldCases} → ${currentCases}`,
+      })
+    } else {
+      durations[file] = oldSeconds
+    }
+  }
   const shards = [
     { files: [], seconds: 0, cases: 0 },
     { files: [], seconds: 0, cases: 0 },
@@ -28,7 +51,21 @@ export function planShards(project, files, durations, caseCounts = {}) {
     shard.seconds += durations[file]
     shard.cases += caseCounts[file] ?? 0
   }
-  return { project, shards }
+  return { project, shards, durations, estimates }
+}
+
+export function assertCoverage(files, expectedCases, shards) {
+  const assignedFiles = shards.flatMap((shard) => shard.files)
+  if (
+    assignedFiles.length !== files.length ||
+    new Set(assignedFiles).size !== files.length ||
+    files.some((file) => !assignedFiles.includes(file))
+  ) {
+    throw new Error('shard lists do not cover each collected spec file exactly once')
+  }
+  if (shards.reduce((total, shard) => total + shard.cases, 0) !== expectedCases) {
+    throw new Error('shard lists do not cover each collected test case exactly once')
+  }
 }
 
 function collectSpecFiles(suites, parent = '') {
@@ -80,35 +117,38 @@ function run(project, shardNumber, planOnly = false) {
   )
   const projectManifest = manifest.projects[project]
   if (!projectManifest) throw new Error(`no measured timings for ${project}`)
-  const plan = planShards(project, files, projectManifest.seconds, counts)
+  const plan = planShards(project, files, projectManifest, counts)
   const expectedCases = specs.length
-  if (expectedCases !== projectManifest.cases_per_browser) {
-    throw new Error(
-      `collected ${expectedCases} test cases for ${project}, but duration measurements cover ${projectManifest.cases_per_browser}; refresh the measured timing data`,
-    )
-  }
-  const allPlanned = plan.shards.flatMap((shard) => shard.files)
-  if (new Set(allPlanned).size !== files.length || allPlanned.length !== files.length) {
-    throw new Error('shard lists do not cover each collected spec file exactly once')
-  }
-  if (plan.shards.reduce((total, shard) => total + shard.cases, 0) !== expectedCases) {
-    throw new Error('shard lists do not cover each collected test case exactly once')
-  }
+  assertCoverage(files, expectedCases, plan.shards)
   const selected = plan.shards[shardNumber - 1]
   if (!selected) throw new Error(`shard must be 1 or 2, received ${shardNumber}`)
+  const sourceRuns = manifest.source_runs.map((run) => run.run_id).join(', ')
   console.log(
-    `Duration plan (${manifest.source_runs.map((run) => run.run_id).join(', ')}): ${plan.shards.map((shard, index) => `${index + 1}=${shard.cases} tests/${(shard.seconds / 60).toFixed(1)} measured min`).join(', ')}`,
+    `Duration plan (${sourceRuns}): ${plan.shards.map((shard, index) => `${index + 1}=${shard.cases} tests/${(shard.seconds / 60).toFixed(1)} estimated min`).join(', ')}`,
   )
+  if (plan.estimates.length) {
+    const names = plan.estimates.map(({ file, reason }) => `${file} (${reason})`).join(', ')
+    console.log(`Timing estimates for unmeasured or changed files: ${names}`)
+  }
   console.log(
     `Coverage verified: ${plan.shards.reduce((n, shard) => n + shard.cases, 0)} test cases across ${files.length} spec files; each assigned once.`,
   )
   if (planOnly) return
+  const reportFile = join(root, 'test-results', `playwright-${project}-${shardNumber}.json`)
   const result = spawnSync(
     'npx',
-    ['playwright', 'test', ...selected.files.slice().sort(), '--project', project],
+    [
+      'playwright',
+      'test',
+      ...selected.files.slice().sort(),
+      '--project',
+      project,
+      '--reporter=line,json',
+    ],
     {
       cwd: root,
       stdio: 'inherit',
+      env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: reportFile },
     },
   )
   if (result.error) throw result.error
