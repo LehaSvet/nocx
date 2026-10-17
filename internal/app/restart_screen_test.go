@@ -33,9 +33,11 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -195,12 +197,22 @@ func TestASessionsScreenOutlivesTheCoordinatorThatOpenedIt(t *testing.T) {
 	}
 	// Resize through the adopted session channel, then query TIOCGWINSZ on
 	// the helper-owned PTY slave. The helper session entry carries the shell
-	// pid, and /proc/<pid>/fd/0 is the slave the shell reads from.
+	// pid, and /proc/<pid>/fd/0 is the slave the shell reads from — on Linux,
+	// which is the only platform that reaches it: the PTY MASTER belongs to
+	// the helper daemon, because this test drives the shipped App rather than
+	// holding a PTY of its own, so the slave is reachable by pid through
+	// /proc and by nothing else. On darwin the read is skipped and said out
+	// loud; the SAME winsize is still asserted there through the program's
+	// own view of the same ioctl, two assertions below — the shell's `stty
+	// size` and the SIGWINCH trap that ioctl raises.
 	if err := restored.Resize(context.Background(), session.Size{Cols: 132, Rows: 43}); err != nil {
 		t.Fatalf("resizing the re-adopted helper session: %v", err)
 	}
 	if err := waitForPTYWinsize(t, afterPID, 132, 43); err != nil {
-		t.Fatal(err)
+		if !errors.Is(err, errNoProcessFD) {
+			t.Fatal(err)
+		}
+		t.Logf("the out-of-band TIOCGWINSZ read is skipped here: %v", err)
 	}
 	// The PTY ioctl also raises SIGWINCH to the foreground process group. The
 	// shell remains in its normal prompt loop; ask it to report the trap state
@@ -225,10 +237,30 @@ func TestASessionsScreenOutlivesTheCoordinatorThatOpenedIt(t *testing.T) {
 	}
 }
 
+// errNoProcessFD reports that this platform gives a test no way to reach a
+// process's own tty by pid. It is a SENTINEL rather than a skip woven into the
+// caller so the one platform-dependent step stays one function: the caller
+// tolerates exactly this refusal and nothing else.
+var errNoProcessFD = errors.New("this platform keeps no /proc/<pid>/fd")
+
 // waitForPTYWinsize reads the helper-owned PTY slave directly; no shell or
 // coordinator size report can substitute for the kernel's TIOCGWINSZ value.
+//
+// LINUX ONLY, and the reason is the PTY's SHAPE rather than a preference: the
+// master of this session belongs to the helper daemon — this test drives the
+// shipped App, so it never holds a PTY fd of its own — which leaves
+// /proc/<pid>/fd/0, the slave the shell reads from, as the one door to the
+// kernel's answer. darwin keeps no such tree, and the honest consequence is
+// the sentence on `errNoProcessFD`: the CALLER says it skipped this read
+// rather than the read pretending it passed. What darwin does still assert is
+// the same winsize through the program's own view of the same ioctl, which is
+// why the skip costs this test its out-of-band half and not its criterion.
 func waitForPTYWinsize(t *testing.T, pid, cols, rows int) error {
 	t.Helper()
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("%w (%s): the PTY master is the helper daemon's, so its slave "+
+			"is reachable by pid only through /proc", errNoProcessFD, runtime.GOOS)
+	}
 	deadline := time.Now().Add(20 * time.Second)
 	var last string
 	for time.Now().Before(deadline) {
