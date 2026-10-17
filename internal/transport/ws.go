@@ -2403,6 +2403,18 @@ func (s *WSServer) Stop(ctx context.Context) error {
 	return shutdownErr
 }
 
+// stopping reports whether Stop has begun tearing this server down.
+//
+// The flag is the fence getOrCreateRx and recorder admission already read
+// under ringsMu; this is the read for a caller that has no other reason to
+// hold that lock — monitorExit, deciding whether the end it is witnessing is
+// a loss or the coordinator's own shutdown (nocx-xn63t.6.33).
+func (s *WSServer) stopping() bool {
+	s.ringsMu.Lock()
+	defer s.ringsMu.Unlock()
+	return s.stopped
+}
+
 func (s *WSServer) Port() int {
 	return s.port
 }
@@ -4173,6 +4185,27 @@ func (s *WSServer) monitorExit(rx *sessionRx, sess session.Session) {
 	}
 
 	if wconn == nil {
+		return
+	}
+
+	// A SHUTDOWN IS NOT A LOSS (nocx-xn63t.6.33), so it states nothing here.
+	// The exit notification is the renderer's one signal that a session
+	// ENDED, and a pane treats it as terminal: cause "interrupted" sets the
+	// pane's lost state for the rest of that tab's life, with the card that
+	// offers "Reconnecting opens a NEW shell" over it. On Stop the session
+	// has not ended — Stop closes every registry row with Reg.Close, the
+	// DETACH verb, chosen precisely so a later coordinator can re-adopt the
+	// session (internal/session/session.go, and the helper adoption the
+	// owner's own run logged), and the page that reconnects reattaches that
+	// same session.
+	//
+	// Nothing is silently dropped by staying quiet, and the alternative was
+	// tried: the client's reconnect pass attaches every session it still
+	// knows, and a session the returning coordinator really does not have
+	// is refused there — which delivers the very same cause to the very
+	// same callback (frontend/src/ipc.ts). So a session that is gone still
+	// reads as gone; one that was re-adopted is no longer slandered.
+	if s.stopping() {
 		return
 	}
 
