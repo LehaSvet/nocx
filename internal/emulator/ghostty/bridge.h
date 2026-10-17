@@ -36,6 +36,13 @@
 /* Implemented on the Go side with //export. The parameter is non-const because
    cgo's generated header for an exported function is, and the two declarations
    must agree. */
+
+/* C allocator probe used by sequencebounds_test.go. */
+uint64_t nocxCHeapInUse(void);
+void *nocxCHeapProbeAlloc(size_t size);
+void nocxCHeapProbeFree(void *ptr);
+void nocxCHeapProbeTouch(void *ptr, size_t size);
+
 extern void nocxGoWritePty(uintptr_t handle, uint8_t *data, size_t len);
 
 /* The effect callbacks, on the same terms: the C half reads the borrowed value
