@@ -22,11 +22,26 @@ package app
 //   - a read the decision needs that fails refuses everything as
 //     unresolved, because held and abandoned cannot then be told apart
 //     (TestAFailingHeldReadRefusesEverythingAsUnresolved).
+//
+// The explicit discard (nocx-xn63t.6.40, ADR-0088) is proven on the same
+// stand, because it moves exactly one refusal and every other answer must
+// stay where it was:
+//
+//   - without the ask the dirty checkout is still refused, byte for byte
+//     where it was, and the row claims no discarded work
+//     (TestADirtyCheckoutIsRefusedWhenTheAskDoesNotDiscard);
+//   - with the ask on one checkout the work goes with it, the branch and
+//     its commits stay, and the row names what went, counted
+//     (TestTheDiscardAskRemovesTheWorkWithTheCheckoutAndNamesIt);
+//   - with the ask on a checkout a live worker holds, the answer is still
+//     `held` — the one refusal that must not be for sale
+//     (TestTheDiscardAskDoesNotReachACheckoutALiveWorkerHolds).
 
 import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shady2k/nocx/internal/workers"
@@ -338,6 +353,178 @@ func TestARemovalForASessionStandingNowhereIsRefusedNotOurs(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("the checkout did not survive the refusal: %v", err)
 	}
+}
+
+// Criterion 1 of the discard (nocx-xn63t.6.40): an ask that does NOT say
+// discard leaves a dirty checkout exactly where it was, and the row claims
+// nothing was thrown away. This is the default, and it is the whole of the
+// behaviour before the flag existed.
+func TestADirtyCheckoutIsRefusedWhenTheAskDoesNotDiscard(t *testing.T) {
+	repoDir, _ := initRealRepo(t)
+	stand := newCheckoutStand(t)
+	coordA := stand.openCoordinator(t, "pane-a", repoDir)
+	stand.spawnCheckoutWorker(t, coordA, "worker-1", "feat/kept", "t")
+	path := expectedWorktreePath(stand.checkouts.worktreeRoot, repoDir, "feat/kept")
+
+	// Both halves of "work no commit keeps": a tracked file that changed
+	// and a file git never knew about.
+	edited := filepath.Join(path, "README.md")
+	if err := os.WriteFile(edited, []byte("the worker's own edit\n"), 0o600); err != nil {
+		t.Fatalf("write the tracked edit: %v", err)
+	}
+	untracked := filepath.Join(path, "findings.txt")
+	if err := os.WriteFile(untracked, []byte("what the worker found\n"), 0o600); err != nil {
+		t.Fatalf("write the untracked file: %v", err)
+	}
+
+	coordB := stand.openCoordinator(t, "pane-b", repoDir)
+	got := stand.checkouts.RemoveCheckouts(context.Background(), string(coordB),
+		[]workers.CheckoutRef{{Path: path}})
+
+	if len(got.Items) != 1 {
+		t.Fatalf("items = %+v, want one answer", got.Items)
+	}
+	item := got.Items[0]
+	if item.Removed || item.Refusal != workers.CheckoutRefusalUncommitted {
+		t.Fatalf("item = %+v, want the uncommitted refusal", item)
+	}
+	if item.Discarded != nil {
+		t.Fatalf("item = %+v, want no discarded work claimed by a refusal that removed nothing", item)
+	}
+	for _, still := range []string{edited, untracked} {
+		if _, err := os.Stat(still); err != nil {
+			t.Fatalf("%q did not survive the refusal: %v", still, err)
+		}
+	}
+	body, err := os.ReadFile(edited) //nolint:gosec // a file of this test's own checkout under t.TempDir()
+	if err != nil || string(body) != "the worker's own edit\n" {
+		t.Fatalf("the tracked edit = %q (%v), want the worker's own bytes", body, err)
+	}
+}
+
+// Criterion 2 of the discard: the ask that names it takes the checkout
+// together with everything no commit keeps — the tracked edit, the untracked
+// file, the ignored one — and the row says what went, counted. The branch and
+// the commits on it are untouched: this act removes a checkout, never work
+// somebody committed.
+func TestTheDiscardAskRemovesTheWorkWithTheCheckoutAndNamesIt(t *testing.T) {
+	repoDir, _ := initRealRepo(t)
+	// An ignored name the repository itself declares, so one of the files
+	// this checkout holds is one git was told not to look at — the case the
+	// bead names beside modified and untracked.
+	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("ignored-notes.txt\n"), 0o600); err != nil {
+		t.Fatalf("write the ignore file: %v", err)
+	}
+	gitRun(t, repoDir, "add", ".gitignore")
+	gitRun(t, repoDir, "commit", "-m", "the repository ignores this name")
+
+	stand := newCheckoutStand(t)
+	coordA := stand.openCoordinator(t, "pane-a", repoDir)
+	stand.spawnCheckoutWorker(t, coordA, "worker-1", "feat/discard", "t")
+	path := expectedWorktreePath(stand.checkouts.worktreeRoot, repoDir, "feat/discard")
+
+	// One commit the worker made, which the removal must not take.
+	if err := os.WriteFile(filepath.Join(path, "worker-note.txt"), []byte("committed work\n"), 0o600); err != nil {
+		t.Fatalf("write the file to commit: %v", err)
+	}
+	gitRun(t, path, "add", "worker-note.txt")
+	gitRun(t, path, "commit", "-m", "the worker's commit")
+	commit := gitIn(t, path, "rev-parse", "HEAD")
+
+	// Then exactly one tracked edit, one untracked file, one ignored file.
+	if err := os.WriteFile(filepath.Join(path, "README.md"), []byte("the worker's own edit\n"), 0o600); err != nil {
+		t.Fatalf("write the tracked edit: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "findings.txt"), []byte("what the worker found\n"), 0o600); err != nil {
+		t.Fatalf("write the untracked file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "ignored-notes.txt"), []byte("a tool's scratch\n"), 0o600); err != nil {
+		t.Fatalf("write the ignored file: %v", err)
+	}
+	if out := gitIn(t, path, "status", "--porcelain"); len(strings.Split(out, "\n")) != 2 ||
+		!strings.Contains(out, "README.md") || !strings.Contains(out, "findings.txt") {
+		t.Fatalf("the checkout's status = %q, want exactly the tracked edit and the untracked file (the ignored one does not count)", out)
+	}
+
+	coordB := stand.openCoordinator(t, "pane-b", repoDir)
+	got := stand.checkouts.RemoveCheckouts(context.Background(), string(coordB),
+		[]workers.CheckoutRef{{Path: path, Discard: true}})
+
+	if len(got.Items) != 1 {
+		t.Fatalf("items = %+v, want one answer", got.Items)
+	}
+	item := got.Items[0]
+	if !item.Removed || item.Refusal != "" {
+		t.Fatalf("item = %+v, want the checkout removed", item)
+	}
+	if item.Path != path || item.Branch != "feat/discard" {
+		t.Fatalf("item = %+v, want the resolved path and branch", item)
+	}
+	if item.Discarded == nil {
+		t.Fatal("the row removed the checkout and named nothing that went with it")
+	}
+	if item.Discarded.Modified != 1 || item.Discarded.Untracked != 1 {
+		t.Fatalf("discarded = %+v, want one modified file and one untracked file", *item.Discarded)
+	}
+	// THE WHOLE DIRECTORY, the ignored file included: git removes a worktree
+	// by removing it, and nothing here picks files out of it.
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("the checkout at %q is still on disk after the removal", path)
+	}
+	// AND THE COMMITTED WORK IS NOT THIS ACT'S: the branch is still there,
+	// still at the commit the worker made in it.
+	if got := gitIn(t, repoDir, "rev-parse", "--verify", "refs/heads/feat/discard"); got != commit {
+		t.Fatalf("branch feat/discard = %q, want the worker's commit %q", got, commit)
+	}
+
+	// The record no longer names it, the same as a clean removal.
+	rows, err := stand.rows.List(context.Background(), nocxCheckoutRepoKey(repoDir))
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("the record still holds %+v (%v) after the removal dropped it", rows, err)
+	}
+	survey := stand.checkouts.Leftovers(context.Background(), string(coordB))
+	if !survey.Complete || len(survey.Leftovers) != 0 {
+		t.Fatalf("holdings after the removal = %+v, want nothing left over", survey)
+	}
+}
+
+// Criterion 3 of the discard: it moves the dirty-work refusal and nothing
+// else. A live worker's hold is refused whatever the ask says — and the
+// checkout here is dirty as well, so a hold that were checked after the
+// removal, or waived by the ask, would answer removed or uncommitted instead.
+func TestTheDiscardAskDoesNotReachACheckoutALiveWorkerHolds(t *testing.T) {
+	repoDir, _ := initRealRepo(t)
+	stand := newCheckoutStand(t)
+	coordA := stand.openCoordinator(t, "pane-a", repoDir)
+	stand.spawnCheckoutWorker(t, coordA, "worker-1", "feat/held", "t")
+	path := expectedWorktreePath(stand.checkouts.worktreeRoot, repoDir, "feat/held")
+	stand.holdCheckout(t, "worker-1", string(coordA), path, "feat/held")
+	dirty := filepath.Join(path, "still-working.txt")
+	if err := os.WriteFile(dirty, []byte("half a thought\n"), 0o600); err != nil {
+		t.Fatalf("write the held checkout's work: %v", err)
+	}
+
+	coordB := stand.openCoordinator(t, "pane-b", repoDir)
+	got := stand.checkouts.RemoveCheckouts(context.Background(), string(coordB),
+		[]workers.CheckoutRef{{Path: path, Discard: true}})
+
+	if len(got.Items) != 1 {
+		t.Fatalf("items = %+v, want one answer", got.Items)
+	}
+	item := got.Items[0]
+	if item.Removed || item.Refusal != workers.CheckoutRefusalHeldByWorker {
+		t.Fatalf("item = %+v, want the held-by-worker refusal even with the discard asked for", item)
+	}
+	if item.Discarded != nil {
+		t.Fatalf("item = %+v, want no discarded work claimed by a refusal", item)
+	}
+	if item.Detail == "" {
+		t.Fatal("the refusal says no why")
+	}
+	if _, err := os.Stat(dirty); err != nil {
+		t.Fatalf("the held checkout's work did not survive the refusal: %v", err)
+	}
+	gitRun(t, repoDir, "rev-parse", "--verify", "refs/heads/feat/held")
 }
 
 // Criterion, the macOS shape (nocx-xn63t.1.5 evidence): the worktrees root

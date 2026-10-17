@@ -180,7 +180,11 @@ func (r *Repo) removePartialWorktree(ctx context.Context, env []string, path str
 		if !samePath(rec.Path, path) {
 			continue
 		}
-		if err := r.RemoveWorktree(ctx, path); err != nil {
+		// No discard: this is a checkout THIS call created and could not
+		// finish populating, and RemoveWorktree without the ask refuses one
+		// holding work — which is the whole point of the refusal, and it
+		// would be wrong here to reach past it.
+		if _, err := r.RemoveWorktree(ctx, path, git.RemoveWorktreeOptions{}); err != nil {
 			return fmt.Errorf("remove partial worktree: %w", err)
 		}
 		return nil
@@ -218,17 +222,18 @@ func (r *Repo) Worktrees(ctx context.Context, base string) ([]git.Worktree, erro
 	return list, nil
 }
 
-// RemoveWorktree removes a clean linked worktree, leaving its branch.
-func (r *Repo) RemoveWorktree(ctx context.Context, path string) error {
+// RemoveWorktree removes a linked worktree, leaving its branch, and answers
+// what it took with it when the call asked for that.
+func (r *Repo) RemoveWorktree(ctx context.Context, path string, opts git.RemoveWorktreeOptions) (git.WorktreeDiscard, error) {
 	if path == "" {
-		return errors.New("git: worktree remove needs a path")
+		return git.WorktreeDiscard{}, errors.New("git: worktree remove needs a path")
 	}
 	env := r.envSettled()
 	path = r.resolvePath(path)
 
 	records, err := r.worktreeRecords(ctx, env)
 	if err != nil {
-		return err
+		return git.WorktreeDiscard{}, err
 	}
 	idx := -1
 	for i, rec := range records {
@@ -238,28 +243,39 @@ func (r *Repo) RemoveWorktree(ctx context.Context, path string) error {
 		}
 	}
 	if idx < 0 {
-		return &git.ErrNotAWorktree{Path: path}
+		return git.WorktreeDiscard{}, &git.ErrNotAWorktree{Path: path}
 	}
 	if idx == 0 {
-		return &git.ErrMainWorktree{Path: records[0].Path}
+		return git.WorktreeDiscard{}, &git.ErrMainWorktree{Path: records[0].Path}
 	}
 	rec := records[idx]
 
-	changes, err := r.worktreeState(ctx, env, rec.Path)
+	discard, err := r.worktreeDiscard(ctx, env, rec.Path)
 	if err != nil {
 		if cancelled(err) {
-			return err
+			return git.WorktreeDiscard{}, err
 		}
-		return &git.ErrWorktreeUnreadable{Path: rec.Path, Cause: err}
+		return git.WorktreeDiscard{}, &git.ErrWorktreeUnreadable{Path: rec.Path, Cause: err}
 	}
-	if changes > 0 {
-		return &git.ErrWorktreeUncommitted{Path: rec.Path, Changes: changes}
+	if changes := discard.Modified + discard.Untracked; changes > 0 && !opts.Discard {
+		return git.WorktreeDiscard{}, &git.ErrWorktreeUncommitted{Path: rec.Path, Changes: changes}
 	}
 	// git's own refusal is still behind this one, and deliberately: the
 	// listing and the state were read moments ago, and a file written in
 	// between reaches git as "contains modified or untracked files". Its
-	// error is the honest account of that race.
-	return r.mutateArgv(ctx, env, spawn.WorktreeRemoveArgs(rec.Path))
+	// error is the honest account of that race. With Discard the invocation
+	// carries git's own --force, which is the only thing that removes a
+	// dirty worktree at all.
+	if err := r.mutateArgv(ctx, env, spawn.WorktreeRemoveArgs(rec.Path, opts.Discard)); err != nil {
+		return git.WorktreeDiscard{}, err
+	}
+	// THE COUNTS ARE THE READ'S, and the read happened before the removal:
+	// what git listed a moment ago is what the directory held when it was
+	// taken, and nothing is re-counted afterwards, when there is nothing
+	// left to count. Without the discard the guard above has already
+	// established there was nothing to count, so the zero value returned
+	// there is the truth rather than a default.
+	return discard, nil
 }
 
 // DeleteWorktreeBranch deletes a branch that has no commits beyond base — the
@@ -385,17 +401,39 @@ func (r *Repo) readWorktree(ctx context.Context, env []string, rec spawn.Worktre
 // the panel's rows' enrichment and cost two more invocations per worktree,
 // and no decision here is taken on them.
 func (r *Repo) worktreeState(ctx context.Context, env []string, path string) (int, error) {
-	st, err := r.statusIn(ctx, path, env)
+	discard, err := r.worktreeDiscard(ctx, env, path)
 	if err != nil {
 		return 0, err
+	}
+	return discard.Modified + discard.Untracked, nil
+}
+
+// worktreeDiscard is that same read, COUNTED THE WAY A REMOVAL'S ANSWER NAMES
+// IT (nocx-xn63t.6.40): one status invocation, no line counts, and the
+// records split into the tracked changes and the untracked files rather than
+// added up. There is one read behind both callers for the reason there is one
+// behind the listing: the refusal and the counts it reports must be about the
+// same disk.
+//
+// The two counts are exact under the same Completeness Total is — the
+// untracked half is counted as the records go by, past the retention cap
+// (spawn.Result.Untracked) — so a capped read still splits what it saw
+// correctly, and a CUT read is unreadable exactly as it always was.
+func (r *Repo) worktreeDiscard(ctx context.Context, env []string, path string) (git.WorktreeDiscard, error) {
+	st, err := r.statusIn(ctx, path, env)
+	if err != nil {
+		return git.WorktreeDiscard{}, err
 	}
 	if st.Completeness == git.CompletenessCut {
 		// A status traversal stopped at the work ceiling holds a prefix: what
 		// it did not reach is exactly what could be a worker's uncommitted
 		// work, so "clean" is not available and the state is unreadable.
-		return 0, errors.New("the status read was stopped at the work ceiling")
+		return git.WorktreeDiscard{}, errors.New("the status read was stopped at the work ceiling")
 	}
-	return st.Total, nil
+	return git.WorktreeDiscard{
+		Modified:  st.Total - st.Untracked,
+		Untracked: st.Untracked,
+	}, nil
 }
 
 // countCommits counts the commits reachable from `to` and not from `from`.

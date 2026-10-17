@@ -215,8 +215,8 @@ func (r *stubRepo) Worktrees(ctx context.Context, base string) ([]git.Worktree, 
 	return nil, errors.New("stubRepo: Worktrees not stubbed")
 }
 
-func (r *stubRepo) RemoveWorktree(ctx context.Context, path string) error {
-	return errors.New("stubRepo: RemoveWorktree not stubbed")
+func (r *stubRepo) RemoveWorktree(ctx context.Context, path string, _ git.RemoveWorktreeOptions) (git.WorktreeDiscard, error) {
+	return git.WorktreeDiscard{}, errors.New("stubRepo: RemoveWorktree not stubbed")
 }
 
 func (r *stubRepo) DeleteWorktreeBranch(ctx context.Context, branch, base string) error {

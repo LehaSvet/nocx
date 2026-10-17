@@ -114,8 +114,9 @@ func (u *worktreeUndo) location() workers.Worktree {
 // somebody else's, and DeleteWorktreeBranch exists precisely for the one
 // branch a spawn may take back. Both halves are the seam's own operations;
 // a removal that fails (a worktree holding work, a branch that grew commits)
-// fails the undo rather than being forced — the seam has no force, by
-// design, because the thing it would force past is a worker's work.
+// fails the undo rather than being forced — this call passes no discard, by
+// design, because the thing a discard would force past is a worker's work,
+// and a spawn that failed after making the checkout has no claim on it.
 func (u *worktreeUndo) run(ctx context.Context) error {
 	if u == nil {
 		return nil
@@ -128,7 +129,7 @@ func (u *worktreeUndo) run(ctx context.Context) error {
 		return fmt.Errorf("worker spawn: the coordinator's checkout answers %q now, so the worktree at %q could not be removed", outcome.State, u.path)
 	}
 	defer func() { _ = repo.Close() }()
-	if err := repo.RemoveWorktree(ctx, u.path); err != nil {
+	if _, err := repo.RemoveWorktree(ctx, u.path, git.RemoveWorktreeOptions{}); err != nil {
 		return fmt.Errorf("worker spawn: remove the worktree at %q: %w", u.path, err)
 	}
 	if u.created {

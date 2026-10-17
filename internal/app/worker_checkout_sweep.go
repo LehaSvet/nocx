@@ -265,6 +265,10 @@ func (s *checkoutSweeper) RunOnce(ctx context.Context) {
 				}
 				continue
 			}
+			// NO DISCARD: a sweep is nobody looking. The scheduler removes
+			// what a period expired, and the one thing it must never do is
+			// take work away that a person did not ask about — so a dirty
+			// checkout is left where it is and the note says why.
 			refs = append(refs, workers.CheckoutRef{Path: row.Path, Branch: row.Branch})
 		}
 		if len(refs) == 0 {

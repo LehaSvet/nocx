@@ -751,7 +751,7 @@ func TestRemoveWorktreeLeavesTheBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := repo.RemoveWorktree(ctx, path); err != nil {
+	if _, err := repo.RemoveWorktree(ctx, path, git.RemoveWorktreeOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -815,7 +815,7 @@ func TestRemoveWorktreeRefusesUncommittedWork(t *testing.T) {
 			}
 			tc.dirty(t, path)
 
-			err := repo.RemoveWorktree(ctx, path)
+			_, err := repo.RemoveWorktree(ctx, path, git.RemoveWorktreeOptions{})
 			var dirty *git.ErrWorktreeUncommitted
 			if !errors.As(err, &dirty) {
 				t.Fatalf("err = %v, want *git.ErrWorktreeUncommitted", err)
@@ -830,6 +830,104 @@ func TestRemoveWorktreeRefusesUncommittedWork(t *testing.T) {
 				t.Error("the branch was removed with the refused worktree")
 			}
 		})
+	}
+}
+
+// TestRemoveWorktreeDiscardsTheWorkOnlyWhenTheCallAsksForIt is the seam's
+// half of nocx-xn63t.6.40 (ADR-0088), both ends on one checkout: the same
+// dirty worktree refuses the call that did not ask, and goes — with its work
+// counted — for the call that did.
+//
+// The ignored file is the third case the bead names, and it is here rather
+// than assumed: it neither refuses the removal (git has never counted it as
+// dirty) nor appears in the counts (git's status does not list it), and it
+// leaves with the directory like everything else in it.
+func TestRemoveWorktreeDiscardsTheWorkOnlyWhenTheCallAsksForIt(t *testing.T) {
+	dir, home := worktreeRepo(t)
+	repo := openRepo(t, gitEnv(t), dir)
+	ctx := context.Background()
+	path := filepath.Join(home, "worker-1")
+	if _, err := repo.AddWorktree(ctx, "worker-1", "master", path); err != nil {
+		t.Fatal(err)
+	}
+	// The repository's own exclude file, so a file can be one git was told
+	// not to look at without the checkout gaining a record of its own.
+	if err := os.WriteFile(filepath.Join(dir, ".git", "info", "exclude"), []byte("ignored.txt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(path, "tracked.txt"), []byte("edited"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"one.txt", "two.txt", "ignored.txt"} {
+		if err := os.WriteFile(filepath.Join(path, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The call that did not ask: refused, and the answer counts nothing.
+	discard, err := repo.RemoveWorktree(ctx, path, git.RemoveWorktreeOptions{})
+	var dirty *git.ErrWorktreeUncommitted
+	if !errors.As(err, &dirty) {
+		t.Fatalf("err = %v, want *git.ErrWorktreeUncommitted", err)
+	}
+	if discard != (git.WorktreeDiscard{}) {
+		t.Errorf("a refused removal answered %+v, want nothing discarded", discard)
+	}
+
+	// The call that asked: the checkout and the work go, counted.
+	discard, err = repo.RemoveWorktree(ctx, path, git.RemoveWorktreeOptions{Discard: true})
+	if err != nil {
+		t.Fatalf("remove with the discard: %v", err)
+	}
+	want := git.WorktreeDiscard{Modified: 1, Untracked: 2}
+	if discard != want {
+		t.Errorf("discarded = %+v, want %+v — the ignored file is in neither count", discard, want)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the worktree directory is still there (stat err = %v)", err)
+	}
+	if got := gitOut(t, dir, "rev-parse", "--verify", "refs/heads/worker-1"); got == "" {
+		t.Error("the discard took the branch with the worktree")
+	}
+}
+
+// TestRemoveWorktreeDiscardIsStillRefusedByGitForALock: the discard is one
+// --force, and one --force is not a key to somebody's lock. git's own account
+// of the lock reaches the caller unchanged, and nothing on disk moves —
+// because the alternative is a seam that quietly overrides a decision a
+// person made about their own worktree.
+func TestRemoveWorktreeDiscardIsStillRefusedByGitForALock(t *testing.T) {
+	dir, home := worktreeRepo(t)
+	repo := openRepo(t, gitEnv(t), dir)
+	ctx := context.Background()
+	path := filepath.Join(home, "worker-1")
+	if _, err := repo.AddWorktree(ctx, "worker-1", "master", path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "tracked.txt"), []byte("edited"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := commandIn(dir, "worktree", "lock", path).Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := repo.RemoveWorktree(ctx, path, git.RemoveWorktreeOptions{Discard: true})
+	if err == nil {
+		t.Fatal("a locked worktree was removed by a discard")
+	}
+	if !strings.Contains(err.Error(), "locked") {
+		t.Errorf("err = %v, want git's own account of the lock", err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Errorf("the locked worktree is gone: %v", statErr)
+	}
+
+	// And the discard reaches no other refusal either: the main checkout is
+	// still refused by name.
+	var mainErr *git.ErrMainWorktree
+	if _, err := repo.RemoveWorktree(ctx, dir, git.RemoveWorktreeOptions{Discard: true}); !errors.As(err, &mainErr) {
+		t.Errorf("removing the main checkout with a discard: err = %v, want *git.ErrMainWorktree", err)
 	}
 }
 
@@ -848,7 +946,7 @@ func TestRemoveWorktreeRefusesPathsItMayNotRemove(t *testing.T) {
 	}
 
 	var mainErr *git.ErrMainWorktree
-	if err := repo.RemoveWorktree(ctx, dir); !errors.As(err, &mainErr) {
+	if _, err := repo.RemoveWorktree(ctx, dir, git.RemoveWorktreeOptions{}); !errors.As(err, &mainErr) {
 		t.Fatalf("removing the main checkout: err = %v, want *git.ErrMainWorktree", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "tracked.txt")); err != nil {
@@ -857,7 +955,7 @@ func TestRemoveWorktreeRefusesPathsItMayNotRemove(t *testing.T) {
 
 	for _, path := range []string{foreign, filepath.Join(home, "never-existed")} {
 		var notAWorktree *git.ErrNotAWorktree
-		if err := repo.RemoveWorktree(ctx, path); !errors.As(err, &notAWorktree) {
+		if _, err := repo.RemoveWorktree(ctx, path, git.RemoveWorktreeOptions{}); !errors.As(err, &notAWorktree) {
 			t.Errorf("removing %s: err = %v, want *git.ErrNotAWorktree", path, err)
 		}
 	}
@@ -884,7 +982,7 @@ func TestRemoveWorktreeLeavesALockedWorktreeToGit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := repo.RemoveWorktree(ctx, path)
+	_, err := repo.RemoveWorktree(ctx, path, git.RemoveWorktreeOptions{})
 	if err == nil {
 		t.Fatal("a locked worktree was removed")
 	}
@@ -916,7 +1014,7 @@ func TestRemoveWorktreeRefusesAStateItCannotRead(t *testing.T) {
 	}
 
 	var unreadable *git.ErrWorktreeUnreadable
-	if err := repo.RemoveWorktree(ctx, path); !errors.As(err, &unreadable) {
+	if _, err := repo.RemoveWorktree(ctx, path, git.RemoveWorktreeOptions{}); !errors.As(err, &unreadable) {
 		t.Fatalf("err = %v, want *git.ErrWorktreeUnreadable", err)
 	}
 	if !strings.Contains(worktreeListing(t, dir), "worktree "+path) {

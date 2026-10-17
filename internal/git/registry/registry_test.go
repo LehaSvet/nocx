@@ -92,8 +92,8 @@ func (s *stubRepo) Worktrees(ctx context.Context, base string) ([]git.Worktree, 
 	return nil, errors.New("stubRepo: Worktrees not scripted")
 }
 
-func (s *stubRepo) RemoveWorktree(ctx context.Context, path string) error {
-	return errors.New("stubRepo: RemoveWorktree not scripted")
+func (s *stubRepo) RemoveWorktree(ctx context.Context, path string, _ git.RemoveWorktreeOptions) (git.WorktreeDiscard, error) {
+	return git.WorktreeDiscard{}, errors.New("stubRepo: RemoveWorktree not scripted")
 }
 
 func (s *stubRepo) DeleteWorktreeBranch(ctx context.Context, branch, base string) error {

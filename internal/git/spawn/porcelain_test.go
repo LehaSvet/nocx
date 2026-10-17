@@ -221,6 +221,32 @@ func TestParseCappedKeepsCounting(t *testing.T) {
 	}
 }
 
+// TestParseCountsUntrackedPastTheRetentionCap pins the one count that is not
+// derivable from the retained lists. The removal's discard answer splits what
+// it threw away into modified files and untracked ones, and the lists stop at
+// the retention cap while the count must not: a split taken from the lists
+// would report an untracked file as a modified one (nocx-xn63t.6.40).
+func TestParseCountsUntrackedPastTheRetentionCap(t *testing.T) {
+	// Three records — a tracked one, then a tracked one and an untracked one
+	// — with room for a single record in the lists.
+	res := parse(t, statusUnborn+statusDetached, 1)
+	if res.Total != 3 {
+		t.Fatalf("Total = %d, want 3", res.Total)
+	}
+	if res.Untracked != 1 {
+		t.Fatalf("Untracked = %d, want 1: it is counted as the records go by, never derived from what was retained", res.Untracked)
+	}
+	if len(res.Staged) != 1 || len(res.Unstaged) != 0 {
+		t.Fatalf("retained %d staged / %d unstaged, want the first record only", len(res.Staged), len(res.Unstaged))
+	}
+
+	// The ordinary reading agrees: one record of each kind.
+	whole := parse(t, statusDetached, 5000)
+	if whole.Total != 2 || whole.Untracked != 1 {
+		t.Fatalf("Total/Untracked = %d/%d, want 2/1", whole.Total, whole.Untracked)
+	}
+}
+
 func TestParseCutBelowRecordCapIsCompleteShaped(t *testing.T) {
 	// A traversal cut below the record cap leaves a result that looks
 	// complete: every observed record is in the lists and Total < cap. The

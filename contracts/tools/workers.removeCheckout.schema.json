@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nocx.local/contracts/tools/workers.removeCheckout.schema.json",
   "title": "WorkersRemoveCheckoutParams",
-  "description": "Parameters for the workers.removeCheckout agent tool: remove one or more of nocx's own leftover worker checkouts of the repository your session stands in. Removal is explicit and separate from closing a worker — a close never touches its checkout, and this is the call that takes a left-over one away. Name each checkout by its path, by its branch, or both; both must agree. A checkout holding uncommitted work, a checkout a live worker still holds, and anything that is not one of nocx's checkouts of your repository are all refused by name and left exactly as they were. The branch always stays. There is no override: a person who wants the work gone has a shell.",
+  "description": "Parameters for the workers.removeCheckout agent tool: remove one or more of nocx's own leftover worker checkouts of the repository your session stands in. Removal is explicit and separate from closing a worker — a close never touches its checkout, and this is the call that takes a left-over one away. Name each checkout by its path, by its branch, or both; both must agree. A checkout holding uncommitted work is refused by name and left exactly as it was unless that checkout's own ask says discard, and then the work goes with the checkout and the row names what went, counted. A checkout a live worker still holds, and anything that is not one of nocx's checkouts of your repository, are refused by name either way; so is a checkout whose working state nobody could read, because a discarded directory cannot be handed back. The branch always stays. There is no standing override and no default that discards: the flag is your explicit word, per checkout.",
   "type": "object",
   "additionalProperties": false,
   "required": ["checkouts"],
@@ -26,6 +26,10 @@
             "type": "string",
             "minLength": 1,
             "description": "The branch checked out in the checkout. It resolves to the one working tree of the repository that holds it — and it STAYS in the repository after the removal either way."
+          },
+          "discard": {
+            "type": "boolean",
+            "description": "Whether to take THIS checkout together with the work no commit keeps — a modified file, an untracked file — and with whatever ignored files the directory holds. Absent or false is the ordinary refusal: a checkout holding such work is left exactly as it was and its row says uncommitted, so the work is neither lost nor silently kept from you. True is your explicit word that the work should go, and the row that removes it then names what went, counted. It reaches nothing else: a checkout a live worker still holds, anything that is not one of nocx's checkouts of your repository, and a checkout whose state nobody could read all refuse either way — and the branch always stays, so committed work survives."
           }
         }
       }
@@ -59,6 +63,24 @@
                 "type": "boolean",
                 "description": "True when the checkout directory was removed; its branch is still in the repository. False means nothing was touched and refusal says why."
               },
+              "discarded": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["modified", "untracked"],
+                "description": "Present only on a removed row that threw work away: what no commit kept went with the checkout, counted as git listed it, from the read taken immediately before the removal. Absent on a removed row that discarded nothing, and on every refused row — a refusal removed nothing, so there is nothing to name. Ignored files are in neither count: git's status does not list them, and they go with the directory either way.",
+                "properties": {
+                  "modified": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Files whose change no commit keeps: staged, unstaged and conflicted records, renames included."
+                  },
+                  "untracked": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Files git did not know about at all."
+                  }
+                }
+              },
               "refusal": {
                 "type": "string",
                 "enum": ["uncommitted", "held", "not-ours", "unresolved"],
@@ -72,7 +94,7 @@
             "allOf": [
               {
                 "if": { "properties": { "removed": { "const": false } } },
-                "then": { "required": ["refusal", "detail"] },
+                "then": { "required": ["refusal", "detail"], "properties": { "discarded": false } },
                 "else": { "properties": { "refusal": false, "detail": false } }
               }
             ]

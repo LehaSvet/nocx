@@ -153,3 +153,4 @@ alternative, and what the next person inherits. Add the row here in the same com
 
 | 0086 | [A third-party Homebrew tap may clear quarantine for the unsigned cask](0086-a-third-party-homebrew-tap-may-clear-quarantine-for-the-unsigned-cask.md) | Accepted (owner decision, 2026-09-30; supersedes in part ADR-0003 and ADR-0052) |
 | 0087 | [Linux user installs verify the signed release manifest](0087-linux-user-installs-use-the-signed-release-manifest.md) | Accepted (owner decision, 2026-10-16) |
+| 0088 | [A leftover checkout's work goes with it only when the caller says discard](0088-a-checkout-s-work-goes-with-it-only-when-the-caller-says-discard.md) | Accepted (owner decision, 2026-10-17 on `nocx-xn63t.6.40`; takes back the "no override" half of `nocx-xn63t.1.5`'s refusal, keeps its default) |

@@ -241,7 +241,7 @@ func TestRemoveWorktreeReportsAFailedInvocation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			env, wtPath := withFakeWorktree(t, tc.fake)
 			repo := openRepo(t, env, t.TempDir())
-			err := repo.RemoveWorktree(context.Background(), wtPath)
+			_, err := repo.RemoveWorktree(context.Background(), wtPath, git.RemoveWorktreeOptions{})
 			if err == nil {
 				t.Fatal("RemoveWorktree succeeded with a failed invocation")
 			}
@@ -321,7 +321,7 @@ func TestWorktreeOperationsReportAVanishedGit(t *testing.T) {
 	if _, err := repo.Worktrees(ctx, "master"); err == nil {
 		t.Error("Worktrees succeeded with no git to run")
 	}
-	if err := repo.RemoveWorktree(ctx, wtPath); err == nil {
+	if _, err := repo.RemoveWorktree(ctx, wtPath, git.RemoveWorktreeOptions{}); err == nil {
 		t.Error("RemoveWorktree succeeded with no git to run")
 	}
 	if err := repo.DeleteWorktreeBranch(ctx, "worker-1", "master"); err == nil {
@@ -347,7 +347,7 @@ func TestWorktreeInvocationArgv(t *testing.T) {
 	if _, err := repo.AddWorktree(ctx, "worker-1", "master", wtPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.RemoveWorktree(ctx, wtPath); err != nil {
+	if _, err := repo.RemoveWorktree(ctx, wtPath, git.RemoveWorktreeOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.DeleteWorktreeBranch(ctx, "worker-1", "master"); err != nil {

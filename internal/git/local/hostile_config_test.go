@@ -104,7 +104,7 @@ func TestWorktreeStateIgnoresStatusShowUntrackedFiles(t *testing.T) {
 	}
 
 	var uncommitted *git.ErrWorktreeUncommitted
-	if err := repo.RemoveWorktree(ctx, path); !errors.As(err, &uncommitted) {
+	if _, err := repo.RemoveWorktree(ctx, path, git.RemoveWorktreeOptions{}); !errors.As(err, &uncommitted) {
 		t.Fatalf("RemoveWorktree err = %v, want *git.ErrWorktreeUncommitted", err)
 	}
 	if _, err := os.Stat(filepath.Join(path, "untracked.txt")); err != nil {
@@ -176,13 +176,13 @@ func TestWorktreeReadsRunNoConfiguredDiffProgram(t *testing.T) {
 	// The dirty state read is the one that would take line counts if anything
 	// did, so the removal is driven against it and refused before the worktree
 	// is cleaned and removed for real.
-	if err := repo.RemoveWorktree(ctx, path); err == nil {
+	if _, err := repo.RemoveWorktree(ctx, path, git.RemoveWorktreeOptions{}); err == nil {
 		t.Fatal("the edited worktree was removed; this case needs it dirty to exercise the state read")
 	}
 	if err := os.WriteFile(filepath.Join(path, "tracked.txt"), []byte("v1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.RemoveWorktree(ctx, path); err != nil {
+	if _, err := repo.RemoveWorktree(ctx, path, git.RemoveWorktreeOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.DeleteWorktreeBranch(ctx, "worker-1", "master"); err != nil {

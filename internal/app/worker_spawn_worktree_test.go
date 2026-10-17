@@ -89,16 +89,20 @@ func symlinkedDir(t *testing.T, dir string) string {
 // that opens in it.
 type scriptedGitRepo struct {
 	git.Repo
-	mu              sync.Mutex
-	trees           []git.Worktree
-	treesErr        error
-	head            git.Log
-	headErr         error
-	addCreated      bool
-	addErr          error
-	addCalls        []string
-	removed         []string
-	removeErr       error
+	mu         sync.Mutex
+	trees      []git.Worktree
+	treesErr   error
+	head       git.Log
+	headErr    error
+	addCreated bool
+	addErr     error
+	addCalls   []string
+	removed    []string
+	removeErr  error
+	// discardAsked records what each removal asked for, so a test can pin
+	// that a compensation never reaches past the dirty-work refusal.
+	discardAsked    []bool
+	discard         git.WorktreeDiscard
 	deletedBranches [][2]string
 	deleteErr       error
 	// makeDir has AddWorktree create the directory, the way git would, so a
@@ -134,14 +138,15 @@ func (r *scriptedGitRepo) AddWorktree(_ context.Context, branch, base, path stri
 	return git.WorktreeAdded{Created: r.addCreated}, r.addErr
 }
 
-func (r *scriptedGitRepo) RemoveWorktree(_ context.Context, path string) error {
+func (r *scriptedGitRepo) RemoveWorktree(_ context.Context, path string, opts git.RemoveWorktreeOptions) (git.WorktreeDiscard, error) {
 	r.mu.Lock()
 	r.removed = append(r.removed, path)
+	r.discardAsked = append(r.discardAsked, opts.Discard)
 	r.mu.Unlock()
 	_ = os.RemoveAll(path)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.removeErr
+	return r.discard, r.removeErr
 }
 
 func (r *scriptedGitRepo) DeleteWorktreeBranch(_ context.Context, branch, base string) error {

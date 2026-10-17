@@ -18,8 +18,12 @@ package workers
 // never an answer of safe.
 //
 // The branch is not part of any answer's fate: removal takes the checkout
-// and always leaves the branch. There is no force anywhere in this shape —
-// a person who wants the work gone has a shell.
+// and always leaves the branch. Work no commit keeps — a tracked change, an
+// untracked file — refuses the removal unless the caller says Discard on that
+// checkout, and then the row that removed it names what went with it, counted
+// (nocx-xn63t.6.40, ADR-0088). The discard is a CALLER'S WORD and never a
+// default: nothing here decides for itself that somebody's work may be thrown
+// away, and a call that did not ask cannot lose any.
 
 // CheckoutRef names one checkout a caller asks to remove: by its path, by
 // the branch checked out in it, or by both. A branch resolves to the one
@@ -30,6 +34,19 @@ package workers
 type CheckoutRef struct {
 	Path   string
 	Branch string
+	// Discard is the caller saying it wants the work no commit keeps gone
+	// WITH this checkout: a tracked change, an untracked file, and whatever
+	// ignored files the directory holds. It is false unless it was asked
+	// for, and false is the whole of the old behaviour — a checkout holding
+	// such work is refused `uncommitted` and left exactly as it was.
+	//
+	// It reaches nothing else. A checkout a live worker holds is still
+	// refused `held`, anything that is not one of nocx's checkouts of the
+	// caller's repository is still refused `not-ours`, and a state nobody
+	// could read is still `unresolved` — the last one especially, because a
+	// discarded directory cannot be handed back, and "unreadable" is the
+	// one answer that is not an answer of safe. The branch always stays.
+	Discard bool
 }
 
 // CheckoutRefusal is WHY one checkout was not removed. The set is closed:
@@ -72,8 +89,28 @@ type RemovedCheckout struct {
 	Path    string
 	Branch  string
 	Removed bool
-	Refusal CheckoutRefusal
-	Detail  string
+	// Discarded is the work that went with the checkout: what no commit
+	// kept, counted. It is present exactly when the checkout was removed
+	// AND something was actually thrown away — a removal that asked to
+	// discard a clean checkout discarded nothing, and a refused row removed
+	// nothing at all, so neither has anything to name.
+	Discarded *DiscardedWork
+	Refusal   CheckoutRefusal
+	Detail    string
+}
+
+// DiscardedWork is what a removal took away that no commit keeps, counted the
+// way git listed it: Modified is every status record that is not an untracked
+// file (staged, unstaged, conflicted, rename and all), Untracked is the files
+// git did not know about at all. Ignored files are not in either count —
+// git's status does not list them — and they ride out with the directory
+// either way.
+//
+// The counts are the read taken immediately before the removal, which is the
+// only moment they can be taken: afterwards there is nothing left to count.
+type DiscardedWork struct {
+	Modified  int
+	Untracked int
 }
 
 // CheckoutRemoval is the answer to one removal ask: one row per asked

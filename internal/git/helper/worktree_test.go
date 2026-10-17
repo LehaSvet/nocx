@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/shady2k/nocx/internal/git"
 )
 
 // The linked-worktree operations are not served by the helper (brief
@@ -35,7 +37,8 @@ func TestHelperRepoDoesNotServeTheWorktreeOperations(t *testing.T) {
 			return err
 		}},
 		{"worktree.remove", func() error {
-			return repo.RemoveWorktree(ctx, wtPath)
+			_, err := repo.RemoveWorktree(ctx, wtPath, git.RemoveWorktreeOptions{})
+			return err
 		}},
 		{"worktree.deleteBranch", func() error {
 			return repo.DeleteWorktreeBranch(ctx, "worker-1", "master")

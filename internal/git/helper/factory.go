@@ -220,8 +220,8 @@ func (r *repo) Worktrees(_ context.Context, _ string) ([]git.Worktree, error) {
 	return nil, unserved("worktree.list")
 }
 
-func (r *repo) RemoveWorktree(_ context.Context, _ string) error {
-	return unserved("worktree.remove")
+func (r *repo) RemoveWorktree(_ context.Context, _ string, _ git.RemoveWorktreeOptions) (git.WorktreeDiscard, error) {
+	return git.WorktreeDiscard{}, unserved("worktree.remove")
 }
 
 func (r *repo) DeleteWorktreeBranch(_ context.Context, _, _ string) error {
