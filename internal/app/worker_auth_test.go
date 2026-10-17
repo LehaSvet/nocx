@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -275,6 +276,24 @@ func TestToolAuthorizerAdmitsEnrolledOwnedTreeThroughRealWorkerRecord(t *testing
 	registry, err := agenttools.Assemble(os.DirFS("../../contracts/tools"))
 	if err != nil {
 		t.Fatalf("assemble tools: %v", err)
+	}
+	gotTools := make([]string, 0)
+	for _, tool := range registry.ForGrant(inv.Grant) {
+		gotTools = append(gotTools, tool.Name)
+	}
+	wantTools := []string{
+		"session.list", "session.read", "session.keys", "session.message", "session.run", "session.wait",
+		"workers.holdings", "workers.spawn", "workers.say", "workers.inbox", "workers.report", "workers.close", "workers.removeCheckout",
+	}
+	if !reflect.DeepEqual(gotTools, wantTools) {
+		t.Fatalf("coordinator tools = %v, want exactly %v", gotTools, wantTools)
+	}
+	for _, forbidden := range []string{"files.read", "files.edit", "files.create", "files.delete", "notes.search", "notes.create", "notes.update", "notes.delete"} {
+		for _, got := range gotTools {
+			if got == forbidden {
+				t.Errorf("coordinator tools unexpectedly offer %q", forbidden)
+			}
+		}
 	}
 	workerStore := workers.NewRegistrar(workers.NewMemoryStore(), nil, nil, nil)
 	dispatcher, err := assistant.NewToolDispatcher(registry, workerRecordForTools{workerStore}, localEnv)
