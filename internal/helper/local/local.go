@@ -180,10 +180,12 @@ type Config struct {
 //
 // The failures are told apart by sentinel, because the product renders them
 // as different sentences: endpoint.ErrNoEndpoint is "nothing is serving and
-// this caller may not start one"; an error from the start says the process
-// did not come up; client.ErrHashMismatch, ErrNotOurHelper, ErrSentinelTimeout
-// and ErrLost are all "something answered and it is not the generation we
-// installed".
+// this caller may not start one"; an error from the start says no helper came
+// up — the process failed, or every helper this call started yielded to
+// another that then left the endpoint unserved (endpoint.Ensure makes the
+// start again before it concludes that); client.ErrHashMismatch,
+// ErrNotOurHelper, ErrSentinelTimeout and ErrLost are all "something answered
+// and it is not the generation we installed".
 //
 // ONE CASE HAS NO STABLE SENTINEL YET, and it is written down rather than
 // smoothed over, because L4's refusal is owed a reason from a CLOSED SET and
