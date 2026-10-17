@@ -27,6 +27,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shady2k/nocx/internal/agentdriver"
 	"github.com/shady2k/nocx/internal/assistant"
@@ -248,6 +249,37 @@ func TestABriefingBehindAMenuTypesNothingAndThenDeliversOnce(t *testing.T) {
 	}
 	if enters := s.keys.enterCalls(); enters != 1 {
 		t.Fatalf("Enter calls = %d, want exactly one", enters)
+	}
+}
+
+// A pane can become free while pasteReady is reading it. The observation
+// callback may run before readiness returns; the queue must already be listening
+// so that this change is not lost between the read and the wait.
+func TestABriefingDoesNotLosePaneChangeDuringReadinessProbe(t *testing.T) {
+	s := newBriefingStand(t, "change-during-probe", nil)
+	menuUp(t, s.reader)
+	// Disable the safety retry: delivery must proceed from the change that
+	// happened during its readiness read, not from a later periodic retry.
+	never := make(chan time.Time)
+	s.pm.after = func(time.Duration) <-chan time.Time { return never }
+	s.reader.mu.Lock()
+	s.reader.onRead = func(n int) {
+		if n != 1 {
+			return
+		}
+		s.reader.setFrame(boxFrame(""), agentdriver.StateFreeText, sessionruntime.TargetInput)
+		s.pm.PaneChanged(s.sessionID)
+	}
+	s.reader.mu.Unlock()
+	if err := s.pm.EnqueueBriefing(context.Background(), s.coordinatorSession, s.participant, s.briefing); err != nil {
+		t.Fatalf("EnqueueBriefing: %v", err)
+	}
+	waitForCondition(t, "the briefing to submit after a pane change during its readiness probe", func() bool {
+		phase, ok := s.phase()
+		return ok && phase == assistant.PhaseSubmitted
+	})
+	if got := s.pastedTexts(); len(got) != 1 || got[0] != s.briefing.Text() {
+		t.Fatalf("pastes = %q, want one briefing", got)
 	}
 }
 

@@ -102,6 +102,15 @@ const (
 	phaseIdle    phase = "idle"
 	phaseMenu    phase = "menu"
 	phaseWorking phase = "working"
+	// phaseTrust is the dialog a fresh Claude opens a NEW directory with — the
+	// folder-trust question — and phaseGhost is the screen a real Claude shows
+	// the instant that question is answered: an empty prompt carrying its own
+	// SUGGESTION in the box ("Try \"fix lint errors\""). nocx-xn63t.6.32 is the
+	// defect that pair reproduces: answering the question frees the pane, the
+	// queued task's readiness gate reads the suggestion as typed text, and the
+	// task is never delivered.
+	phaseTrust phase = "trust"
+	phaseGhost phase = "ghost"
 )
 
 // captureMoment names one real corpus capture and the mark
@@ -116,6 +125,12 @@ var moments = map[phase]captureMoment{
 	phaseIdle:    {"claude-idle", 11000},
 	phaseMenu:    {"claude-permission", 49000},
 	phaseWorking: {"claude-working", 17000},
+	phaseTrust:   {"claude-trust", 3000},
+	// 1480ms is INSIDE the window claude-modal draws the suggestion in and
+	// measured by replay, never by timing: the drawing arrives at 1473ms and
+	// is erased at 1505ms. See the corpus manifest's own "idle-suggestion"
+	// mark, which is this same frame.
+	phaseGhost: {"claude-modal", 1480},
 }
 
 // exitCue is the one cue that is not a frame: a worker whose process ends.
@@ -207,7 +222,17 @@ func run() error {
 	out := bufio.NewWriter(os.Stdout)
 	defer func() { _ = out.Flush() }()
 
-	m.setPhase(phaseIdle)
+	// S14_INITIAL_PHASE is a test-only launch fixture. It lets a real worker
+	// begin on a captured permission prompt before workers.spawn starts its
+	// readiness wait; unset preserves the ordinary idle start.
+	initialPhase := phase(strings.TrimSpace(os.Getenv("S14_INITIAL_PHASE")))
+	if initialPhase == "" {
+		initialPhase = phaseIdle
+	}
+	if _, ok := moments[initialPhase]; !ok {
+		return fmt.Errorf("unsupported S14_INITIAL_PHASE %q", initialPhase)
+	}
+	m.setPhase(initialPhase)
 	if _, err := out.Write(m.paintCurrent()); err != nil {
 		return err
 	}
@@ -336,6 +361,13 @@ type mock struct {
 	base  map[phase]paneview.Frame
 	cur   phase
 	echo  string
+	// sel is how far this pane's own menu selection has been moved down from
+	// the mark it started at — a real Claude moves it on a Down key, and the
+	// coordinator's own option call (session.keys with an option that is not
+	// under the cursor) sends one and then waits for the selection to have
+	// moved by exactly one. Nothing but the trust dialog's own two options is
+	// modelled: this fixture answers one question.
+	sel int
 }
 
 func newMock(capturesDir string) (*mock, error) {
@@ -378,6 +410,7 @@ func (m *mock) setPhase(p phase) {
 	defer m.mu.Unlock()
 	m.cur = p
 	m.echo = ""
+	m.sel = 0
 }
 
 // paintCurrent renders this pane's own current frame — its base capture,
@@ -395,6 +428,9 @@ func (m *mock) paintCurrent() []byte {
 // behind.
 func (m *mock) paintLocked() []byte {
 	frame := m.base[m.cur]
+	if m.cur == phaseTrust && m.sel > 0 {
+		frame, _ = selectionDown(m.rules, frame)
+	}
 	if m.echo != "" {
 		frame = grownInputBox(m.rules, frame, m.echo)
 	}
@@ -572,10 +608,11 @@ func (m *mock) handleChunk(chunk []byte) []byte {
 	if isEnter(chunk) {
 		return m.onEnter()
 	}
+	if isDownKey(chunk) {
+		return m.onDown()
+	}
 	if containsEscape(chunk) {
-		// An arrow key or another control sequence this test's own flow
-		// never needs to move (sendOption never sends one when the caller
-		// asks for the option already under the cursor — see the file doc).
+		// Another control sequence this test's own flow never needs to move.
 		// Logged already; nothing to repaint.
 		return nil
 	}
@@ -595,6 +632,12 @@ func (m *mock) onEnter() []byte {
 	case phaseMenu:
 		m.cur = phaseWorking
 		m.echo = ""
+	case phaseTrust:
+		// The folder-trust question answered: a real Claude does not run a
+		// tool here, it hands the person the prompt it was opened for — and
+		// that prompt is the screen this bead is about.
+		m.cur = phaseGhost
+		m.echo = ""
 	default:
 		if m.echo == "" {
 			return nil
@@ -602,6 +645,79 @@ func (m *mock) onEnter() []byte {
 		m.echo = ""
 	}
 	return m.paintLocked()
+}
+
+// onDown moves this pane's own menu selection down one option, which is what
+// one Down key does to a real dialog and what the coordinator's own option
+// call waits to observe before pressing Enter (internal/app/session_keys.go's
+// sendOption, whose awaitSelectionMove refuses a selection that did not move
+// by exactly one). Only the trust dialog's two options are modelled; a second
+// Down, or one on another phase, repaints nothing.
+func (m *mock) onDown() []byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cur != phaseTrust || m.sel > 0 {
+		return nil
+	}
+	m.sel = 1
+	return m.paintLocked()
+}
+
+// isDownKey reports whether chunk is nothing but one Down key's own encoding —
+// CSI or SS3 spelling, the two a terminal sends for the same key.
+func isDownKey(chunk []byte) bool {
+	return string(chunk) == "\x1b[B" || string(chunk) == "\x1bOB"
+}
+
+// selectionDown returns frame with its own menu selection moved one option row
+// down — the state one Down key puts a real Claude's dialog in, which no
+// capture in the corpus holds (every dialog was recorded with its first option
+// under the cursor). The marker column is the one the selected row draws its
+// own "❯" at, and the option below it is the next non-blank row inside the
+// menu's own span.
+func selectionDown(reg *agentdriver.Registry, frame paneview.Frame) (paneview.Frame, bool) {
+	menu, ok := reg.Observe("claude", frame).Menu()
+	if !ok {
+		return frame, false
+	}
+	selected, markerCol := -1, -1
+	for y := menu.Rows.First; y <= menu.Rows.Last && y < len(frame.Lines); y++ {
+		for x, c := range frame.Lines[y] {
+			if c.Text == promptMarker {
+				selected, markerCol = y, x
+				break
+			}
+		}
+		if selected >= 0 {
+			break
+		}
+	}
+	if selected < 0 {
+		return frame, false
+	}
+	next := -1
+	for y := selected + 1; y <= menu.Rows.Last && y < len(frame.Lines); y++ {
+		if strings.TrimSpace(frame.Text(y)) != "" {
+			next = y
+			break
+		}
+	}
+	if next < 0 || markerCol < 0 || markerCol >= len(frame.Lines[next]) {
+		return frame, false
+	}
+	out := frame
+	out.Lines = append([][]paneview.Cell(nil), frame.Lines...)
+	out.Lines[selected] = append([]paneview.Cell(nil), frame.Lines[selected]...)
+	out.Lines[next] = append([]paneview.Cell(nil), frame.Lines[next]...)
+	out.Lines[selected][markerCol] = paneview.Cell{Text: " ", Width: 1}
+	out.Lines[next][markerCol] = paneview.Cell{Text: promptMarker, Width: 1}
+	// The caret goes with it, as Claude's does: the menu's own reading is
+	// anchored on the cursor (claude.rule.json's "belowCursor", read upward
+	// from it), so a selection that moved while the caret stayed put is a
+	// pane whose option list no longer reads — which a real dialog never is.
+	out.CursorY = next
+	out.CursorX = markerCol
+	return out, true
 }
 
 // onText is design §8.2 step 2's echo: the pasted text lands in the input

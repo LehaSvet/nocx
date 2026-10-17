@@ -16,6 +16,7 @@ package agentdriver_test
 // corpus claude.go's note cites.
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/shady2k/nocx/internal/agentdriver"
@@ -186,5 +187,73 @@ func TestInputTextIsUnreadableWhenAMenuDisplacesTheBox(t *testing.T) {
 	}
 	if text, ok := o.InputText(); ok {
 		t.Fatalf("InputText = (%q, true), want ok=false — a menu has displaced the box, there is nothing to read", text)
+	}
+}
+
+// TestInputTextIsEmptyWhenClaudeDrawsItsOwnSuggestion is the failure path
+// nocx-xn63t.6.32 measured on a real session: Claude's empty prompt draws a
+// SUGGESTION in the box it has not been given, and that suggestion is not
+// text the person typed.
+//
+// Observed 2026-10-17 on Claude Code 2.1.296 (owner's working day): the
+// coordinator answered a worker pane's folder-trust question, and four
+// session.read calls over the following minute all reported the same free_text
+// pane whose box row read "\u276f\u00a0Try \"fix lint errors\"" while the worker's queued
+// task stayed at phase "queued" — no delivery, no refusal, no wait. The
+// reading below is why: the suggestion is drawn inside the box's own content
+// rows, so the inputText extractor captured it as the box's text, and every
+// caller that gates on "the box is empty" answered "someone is typing" for a
+// box nobody had touched. The pane's classification never changes while the
+// suggestion sits there, so nothing wakes the queue either; the safety recheck
+// re-reads the same non-empty reading forever.
+//
+// The marks are the corpus's own recorded frames carrying that drawing —
+// claude-modal and claude-idle, replayed at the milliseconds the suggestion is
+// on screen (measured, not guessed: the ghost is present from 1473ms to about
+// 1530ms in claude-modal and near 1450-1500ms in claude-idle, and nowhere else
+// in either capture). The suggestion is drawn in the terminal as SGR 2 (faint)
+// — the paint bytes are "\x1b[39m\u276f\u00a0\x1b[2mTry \"fix lint errors\"" — which is
+// the rendering that distinguishes it from typed text and the one thing this
+// frame type does not carry (paneview.Cell is Text and Width by design), so
+// the rule has to know Claude's own form.
+//
+// The paired direction is the rest of this file: TestInputTextReadsWhatWasTyped
+// asserts that content a person actually typed is still read, so a rule that
+// answered "" for every prompt row could not pass both.
+func TestInputTextIsEmptyWhenClaudeDrawsItsOwnSuggestion(t *testing.T) {
+	reg := registry(t)
+	for _, m := range []struct {
+		capture string
+		atMs    int64
+		drawn   string
+	}{
+		{"claude-modal", 1480, `Try "fix lint errors"`},
+		{"claude-idle", 1470, `Try "fix typecheck errors"`},
+	} {
+		f := replay(t, m.capture, m.atMs)
+		o := reg.Observe("claude", f)
+		if o.State != agentdriver.StateFreeText {
+			t.Fatalf("%s@%dms: state = %q, want free_text — a fresh prompt with a suggestion on it is an idle pane", m.capture, m.atMs, o.State)
+		}
+		// The premise, checked so this test cannot quietly stop covering the
+		// drawing it exists for: the frame really does carry the suggestion,
+		// on the one row the box's own grammar reads as content.
+		onScreen := false
+		for y := range f.Lines {
+			if strings.Contains(f.Text(y), m.drawn) {
+				onScreen = true
+				break
+			}
+		}
+		if !onScreen {
+			t.Fatalf("%s@%dms: no row carries %q — this frame no longer exercises the drawing", m.capture, m.atMs, m.drawn)
+		}
+		text, ok := o.InputText()
+		if !ok {
+			t.Fatalf("%s@%dms: InputText ok=false, want true (the rule reads this box)", m.capture, m.atMs)
+		}
+		if text != "" {
+			t.Errorf("%s@%dms: InputText = %q, want \"\" — Claude's own suggestion is not text in the box, and reading it as text leaves a caller that gates on an empty box refusing every delivery for as long as the prompt stands (nocx-xn63t.6.32)", m.capture, m.atMs, text)
+		}
 	}
 }

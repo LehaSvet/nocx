@@ -849,7 +849,11 @@ func s14ReadTarget(t *testing.T, client *s14MCPClient, sessionID, target string)
 type s14ReadResult struct {
 	SessionID      string `json:"sessionId"`
 	Classification string `json:"classification"`
-	Target         *struct {
+	// Text is the screen the read answered with, as text (contracts/tools/
+	// session.read.schema.json's own required field). It is what a test
+	// asserts a DRAWING on the pane with, when the drawing is not a state.
+	Text   string `json:"text"`
+	Target *struct {
 		TokenID string `json:"tokenId"`
 		Kind    string `json:"kind"`
 		Menu    *struct {
