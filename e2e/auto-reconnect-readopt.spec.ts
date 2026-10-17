@@ -204,6 +204,27 @@ test('reconnects and reattaches a live pane after backend restart without a clic
     expect(aliveFromTheOS(before.pid)).toBe(true)
     await expect(page.locator('body')).not.toContainText(/The connection is gone/)
 
+    // AND NOTHING THE PRODUCT SHOWS SAYS THIS SESSION ENDED. Two checks, one
+    // per sentence an earlier coordinator restart produced over a shell that
+    // was still running and was taken back by the replacement.
+
+    // (1) THE UNRECONCILED NOTICE (nocx-xn63t.6.34): an open command carried
+    // over from the previous coordinator used to wear "<n> in this tab:
+    // neither running nor finished" until a later restart settled it. The
+    // settle now runs off the replay a re-adoption performs, so it is gone
+    // before this page draws it — and this is the only sentence the product
+    // builds from those words (frontend/src/unreconciled-notice.tsx).
+    await expect(page.locator('body')).not.toContainText(/neither running nor finished/)
+
+    // (2) THE INTERRUPTION NOTIFICATIONS (nocx-xn63t.6.33): "Local session was
+    // interrupted" and "Session on <host> was interrupted", which monitorExit
+    // raised for a Stop. No legitimate surface prints "was interrupted" in
+    // this scenario — the pane's own words for a loss are "The connection is
+    // gone" (asserted above), and a frozen row whose status is `interrupted`
+    // renders as unknown rather than as this phrase — so a match here is one
+    // of those two notifications, for a local session here.
+    await expect(page.locator('body')).not.toContainText(/was interrupted/)
+
     // THE SESSION THE REPLACEMENT RE-ADOPTED IS THE ONE THE PANE WAS THE PIPE
     // OF — same session id, same pane. The entry carries the whole identity
     // (instanceId, sessionEpoch, replayFrom, attached), and objectContaining
