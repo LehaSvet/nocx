@@ -2,9 +2,6 @@
 
 #include <stdatomic.h>
 #include <stdlib.h>
-#if defined(__GLIBC__)
-#include <malloc.h>
-#endif
 #include <string.h>
 
 /* ------------------------------------------------------------------ effects */
@@ -517,22 +514,4 @@ GhosttyResult nocxMouseEncode(GhosttyMouseEncoder encoder,
   r = ghostty_mouse_encoder_encode(encoder, event, out, out_len, out_written);
   ghostty_mouse_event_free(event);
   return r;
-}
-
-
-/* Test-only measurement helpers. glibc reports live allocator bytes and
- * separately mapped heap blocks; the fallback keeps non-glibc builds linkable. */
-uint64_t nocxCHeapInUse(void) {
-#if defined(__GLIBC__) && defined(__GLIBC_PREREQ) && __GLIBC_PREREQ(2, 33)
-    struct mallinfo2 info = mallinfo2();
-    return (uint64_t)info.uordblks + (uint64_t)info.hblkhd;
-#else
-    return 0;
-#endif
-}
-void *nocxCHeapProbeAlloc(size_t size) { return malloc(size); }
-void nocxCHeapProbeFree(void *ptr) { free(ptr); }
-void nocxCHeapProbeTouch(void *ptr, size_t size) {
-    unsigned char *bytes = (unsigned char *)ptr;
-    for (size_t i = 0; i < size; i++) bytes[i] = (unsigned char)i;
 }
