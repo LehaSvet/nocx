@@ -33,6 +33,8 @@ package app
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -43,6 +45,7 @@ import (
 	"github.com/shady2k/nocx/internal/sessionruntime"
 	"github.com/shady2k/nocx/internal/storage/storagetest"
 	"github.com/shady2k/nocx/internal/transport"
+	"golang.org/x/sys/unix"
 )
 
 // TestASessionsScreenOutlivesTheCoordinatorThatOpenedIt is the acceptance
@@ -56,9 +59,9 @@ func TestASessionsScreenOutlivesTheCoordinatorThatOpenedIt(t *testing.T) {
 	t.Cleanup(func() { endTheDaemon(t, filepath.Join(helperRoot(home, src.hash()), "nocx-helper")) })
 
 	first := bootLocalAppOn(t, src)
-	opened, err := first.Transport.OpenSession(context.Background(), transport.OpenSpec{Cols: 100, Rows: 30})
-	if err != nil {
-		t.Fatalf("opening a local pane through the shipped opener: %v", err)
+	opened, openErr := first.Transport.OpenSession(context.Background(), transport.OpenSpec{Cols: 100, Rows: 30})
+	if openErr != nil {
+		t.Fatalf("opening a local pane through the shipped opener: %v", openErr)
 	}
 	sid := opened.Session.ID()
 
@@ -74,6 +77,13 @@ func TestASessionsScreenOutlivesTheCoordinatorThatOpenedIt(t *testing.T) {
 		t.Fatalf("watching the pane: %v", err)
 	}
 	before := waitForMarker(t, first, sid, marker)
+	// Keep a shell trap running across the coordinator restart. Its trap reads
+	// the live PTY winsize when SIGWINCH arrives from the post-restart resize.
+	const winchMarker = "RESTART-RESIZE-WINCH"
+	if _, err := opened.Session.Write([]byte("trap 'WINCH_SEEN=1' WINCH; echo WINCH-TRAP-READY\n")); err != nil {
+		t.Fatalf("starting the SIGWINCH probe in the helper PTY: %v", err)
+	}
+	waitForMarkerAnywhere(t, first, sid, "WINCH-TRAP-READY")
 	// The FIRST coordinator's read is a frame of the session's own size, and it
 	// is asserted here rather than beside the resolution below: everything
 	// above the gap is unconditional, so a frame that came back at some other
@@ -178,6 +188,66 @@ func TestASessionsScreenOutlivesTheCoordinatorThatOpenedIt(t *testing.T) {
 	if after.Cols != 100 || after.Rows != 30 {
 		t.Errorf("the screen came back at %dx%d, want the 100x30 the session was opened at", after.Cols, after.Rows)
 	}
+
+	restored, err := second.Session.Get(sid)
+	if err != nil {
+		t.Fatalf("getting the re-adopted session to resize: %v", err)
+	}
+	// Resize through the adopted session channel, then query TIOCGWINSZ on
+	// the helper-owned PTY slave. The helper session entry carries the shell
+	// pid, and /proc/<pid>/fd/0 is the slave the shell reads from.
+	if err := restored.Resize(context.Background(), session.Size{Cols: 132, Rows: 43}); err != nil {
+		t.Fatalf("resizing the re-adopted helper session: %v", err)
+	}
+	if err := waitForPTYWinsize(t, afterPID, 132, 43); err != nil {
+		t.Fatal(err)
+	}
+	// The PTY ioctl also raises SIGWINCH to the foreground process group. The
+	// shell remains in its normal prompt loop; ask it to report the trap state
+	// and the winsize directly from its tty after the ioctl.
+	if _, err := restored.Write([]byte("echo " + winchMarker + "-$WINCH_SEEN; stty size\n")); err != nil {
+		t.Fatalf("asking the re-adopted shell to report SIGWINCH: %v", err)
+	}
+	resized := waitForMarkerAnywhere(t, second, sid, winchMarker)
+	var screen strings.Builder
+	for row := 0; row < resized.Rows; row++ {
+		screen.WriteString(resized.Text(row))
+		screen.WriteByte('\n')
+	}
+	if got := screen.String(); !strings.Contains(got, "43 132") {
+		t.Fatalf("the shell's stty size output %q does not show 43 132", got)
+	}
+	if got := screen.String(); !strings.Contains(got, winchMarker+"-1") {
+		t.Fatalf("the shell output %q does not show the SIGWINCH trap ran", got)
+	}
+	if resized.Cols != 132 || resized.Rows != 43 {
+		t.Fatalf("the re-adopted screen is %dx%d after resize, want 132x43", resized.Cols, resized.Rows)
+	}
+}
+
+// waitForPTYWinsize reads the helper-owned PTY slave directly; no shell or
+// coordinator size report can substitute for the kernel's TIOCGWINSZ value.
+func waitForPTYWinsize(t *testing.T, pid, cols, rows int) error {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		fd, err := os.Open(fmt.Sprintf("/proc/%d/fd/0", pid))
+		if err != nil {
+			return fmt.Errorf("open helper shell tty for pid %d: %w", pid, err)
+		}
+		ws, ioctlErr := unix.IoctlGetWinsize(int(fd.Fd()), unix.TIOCGWINSZ)
+		_ = fd.Close()
+		if ioctlErr != nil {
+			return fmt.Errorf("TIOCGWINSZ for helper shell pid %d: %w", pid, ioctlErr)
+		}
+		last = fmt.Sprintf("%dx%d", ws.Col, ws.Row)
+		if int(ws.Col) == cols && int(ws.Row) == rows {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return fmt.Errorf("helper PTY winsize is %s, want %dx%d", last, cols, rows)
 }
 
 // bootLocalAppOn boots the shipped composition root and stops it when the test
@@ -215,6 +285,31 @@ func waitForMarker(t *testing.T, a *App, sid session.ID, marker string) paneview
 		if err == nil {
 			if line := f.Text(2); strings.Contains(line, marker) {
 				return f
+			}
+		} else {
+			lastErr = err
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("the marker %q never reached the screen read (last error: %v)", marker, lastErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// waitForMarkerAnywhere is for asynchronous terminal replies such as a shell
+// trap. Unlike a command's normal output, its line depends on the cursor where
+// the signal arrived.
+func waitForMarkerAnywhere(t *testing.T, a *App, sid session.ID, marker string) paneview.Frame {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	var lastErr error
+	for {
+		f, err := a.paneViews.Frame(string(sid))
+		if err == nil {
+			for row := 0; row < f.Rows; row++ {
+				if strings.Contains(f.Text(row), marker) {
+					return f
+				}
 			}
 		} else {
 			lastErr = err
