@@ -131,6 +131,17 @@ describe('a restored tab says which blocks nobody could check (nocx-k6p18.5)', (
     ).toBeTruthy()
   })
 
+  // AND IT IS THE BAND VARIANT OF THAT CARD (nocx-xn63t.6.36). The owner's
+  // decision: the notice is a band of the pane rather than a card put into it,
+  // so the treatment lives in the kit and this surface only asks for it. The
+  // alternative — the surface setting a radius or a margin under the card —
+  // is the repaint the kit's rule forbids, and it is what left a 32px empty
+  // band between the notice and the pane. Measured: e2e/unreconciled-notice-band.
+  it('asks the kit for the band variance, and never paints one here', () => {
+    mount([row('hostUnreachable')])
+    expect(card()!.getAttribute('data-band')).toBe('')
+  })
+
   // Placement only. A surface may place a kit component and may never repaint
   // it (frontend/src/ui/README.md).
   it('repaints nothing: its stylesheet places and no more', () => {

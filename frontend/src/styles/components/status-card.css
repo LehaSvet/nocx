@@ -22,6 +22,36 @@
   margin-bottom: var(--space-8);
 }
 
+/* BAND — the card attached to the edge of the thing it belongs to
+   (nocx-xn63t.6.36: the third state's notice above the pane's own content).
+
+   A band gives up the rounded box AND THE AIR BELOW ITSELF. That air is in the
+   base rule above because the next thing after a card is unknown; a band has a
+   known neighbour, and the 32px it used to reserve was read — correctly — as an
+   empty band between the notice and the pane. The gap is removed HERE, at the
+   component that owns it, and never by a negative margin in a surface: a
+   surface may place a kit component and may not repaint it
+   (frontend/src/ui/README.md).
+
+   The leading edge stays. It is the tone's only paint, and the one part of the
+   frame that carries a fact, so the other three sides go and the `border`
+   shorthand is deliberately not used: it would reset the style the tone rules
+   colour. */
+.ui-status-card[data-band] {
+  border-top: none;
+  border-right: none;
+  border-bottom: none;
+  border-radius: 0;
+  /* The pane's own chrome colour, so the band and whatever chrome the pane
+     draws under it read as one region rather than two cards that happen to
+     touch. Eleven of the twelve themes give --color-terminal-chrome the same
+     value as --color-surface, so there the variance is geometry alone; the
+     light theme is the one where the two roles differ, and a white card on a
+     grey pane was the wrong one of the two. */
+  background: var(--color-terminal-chrome);
+  margin-bottom: 0;
+}
+
 .ui-status-card[data-tone='ok'] {
   border-left-color: var(--color-success);
 }
