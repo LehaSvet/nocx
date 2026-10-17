@@ -56,11 +56,14 @@ var (
 type DispatchRefusalError struct {
 	Method string
 	Reason string
+	Cause  error
 }
 
 func (e *DispatchRefusalError) Error() string {
 	return fmt.Sprintf("assistant dispatch: %s: %s", e.Method, e.Reason)
 }
+
+func (e *DispatchRefusalError) Unwrap() error { return e.Cause }
 
 func dispatchAbortedError(invocation ToolInvocation, result *modelResult) error {
 	reason := ""

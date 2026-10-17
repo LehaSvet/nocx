@@ -1,21 +1,14 @@
 package app
 
-// The nocx-xn63t.1 review's blocker 1, held at the layer the product's own
-// coordinators actually cross: callerGrant is the grant every admitted
-// external coordinator is minted with, and it permits delegate while it
-// refuses mutate-reversible. Under that mint a worktree spawn — which creates
-// a branch and a linked checkout, a reversible mutation — must be REFUSED
-// before anything is created, and a plain spawn must still go through: the
-// coordinator's decision was that requiring mutation may not take delegation
-// away. The refusal arrives from the dispatch layer's effect gate, which runs
-// before any capability is constructed and before any side effect exists, so
-// the refusal type itself is the proof of "before side effects".
+// The nocx-xn63t.6.31 policy assertion: callerGrant is the grant every
+// admitted external coordinator is minted with. Delegation and worktree
+// creation are distinct effects (ADR-0053); the grant permits both for the
+// coordinator's own session/environment so its worktree ask can reach the
+// app's worktree planner.
 
 import (
 	"context"
-	"errors"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/shady2k/nocx/internal/agenttools"
@@ -94,31 +87,15 @@ func dispatchSpawnWithGrant(t *testing.T, rec *spawnPolicyRecord, grant content.
 	return err
 }
 
-func TestSpawnUnderTheProductMintRefusesTheWorktreeAndAllowsThePlain(t *testing.T) {
+func TestSpawnUnderTheProductMintAllowsWorktreeAndPlainSpawn(t *testing.T) {
 	grant := callerGrant(session.ID("sess-coordinator"), "env-local", workerTestWorkspace)
-
-	plainRec := &spawnPolicyRecord{}
-	if plainErr := dispatchSpawnWithGrant(t, plainRec, grant, `{"command":"claude","task":"read it"}`); plainErr != nil {
-		var plainRefusal *assistant.DispatchRefusalError
-		if errors.As(plainErr, &plainRefusal) {
-			t.Fatalf("plain spawn refused by the effect gate: %s — requiring mutation took delegation away", plainRefusal.Reason)
+	for _, params := range []string{`{"command":"claude","task":"read it"}`, `{"command":"claude","task":"read it","worktree":{"branch":"feat/x"}}`} {
+		rec := &spawnPolicyRecord{}
+		if err := dispatchSpawnWithGrant(t, rec, grant, params); err != nil {
+			t.Fatalf("spawn under product grant (%s): %v", params, err)
 		}
-		t.Fatalf("plain spawn under the product mint: %v", plainErr)
-	}
-	if len(plainRec.registered) != 1 {
-		t.Fatalf("plain spawn registered %d workers, want 1", len(plainRec.registered))
-	}
-
-	worktreeRec := &spawnPolicyRecord{}
-	worktreeErr := dispatchSpawnWithGrant(t, worktreeRec, grant, `{"command":"claude","task":"read it","worktree":{"branch":"feat/x"}}`)
-	var refusal *assistant.DispatchRefusalError
-	if !errors.As(worktreeErr, &refusal) {
-		t.Fatalf("worktree spawn under the product mint: err = %v, want the effect gate's refusal", worktreeErr)
-	}
-	if !strings.Contains(refusal.Reason, "mutate-reversible") {
-		t.Fatalf("refusal = %q, want it to name the refused mutate-reversible row", refusal.Reason)
-	}
-	if len(worktreeRec.registered) != 0 {
-		t.Fatalf("the refused spawn reached the record and registered %+v — the checkout would already exist", worktreeRec.registered)
+		if len(rec.registered) != 1 {
+			t.Fatalf("spawn registered %d workers, want 1", len(rec.registered))
+		}
 	}
 }

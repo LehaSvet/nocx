@@ -636,8 +636,11 @@ func callerGrant(sid session.ID, environmentID, workspace string) content.Grant 
 	permit := content.EffectRow{Decision: content.DecisionPermit}
 	refuse := content.EffectRow{Decision: content.DecisionRefuse}
 	return content.EffectPolicy{
-		Observe:           permit,
-		MutateReversible:  refuse,
+		Observe: permit,
+		// A coordinator's worktree spawn creates a branch and linked
+		// checkout in its own repository; callerGrant's run fence below
+		// keeps this reversible mutation within its session/environment.
+		MutateReversible:  permit,
 		MutateDestructive: permit,
 		PrivilegeChange:   refuse,
 		Disclose:          refuse,

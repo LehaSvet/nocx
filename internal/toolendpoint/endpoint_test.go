@@ -431,6 +431,23 @@ func TestEndpointRefusesMalformedOversizedUnknownAndNotification(t *testing.T) {
 	}
 }
 
+func TestEndpointReturnsNamedDispatchRefusalInsteadOfInternalError(t *testing.T) {
+	const cause = "workers.spawn: the coordinator's pane has no recorded directory, so there is no repository to create a worktree from"
+	dispatch := &testDispatcher{err: &assistant.DispatchRefusalError{Method: "workers.spawn", Reason: cause}}
+	ep := startEndpoint(t, endpointConfig(t, &testAuthorizer{}, dispatch))
+	conn := dialEndpoint(t, ep)
+	if _, err := io.WriteString(conn, `{"jsonrpc":"2.0","id":1,"method":"workers.spawn","params":{}}`+"\n"); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	response := readResponse(t, conn)
+	if response.Error == nil || response.Error.Code != rpcDomainError || response.Error.Message == "internal error" {
+		t.Fatalf("response error = %+v, want classified request refusal", response.Error)
+	}
+	if !strings.Contains(response.Error.Data.Reason, "no repository") {
+		t.Fatalf("response reason = %q, want no repository", response.Error.Data.Reason)
+	}
+}
+
 func TestEndpointMapsDispatcherRefusalsToJSONRPC(t *testing.T) {
 	cases := []struct {
 		name string
