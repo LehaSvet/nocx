@@ -63,13 +63,21 @@ func WorktreeCheckoutArgs(path, branch string) []string {
 	return []string{"worktree", "add", "--", path, branch}
 }
 
-// WorktreeRemoveArgs removes one linked worktree: git worktree remove <path>.
-// There is no --force form here and no argument that adds one (brief
-// nocx-xn63t.1.1): removing a worktree that holds work is refused by the
-// caller and again by git, and a person who wants that work gone has a shell.
+// WorktreeRemoveArgs removes one linked worktree: git worktree remove
+// [--force] <path>. force is git's own --force, passed only when the caller
+// has explicitly asked for the work no commit keeps to go with the checkout
+// (nocx-xn63t.6.40); without it git refuses a worktree holding a modified or
+// untracked file, and that refusal is the one the domain maps to
+// ErrWorktreeUncommitted.
+//
+// A worktree git was asked to LOCK is still left alone: one --force removes a
+// dirty worktree but not a locked one, and the lock is git's answer to give.
 //
 // The path is placed after -- for the reason WorktreeCheckoutArgs gives.
-func WorktreeRemoveArgs(path string) []string {
+func WorktreeRemoveArgs(path string, force bool) []string {
+	if force {
+		return []string{"worktree", "remove", "--force", "--", path}
+	}
 	return []string{"worktree", "remove", "--", path}
 }
 

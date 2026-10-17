@@ -11,9 +11,18 @@ package app
 // location under the worktrees root is the one marker of "nocx's". A second
 // walk here would be a second answer that agrees until the day it doesn't.
 // What is added on top is only the refusals and the two writes: the git
-// seam's own RemoveWorktree — which refuses uncommitted work itself and has
-// no force — and the row drop that keeps the durable record from listing a
+// seam's own RemoveWorktree — which refuses uncommitted work itself unless
+// the ask carries the discard, and which is where the discarded counts come
+// from — and the row drop that keeps the durable record from listing a
 // checkout it no longer has.
+//
+// THE DISCARD IS THE CALLER'S OWN WORD, per checkout, and it moves exactly
+// one refusal (nocx-xn63t.6.40, ADR-0088): the seam is asked to take the work
+// no commit keeps away with the directory, and the row then names what went.
+// Every other refusal is checked before the seam is reached — a live worker's
+// hold, the location marker, an unreadable state — so none of them can be
+// waived by asking to discard, and a checkout that is not nocx's is never a
+// candidate in the first place.
 //
 // THE BRANCH ALWAYS STAYS. RemoveWorktree leaves it, and nothing here calls
 // DeleteWorktreeBranch: that operation exists for the one compensation a
@@ -328,10 +337,12 @@ func (c *workerCheckouts) removeOne(
 			"the checkout's working state could not be read (%s), and unreadable is never clean; nothing was removed", tree.Reason)
 	}
 
-	// The seam refuses uncommitted work itself, and has no force: the
-	// answers below are the seam's own refusals, carried rather than
-	// re-decided here.
-	if err := repo.RemoveWorktree(ctx, tree.Path); err != nil {
+	// The seam refuses uncommitted work itself unless the ask says to
+	// discard it, and answers what it took: the refusals below are the
+	// seam's own, carried rather than re-decided here, and the counts are
+	// the read the seam made immediately before the removal.
+	discarded, err := repo.RemoveWorktree(ctx, tree.Path, git.RemoveWorktreeOptions{Discard: ref.Discard})
+	if err != nil {
 		lg.Warn("worker checkouts: remove the checkout", "path", tree.Path, "error", err)
 		switch {
 		case errors.As(err, new(*git.ErrWorktreeUncommitted)):
@@ -348,6 +359,19 @@ func (c *workerCheckouts) removeOne(
 				"the removal failed: %s; what is on disk now is not claimed", err)
 		}
 	}
-	lg.Info("worker checkouts: the checkout is removed", "path", tree.Path, "branch", tree.Branch)
-	return workers.RemovedCheckout{Path: tree.Path, Branch: tree.Branch, Removed: true}
+	row := workers.RemovedCheckout{Path: tree.Path, Branch: tree.Branch, Removed: true}
+	// WHAT WENT GOES IN THE ANSWER. The row carries no counts when nothing
+	// was discarded: a clean removal threw nothing away, and a row that
+	// answered "0 modified, 0 untracked" would claim a reading of work that
+	// was never there to read.
+	if discarded.Modified > 0 || discarded.Untracked > 0 {
+		row.Discarded = &workers.DiscardedWork{
+			Modified:  discarded.Modified,
+			Untracked: discarded.Untracked,
+		}
+	}
+	lg.Info("worker checkouts: the checkout is removed",
+		"path", tree.Path, "branch", tree.Branch,
+		"discarded_modified", discarded.Modified, "discarded_untracked", discarded.Untracked)
+	return row
 }

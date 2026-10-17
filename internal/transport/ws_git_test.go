@@ -156,8 +156,8 @@ func (r *stubGitRepo) Worktrees(_ context.Context, _ string) ([]git.Worktree, er
 	return nil, errors.New("stubGitRepo: Worktrees not scripted")
 }
 
-func (r *stubGitRepo) RemoveWorktree(_ context.Context, _ string) error {
-	return errors.New("stubGitRepo: RemoveWorktree not scripted")
+func (r *stubGitRepo) RemoveWorktree(_ context.Context, _ string, _ git.RemoveWorktreeOptions) (git.WorktreeDiscard, error) {
+	return git.WorktreeDiscard{}, errors.New("stubGitRepo: RemoveWorktree not scripted")
 }
 
 func (r *stubGitRepo) DeleteWorktreeBranch(_ context.Context, _, _ string) error {

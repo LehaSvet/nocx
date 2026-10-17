@@ -519,6 +519,7 @@ func (r *Repo) statusIn(ctx context.Context, dir string, env []string) (git.Stat
 		Unstaged:   parsed.Unstaged,
 		Conflicted: parsed.Conflicted,
 		Total:      parsed.Total,
+		Untracked:  parsed.Untracked,
 	}
 	if res.cut {
 		st.Completeness = git.CompletenessCut

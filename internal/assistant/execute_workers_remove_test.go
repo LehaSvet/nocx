@@ -13,6 +13,11 @@ package assistant
 // The refusals themselves are the service's (internal/app, the holdings
 // walk); what this surface owes is that they reach the caller VERBATIM, in
 // the ask's order, with a removed row carrying no refusal at all.
+//
+// The discard (nocx-xn63t.6.40) adds the two things this surface does own:
+// the ask's OWN flag travels on the ref of the checkout it was asked about
+// and nowhere else, and the counts the walk answered reach the wire on the
+// removed row — and on no other row, which the schema itself forbids.
 
 import (
 	"context"
@@ -79,6 +84,12 @@ func TestWorkerRemoveCheckoutDTOConformsToContract(t *testing.T) {
 				Branch:  "feat/nope",
 				Refusal: workers.CheckoutRefusalNotOurs,
 				Detail:  `no checkout of this repository holds branch "feat/nope", so there is nothing of nocx's to remove`,
+			},
+		}},
+		{"a removed row that discarded work", []workers.RemovedCheckout{
+			{
+				Path: "/wt/nocx-left", Branch: "feat/left", Removed: true,
+				Discarded: &workers.DiscardedWork{Modified: 2, Untracked: 3},
 			},
 		}},
 	}
@@ -209,6 +220,94 @@ func TestWorkerRemoveCheckoutRefusesAnUnanswerableAsk(t *testing.T) {
 	}
 }
 
+// Criterion: the discarded counts are what the WALK answered — carried, not
+// recomputed — and they ride only the row that removed something. The
+// refusal in the same answer threw nothing away, so it names nothing.
+func TestWorkerRemoveCheckoutCarriesTheDiscardedCountsOnTheRemovedRowOnly(t *testing.T) {
+	rec := &fakeWorkerRecord{removal: workers.CheckoutRemoval{Items: []workers.RemovedCheckout{
+		{
+			Path: "/wt/nocx-left", Branch: "feat/left", Removed: true,
+			Discarded: &workers.DiscardedWork{Modified: 2, Untracked: 3},
+		},
+		{
+			Path: "/wt/nocx-held", Branch: "feat/held",
+			Refusal: workers.CheckoutRefusalHeldByWorker,
+			Detail:  "a live worker holds the checkout at /wt/nocx-held; close the worker first",
+		},
+	}}}
+	out, err := executeWorkerRemoveCheckout(context.Background(),
+		testCoordinator("sess-coordinator"),
+		json.RawMessage(`{"checkouts":[{"path":"/wt/nocx-left","discard":true},{"path":"/wt/nocx-held"}]}`),
+		workerSeams(rec))
+	if err != nil {
+		t.Fatalf("workers.removeCheckout: %v", err)
+	}
+	var decoded struct {
+		Checkouts []workerRemoveItemResult `json:"checkouts"`
+	}
+	if unmarshalErr := json.Unmarshal([]byte(out), &decoded); unmarshalErr != nil {
+		t.Fatalf("decode result: %v", unmarshalErr)
+	}
+	if len(decoded.Checkouts) != 2 {
+		t.Fatalf("rows = %+v, want one per ask", decoded.Checkouts)
+	}
+	first := decoded.Checkouts[0]
+	if first.Discarded == nil || first.Discarded.Modified != 2 || first.Discarded.Untracked != 3 {
+		t.Fatalf("row 0 = %+v, want the walk's own counts (2 modified, 3 untracked)", first)
+	}
+	if decoded.Checkouts[1].Discarded != nil {
+		t.Fatalf("row 1 = %+v, want no discarded work on a refusal that removed nothing", decoded.Checkouts[1])
+	}
+
+	// AND THE FLAG TRAVELLED ON ITS OWN CHECKOUT: the ask discarded one and
+	// merely asked about the other, and the service must be able to tell.
+	if len(rec.removedRefs) != 2 {
+		t.Fatalf("refs = %+v, want one per ask", rec.removedRefs)
+	}
+	if !rec.removedRefs[0].Discard {
+		t.Fatalf("ref 0 = %+v, want the discard the ask named", rec.removedRefs[0])
+	}
+	if rec.removedRefs[1].Discard {
+		t.Fatalf("ref 1 = %+v, want no discard: the ask named one, and it was for the other checkout", rec.removedRefs[1])
+	}
+}
+
+// Criterion, the interval end other direction: the schema itself refuses a
+// refusal that claims discarded work. The wire shape would otherwise permit
+// a row saying "nothing was removed, and here is what went" — one row telling
+// two stories — and the contract is where that has to be impossible, not the
+// executor that happens to build it correctly today.
+func TestTheRemoveCheckoutContractRefusesDiscardedWorkOnARefusedRow(t *testing.T) {
+	// The value is the WIRE's, decoded the way the dispatcher decodes one
+	// (validateToolResult unmarshals the executor's JSON): a hand-built Go
+	// value is not the payload, and the schema library's type checker
+	// refuses []map[string]any outright — a case that would then pass for a
+	// reason that has nothing to do with the clause being tested.
+	var value any
+	if err := json.Unmarshal([]byte(`{"checkouts":[{`+
+		`"path":"/wt/nocx-dirty","branch":"feat/dirty","removed":false,`+
+		`"refusal":"uncommitted","detail":"nothing was removed",`+
+		`"discarded":{"modified":1,"untracked":0}}]}`), &value); err != nil {
+		t.Fatalf("decode the payload: %v", err)
+	}
+	if err := workerRemoveCheckoutResultSchema(t).Validate(value); err == nil {
+		t.Fatal("the contract accepted a refused row claiming discarded work")
+	}
+
+	// AND THE OTHER DIRECTION, so the refusal above is the clause and not the
+	// row: the same row without the field is what the executor produces and
+	// what the contract must accept.
+	var clean any
+	if err := json.Unmarshal([]byte(`{"checkouts":[{`+
+		`"path":"/wt/nocx-dirty","branch":"feat/dirty","removed":false,`+
+		`"refusal":"uncommitted","detail":"nothing was removed"}]}`), &clean); err != nil {
+		t.Fatalf("decode the clean payload: %v", err)
+	}
+	if err := workerRemoveCheckoutResultSchema(t).Validate(clean); err != nil {
+		t.Fatalf("the contract refused a refusal that claims nothing: %v", err)
+	}
+}
+
 // Criterion, the third check: the REAL result off the REAL dispatcher —
 // schema validation, the narrow, the executor map — satisfies the contract
 // when a coordinator removes one checkout and is refused another.
@@ -218,7 +317,10 @@ func TestWorkerRemoveCheckout_OverTheWireConformsToContract(t *testing.T) {
 		t.Fatalf("assemble tools: %v", err)
 	}
 	rec := &fakeWorkerRecord{removal: workers.CheckoutRemoval{Items: []workers.RemovedCheckout{
-		{Path: "/wt/nocx-gone", Branch: "feat/gone", Removed: true},
+		{
+			Path: "/wt/nocx-gone", Branch: "feat/gone", Removed: true,
+			Discarded: &workers.DiscardedWork{Modified: 1, Untracked: 2},
+		},
 		{
 			Path: "/wt/nocx-dirty", Branch: "feat/dirty",
 			Refusal: workers.CheckoutRefusalUncommitted,
@@ -237,7 +339,7 @@ func TestWorkerRemoveCheckout_OverTheWireConformsToContract(t *testing.T) {
 		},
 		Grant: workerGrantForTest(),
 		RawParams: json.RawMessage(
-			`{"checkouts":[{"branch":"feat/gone"},{"path":"/wt/nocx-dirty"}]}`),
+			`{"checkouts":[{"branch":"feat/gone","discard":true},{"path":"/wt/nocx-dirty"}]}`),
 	}
 	out, dispatchErr := dispatcher.Dispatch(invocation)
 	if dispatchErr != nil {

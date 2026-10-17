@@ -281,10 +281,23 @@ type workerCloseWorktreeResult struct {
 
 // workerRemoveRef is one checkout a removal ask names: by path, by branch,
 // or both — both must agree, which the service refuses rather than guesses
-// about.
+// about. Discard rides the ONE checkout it was asked about (nocx-xn63t.6.40):
+// the flag is per checkout because the refusals are per checkout, so an ask
+// that discards one leftover and refuses to touch another is one call.
 type workerRemoveRef struct {
-	Path   string `json:"path,omitempty"`
-	Branch string `json:"branch,omitempty"`
+	Path    string `json:"path,omitempty"`
+	Branch  string `json:"branch,omitempty"`
+	Discard bool   `json:"discard,omitempty"`
+}
+
+// workerRemoveDiscardedResult is what a removal threw away, on the wire: the
+// work no commit kept, counted. It rides a removed row only, and only when
+// something actually went — a row that removed a clean checkout discarded
+// nothing, and a refusal removed nothing at all, so neither has anything to
+// say here (the schema forbids the field on a refused row).
+type workerRemoveDiscardedResult struct {
+	Modified  int `json:"modified"`
+	Untracked int `json:"untracked"`
 }
 
 // workerRemoveCheckoutParams is what the removal ask carries: the
@@ -303,8 +316,13 @@ type workerRemoveItemResult struct {
 	Path    string `json:"path,omitempty"`
 	Branch  string `json:"branch,omitempty"`
 	Removed bool   `json:"removed"`
-	Refusal string `json:"refusal,omitempty"`
-	Detail  string `json:"detail,omitempty"`
+	// Discarded names the work that went with a removed checkout. It is
+	// absent when nothing was thrown away, and the pointer is what makes
+	// that absence expressible: zero counts would be an answer about work
+	// nobody read.
+	Discarded *workerRemoveDiscardedResult `json:"discarded,omitempty"`
+	Refusal   string                       `json:"refusal,omitempty"`
+	Detail    string                       `json:"detail,omitempty"`
 }
 
 // workerRemoveCheckoutResult is the answer: one row per asked checkout, in
@@ -790,6 +808,13 @@ func executeWorkerClose(ctx context.Context, cap agenttools.Capability, args jso
 // task 1.6 will remove through, and this executor's whole job is to carry
 // them to the caller verbatim — a refusal reworded here would be a second
 // account of the same disk.
+//
+// THE DISCARD IS CARRIED, NOT INTERPRETED (nocx-xn63t.6.40, ADR-0088). Each
+// ask's own flag travels on its own ref, and each row's discarded counts come
+// back exactly as the walk answered them: the decision about what may be
+// thrown away is the service's, taken against the same listing and the same
+// held answer the refusals are taken against, and an executor that weighed
+// them again here would be a second opinion about one disk.
 func executeWorkerRemoveCheckout(ctx context.Context, cap agenttools.Capability, args json.RawMessage, seams toolSeams) (string, error) {
 	coordinator, err := workerCoordinatorFrom(cap, "workers.removeCheckout")
 	if err != nil {
@@ -810,12 +835,18 @@ func executeWorkerRemoveCheckout(ctx context.Context, cap agenttools.Capability,
 		if ask.Path == "" && ask.Branch == "" {
 			return "", fmt.Errorf("workers.removeCheckout: checkout %d names neither a path nor a branch", i+1)
 		}
-		refs = append(refs, workers.CheckoutRef{Path: ask.Path, Branch: ask.Branch})
+		refs = append(refs, workers.CheckoutRef{Path: ask.Path, Branch: ask.Branch, Discard: ask.Discard})
 	}
 	removal := seams.workerStore.RemoveCheckouts(ctx, coordinator.Session(), refs)
 	items := make([]workerRemoveItemResult, 0, len(removal.Items))
 	for _, item := range removal.Items {
 		row := workerRemoveItemResult{Path: item.Path, Branch: item.Branch, Removed: item.Removed}
+		if item.Discarded != nil {
+			row.Discarded = &workerRemoveDiscardedResult{
+				Modified:  item.Discarded.Modified,
+				Untracked: item.Discarded.Untracked,
+			}
+		}
 		if !item.Removed {
 			row.Refusal = string(item.Refusal)
 			row.Detail = item.Detail

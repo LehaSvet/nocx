@@ -1084,16 +1084,25 @@ var declarations = []Declaration{
 	},
 	{
 		Name:        "workers.removeCheckout",
-		Description: "Remove one or more of nocx's own leftover worker checkouts of the repository your session stands in — the checkouts workers.spawn created that no live worker uses any more; workers.holdings lists them. This is deliberate cleanup, separate from workers.close: closing a worker never touches its checkout, and this call takes a left-over one away. Name each checkout by its path, its branch, or both. It refuses by name and leaves untouched any checkout that holds uncommitted work (commit or discard the work first), any checkout a live worker still holds (close the worker first), and anything that is not one of nocx's checkouts of your repository — your own worktrees and the main checkout are never touched. The branch always stays; only the checkout directory goes. There is no override: a person who wants the work gone has a shell.",
+		Description: "Remove one or more of nocx's own leftover worker checkouts of the repository your session stands in — the checkouts workers.spawn created that no live worker uses any more; workers.holdings lists them. This is deliberate cleanup, separate from workers.close: closing a worker never touches its checkout, and this call takes a left-over one away. Name each checkout by its path, its branch, or both. A checkout that holds uncommitted work is refused by name and left exactly as it was — commit it, or set that checkout's own discard: true to say the work should go with the checkout; the row then names what was thrown away, counted. Discard reaches nothing else: a checkout a live worker still holds (close the worker first), anything that is not one of nocx's checkouts of your repository (your own worktrees and the main checkout are never touched), and a checkout whose working state nobody could read are all refused either way. The branch always stays; only the checkout directory goes.",
 		// MUTATE-DESTRUCTIVE, and workers.close's other half by the owner's
 		// decision of 2026-09-18: the close ends a worker and never touches
 		// its checkout; this removes a checkout a spawn left behind. What
 		// it deletes — the checkout directory and the ignored files in it
-		// — does not come back, and it refuses rather than force past
-		// uncommitted work, a live worker's hold, or anything that is not
-		// one of nocx's own checkouts of the caller's repository. There is
-		// no force parameter, on purpose: a person who wants the work gone
-		// has a shell.
+		// — does not come back, and it refuses rather than force past a
+		// live worker's hold or anything that is not one of nocx's own
+		// checkouts of the caller's repository.
+		//
+		// THE DISCARD IS THE SAME EFFECT CLASS, not a new one (the owner's
+		// decision of 2026-10-17 on nocx-xn63t.6.40, ADR-0088). Asking for
+		// a checkout's uncommitted work to go with it changes WHICH work
+		// this call may take, never the authority to take a checkout: the
+		// class was already mutate-destructive, the coordinator's grant
+		// already permits it, and the admitted tool set is therefore
+		// unchanged (worker_auth_test.go pins it). The flag is per
+		// checkout and defaults to false, so a call that did not ask
+		// cannot lose a person's work — the refusal is the default, not a
+		// second tool.
 		Effect:       []content.Effect{content.EffectMutateDestructive},
 		OutputTrust:  OutputTrustUntrusted,
 		ResultBound:  ResultBound{MaxBytes: 4 << 10, Truncation: TruncationDropTail},

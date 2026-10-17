@@ -123,14 +123,19 @@ type Repo interface {
 	// because one of them lets a caller delete a worker's work.
 	Worktrees(ctx context.Context, base string) ([]Worktree, error)
 
-	// RemoveWorktree removes a clean linked worktree and leaves its branch.
-	// A worktree holding uncommitted work — a tracked change or an untracked
-	// file; ignored files do not count — refuses with ErrWorktreeUncommitted,
-	// the main checkout with ErrMainWorktree, a path that is not a worktree
-	// of this repository with ErrNotAWorktree, and one whose state could not
-	// be read with ErrWorktreeUnreadable. There is no force and no argument
-	// that adds one.
-	RemoveWorktree(ctx context.Context, path string) error
+	// RemoveWorktree removes a linked worktree and leaves its branch. A
+	// worktree holding uncommitted work — a tracked change or an untracked
+	// file; ignored files do not count — refuses with ErrWorktreeUncommitted
+	// unless opts asks for that work to go with it, the main checkout with
+	// ErrMainWorktree, a path that is not a worktree of this repository with
+	// ErrNotAWorktree, and one whose state could not be read with
+	// ErrWorktreeUnreadable. What it took away when it was asked to is
+	// counted in the answer.
+	//
+	// THE DISCARD IS THE CALLER'S WORD AND NEVER A DEFAULT (nocx-xn63t.6.40):
+	// nothing here decides on its own that a person's work may be thrown
+	// away, and a call that did not ask cannot lose any.
+	RemoveWorktree(ctx context.Context, path string, opts RemoveWorktreeOptions) (WorktreeDiscard, error)
 
 	// DeleteWorktreeBranch deletes a branch that has NO commits beyond base
 	// — the narrow half of AddWorktree's compensation, which is the only
@@ -158,6 +163,31 @@ type WorktreeAdded struct {
 	// deletes the branch IT created and must not delete one it merely found,
 	// and a branch it found is a branch somebody else's commits may be on.
 	Created bool
+}
+
+// RemoveWorktreeOptions is how a removal is asked for. The zero value is the
+// ordinary call: a checkout holding work no commit keeps is refused and left
+// exactly as it was.
+type RemoveWorktreeOptions struct {
+	// Discard is the caller saying it wants the work no commit keeps gone
+	// WITH the checkout — a tracked change, an untracked file. Ignored
+	// files go either way: git counts neither as dirty, so they ride out
+	// with the directory whether this is set or not. It reaches nothing
+	// else: the main checkout, a path that is not a worktree of this
+	// repository, a state nobody could read, and the branch all answer as
+	// they always did.
+	Discard bool
+}
+
+// WorktreeDiscard is the work a removal took with the checkout that no
+// commit keeps, counted as git listed it: Modified is every status record
+// that is not an untracked file, Untracked is the untracked records. The
+// zero value is an ordinary clean removal — and also a removal that asked
+// to discard with nothing there to take, which is the same fact about the
+// disk: nothing was thrown away.
+type WorktreeDiscard struct {
+	Modified  int
+	Untracked int
 }
 
 // Worktree is one working tree of a repository: the main checkout, or a
@@ -317,7 +347,16 @@ type Status struct {
 
 	// Total is the number of status records observed. Its meaning is fixed
 	// by Completeness: exact when complete or capped, a lower bound when cut.
-	Total        int
+	Total int
+	// Untracked is how many of Total's records are untracked files — the
+	// '?' records — and it is the split the removal's discard answer names
+	// (nocx-xn63t.6.40). The parser counts it as the records go by, so it
+	// is exact under exactly the Completeness Total is: capped means every
+	// record was observed. A status restored from the remote helper's wire
+	// carries zero here, because that service's answer has no such field —
+	// no caller on that path reads it, the linked-worktree operations being
+	// local-only (helper/factory.go).
+	Untracked    int
 	Completeness Completeness
 }
 

@@ -23,6 +23,13 @@ type Result struct {
 	Unstaged   []git.Entry
 	Conflicted []git.Entry
 	Total      int // records counted; exact unless the stream was cut
+	// Untracked is how many of Total were '?' records. It is counted
+	// beside Total and never derived from the retained lists, because the
+	// lists stop at the retention cap while this count must not: the
+	// removal's discard answer splits what it threw away into modified
+	// files and untracked ones, and a split missing the untracked half
+	// would report them as modified (nocx-xn63t.6.40).
+	Untracked int
 }
 
 // Parser consumes a git status --porcelain=v2 -z --branch
@@ -243,6 +250,9 @@ func (p *Parser) untracked(f string) error {
 		p.Result.Unstaged = append(p.Result.Unstaged, git.Entry{Path: path, X: '?', Y: '?'})
 	}
 	p.Result.Total++
+	// Counted outside the retention test, for the reason Result.Untracked
+	// gives: every record is observed even when it is not retained.
+	p.Result.Untracked++
 	return nil
 }
 
