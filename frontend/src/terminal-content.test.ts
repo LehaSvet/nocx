@@ -7890,6 +7890,141 @@ describe('the editor submit opens the attempt before the pty write (ADR-0024 §5
       teardown()
     }
   })
+  it('a control focused while the attempt is answered keeps the keyboard (nocx-xn63t.6.37)', async () => {
+    // The row exists BEFORE the pty write, by design: the backend publishes
+    // the running fact inside SubmitAttempt (see the test above), so the
+    // Stop button is on screen while the answer is still in flight. That is
+    // the window a person tabs into, and the deferred handoff — the second
+    // `focusGrid`, the one that runs when the answer settles — took the
+    // keyboard back from whatever it found. On webkit that is what CI saw:
+    // `stop.focus()` then `expect(stop).toBeFocused()` reading 'inactive'
+    // for its whole 5 s (shard 1, run 39052926672).
+    const client = makeClient()
+    const submitAttempt = client.dispatcher.call
+    // Promise.withResolvers needs ES2024 and this project targets ES2021, so
+    // the resolver is captured via the executor form (the codebase pattern).
+    let resolveAttempt!: (v: unknown) => void
+    const attemptPromise = new Promise<unknown>((done) => {
+      resolveAttempt = done
+    })
+    submitAttempt.mockImplementation(() => attemptPromise)
+    const { view, ed, content, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    const session = sessionOf(content)
+    const handler = factHandler(client)
+    const restoreScroll = stubScrolling()
+    try {
+      content.setVisible(true)
+      handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
+      ed.insertText('sleep 30')
+      key(view, { key: 'Enter' })
+
+      handler({
+        lane: 'lane-1',
+        lifecycle: 'running',
+        domain: 'd1',
+        epoch: 1,
+        attempt: {
+          id: 'att-37',
+          state: 'open',
+          origin: 'app',
+          submitId: submitToken(client),
+          command: 'sleep 30',
+        },
+      })
+      // The running row is on screen — the person's Stop, reached the way
+      // the keyboard reaches it (Tab lands on it: it carries
+      // `data-block-control`, the pane's own exemption from its focus
+      // bounce).
+      const stop = Array.from(
+        document.querySelectorAll<HTMLElement>('.cmd-block [data-block-control]'),
+      ).find((el) => (el.textContent ?? '').trim() === 'Stop')
+      expect(stop).toBeDefined()
+      stop?.focus()
+      expect(document.activeElement).toBe(stop)
+
+      // The answer settles and the bytes go out. The keyboard stays where
+      // the person put it: the deferred handoff is the repair for keys that
+      // reached <body> during the round trip, and it is not a claim on a
+      // control that is holding them.
+      resolveAttempt({
+        id: 'att-37',
+        domain: 'd1',
+        state: 'open',
+        command: 'sleep 30',
+        cwd: FIXTURE_CWD,
+        host: '',
+        origin: 'app',
+        submitId: submitToken(client),
+        startedAt: '2026-08-08T12:00:00Z',
+      })
+      // The write really ran: the command went out. The grid's own focus
+      // intents travel on this same seam, so the wait names the paste rather
+      // than the tail of the list.
+      await vi.waitFor(() =>
+        expect(session.intent.mock.calls).toContainEqual(['paste', 'sleep 30']),
+      )
+      expect(document.activeElement).toBe(stop)
+    } finally {
+      restoreScroll()
+      teardown()
+    }
+  })
+  it('still hands the grid the keyboard when the round trip left it on nobody (nocx-u7uh.23)', async () => {
+    // The other half of the guard, and the reason it is a guard rather than a
+    // deletion. The deferred handoff exists because the editor gives the
+    // keyboard up synchronously at commit and a display:none host drops the
+    // browser's focus to <body> — for the whole round trip keys typed into a
+    // program already reading stdin then reached nobody, and an ssh password
+    // prompt was answered with an empty line. <body> is still repaired; a
+    // control the person reached is not.
+    const client = makeClient()
+    const submitAttempt = client.dispatcher.call
+    let resolveAttempt!: (v: unknown) => void
+    const attemptPromise = new Promise<unknown>((done) => {
+      resolveAttempt = done
+    })
+    submitAttempt.mockImplementation(() => attemptPromise)
+    const { view, ed, content, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    const handler = factHandler(client)
+    const restoreScroll = stubScrolling()
+    const grid = intentElementOf(content)
+    try {
+      content.setVisible(true)
+      handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
+      ed.insertText('read x')
+      key(view, { key: 'Enter' })
+
+      // jsdom keeps the DOM's focus where a real browser would have dropped
+      // it when the editor's host went display:none, so the drop is made
+      // explicit — the same trade the pane's own tests make for it.
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      expect(document.activeElement).toBe(document.body)
+
+      resolveAttempt({
+        id: 'att-38',
+        domain: 'd1',
+        state: 'open',
+        command: 'read x',
+        cwd: FIXTURE_CWD,
+        host: '',
+        origin: 'app',
+        submitId: submitToken(client),
+        startedAt: '2026-08-08T12:00:00Z',
+      })
+      await vi.waitFor(() => expect(document.activeElement).toBe(grid))
+    } finally {
+      restoreScroll()
+      teardown()
+    }
+  })
   it('an agent submission cancelled during the attempt round trip sends no bytes and releases its waiters', async () => {
     const client = makeClient()
     let resolveAttempt!: (v: unknown) => void
