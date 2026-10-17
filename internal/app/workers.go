@@ -2011,9 +2011,10 @@ func (e *workerEscalation) Escalate(ctx context.Context, n workers.Notice) error
 	case workers.NoticeUnread:
 		title = "A coordinator is not reading its workers' mail"
 		body = fmt.Sprintf(
-			"nocx wrote %d line(s) about %d unread message(s) and none of them was read. "+
+			"nocx wrote %d line(s) about %d unread message(s) and %d unread state change(s), "+
+				"and none of them was read. "+
 				"Nothing is being coordinated until somebody reads that mailbox.",
-			n.Lines, n.Unread)
+			n.Lines, n.Messages, n.Observations)
 	case workers.NoticeBlocked:
 		title = "A coordinator is stuck, and its workers are not"
 		body = fmt.Sprintf(

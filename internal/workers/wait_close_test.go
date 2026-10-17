@@ -15,6 +15,9 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/shady2k/nocx/internal/session"
 )
 
 // fakeCloser records what it was asked to end. It writes no state, because the
@@ -260,5 +263,106 @@ func TestALiveParticipantIsStillRefusedUnderARevokedDelegation(t *testing.T) {
 	}
 	if got := closer.seen(); len(got) != 0 {
 		t.Fatalf("a refused close ended %v anyway", got)
+	}
+}
+
+// ── the exit a close causes ───────────────────────────────────────────────
+
+// exitCausingCloser ends a participant the way the product's closer does:
+// ending the session is what produces the process exit, and the supervisor
+// reports that exit on its own goroutine while this call has not returned —
+// the race Store.Closed's own doc names ("the two run on different goroutines
+// with no order between them").
+//
+// It is a double of its own rather than a hook on fakeCloser because what it
+// models is the ORDER, and an order a test cannot state is the one thing a
+// test about a race has to state.
+type exitCausingCloser struct {
+	// during runs INSIDE the close, before it returns.
+	during func()
+}
+
+func (c *exitCausingCloser) Close(_ context.Context, _ Participant) (CloseResult, error) {
+	if c.during != nil {
+		c.during()
+	}
+	return CloseResult{}, nil
+}
+
+// THE EXIT THE CLOSE CAUSES IS NOT AN OBSERVATION FOR THE COORDINATOR THAT
+// ASKED FOR IT (nocx-xn63t.6.39, second occurrence).
+//
+// Seen live 2026-10-17 21:45 (+03): `workers.close: start` at 21:45:46.620, the
+// observation in the coordinator's mailbox 78 ms later, `workers.close: ok` at
+// 21:45:47.233 — and then the coordinator typed at with "you have 1 new
+// messages from your workers" for a worker IT had just closed. The close ends
+// the session before it writes `closed` (Store.Closed's own doc says why), so
+// the supervisor's exit reaches admit while the record is still non-terminal,
+// the exit is admitted and the observation is placed.
+//
+// THE EXIT FACT IS STILL THE RECORD'S. What is withheld is the MAIL: a
+// coordinator that asked for the end has nothing to be told about it, and the
+// close's own answer is where it learns what became of the worker.
+func TestAnExitTheCloseCausesIsNotAnObservationForTheCoordinator(t *testing.T) {
+	ctx := context.Background()
+	s := newWakeStand(t, 3*time.Second, 3)
+	p := s.worker
+	s.says(t, ObservedIdle)
+
+	closer := &exitCausingCloser{}
+	closer.during = func() {
+		// A reading of the pane this close is tearing down: an observation of a
+		// worker being ended is not news either, and the pane is still read as
+		// the session goes.
+		s.settles(t, p, ObservedIdle)
+		// And the process fact the close itself produces.
+		if _, err := s.harness.reg.Exited(ctx, p.ID, p.Liveness, Exit{Cause: string(session.ExitExited)}); err != nil {
+			t.Errorf("the exit the close caused was refused: %v", err)
+		}
+	}
+	s.harness.reg.closer = closer
+
+	if _, err := s.harness.reg.Close(ctx, coordSession, p.ID); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	if got := s.lines(); len(got) != 0 {
+		t.Fatalf("the coordinator was woken about the worker IT closed: %+v", got)
+	}
+	if got := s.mailed(t); len(got) != 0 {
+		t.Fatalf("the coordinator's mailbox holds %d rows about the worker it closed: %+v", len(got), got)
+	}
+	// AND THE RECORD KEEPS ITS OWN ACCOUNT: the suppression is of the mail and
+	// never of the process fact, which is admitted and then replaced by the
+	// close's own state — closed wins that race whichever way it falls.
+	stored, ok := s.harness.store.read(t, p.ID)
+	if !ok {
+		t.Fatalf("the record lost the participant")
+	}
+	if stored.State != StateClosed {
+		t.Fatalf("the participant reads %q, want %q", stored.State, StateClosed)
+	}
+	if stored.Exited == nil {
+		t.Fatalf("the exit the close caused was not recorded at all")
+	}
+}
+
+// AND THE OTHER DIRECTION, because a suppression that swallowed everything
+// would pass the test above: an exit this coordinator did NOT cause is still an
+// observation, and it is what wakes it.
+func TestAnExitNoCloseCausedIsStillAnObservation(t *testing.T) {
+	ctx := context.Background()
+	s := newWakeStand(t, 3*time.Second, 3)
+	p := s.worker
+	s.says(t, ObservedIdle)
+
+	if _, err := s.harness.reg.Exited(ctx, p.ID, p.Liveness, Exit{Cause: string(session.ExitExited)}); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	if got := s.mailed(t); len(got) != 1 || got[0].Observed == nil || got[0].Observed.State != ObservedExited {
+		t.Fatalf("a worker that ended on its own is not in the coordinator's mailbox: %+v", got)
+	}
+	if got := s.lines(); len(got) != 1 {
+		t.Fatalf("the coordinator was not woken about a worker that ended on its own: %+v", got)
 	}
 }

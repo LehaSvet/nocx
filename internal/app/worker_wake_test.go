@@ -410,7 +410,9 @@ func TestAnIdleCoordinatorIsWokenWhenItsWorkerSettlesIdle(t *testing.T) {
 		typed = w.coordPTY.read()
 		return strings.Contains(typed, "workers.inbox") && strings.HasSuffix(typed, "\r")
 	})
-	const want = "nocx: you have 1 new messages from your workers. Call workers.inbox."
+	// THE SENTENCE NAMES WHAT IS WAITING (nocx-xn63t.6.39), and what this worker
+	// produced is an OBSERVATION: it settled idle and said nothing.
+	const want = "nocx: you have 1 new observation of your workers. Call workers.inbox."
 	if !strings.Contains(typed, want) {
 		t.Fatalf("the coordinator's pane was typed at with %q, want it to contain %q", typed, want)
 	}
@@ -529,7 +531,7 @@ func TestTheEscalationTellsThePersonWhichSituationThisIs(t *testing.T) {
 	t.Run("the coordinator never read its mail", func(t *testing.T) {
 		raiser.events = nil
 		if err := esc.Escalate(context.Background(), workers.Notice{
-			Mailbox: "sess-coordinator", Kind: workers.NoticeUnread, Unread: 4, Lines: 3,
+			Mailbox: "sess-coordinator", Kind: workers.NoticeUnread, Messages: 3, Observations: 1, Lines: 3,
 		}); err != nil {
 			t.Fatalf("escalate: %v", err)
 		}
@@ -547,8 +549,13 @@ func TestTheEscalationTellsThePersonWhichSituationThisIs(t *testing.T) {
 		if ev.SessionID != "sess-coordinator" {
 			t.Fatalf("the notification names session %q, want the coordinator's", ev.SessionID)
 		}
-		if !strings.Contains(ev.Body, "4 unread") || !strings.Contains(ev.Body, "3 line") {
-			t.Fatalf("the person is not told how much is waiting or how often nocx tried: %q", ev.Body)
+		// BOTH COUNTS, because the person is being sent to read and the two
+		// kinds are different things to find (nocx-xn63t.6.39): a sentence
+		// carrying one number would send them looking for messages among
+		// observations.
+		if !strings.Contains(ev.Body, "3 unread message") || !strings.Contains(ev.Body, "1 unread state change") ||
+			!strings.Contains(ev.Body, "3 line") {
+			t.Fatalf("the person is not told what is waiting, in which kinds, or how often nocx tried: %q", ev.Body)
 		}
 	})
 
@@ -598,7 +605,7 @@ func TestANoticeThePipelineRefusedIsReportedAsAFailure(t *testing.T) {
 	esc := &workerEscalation{raise: raiser}
 
 	err := esc.Escalate(context.Background(), workers.Notice{
-		Mailbox: "sess-coordinator", Kind: workers.NoticeUnread, Unread: 1, Lines: 3,
+		Mailbox: "sess-coordinator", Kind: workers.NoticeUnread, Messages: 0, Observations: 1, Lines: 3,
 	})
 	if err == nil {
 		t.Fatalf("a notice the pipeline refused was reported as delivered")
@@ -611,7 +618,7 @@ func TestANoticeThePipelineRefusedIsReportedAsAFailure(t *testing.T) {
 	// reads as success.
 	unwired := &workerEscalation{}
 	if err := unwired.Escalate(context.Background(), workers.Notice{
-		Mailbox: "sess-coordinator", Kind: workers.NoticeUnread, Unread: 1,
+		Mailbox: "sess-coordinator", Kind: workers.NoticeUnread, Messages: 1, Observations: 0,
 	}); err == nil {
 		t.Fatalf("an unwired escalation reported success")
 	}

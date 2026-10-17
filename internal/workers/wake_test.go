@@ -301,8 +301,10 @@ func TestAnIdleCoordinatorWithUnreadMailIsToldOnceAndItsReadClearsTheBatch(t *te
 	// absent words. That is the strongest form of "it carries no worker
 	// output": there is no room in it for anybody's text, and a line that grew
 	// one would fail here rather than in a reviewer's head. It is also design
-	// §5.2's sentence, verbatim.
-	const want = "nocx: you have 1 new messages from your workers. Call workers.inbox."
+	// §5.2's sentence, verbatim — as amended for nocx-xn63t.6.39, because the
+	// one row this worker produced is an OBSERVATION and the sentence names
+	// what it announces.
+	const want = "nocx: you have 1 new observation of your workers. Call workers.inbox."
 	if got[0].text != want {
 		t.Fatalf("the wake line is\n  %q\nwant\n  %q", got[0].text, want)
 	}
@@ -321,6 +323,101 @@ func TestAnIdleCoordinatorWithUnreadMailIsToldOnceAndItsReadClearsTheBatch(t *te
 	}
 	if got := len(s.notices()); got != 0 {
 		t.Fatalf("the human was told about mail that was read: %+v", got)
+	}
+}
+
+// ── 1b. what the line NAMES: two counts, because there are two kinds ───────
+
+// THE CRITERION (nocx-xn63t.6.39). A coordinator whose only new mail is an
+// OBSERVATION is not told it has a message.
+//
+// Seen live 2026-10-17 21:41 (+03): after the worker's own report had already
+// been read, the coordinator was typed at with "you have 1 new messages from
+// your workers", opened its inbox and found no message at all — only the
+// observation that the worker had settled idle. One count was taken over two
+// kinds of row and the sentence named the kind it was not, so the coordinator
+// spent a turn on nothing.
+func TestAnObservationIsNotAnnouncedAsAMessage(t *testing.T) {
+	s := newWakeStand(t, 3*time.Second, 3)
+	s.says(t, ObservedIdle)
+
+	// The worker settles idle: one observation, and nothing said by anybody.
+	s.settles(t, s.worker, ObservedIdle)
+
+	lines := s.lines()
+	if len(lines) != 1 {
+		t.Fatalf("lines = %d, want the one the observation is owed: %+v", len(lines), lines)
+	}
+	if strings.Contains(lines[0].text, "message") {
+		t.Fatalf("the coordinator was told it had a message, and its box holds only an observation: %q",
+			lines[0].text)
+	}
+	const want = "nocx: you have 1 new observation of your workers. Call workers.inbox."
+	if lines[0].text != want {
+		t.Fatalf("the wake line is\n  %q\nwant\n  %q", lines[0].text, want)
+	}
+	// AND THE BOX AGREES WITH THE LINE, read back through the record rather than
+	// assumed: the claim is about what is waiting, so the test reads what is
+	// waiting — one row, and it is an observation.
+	read := s.read(t)
+	if len(read.Messages) != 1 || read.Messages[0].Observed == nil {
+		t.Fatalf("the box does not hold exactly the observation the line named: %+v", read.Messages)
+	}
+}
+
+// THE TWO COUNTS AND THE PLURAL THAT GOES WITH EACH.
+//
+// A table over the sentence itself, because how much is waiting is the whole of
+// what the line says about it and there are five shapes: one message, several,
+// one observation, several, and both at once. "1 new messages" — the form typed
+// at the coordinator on 2026-10-17 — is in no row of it.
+func TestTheWakeLineNamesEachCountAndAgreesWithIt(t *testing.T) {
+	for _, c := range []struct {
+		messages     int
+		observations int
+		want         string
+	}{
+		{1, 0, "nocx: you have 1 new message from your workers. Call workers.inbox."},
+		{3, 0, "nocx: you have 3 new messages from your workers. Call workers.inbox."},
+		{0, 1, "nocx: you have 1 new observation of your workers. Call workers.inbox."},
+		{0, 4, "nocx: you have 4 new observations of your workers. Call workers.inbox."},
+		{1, 1, "nocx: you have 1 new message from your workers and 1 new observation of them. Call workers.inbox."},
+		{2, 3, "nocx: you have 2 new messages from your workers and 3 new observations of them. Call workers.inbox."},
+	} {
+		if got := wakeText(c.messages, c.observations); got != c.want {
+			t.Errorf("wakeText(%d, %d) =\n  %q\nwant\n  %q", c.messages, c.observations, got, c.want)
+		}
+	}
+}
+
+// AND THE TWO COUNTS COME OFF THE MAILBOX, not off a number the caller kept: a
+// report and a state are two kinds of row in one box, and the line names both.
+func TestTheLineCountsAMessageAndAnObservationSeparately(t *testing.T) {
+	s := newWakeStand(t, 3*time.Second, 3)
+	s.says(t, ObservedWorking)
+
+	// The worker says it is done, then settles idle: two rows, two kinds, both
+	// landing while the coordinator is mid-turn.
+	if _, err := s.harness.reg.Report(s.ctx, s.worker.ID, Report{
+		Kind: KindDone, Text: "the piece is finished",
+	}); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	s.settles(t, s.worker, ObservedIdle)
+	if got := s.lines(); len(got) != 0 {
+		t.Fatalf("nocx typed into a coordinator that was mid-turn: %+v", got)
+	}
+
+	// And now it settles idle, which is when the whole batch gets its line.
+	s.says(t, ObservedIdle)
+
+	got := s.lines()
+	if len(got) != 1 {
+		t.Fatalf("lines = %d, want the one the batch is owed: %+v", len(got), got)
+	}
+	const want = "nocx: you have 1 new message from your workers and 1 new observation of them. Call workers.inbox."
+	if got[0].text != want {
+		t.Fatalf("the wake line is\n  %q\nwant\n  %q", got[0].text, want)
 	}
 }
 
@@ -391,7 +488,7 @@ func TestMailArrivingAfterALineWaitsForTheRetryPause(t *testing.T) {
 	// The second line counts BOTH, because the count is taken when the line is
 	// written rather than when the first one was: a coordinator told "1" about
 	// a mailbox holding two would act on the wrong number.
-	if !strings.Contains(got[1].text, "2 new messages") {
+	if !strings.Contains(got[1].text, "2 new observations") {
 		t.Fatalf("the retry line does not count what is now waiting: %q", got[1].text)
 	}
 }
@@ -436,8 +533,12 @@ func TestTheBatchIsRetypedAtThePauseUntilTheLimitAndThenTheHumanIsTold(t *testin
 	if told[0].Lines != 3 {
 		t.Fatalf("the notice says %d lines were typed, want 3", told[0].Lines)
 	}
-	if told[0].Unread == 0 {
-		t.Fatalf("the notice does not say how much is waiting: %+v", told[0])
+	// AND IT SAYS WHAT KIND, not one number over two (nocx-xn63t.6.39): this
+	// batch is one idle observation and no message, and a person told
+	// "1 unread message" would go looking for words nobody said.
+	if told[0].Messages != 0 || told[0].Observations != 1 {
+		t.Fatalf("the notice says %d unread message(s) and %d state change(s), want 0 and the one observation: %+v",
+			told[0].Messages, told[0].Observations, told[0])
 	}
 	// And no more lines: the budget is spent, and a coordinator cannot be typed
 	// at for ever about one batch.

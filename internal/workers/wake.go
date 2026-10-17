@@ -124,11 +124,20 @@ type Notice struct {
 	Mailbox ReaderID
 	// Kind says which of the two situations this is.
 	Kind NoticeKind
-	// Unread is how many messages of a waking kind are waiting, and Lines is
-	// how many times nocx typed at the coordinator without an answer. Both
-	// belong to the unread notice; the blocked one is about a screen.
-	Unread int
-	Lines  int
+	// Messages and Observations are how many rows of each kind are waiting,
+	// and Lines is how many times nocx typed at the coordinator without an
+	// answer. All three belong to the unread notice; the blocked one is about
+	// a screen.
+	//
+	// TWO NUMBERS AND NOT ONE (nocx-xn63t.6.39), for the reason the wake line
+	// has two: the person is being sent to read something, and "5 unread
+	// messages" about five observations sends them looking for words nobody
+	// said. They are the same two counts the line names, taken from the same
+	// read, so the sentence the person reads and the sentence the coordinator
+	// was typed at cannot disagree.
+	Messages     int
+	Observations int
+	Lines        int
 	// LiveWorkers is how many workers the coordinator holds.
 	LiveWorkers int
 }
@@ -561,7 +570,7 @@ func (w *Wake) typeNow(ctx context.Context, mailbox ReaderID, gen int) {
 		log.From(ctx).Error("worker: a coordinator's unread mail could not be counted, so nothing was typed",
 			"session_id", string(mailbox), "error", err)
 		return
-	case n == 0:
+	case !n.waiting():
 		// Nothing is waiting: the only mail is of a kind that never wakes,
 		// and the batch is over.
 		b.inFlight = false
@@ -574,12 +583,12 @@ func (w *Wake) typeNow(ctx context.Context, mailbox ReaderID, gen int) {
 		b.inFlight = false
 		w.mu.Unlock()
 		log.From(ctx).Error("worker: a coordinator has unread mail and this backend has nothing to type into a pane with",
-			"session_id", string(mailbox), "unread", n)
+			"session_id", string(mailbox), "messages", n.messages, "observations", n.observations)
 		return
 	}
 	w.mu.Unlock()
 
-	out := w.waker.Wake(ctx, string(mailbox), wakeText(n))
+	out := w.waker.Wake(ctx, string(mailbox), wakeText(n.messages, n.observations))
 
 	w.mu.Lock()
 	cur, ok := w.byMailbox[mailbox]
@@ -594,14 +603,16 @@ func (w *Wake) typeNow(ctx context.Context, mailbox ReaderID, gen int) {
 		// it may or may not have received was about mail it has seen.
 		w.mu.Unlock()
 		log.From(ctx).Debug("worker: the coordinator read its mail while a line was being typed; the line is not counted",
-			"session_id", string(mailbox), "unread", n, "delivered", out.Delivered)
+			"session_id", string(mailbox), "messages", n.messages, "observations", n.observations,
+			"delivered", out.Delivered)
 		w.consider(ctx, mailbox)
 		return
 	}
 	if out.Delivered {
 		cur.lines++
 		log.From(ctx).Info("worker: the coordinator was woken for its workers' mail",
-			"session_id", string(mailbox), "unread", n, "line", cur.lines, "of", w.attempts)
+			"session_id", string(mailbox), "messages", n.messages, "observations", n.observations,
+			"line", cur.lines, "of", w.attempts)
 		// The pause is armed for a DELIVERED line only, and that is the whole
 		// of "a refused type is not an attempt" (design §5.4, nocx-luqz9.3):
 		// a line the pane took has not been read, so it is worth retyping;
@@ -621,7 +632,8 @@ func (w *Wake) typeNow(ctx context.Context, mailbox ReaderID, gen int) {
 		// and what would be a defect twice over is spending an attempt on it:
 		// the screen changed, so the coordinator was told nothing.
 		log.From(ctx).Info("worker: the coordinator was not woken, and its mail stays unread",
-			"session_id", string(mailbox), "unread", n, "reason", out.Reason, "lines", cur.lines)
+			"session_id", string(mailbox), "messages", n.messages, "observations", n.observations,
+			"reason", out.Reason, "lines", cur.lines)
 	}
 	w.mu.Unlock()
 }
@@ -678,7 +690,8 @@ func (w *Wake) fire(ctx context.Context, mailbox ReaderID) {
 		// told the wrong size of the problem, and the size is the whole reason
 		// they are being interrupted.
 		if n, err := w.unread(ctx, mailbox); err == nil {
-			notice.Unread = n
+			notice.Messages = n.messages
+			notice.Observations = n.observations
 		}
 		w.reach(ctx, mailbox, notice)
 		return
@@ -784,50 +797,77 @@ func (w *Wake) tell(ctx context.Context, n Notice) error {
 	if w.human == nil {
 		log.From(ctx).Error("worker: coordination has stopped and this backend has nothing to tell anyone with",
 			"session_id", string(n.Mailbox), "notice", string(n.Kind),
-			"unread", n.Unread, "lines", n.Lines, "live_workers", n.LiveWorkers)
+			"messages", n.Messages, "observations", n.Observations,
+			"lines", n.Lines, "live_workers", n.LiveWorkers)
 		return fmt.Errorf("this backend has nothing to tell anyone with")
 	}
 	if err := w.human.Escalate(ctx, n); err != nil {
 		log.From(ctx).Error("worker: the human was not told that coordination has stopped",
 			"session_id", string(n.Mailbox), "notice", string(n.Kind),
-			"unread", n.Unread, "live_workers", n.LiveWorkers, "error", err)
+			"messages", n.Messages, "observations", n.Observations,
+			"live_workers", n.LiveWorkers, "error", err)
 		return err
 	}
 	log.From(ctx).Warn("worker: coordination has stopped and the notice was submitted",
 		"session_id", string(n.Mailbox), "notice", string(n.Kind),
-		"unread", n.Unread, "lines", n.Lines, "live_workers", n.LiveWorkers)
+		"messages", n.Messages, "observations", n.Observations,
+		"lines", n.Lines, "live_workers", n.LiveWorkers)
 	return nil
 }
 
+// mailCount is what a coordinator's mailbox holds past its read mark, split the
+// way the mailbox itself is: what its workers SAID, and what nocx SAW of them.
+//
+// TWO COUNTS AND NOT ONE (nocx-xn63t.6.39), because the line that announces
+// them names the kind and one number cannot. A coordinator told it had "1 new
+// messages from your workers" about an idle observation opened its inbox, found
+// no message at all, and spent a turn on nothing. The two names here are the
+// mailbox's own — the same two lists workers.inbox hands back — so the line and
+// the read agree by construction rather than through a second vocabulary.
+type mailCount struct {
+	messages     int
+	observations int
+}
+
+// waiting is whether anything at all is, which is the one question the wake
+// asks of the sum. The sum is never what a coordinator or a person is told: one
+// number over two kinds is the defect this type exists for.
+func (c mailCount) waiting() bool { return c.messages+c.observations > 0 }
+
 // unread counts the mail of a waking kind that sits past this coordinator's
-// read mark.
+// read mark, by kind.
 //
 // Pages are taken until one comes back short, because a number that capped at
 // one page would be a lie in exactly the case the line exists for — a
 // coordinator that has been away from a busy worker.
-func (w *Wake) unread(ctx context.Context, mailbox ReaderID) (int, error) {
+func (w *Wake) unread(ctx context.Context, mailbox ReaderID) (mailCount, error) {
 	if w.mail == nil {
-		return 0, fmt.Errorf("this backend keeps no mailbox")
+		return mailCount{}, fmt.Errorf("this backend keeps no mailbox")
 	}
 	w.mu.Lock()
 	b, ok := w.byMailbox[mailbox]
 	if !ok {
 		w.mu.Unlock()
-		return 0, nil
+		return mailCount{}, nil
 	}
 	after := b.read
 	w.mu.Unlock()
 
-	total := 0
+	total := mailCount{}
 	for {
 		page, err := w.mail.Since(ctx, mailbox, after, MaxFetch)
 		if err != nil {
-			return 0, err
+			return mailCount{}, err
 		}
 		for _, m := range page {
 			after = m.Seq
-			if kindOf(m).Wakes() {
-				total++
+			// kindOf and not m.Kind, for the reason kinds.go gives: a row
+			// carrying a state IS an observation whatever its Kind field says.
+			switch kind := kindOf(m); {
+			case kind == KindObservation:
+				total.observations++
+			case kind.Wakes():
+				total.messages++
 			}
 		}
 		if len(page) < MaxFetch {
@@ -908,6 +948,41 @@ func (w *Wake) batchOf(mailbox ReaderID) *batch {
 // mail it announces is a worker's own text, and typing that into another
 // agent's input region would be prompt injection performed with our own hands —
 // which is why the line names the tool to call and not the thing to read.
-func wakeText(n int) string {
-	return fmt.Sprintf("nocx: you have %d new messages from your workers. Call workers.inbox.", n)
+//
+// IT NAMES WHAT IS WAITING, and the two kinds separately (nocx-xn63t.6.39): a
+// message is something a worker said, and an observation is something nocx saw,
+// and they are different things to be told. One count called them all
+// "messages", so a coordinator whose only new row was an idle observation was
+// told to expect words that were not there and spent a turn on nothing. The two
+// counts are the same two the mailbox hands back, and each carries the number
+// that agrees with it.
+//
+// At least one count is positive: the caller types nothing when the box holds
+// nothing of a waking kind.
+func wakeText(messages, observations int) string {
+	switch {
+	case messages > 0 && observations > 0:
+		return fmt.Sprintf("nocx: you have %s from your workers and %s of them. Call workers.inbox.",
+			counted(messages, "new message"), counted(observations, "new observation"))
+	case messages > 0:
+		return fmt.Sprintf("nocx: you have %s from your workers. Call workers.inbox.",
+			counted(messages, "new message"))
+	default:
+		// Observations and no messages, which is the case the old line got
+		// wrong. "Of your workers" and not "from": nocx is the one that saw
+		// these, and a worker never said them.
+		return fmt.Sprintf("nocx: you have %s of your workers. Call workers.inbox.",
+			counted(observations, "new observation"))
+	}
+}
+
+// counted is one noun phrase with a number that agrees with it.
+//
+// It exists because "1 new messages" was typed at a coordinator on 2026-10-17,
+// and a noun with its plural baked in is how that happens again.
+func counted(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }

@@ -62,8 +62,11 @@ product with this epic.
 1. **What wakes.** New unread mail of kinds `done`, `question`, or an observed `idle`,
    `blocked` or `exited`. `progress` never wakes (P4).
 2. **When.** Only while the coordinator is itself idle. nocx types one line — "nocx: you have
-   N new messages from your workers. Call workers.inbox." — and never a worker's words. While
-   the coordinator is working nothing is typed and no timer runs.
+   N new messages from your workers. Call workers.inbox.", or, when the new rows are states
+   nocx saw rather than words a worker said, "nocx: you have N new observations of your
+   workers." (`nocx-xn63t.6.39`: one count over both kinds told a coordinator it had messages
+   when its box held only an idle observation) — and never a worker's words. While the
+   coordinator is working nothing is typed and no timer runs.
 3. **Once per batch.** A second line is typed only for mail that arrived after the last line,
    or as a retry (below). Reading the mailbox clears the batch.
 4. **Retries and the human.** If the coordinator stays idle with the batch unread, the line is
