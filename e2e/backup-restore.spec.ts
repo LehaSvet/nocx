@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
-import { appReadyForInput, test, expect, settingsReady } from './harness'
+import { appReadyForInput, test, expect, settingsReady, openControlPlane } from './harness'
+import { readStand } from './stand'
 
 const placementNav = '.ui-grouped-nav__item[data-item="Interface"] button'
 const placementSelect = '.ui-settings-row[data-key="tab.placement"] select'
@@ -40,6 +41,19 @@ async function setPlacement(page: Page, value: 'vertical' | 'horizontal'): Promi
  * makes a successful no-op restore fail this acceptance check.
  */
 test.describe('Backup & Restore', () => {
+  test.afterEach(async () => {
+    // The stand is shared across specs. Restore the declared tab-placement
+    // default through the backend even when the page assertion failed or the
+    // Settings view is no longer mounted.
+    const stand = readStand()
+    const wire = await openControlPlane(stand.port, stand.token)
+    try {
+      await wire.call('settings.set', { key: 'tab.placement', value: 'horizontal' })
+    } finally {
+      wire.close()
+    }
+  })
+
   test('creates, reads, previews and restores a backup after mutating state', async ({
     page,
   }, testInfo) => {

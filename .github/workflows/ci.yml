@@ -669,6 +669,10 @@ jobs:
         working-directory: .
         run: node e2e/check-coverage.mjs
 
+      - name: Duration shard planner tests
+        working-directory: .
+        run: node --test scripts/shard-files.test.mjs
+
   # ci-backlog — the backlog is still a queue, not a dump.
   #
   # The one gate here that reads no code. It applies the rules in
@@ -873,12 +877,17 @@ jobs:
     # see each other at all — and a shard is another runner, so it inherits
     # that isolation whole rather than needing its own argument.
     #
-    # `matrix.project` is the name playwright.config.ts resolves through
-    # PW_PROJECTS, and `--shard` is Playwright's own, passed through by
-    # e2e/run-in-container.sh, which forwards everything after the script name
-    # to `playwright test`. THE LOCAL RUNNER IS UNCHANGED — the owner's
-    # decision of 2026-09-22: e2e/run-in-container.sh with no variables and no
-    # arguments still runs both browsers, the whole suite, in one worker.
+    # matrix.project selects the browser through PW_PROJECTS. For each browser,
+    # e2e/shard-files.mjs reads the committed per-spec duration measurements and
+    # assigns complete spec files to the currently lighter shard (longest first).
+    # The timing data averages Playwright-reported case durations from the two
+    # successful CI runs named in the data file. The planner runs Playwright's
+    # --list first, proves every collected spec and case appears exactly once
+    # across the two file lists, then runs only the selected list. New or
+    # removed spec files make the plan fail until its measurements are updated.
+    # This keeps the same four browser/shard jobs, so it adds no image-build job.
+    # THE LOCAL RUNNER IS UNCHANGED — without the CI-only env flag,
+    # e2e/run-in-container.sh still runs both browsers and the whole suite.
     #
     # Both lists' lengths are written again in the run step's env, because
     # GitHub gives no expression for a matrix leg's own length. They are not
@@ -985,12 +994,10 @@ jobs:
       # The image is the one built above, and the caches are on the host; the
       # container reaches both through the two variables here.
       #
-      # `--shard` rides through as an argument because the script forwards
-      # everything after its name to `playwright test`; it is not an env var
-      # and deliberately has no default, so a run that names no shard runs the
-      # whole suite. The guard is the first line: SHARD_TOTAL is duplicated
-      # between the matrix list and this flag, and a mismatch would silently
-      # drop or repeat tests rather than fail, so it is checked out loud.
+      # The matrix list and SHARD_TOTAL are duplicated here because GitHub has
+      # no expression for a matrix leg's own length. The guard below prevents a
+      # matrix edit from silently dropping or repeating a shard. File assignment
+      # and exact coverage are checked by shard-files.mjs before tests start.
       - name: e2e (container)
         run: |
           set -euo pipefail
@@ -1000,7 +1007,7 @@ jobs:
             echo "A list and its total disagree in .github/workflows/ci.yml — fix both. Left alone, the shards no longer cover the suite and the tests in the missing shard simply never run." >&2
             exit 1
           fi
-          e2e/run-in-container.sh --shard="${{ matrix.shard }}/$SHARD_TOTAL"
+          NOCX_E2E_SHARD_FILES=1 NOCX_E2E_SHARD="${{ matrix.shard }}" e2e/run-in-container.sh
         env:
           # The two totals are the matrix lists' lengths, written again because
           # GitHub has no expression for a matrix leg's own length. Keeping them
@@ -1022,10 +1029,12 @@ jobs:
       # shard that failed. The shard belongs in the name for the same reason
       # the project did — without it the four legs are two pairs fighting over
       # two names.
-      - name: Upload traces
+      - name: Upload traces and duration report
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: playwright-traces-${{ matrix.project }}-${{ matrix.shard }}
-          path: test-results/
+          path: |
+            test-results/
+            test-results/playwright-${{ matrix.project }}-${{ matrix.shard }}.json
           retention-days: 7
