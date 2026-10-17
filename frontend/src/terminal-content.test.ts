@@ -16959,6 +16959,11 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
 // recovered scrollback is written in exactly that interval.
 describe('a pane drawing a session it did not size (nocx-eidfb.3)', () => {
   const SESSION_GRID = { cols: 132, rows: 43, xpixel: 0, ypixel: 0 }
+  /** The grid a backend-spawned worker runs at before any window has
+   *  measured it, and the crate makes exactly this promise about it: "the
+   *  first client to attach reports its own geometry and the session
+   *  resizes" (internal/app/workers.go, participantCols/participantRows). */
+  const WORKER_GRID = { cols: 120, rows: 40 }
   const RECOVERED = 'what the session printed while this window was away'
 
   /** A pane that takes back a live session running at SESSION_GRID, with the
@@ -17041,6 +17046,100 @@ describe('a pane drawing a session it did not size (nocx-eidfb.3)', () => {
       // visual source until the backend publishes its resized screen.
       content.viewportChanged({ width: 800, height: 400 })
       expect(area.dataset.gridOwner).toBeUndefined()
+    } finally {
+      teardown()
+    }
+  })
+
+  /** A pane whose session the BACKEND sized and started — a nocx-spawned
+   *  worker, the shape nocx-xn63t.6.35 was reported against. The pane is
+   *  built while its tab is in the background and the running program paints
+   *  on its own, which is the whole difference from a shell sitting at a
+   *  prompt: an agent's TUI repaints while a person resizes the window. */
+  const workerPane = async () => {
+    const session = makeSession({ recovered: { produced: 0, gaps: [] } })
+    const mounted = await mountTerminal(makeClipboard(), {
+      hooks: { adoptSession: () => Promise.resolve(asSessionHandleForTest(session)) },
+    })
+    let revision = 1
+    const paint = (lines: string[] = ['worker'], at = WORKER_GRID): void => {
+      session.fireScreenFrame(screenFrame(revision++, lines, { cols: at.cols, rows: at.rows }))
+    }
+    return { ...mounted, session, paint }
+  }
+
+  it('reports the grid this window measured when the program paints inside the settle window (nocx-xn63t.6.35)', async () => {
+    const { content, tab, session, paint, teardown } = await workerPane()
+    try {
+      paint(['worker', 'thinking'])
+      expect(scrollbackFor(content).scrollbackArea.dataset.gridOwner).toBe('session')
+      vi.useFakeTimers()
+      try {
+        // The worker's tab comes to the front, and the pane is laid out.
+        tab.pane.classList.add('active')
+        content.viewportChanged({ width: 1632, height: 832 })
+        expect(content.cols).toBe(204)
+        // AND THE WORKER KEEPS PAINTING. Its frame puts the session's own grid
+        // back into the state the pending report is computed from — which is
+        // what the report must not read.
+        paint(['worker', 'still thinking'])
+        vi.advanceTimersByTime(1_000)
+        expect(session.sendResize).toHaveBeenCalledTimes(1)
+        expect(session.sendResize.mock.calls[0][0]).toMatchObject({
+          cols: 204,
+          rows: 52,
+          xpixel: 204 * 8,
+          ypixel: 52 * 16,
+        })
+      } finally {
+        vi.useRealTimers()
+      }
+    } finally {
+      teardown()
+    }
+  })
+
+  it('keeps its own measured grid when a frame moves the session grid under it (nocx-xn63t.6.35)', async () => {
+    const { content, session, paint, teardown } = await workerPane()
+    try {
+      paint(['worker'])
+      vi.useFakeTimers()
+      try {
+        content.viewportChanged({ width: 1632, height: 832 })
+        vi.advanceTimersByTime(1_000)
+        session.sendResize.mockClear()
+        // The session's grid moves under this window — another client resized
+        // it. The frame describes THEIR grid, and this pane is not theirs.
+        paint(['worker', 'a grid another window chose'], { cols: 90, rows: 30 })
+        vi.advanceTimersByTime(1_000)
+        expect(session.sendResize).toHaveBeenCalledTimes(1)
+        expect(session.sendResize.mock.calls[0][0]).toMatchObject({ cols: 204, rows: 52 })
+      } finally {
+        vi.useRealTimers()
+      }
+    } finally {
+      teardown()
+    }
+  })
+
+  it('invents no grid for a pane that has measured nothing of its own (nocx-xn63t.6.35)', async () => {
+    const { session, paint, teardown } = await workerPane()
+    try {
+      vi.useFakeTimers()
+      try {
+        paint(['worker'])
+        vi.advanceTimersByTime(1_000)
+        // The only true answer for a window that has measured nothing of its
+        // own is the grid the session states. 80x24 is this class's own seed,
+        // and reporting it would shrink a session over a pane nobody laid out.
+        expect(session.sendResize).toHaveBeenCalledTimes(1)
+        expect(session.sendResize.mock.calls[0][0]).toMatchObject({
+          cols: WORKER_GRID.cols,
+          rows: WORKER_GRID.rows,
+        })
+      } finally {
+        vi.useRealTimers()
+      }
     } finally {
       teardown()
     }

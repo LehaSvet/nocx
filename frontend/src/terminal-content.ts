@@ -5269,11 +5269,36 @@ export class TerminalContent extends BasePaneContent {
 
   private _reportedSize(): SessionSize {
     const metrics = this.liveCellMetrics()
+    // THE GRID REPORTED IS THE ONE THIS WINDOW MEASURED (nocx-xn63t.6.35).
+    //
+    // `this.cols`/`this.rows` are not that grid: an accepted frame writes
+    // them, on purpose, so a pane that has measured nothing of its own still
+    // knows what the session runs at. A report read out of them is therefore a
+    // report read out of whichever wrote last — so a program that keeps
+    // painting (an agent's TUI, `top`, anything working in a tab nobody is
+    // looking at) lands a frame inside the settle window and puts the
+    // SESSION's grid back into the report that was armed to change it.
+    //
+    // An agent's pane is where that is not an occasional race but the normal
+    // state: the backend opens a worker's session at participantCols x
+    // participantRows (internal/app/workers.go, 120x40) and says of it "the
+    // first client to attach reports its own geometry and the session
+    // resizes". An echoed report cannot keep that promise — it goes out
+    // identical to the size the session is already running at, and the wire
+    // dedupes the whole report (ipc.sendResize) — so that pty never moved
+    // while the quiet shell beside it followed every window resize.
+    //
+    // `lastLocalGridSize` is exactly what is wanted here, and the fit is its
+    // only writer. Null — nothing measured yet — keeps the old answer, the
+    // accepted grid, which is the only true size such a window has: reporting
+    // this class's own 80x24 seed would shrink a session over a pane nobody
+    // has laid out (nocx-eidfb.3).
+    const grid = this.lastLocalGridSize ?? { cols: this.cols, rows: this.rows }
     const report = {
-      cols: this.cols,
-      rows: this.rows,
-      xpixel: metrics ? this.cols * metrics.deviceCellWidth : 0,
-      ypixel: metrics ? this.rows * metrics.deviceCellHeight : 0,
+      cols: grid.cols,
+      rows: grid.rows,
+      xpixel: metrics ? grid.cols * metrics.deviceCellWidth : 0,
+      ypixel: metrics ? grid.rows * metrics.deviceCellHeight : 0,
     }
     this._lastReport = report
     this._lastReportDpr = displayDpr()
