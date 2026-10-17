@@ -39,6 +39,7 @@
  * visibility, prompt readiness, or backend recording state.
  */
 import { expect, type Browser, type Page } from '@playwright/test'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -180,6 +181,55 @@ const FAILURE_CASES = [
   },
 ] as const
 
+/** The pids of this machine's helper daemons started under one home. */
+function daemonsFor(isolatedHome: string): number[] {
+  try {
+    return execFileSync('pgrep', ['-f', join(isolatedHome, '.nocx', 'helper')], {
+      encoding: 'utf8',
+    })
+      .split('\n')
+      .map((line) => Number(line.trim()))
+      .filter((pid) => Number.isInteger(pid) && pid > 0)
+  } catch {
+    // pgrep exits non-zero when nothing matches, which is an answer.
+    return []
+  }
+}
+
+/**
+ * Stop the helper daemon that owns one home's shells, and WAIT for it to go on
+ * the OS's own answer rather than on a duration.
+ *
+ * The daemon is detached by design (D1) and outlives the coordinator — which is
+ * exactly what the three cycles above rely on — so this is the only way a spec
+ * can end a helper-hosted session FOR REAL. Same two steps, same helpers and
+ * same reason as e2e/local-session-reattach.spec.ts, which is where they were
+ * bought for the teardown side of the same problem.
+ */
+async function endHelperDaemonsUnder(isolatedHome: string): Promise<void> {
+  for (const signal of ['SIGTERM', 'SIGKILL'] as const) {
+    const survivors = daemonsFor(isolatedHome)
+    if (survivors.length === 0) return
+    for (const pid of survivors) {
+      try {
+        process.kill(pid, signal)
+      } catch {
+        /* already gone */
+      }
+    }
+    const deadline = Date.now() + 15_000
+    while (Date.now() < deadline) {
+      if (daemonsFor(isolatedHome).length === 0) return
+      const { promise, resolve: resume } = Promise.withResolvers<void>()
+      setTimeout(resume, 50)
+      await promise
+    }
+  }
+  throw new Error(
+    `the helper daemon(s) ${daemonsFor(isolatedHome).join(', ')} outlived SIGTERM and SIGKILL`,
+  )
+}
+
 function disposableRoot(prefix: string): DisposableRoot {
   return { root: mkdtempSync(join(tmpdir(), prefix)) }
 }
@@ -233,7 +283,9 @@ test.describe('connection overlay survives backend loss', () => {
     await expect(page.locator('body')).not.toContainText(/ws closed|not connected/i)
   })
 
-  test('reconnects through a new port and token across three live cycles', async ({ browser }) => {
+  test('reconnects through a new port and token across three live cycles, and offers Reconnect only when the session is really gone', async ({
+    browser,
+  }) => {
     let current = await backend.start()
     // OFF for exactly as long as this test wants it off, ON only once this
     // test has itself decided to retry. The dispatcher's own automatic
@@ -260,6 +312,15 @@ test.describe('connection overlay survives backend loss', () => {
     pages.push(page)
     await readyForInput(page)
 
+    // THE SHELL THIS PANE IS THE PIPE OF, as the BACKEND holds it. The three
+    // cycles below must keep it (nocx-xn63t.6.33): the coordinator that comes
+    // back is a new backend INSTANCE, but the helper under this home owns the
+    // shell and the replacement re-adopts the session under its own identity,
+    // so the pane has lost nothing to reopen.
+    const first = await oneLiveSession(current)
+    const sessionId = first.sessionId
+    const paneId = first.paneId
+
     let previous = current
     for (let cycle = 0; cycle < 3; cycle += 1) {
       armed = false
@@ -273,15 +334,65 @@ test.describe('connection overlay survives backend loss', () => {
       armed = true
       await overlay(page).getByRole('button', { name: 'Retry', exact: true }).click()
       await expect(overlay(page)).toHaveAttribute('data-state', 'online')
-      await expect(page.getByRole('button', { name: 'Reconnect', exact: true })).toBeVisible()
-      await page.getByRole('button', { name: 'Reconnect', exact: true }).click()
+
+      // THE SESSION CAME BACK, SO THE PANE MUST NOT OFFER TO REPLACE IT.
+      // "Reconnecting opens a NEW shell" over a shell that is still running is
+      // the worst sentence this surface could make — the owner saw it over two
+      // live panes on 2026-10-17, and pressing it would have abandoned a
+      // running agent. So this is not merely "the offer is absent"; the pane
+      // still holds the session it had, and the backend's own answer says so:
+      // the same sessionId, the same paneId, re-adopted by the coordinator
+      // that just started.
+      await expect(page.getByRole('button', { name: 'Reconnect', exact: true })).toHaveCount(0)
+      await expect(page.locator('body')).not.toContainText('The connection is gone')
+      const live = await oneLiveSession(next)
+      expect(live.sessionId).toBe(sessionId)
+      expect(live.paneId).toBe(paneId)
+      // And the editor is the pane's own, never replaced by an offer: this
+      // succeeds with no Reconnect press in between, which is the whole
+      // difference from a lost pane.
       await readyForInput(page)
-      await expect(page.locator('body')).not.toContainText(
+      // THE PANE LEAKS NOTHING ABOUT THE CLAIM ITSELF. This assertion used to
+      // read the whole DOCUMENT, and it passed while a lost pane's Reconnect
+      // opened a NEW session — a new session is a new Files scope, which
+      // re-opened the sidebar's binding as a side effect. A pane that KEEPS its
+      // session re-scopes nothing, so the same restart now leaves the sidebar's
+      // own stale binding on screen: "Invalid params: unknown bindingId" and
+      // its Retry button, which is the Files panel's sticky watch-failure
+      // message BY DESIGN (frontend/src/files/files-store.ts: a rejected
+      // files.watch stays until a successful one, and the header refresh is the
+      // retry). That is a separate defect in the panel's binding lifecycle —
+      // the binding is minted in the coordinator's registry, so a restart
+      // leaves every id the panel holds dead, and nothing but an origin change
+      // re-opens it — reported with this change rather than papered over here.
+      // Scoping the assertion to the surface this spec is about keeps exactly
+      // the claim it was written to make: no refusal of the reconnect reaches
+      // the pane.
+      await expect(page.locator('.pane.active')).not.toContainText(
         /Invalid params|different backend instance|not connected|ws closed/i,
       )
       expect(resolved).toContain(`${next.port}:${next.token}`)
       previous = next
     }
+
+    // THE OTHER HALF OF THAT DISTINCTION, and the reason the three cycles
+    // above are not asserting "the offer never appears". A session that really
+    // IS gone must still be offered Reconnect. What holds this pane's shell is
+    // the helper daemon under this home — it is detached by design (D1) and
+    // outlives the coordinator — so stopping it ends the session for real:
+    // the coordinator that then starts has nothing to re-adopt, the page's
+    // re-claim finds no live entry, and only then is the pane marked lost.
+    // (The same offer, for a host loss rather than a local one, is what
+    // e2e/ssh-reconnect.spec.ts asserts and clicks.)
+    await endHelperDaemonsUnder(backend.isolatedHome)
+    armed = false
+    backend.stop()
+    await expect(overlay(page)).toBeVisible()
+    current = await backend.start()
+    armed = true
+    await overlay(page).getByRole('button', { name: 'Retry', exact: true }).click()
+    await expect(overlay(page)).toHaveAttribute('data-state', 'online')
+    await expect(page.getByRole('button', { name: 'Reconnect', exact: true })).toBeVisible()
 
     await expect(page.locator('#sidebar > .ui-sidebar-view')).toHaveCount(1)
     await expect(page.locator('dialog[open]')).toHaveCount(0)
