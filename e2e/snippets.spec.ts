@@ -1,3 +1,5 @@
+import type { Locator } from '@playwright/test'
+
 import {
   appReadyForInput,
   bindEndpoint,
@@ -34,6 +36,9 @@ import { readStand } from './stand'
  */
 
 const INPUT = '.pane.active .nocx-editor-input'
+/** The grid's own input element: where the pane reads keys while a program
+ *  holds the pty and the command editor is hidden. */
+const GRID_INPUT = '.pane.active .ui-terminal-input'
 // The snippets list is a VARIANT of the quick-connect palette — the same
 // surface the server list, the command palette and the secret picker are
 // (owner review: a second surface for one job is the shape this repo has
@@ -119,10 +124,29 @@ async function removeSnippet(page: Page, title: string): Promise<void> {
 
 /** Open a terminal tab and leave a program waiting on stdin: `read` holds
  *  the pane, so the command editor is hidden and the pty owns input — the
- *  state the palette exists for. Returns the number of completed blocks at
- *  that moment, which is what "nothing was submitted" is measured against.
+ *  state the palette exists for.
+ *
+ *  It answers with the block THIS program opened, by the attempt id it bound
+ *  to, plus the number of blocks at that moment (what "nothing was
+ *  submitted" is measured against).
+ *
+ *  WHY THE BLOCK'S OWN ID AND NOT A CLASS. `.cmd-block` + a text the block
+ *  happens to contain cannot say who it belongs to. Every program in this
+ *  file PRINTS 'got-' and also carries it in its command line, and the
+ *  scrollback from an earlier test in this file is restored after
+ *  `page.goto('/')` — so `page.locator('.cmd-block', { hasText: 'got-' })`
+ *  was satisfied by a previous test's frozen block, and even by the running
+ *  block's own command line, while this test's program had not returned
+ *  (nocx-xn63t.6.43, CI run 39066448948). The running element carries the
+ *  authenticated attempt's id (`BlockManager.bindAttempt`, blocks.ts) and
+ *  the freeze keeps it (`freezeBlock` → `createCommandBlock`), so ONE
+ *  locator spans the same block running and settled, and restored history
+ *  — different attempts, different ids — can never answer for it.
  */
-async function programWaitingOnStdin(page: Page, command: string): Promise<number> {
+async function programWaitingOnStdin(
+  page: Page,
+  command: string,
+): Promise<{ attemptId: string; blocksBefore: number }> {
   // Back to the terminal tab: Settings opened as a second tab, and the
   // first one is the shell this check fires into.
   await page.locator('.nocx-tab').first().click()
@@ -134,10 +158,64 @@ async function programWaitingOnStdin(page: Page, command: string): Promise<numbe
   // the backend's authenticated running fact, which lands after the input has
   // hidden, so counting at the hide can miss it and see the block arrive later
   // as a phantom "extra" (nocx-2v80t.3.59).
-  await expect(page.locator('.pane.active .cmd-block.cmd-block-running')).toHaveCount(1, {
-    timeout: 10_000,
-  })
-  return await page.locator('.cmd-block').count()
+  const running = page.locator('.pane.active .cmd-block.cmd-block-running')
+  await expect(running).toHaveCount(1, { timeout: 10_000 })
+  const attemptId = await running.getAttribute('data-entry-id')
+  expect(attemptId, 'the running block is bound to an attempt').toBeTruthy()
+  return { attemptId: attemptId ?? '', blocksBefore: await page.locator('.cmd-block').count() }
+}
+
+/** This invocation's own block, running or settled. */
+function attemptBlock(page: Page, attemptId: string): Locator {
+  return page.locator(`.pane.active .cmd-block[data-entry-id="${attemptId}"]`)
+}
+
+/** Wait until the PANE owns the keyboard again.
+ *
+ *  The palette is a modal dialog: it takes the keyboard on open, and the
+ *  browser's own focus return on close lands one task later — MEASURED in
+ *  the container under webkit (nocx-xn63t.6.43): the palette's search input
+ *  holds focus for the dialog's life, `dialog.close()` drops focus to
+ *  <body>, and the grid's input element holds it back. So
+ *  `expectPaletteClosed` — which watches the dialog's `open` attribute —
+ *  says nothing about the keyboard: it can return while the keyboard is
+ *  still on <body>, where a keystroke reaches nobody (measured: with the
+ *  keyboard blurred to <body>, the same Enter leaves the program running).
+ *  That is the state CI run 39066448948 left the refused-snippet test in —
+ *  its own `read x` never received the Enter, and the failure surfaced in
+ *  afterEach as a prompt that never came back. The gap itself did not
+ *  reproduce here (three repetitions of the exact sequence lost none), so
+ *  what this waits for is the observable a keystroke needs and never an
+ *  assumed timing. */
+async function gridOwnsKeyboard(page: Page): Promise<void> {
+  await expect(page.locator(GRID_INPUT)).toBeFocused({ timeout: 10_000 })
+}
+
+/** The person's Enter ends the program this block belongs to: wait for the
+ *  pane to own the keyboard, press it, and then wait for the three facts
+ *  that say the key arrived at the pty and the program returned —
+ *
+ *    - this invocation's block settles (`data-outcome`, written by the one
+ *      outcome owner, blocks.ts settleBlockOutcome);
+ *    - its OUTPUT carries the text this test's own program prints;
+ *    - the prompt owns the pane again, which restored history cannot fake
+ *      and which is exactly what the afterEach needs.
+ *
+ *  A program still waiting leaves `data-outcome` absent and the editor
+ *  hidden, so every one of the three fails — which is the failure the old
+ *  `.first()`-over-all-blocks assertion missed. */
+async function finishProgramWithEnter(
+  page: Page,
+  attemptId: string,
+  output: string,
+): Promise<Locator> {
+  const own = attemptBlock(page, attemptId)
+  await gridOwnsKeyboard(page)
+  await page.keyboard.press('Enter')
+  await expect(own).toHaveAttribute('data-outcome', 'success', { timeout: 10_000 })
+  await expect(own.locator('.cmd-output')).toContainText(output, { timeout: 10_000 })
+  await promptReady(page)
+  return own
 }
 
 test.describe('a saved snippet reaches a running program', () => {
@@ -185,7 +263,10 @@ test.describe('a saved snippet reaches a running program', () => {
     // is the subject of the resolver's own tests, not of this one.
     await createSnippet(page, 'e2e fill', 'in-{{env:cwd}}-{{tag}}')
 
-    const blocksBefore = await programWaitingOnStdin(page, 'read x; printf \'got-%s\\n\' "$x"')
+    const { attemptId, blocksBefore } = await programWaitingOnStdin(
+      page,
+      'read x; printf \'got-%s\\n\' "$x"',
+    )
 
     // The chord reaches the palette even though no command editor exists —
     // the case the whole surface was built for.
@@ -208,10 +289,9 @@ test.describe('a saved snippet reaches a running program', () => {
     await expect(page.locator(INPUT)).not.toBeVisible()
 
     // Half two: what was sent. The person presses Enter themselves, and the
-    // program echoes back what it read.
-    await page.keyboard.press('Enter')
-    const block = page.locator('.cmd-block', { hasText: 'got-in-' }).first()
-    await expect(block).toBeVisible({ timeout: 10_000 })
+    // program echoes back what it read — in THIS invocation's block, whose
+    // output no earlier test's restored block carries.
+    const block = await finishProgramWithEnter(page, attemptId, 'got-in-')
     // The ask answer arrived, and no span survived as literal text — the
     // env value is the session's own user, which the test does not pretend
     // to know, so it asserts what it can: the braces are gone.
@@ -227,7 +307,15 @@ test.describe('a saved snippet reaches a running program', () => {
     await appReadyForInput(page)
     await createSnippet(page, 'e2e two lines', 'first line\nsecond line')
 
-    const blocksBefore = await programWaitingOnStdin(page, 'read x; printf \'got-%s\\n\' "$x"')
+    // This program prints its OWN word. `got-` would not have been enough:
+    // the previous test in this file prints `got-in-…` into the same session,
+    // and its frozen block is restored when this page loads. A refusal this
+    // test's Enter did not end could therefore look like a pass against
+    // history that had nothing to do with it (nocx-xn63t.6.43).
+    const { attemptId, blocksBefore } = await programWaitingOnStdin(
+      page,
+      'read x; printf \'refused-%s\\n\' "$x"',
+    )
 
     await pickSnippet(page, 'e2e two lines')
 
@@ -242,11 +330,15 @@ test.describe('a saved snippet reaches a running program', () => {
     await expectPaletteClosed(page)
     await expect(page.locator('.cmd-block')).toHaveCount(blocksBefore)
     // And the program is still waiting: Enter ends it with the empty line
-    // the person typed, not with anything the refused fire sent.
-    await page.keyboard.press('Enter')
-    await expect(page.locator('.cmd-block', { hasText: 'got-' }).first()).toBeVisible({
-      timeout: 10_000,
-    })
+    // the person typed, not with anything the refused fire sent. The wait is
+    // on THIS program's own block settling with its own output and the prompt
+    // coming back — so a program that is still running cannot be answered for
+    // by the restored block of an earlier test, and the afterEach cannot be
+    // the first thing to notice (nocx-xn63t.6.43).
+    const own = await finishProgramWithEnter(page, attemptId, 'refused-')
+    // Nothing was inserted, so the refused body never reached the program: an
+    // empty line is what `read x` returned.
+    await expect(own.locator('.cmd-output')).not.toContainText('first line')
   })
 
   // The OTHER multi-line branch: bracketed paste ON, body delivered. It could
@@ -266,7 +358,7 @@ test.describe('a saved snippet reaches a running program', () => {
     // `read -r` keeps the backslashes the two-line body does not have, and
     // keeps the whole paste as ONE value, which is what makes the assertion
     // below about delivery rather than about the shell's word splitting.
-    const blocksBefore = await programWaitingOnStdin(
+    const { attemptId, blocksBefore } = await programWaitingOnStdin(
       page,
       "printf '\\033[?2004h'; read -r x; printf 'got-%s\\n' \"$x\"",
     )
@@ -305,11 +397,13 @@ test.describe('a saved snippet reaches a running program', () => {
     // the destination could carry one.
     await expect(page.locator('.cmd-block')).toHaveCount(blocksBefore)
 
-    // The person presses Enter themselves, and the program echoes what it
-    // read: both lines arrived, as one bracketed paste.
+    // What the program received is read from THIS invocation's own block:
+    // restored history carries other attempts' ids, so an earlier `read`
+    // block cannot answer for it (nocx-xn63t.6.43).
     await page.keyboard.press('Enter')
-    const block = page.locator('.cmd-block', { hasText: 'got-first line' }).first()
-    await expect(block).toBeVisible({ timeout: 10_000 })
+    const block = attemptBlock(page, attemptId)
+    await expect(block).toHaveAttribute('data-outcome', 'success', { timeout: 10_000 })
+    await expect(block).toContainText('got-first line', { timeout: 10_000 })
     await expect(block).toContainText('second line')
   })
 
@@ -339,7 +433,7 @@ test.describe('a saved snippet reaches a running program', () => {
       'run {{worker=claude|omp|codex}}\n{% if parallel %}\nin parallel\n{% endif %}\ndone',
     )
 
-    const blocksBefore = await programWaitingOnStdin(
+    const { attemptId, blocksBefore } = await programWaitingOnStdin(
       page,
       'printf \'\\033[?2004h\'; read -r a; read -r b; printf \'got-[%s][%s]\\n\' "$a" "$b"',
     )
@@ -380,13 +474,13 @@ test.describe('a saved snippet reaches a running program', () => {
     // the second `read` is still waiting for the person.
     await expect(page.locator('.cmd-block')).toHaveCount(blocksBefore)
 
+    // The whole assertion in one string, on this program's own block: the
+    // chosen option is there, the un-ticked paragraph is not, there is no
+    // blank line where it was, and no {{…}} survived as literal text.
     await page.keyboard.press('Enter')
-    const block = page.locator('.cmd-block', { hasText: 'got-[' }).first()
-    await expect(block).toBeVisible({ timeout: 10_000 })
-    // The whole assertion in one string: the chosen option is there, the
-    // un-ticked paragraph is not, there is no blank line where it was, and
-    // no {{…}} survived as literal text.
-    await expect(block).toContainText('got-[run codex][done]')
+    const block = attemptBlock(page, attemptId)
+    await expect(block).toHaveAttribute('data-outcome', 'success', { timeout: 10_000 })
+    await expect(block).toContainText('got-[run codex][done]', { timeout: 10_000 })
   })
 
   test('a snippet whose secret cannot be resolved refuses, and writes nothing', async ({
@@ -402,7 +496,10 @@ test.describe('a saved snippet reaches a running program', () => {
     // must never reach a running program's stdin.
     await createSnippet(page, 'e2e fill', 'psql {{secret:e2e-absent}}')
 
-    const blocksBefore = await programWaitingOnStdin(page, 'read x; printf \'got-%s\\n\' "$x"')
+    const { attemptId, blocksBefore } = await programWaitingOnStdin(
+      page,
+      'read x; printf \'redacted-%s\\n\' "$x"',
+    )
 
     await pickSnippet(page, 'e2e fill')
 
@@ -415,9 +512,7 @@ test.describe('a saved snippet reaches a running program', () => {
     // No Escape: the palette closed itself on the refusal, and an Escape with
     // nothing to dismiss would reach the program as an ESC byte and land in
     // the very value this then asserts on.
-    await page.keyboard.press('Enter')
-    const block = page.locator('.cmd-block', { hasText: 'got-' }).first()
-    await expect(block).toBeVisible({ timeout: 10_000 })
-    await expect(block).not.toContainText('secret:')
+    const own = await finishProgramWithEnter(page, attemptId, 'redacted-')
+    await expect(own.locator('.cmd-output')).not.toContainText('secret:')
   })
 })
