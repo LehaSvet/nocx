@@ -8,6 +8,7 @@
     "idle-120",
     "idle-80",
     "idle-60",
+    "idle-suggestion",
     "turn-before-timer",
     "turn-with-timer",
     "turn-streaming",
@@ -142,6 +143,19 @@
       "atMs": 11000,
       "state": "free_text",
       "note": "the same moment on Claude Code 2.1.238, kept as a regression (nocx-nru89.2)"
+    },
+    {
+      "moment": "idle-suggestion",
+      "capture": "claude-modal",
+      "atMs": 1480,
+      "state": "free_text",
+      "note": "the empty input box AS CLAUDE DRAWS IT: a fresh prompt whose box carries Claude's own suggestion, 'Try \"fix lint errors\"', in SGR 2 (faint). The box is EMPTY — nothing has been typed — and the drawing is on screen only while it is (claude-modal draws it at 1473ms and erases it at 1505ms), which is why the mark is inside that window and measured by replaying it, never by timing (nocx-detection-verify step 3). Measured 2026-10-17 on a real session against Claude Code 2.1.296: after the coordinator answered a worker pane's folder-trust question, four session.read calls over the following minute every one reported this drawing on a free_text pane while the worker's queued task stayed at phase \"queued\" (nocx-xn63t.6.32). The reading this frame must produce is stated by agentdriver's own TestInputTextIsEmptyWhenClaudeDrawsItsOwnSuggestion: text \"\" and ok=true, so a caller gating on an empty box pastes instead of waiting forever. The 2.1.296 frame itself could NOT be recorded: record.sh builds a fresh HOME and CLAUDE_CONFIG_DIR every run (cmd/agent-capture refuses a warmed one by design), so every recording is a FIRST-run screen — theme picker, security notes, folder trust, the 'Auto mode is now Claude Code's default permission mode' banner — and on 2.1.296 that screen draws no suggestion at all (three isolated runs, verified by reading each replay), while the owner's LM Studio endpoint that a returning-user recording would need was unreachable that day (connection refused on both known ports). This mark is therefore placed on the recorded frames that DO carry the drawing, quoted above, and a real 2.1.296 recording is owed when a warmed, isolated config becomes possible."
+    },
+    {
+      "capture": "claude-idle",
+      "atMs": 1470,
+      "state": "free_text",
+      "note": "the same drawing in the other recorded spelling, \"Try \"fix typecheck errors\"\" (Claude rotates its own suggestion list), kept as a regression: the reading has to answer empty for the FORM and not for one string"
     },
     {
       "moment": "turn-before-timer",

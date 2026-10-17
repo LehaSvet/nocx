@@ -908,6 +908,118 @@ func TestASpawnBriefingQueuedAtPermissionChoiceSubmitsAfterSessionKeysAnswer(t *
 	}
 }
 
+// TestASpawnBriefingQueuedAtFolderTrustSubmitsAfterSessionKeysAnswer is
+// nocx-xn63t.6.32's own deterministic reproduction of the owner's working day,
+// over the same real spawner/registrar/TaskQueue path as the permission test
+// above and through the same real session.keys call.
+//
+// The sequence is the day's own. A worker pane opens on Claude's folder-trust
+// question — what a fresh Claude asks in a fresh directory before it will read
+// anything (s14mock's phaseTrust, the corpus's own claude-trust frame) — and
+// its first briefing is queued behind that question. The coordinator answers
+// the question with session.keys, naming the option that is NOT under the
+// cursor, so the call moves the selection and presses Enter exactly as the
+// owner's own answer did. The pane then shows what a real Claude shows: an
+// EMPTY prompt carrying Claude's own SUGGESTION, `Try "fix lint errors"`
+// (s14mock's phaseGhost — the corpus's own recorded drawing, the manifest's
+// "idle-suggestion" mark, measured 2026-10-17 against Claude Code 2.1.296 on a
+// real session: four session.read calls, this drawing, phase "queued"
+// throughout).
+//
+// What this asserts is the READING of that screen. A suggestion is not typed
+// text, and while it was read as text the readiness gate answered "this box is
+// not free" for a pane nobody had typed into — for as long as the prompt
+// stands, because the pane's classification does not change while it does, so
+// nothing wakes the waiting queue either. The task must arrive in the worker's
+// real PTY exactly once, which is what this test counts.
+func TestASpawnBriefingQueuedAtFolderTrustSubmitsAfterSessionKeysAnswer(t *testing.T) {
+	mockDir := s14RealBuildMock(t)
+	stateDir := t.TempDir()
+	for _, dir := range []string{"cue", "log"} {
+		if err := os.MkdirAll(filepath.Join(stateDir, dir), 0o750); err != nil {
+			t.Fatalf("mkdir %s dir: %v", dir, err)
+		}
+	}
+	capturesDir, err := filepath.Abs(filepath.Join("..", "agentdriver", "testdata", "captures"))
+	if err != nil {
+		t.Fatalf("resolve captures dir: %v", err)
+	}
+	t.Setenv("PATH", mockDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("S14_CAPTURES_DIR", capturesDir)
+	t.Setenv("S14_STATE_DIR", stateDir)
+	// The pane opens on the folder-trust question, BEFORE its first paint, so
+	// the spawn below observes a question rather than racing an idle startup.
+	t.Setenv("S14_INITIAL_PHASE", "trust")
+
+	stand := newS14RealStand(t, mockDir, stateDir)
+	client := newS14MCPClient(t, stand.endpoint.SocketPath())
+	const task = "inspect the trust queue and report exactly once"
+	workerID, workerSession := s14RealSpawn(t, stand, client, "claude", task)
+
+	// The real dialog, read as a menu target: the pane is asking, and the
+	// option under its cursor is the one that does not trust the folder.
+	trustRead := s14ReadTarget(t, client, workerID, "menu")
+	if trustRead.Classification != string(agentdriver.StatePermissionChoice) || trustRead.Target == nil || trustRead.Target.Menu == nil {
+		t.Fatalf("worker read = %+v, want the folder-trust question as a permission_choice menu", trustRead)
+	}
+	if got := trustRead.Target.Menu.Options[trustRead.Target.Menu.Selected]; got != "No, exit" {
+		t.Fatalf("the dialog's selected option = %q, want %q — answering the trusting option must be a real move", got, "No, exit")
+	}
+
+	queued := s14Read(t, client, workerID)
+	if len(queued.Pending) != 1 || queued.Pending[0].ID != "briefing" || queued.Pending[0].Phase != "queued" {
+		t.Fatalf("pending briefing = %+v, want exactly one queued briefing while the question stands", queued.Pending)
+	}
+	beforeAnswer, err := os.ReadFile(stand.logPath(workerSession))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read worker's PTY input log before the answer: %v", err)
+	}
+	if strings.Contains(string(beforeAnswer), task) {
+		t.Fatalf("the task reached the worker while its question was still unanswered: %q", beforeAnswer)
+	}
+
+	answer := client.call(t, "session.keys", map[string]any{
+		"sessionId": workerID, "tokenId": trustRead.Target.TokenID,
+		"option": "Yes, I trust this folder",
+	})
+	var keysResult struct {
+		State string `json:"state"`
+	}
+	s14DecodeInto(t, answer, &keysResult)
+	if keysResult.State != "executed" {
+		t.Fatalf("session.keys answer = %+v, want executed", keysResult)
+	}
+
+	// The pane is free and carries Claude's own suggestion — asserted, so a
+	// fixture that stopped drawing it fails here instead of passing this test
+	// for a reason that has nothing to do with the defect.
+	waittest.WaitFor(t, "the freed pane to show Claude's own prompt suggestion", func() bool {
+		read := s14Read(t, client, workerID)
+		return read.Classification == string(agentdriver.StateFreeText) && strings.Contains(read.Text, `Try "fix lint errors"`)
+	})
+
+	waittest.WaitFor(t, "the queued briefing to be submitted after the question was answered", func() bool {
+		read := s14Read(t, client, workerID)
+		for _, pending := range read.Pending {
+			if pending.ID == "briefing" {
+				return pending.Phase == "submitted"
+			}
+		}
+		return false
+	})
+	logBytes, err := os.ReadFile(stand.logPath(workerSession))
+	if err != nil {
+		t.Fatalf("read worker's PTY input log: %v", err)
+	}
+	if count := strings.Count(string(logBytes), task); count != 1 {
+		t.Fatalf("task text reached the worker's PTY %d times, want exactly once; bytes=%q", count, logBytes)
+	}
+	final := s14Read(t, client, workerID)
+	if len(final.Pending) != 1 || final.Pending[0].ID != "briefing" || final.Pending[0].Phase != "submitted" {
+		t.Fatalf("final pending briefing = %+v, want one submitted briefing", final.Pending)
+	}
+}
+
 // TestACoordinatorReadsAnswersAndMessagesItsWorkerThroughTheRealHelper is this
 // bead's own acceptance check — see the file doc above for what is real here
 // beyond session_surface_happypath_test.go's own test, and the finding it

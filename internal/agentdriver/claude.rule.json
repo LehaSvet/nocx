@@ -284,7 +284,7 @@
       "to": "bottomRule",
       "join": "space",
       "states": ["free_text", "working"],
-      "pattern": "^(?:❯(?:\\x{00A0}(?P<line>.*))?|  (?P<line>\\S.*))$"
+      "pattern": "^(?:❯\\x{00A0}Try \\x22.*\\x22|❯(?:\\x{00A0}(?P<line>.*))?|  (?P<line>\\S.*))$"
     },
     {
       "name": "menu",

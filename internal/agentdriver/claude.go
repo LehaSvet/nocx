@@ -273,10 +273,49 @@ package agentdriver
 // person never pressed. The wrap indent itself is still stripped rather than
 // restored: it is chrome Claude draws, not text anybody typed.
 //
+// # An empty box is not drawn empty, and what it draws is not text
+// (nocx-xn63t.6.32)
+//
+// MEASURED 2026-10-17 on Claude Code 2.1.296, on a real session: the
+// coordinator answered a worker pane's folder-trust question, and four
+// session.read calls over the following minute every one reported the same
+// free_text pane whose box row read "❯\x{00A0}Try \"fix lint errors\"" — while the
+// task queued for that worker stayed at phase "queued", with no delivery, no
+// refusal and no wait. That pane was EMPTY: the drawing is Claude's own prompt
+// SUGGESTION, painted into a box nothing has been given. It is drawn in SGR 2,
+// the terminal's faint attribute — the corpus's own paint bytes are
+// "\x1b[39m❯\x{00A0}\x1b[2mTry \"fix lint errors\"\x1b[22m" (claude-modal at 1473ms,
+// claude-idle at 1444ms) — and it stands only while the box is empty: the same
+// capture erases it at 1505ms with "\x1b[2C\x1b[36B\x1b[K".
+//
+// Reading it as text is not a cosmetic error. internal/app pastes only into a
+// box that reads empty (design §8.2 step 1), so a suggestion standing in an
+// empty box answered "someone is typing" for a box nobody had touched — and
+// because the classification does not move while it stands, nothing wakes the
+// waiting queue either: its safety recheck reads the same non-empty answer for
+// as long as the prompt does.
+//
+// The rendering is what would tell the two apart, and this frame does not
+// carry it: paneview.Cell is text and width by design, and the helper ABI that
+// carries a frame to the coordinator is frozen against a field added later
+// (contracts/helper/README.md). So the reading states the agent's own FORM: a
+// prompt row whose whole content is Try, a space and a double-quoted phrase —
+// Claude's suggestion grammar, in both spellings its own list takes in the
+// corpus ("fix lint errors" in claude-modal, "fix typecheck errors" in
+// claude-idle) — matches with NOTHING captured, exactly as a bare "❯" does, so
+// the box reads EMPTY and readable rather than unreadable, which is the
+// difference Observation.InputText's "absent is not empty" contract keeps.
+//
+// The cost is stated rather than hidden: a person who typed exactly that line
+// into the box would be read as an empty box. The alternative — reading the
+// faint attribute, which no frame carries today — is nocx-xn63t.6.32's own
+// follow-up rather than something this rule can do.
+//
 // The pattern itself is what "excluding rule rows" means in practice: it
-// matches only "❯" optionally followed by ONE cell and content, or two
+// matches a prompt row carrying Claude's own suggestion (which is empty, see
+// the note below), or "❯" optionally followed by ONE cell and content, or two
 // (ordinary) spaces followed by non-blank content, and a row of nothing but
-// "─" satisfies neither — so the rule's own bottom border is read and
+// "─" satisfies none of them — so the rule's own bottom border is read and
 // silently excluded rather than trimmed after the fact. That one cell after
 // the marker is a NO-BREAK SPACE (U+00A0), not the ordinary space it looks
 // like printed — measured off every prompt row in the corpus, idle and
