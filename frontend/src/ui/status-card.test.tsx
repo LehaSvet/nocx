@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, afterEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { render, screen, cleanup, fireEvent } from '@solidjs/testing-library'
 import { StatusCard, type StatusCardProps } from './status-card'
 import { Button } from './button'
@@ -90,5 +92,39 @@ describe('StatusCard', () => {
     expect((button as HTMLButtonElement).disabled).toBe(false)
     fireEvent.click(button)
     expect(clicked).toBe(1)
+  })
+
+  // A BAND, NOT A CARD (nocx-xn63t.6.36). The third state's notice is a strip
+  // of the pane it belongs to, and the card's own air below it — which exists
+  // because the next thing after a card is unknown — is exactly the empty band
+  // the owner photographed above the pane's content. The variance is ONE
+  // attribute and the stylesheet answers it: a band is full-bleed and owns no
+  // air on the side it is attached by. Asserted on the rule itself because
+  // jsdom does not apply the stylesheet, and the property under test IS the
+  // rule (the measured geometry is e2e/unreconciled-notice-band.spec.ts's).
+  it('is a card by default, so a surface that places one keeps the card', () => {
+    subject()
+    expect(document.querySelector('.ui-status-card')!.hasAttribute('data-band')).toBe(false)
+  })
+
+  it('carries the band variance when it is asked for', () => {
+    subject({ band: true })
+    expect(document.querySelector('.ui-status-card')!.getAttribute('data-band')).toBe('')
+  })
+
+  it('the band rule gives up the rounded box and the air below it', () => {
+    const css = readFileSync(
+      resolve(import.meta.dirname ?? '.', '../styles/components/status-card.css'),
+      'utf8',
+    ).replace(/\/\*[\s\S]*?\*\//g, '')
+    const rule = /\.ui-status-card\[data-band\]\s*\{([^}]*)\}/.exec(css)
+    expect(rule, 'the band variance has no rule of its own').not.toBeNull()
+    const body = rule![1]
+    expect(body).toMatch(/margin-bottom:\s*0/)
+    expect(body).toMatch(/border-radius:\s*0/)
+    // The tone's leading edge is the one part of the frame that carries a
+    // fact, so the band gives up the other three sides and never the left: a
+    // `border:` shorthand here would drop the colour the tone rules set.
+    expect(body).not.toMatch(/(^|[^-])border\s*:/)
   })
 })

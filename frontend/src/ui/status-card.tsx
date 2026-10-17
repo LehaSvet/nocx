@@ -43,6 +43,15 @@ export interface StatusCardProps {
    * sentence: its blank lines are kept instead of collapsed.
    */
   prose?: boolean
+  /**
+   * The card as a BAND attached to the surface it heads: full-bleed, no
+   * rounded box, and no air below itself. For a surface that is not a page —
+   * the third state's notice, mounted above the pane's own content
+   * (nocx-xn63t.6.36). Without it a card keeps the air below itself, which is
+   * right where the next thing after it is unknown and wrong where it is
+   * attached.
+   */
+  band?: boolean
 }
 
 export function StatusCard(props: StatusCardProps) {
@@ -51,6 +60,7 @@ export function StatusCard(props: StatusCardProps) {
       class="ui-status-card"
       data-tone={props.tone ?? 'neutral'}
       data-prose={props.prose ? '' : undefined}
+      data-band={props.band === true ? '' : undefined}
     >
       {/* The slot is absent, not empty, when there is no icon: an empty flex
           child still takes its gap, and the text would then sit indented from

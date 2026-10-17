@@ -134,6 +134,12 @@ export interface UnreconciledNoticeProps {
 function UnreconciledNotice(props: { account: UnreconciledAccount; onDismiss: () => void }) {
   return (
     <StatusCard
+      // THE BAND VARIANCE OF THE CARD, not the card (nocx-xn63t.6.36): this
+      // notice is a strip of the pane it heads, so it spans the pane, starts
+      // at the pane's own top edge, and is attached to the pane's content
+      // below it. What a band looks like is the kit's answer; this surface
+      // asks for it and paints nothing.
+      band
       tone="neutral"
       title={unreconciledTitle(props.account)}
       description={unreconciledDescription(props.account)}
