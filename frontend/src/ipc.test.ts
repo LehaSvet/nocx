@@ -20,6 +20,11 @@ const ACK_INTERVAL_MS = 100
 const SID = '0123456789abcdef0011223344556677'
 const OTHER_SID = 'ffffffffffffffffffffffffffffffff'
 const OPEN_IDENTITY = { instanceId: 'fedcba9876543210fedcba9876543210', sessionEpoch: 1 }
+// A DIFFERENT backend instance: the one a coordinator that REPLACED the one
+// this client opened against mints, and therefore what a session it re-adopted
+// is held under (nocx-xn63t.6.33). Equal to no other id here on purpose — a
+// test that reused OPEN_IDENTITY could not tell a re-claim from a stale one.
+const READOPTED_INSTANCE = '0123456789abcdeffedcba9876543210'
 // The geometry the helpers below open at. Named because the reconnect
 // assertions read it back: an attach carries the size this client last
 // reported, and with no resize in between that is still the opening one.
@@ -1774,6 +1779,161 @@ describe('reconnect and reattach', () => {
     // would close the tab exactly when its session went away — the bug
     // this bead was reopened for.
     expect(exits).toEqual([{ sid: SID, cause: 'interrupted' }])
+  })
+
+  // THE COORDINATOR THIS CLIENT IS BOUND TO CAN BE REPLACED UNDER IT
+  // (nocx-xn63t.6.33). A session's identity is (instanceId, sessionEpoch) and
+  // the instance is minted per coordinator start, so every binding this window
+  // holds names an instance the replacement does not have — and the claim is
+  // refused, correctly (AD-7, ws_reclaim.go's judgeClaim). What must not follow
+  // is a tab marked lost over a session that is still running: the helper kept
+  // it, the replacement re-adopted it, and it is held under the identity
+  // `sessions.live` reports. So the refusal that says "not my instance" is
+  // answered by asking that list and claiming again — the SAME answer a window
+  // with no memory reasons from at boot.
+  it('re-claims a re-adopted session under the identity the replacement reports', async () => {
+    const client = new WSClient(mockDispatcher())
+    const { session, firstWS } = await connectedSessionWithBackoff(client)
+
+    const exits: string[] = []
+    session.onExit((exit) => exits.push(exit.cause))
+
+    firstWS.serverHangsUp()
+    vi.advanceTimersByTime(475)
+    await Promise.resolve()
+    const reconnectedWS = socket()
+    reconnectedWS.serverAccepts()
+    await Promise.resolve()
+
+    const stale = reconnectedWS.requests().filter((r) => r.method === 'attach')
+    expect(stale).toHaveLength(1)
+    reconnectedWS.deliverText({
+      jsonrpc: '2.0',
+      id: stale[0].id,
+      error: {
+        code: -32602,
+        message: 'Invalid params: the claim names a different backend instance',
+        data: { reason: 'foreign-instance' },
+      },
+    })
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+
+    const listing = reconnectedWS.requests().filter((r) => r.method === 'sessions.live')
+    expect(listing).toHaveLength(1)
+    reconnectedWS.deliverText({
+      jsonrpc: '2.0',
+      id: listing[0].id,
+      result: {
+        sessions: [
+          {
+            sessionId: SID,
+            instanceId: READOPTED_INSTANCE,
+            sessionEpoch: 1,
+            paneId: 'pane-1',
+            replayFrom: 512,
+            attached: false,
+          },
+        ],
+      },
+    })
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+
+    // The claim names the REPLACEMENT's incarnation, and it starts where THAT
+    // ring's replay starts: the offset this client last acked is a position in
+    // a ring that died with the coordinator it belonged to (AD-9 is continuous
+    // within one incarnation, never across two).
+    const claims = reconnectedWS.requests().filter((r) => r.method === 'attach')
+    expect(claims).toHaveLength(2)
+    expect(claims[1].params).toEqual({
+      sessionId: SID,
+      offset: 512,
+      instanceId: READOPTED_INSTANCE,
+      sessionEpoch: 1,
+      cols: OPEN_COLS,
+      rows: OPEN_ROWS,
+      xpixel: 0,
+      ypixel: 0,
+    })
+    reconnectedWS.deliverText({
+      jsonrpc: '2.0',
+      id: claims[1].id,
+      result: { resumed: false, reset: true, from: 512 },
+    })
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+
+    // The pane is NOT marked lost: the session is this client's again, under
+    // the incarnation the backend is actually holding it under.
+    expect(exits).toEqual([])
+  })
+
+  it('marks the session lost when the replacement does not hold it', async () => {
+    const client = new WSClient(mockDispatcher())
+    const { session, firstWS } = await connectedSessionWithBackoff(client)
+
+    const exits: string[] = []
+    session.onExit((exit) => exits.push(exit.cause))
+
+    firstWS.serverHangsUp()
+    vi.advanceTimersByTime(475)
+    await Promise.resolve()
+    const reconnectedWS = socket()
+    reconnectedWS.serverAccepts()
+    await Promise.resolve()
+
+    const stale = reconnectedWS.requests().filter((r) => r.method === 'attach')
+    reconnectedWS.deliverText({
+      jsonrpc: '2.0',
+      id: stale[0].id,
+      error: {
+        code: -32602,
+        message: 'Invalid params: the claim names a different backend instance',
+        data: { reason: 'foreign-instance' },
+      },
+    })
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+
+    const listing = reconnectedWS.requests().filter((r) => r.method === 'sessions.live')
+    expect(listing).toHaveLength(1)
+    reconnectedWS.deliverText({ jsonrpc: '2.0', id: listing[0].id, result: { sessions: [] } })
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+
+    expect(reconnectedWS.requests().filter((r) => r.method === 'attach')).toHaveLength(1)
+    // A session the replacement really does not hold IS gone, and the tab is
+    // marked rather than destroyed (nocx-ictcq) — the same answer the ordinary
+    // failed reattach gives.
+    expect(exits).toEqual(['interrupted'])
+  })
+
+  it('answers a refusal that is not a foreign binding without asking what is live', async () => {
+    const client = new WSClient(mockDispatcher())
+    const { session, firstWS } = await connectedSessionWithBackoff(client)
+
+    const exits: string[] = []
+    session.onExit((exit) => exits.push(exit.cause))
+
+    firstWS.serverHangsUp()
+    vi.advanceTimersByTime(475)
+    await Promise.resolve()
+    const reconnectedWS = socket()
+    reconnectedWS.serverAccepts()
+    await Promise.resolve()
+
+    const stale = reconnectedWS.requests().filter((r) => r.method === 'attach')
+    reconnectedWS.deliverText({
+      jsonrpc: '2.0',
+      id: stale[0].id,
+      error: {
+        code: -32602,
+        message: 'Invalid params: unknown sessionId',
+        data: { reason: 'unknown-session' },
+      },
+    })
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+
+    // This backend holds the session or it does not, and it has just said which:
+    // there is no second incarnation to claim under, so the list is not asked.
+    expect(reconnectedWS.requests().filter((r) => r.method === 'sessions.live')).toHaveLength(0)
+    expect(exits).toEqual(['interrupted'])
   })
 
   it('sends attach for multiple sessions on reconnect', async () => {

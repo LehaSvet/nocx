@@ -292,7 +292,16 @@ export class Dispatcher {
       // its resolution belongs to an attempt this dispatcher no longer owns.
       if (epoch !== this._attemptEpoch) return
       if (!result.ok) {
-        this.setConnectionState({ kind: 'blocked', failure: result.failure })
+        // The desktop provider reports a stopped backend as `no-server`.
+        // Unlike configuration/authentication failures, that condition can
+        // clear without user action when the backend process comes back.
+        // Keep probing on the normal backoff so an open page reconnects and
+        // the onConnect attach pass can recover its live sessions.
+        if (result.failure.kind === 'no-server') {
+          this._scheduleReconnect()
+        } else {
+          this.setConnectionState({ kind: 'blocked', failure: result.failure })
+        }
         return
       }
       try {

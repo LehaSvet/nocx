@@ -253,6 +253,30 @@ describe('dispatcher endpoint state machine', () => {
     expect(states).toEqual(['connecting', 'online', 'waiting', 'connecting'])
   })
 
+  it('automatically retries provider no-server failures until the backend returns', async () => {
+    const provider = new TestEndpointProvider()
+    provider.enqueue({
+      ok: false,
+      failure: { kind: 'no-server', message: 'No server.', remedy: 'Start the server.' },
+    })
+    provider.enqueue(SUCCESS)
+    const d = new Dispatcher(provider)
+
+    d.start()
+    await flush()
+    expect(d.connectionState.kind).toBe('waiting')
+    expect(d.reconnectPending).toBe(true)
+    expect(provider.calls).toBe(1)
+
+    vi.advanceTimersByTime(250)
+    await flush()
+    expect(provider.calls).toBe(2)
+    expect(d.connectionState.kind).toBe('connecting')
+    socket().serverAccepts()
+    await flush()
+    expect(d.connectionState.kind).toBe('online')
+  })
+
   it('blocks on provider failure and retries only when retryNow is called', async () => {
     const provider = new TestEndpointProvider()
     const failure = {
@@ -349,7 +373,11 @@ describe('dispatcher endpoint state machine', () => {
     const blockedProvider = new TestEndpointProvider()
     blockedProvider.enqueue({
       ok: false,
-      failure: { kind: 'no-server', message: 'No server.', remedy: 'Start the server.' },
+      failure: {
+        kind: 'server-binary-unusable',
+        message: 'No server binary.',
+        remedy: 'Install the server.',
+      },
     })
     const blocked = new Dispatcher(blockedProvider)
     blocked.start()

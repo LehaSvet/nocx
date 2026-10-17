@@ -219,6 +219,78 @@ func TestSessionEndWithNoRaiserStillNotifiesExit(t *testing.T) {
 	}
 }
 
+// --- the shutdown, which is not an end ----------------------------------
+//
+// The other half of the pair above, for the second way an end can be
+// nobody's news (nocx-xn63t.6.33). Stop closes every registry row with
+// Reg.Close — the DETACH verb, chosen so a later coordinator can re-adopt the
+// session — and monitorExit then raised the feed's "was interrupted" warning
+// over shells that were still running. The owner's restart showed both
+// "Local session was interrupted" and "Session on <host> was interrupted"
+// while the replacement took the same sessions back.
+//
+// The absence is observed for a bounded window, which is the only honest way
+// to check a negative over a seam that has no event to wait on (boundedFalse,
+// ws_end_hold_test.go, makes the same judgement for "no notification
+// leaked"). The window is not what makes the test pass: the raise it is
+// waiting for in the red state happens during Stop, and the paired test below
+// proves a real loss still raises.
+
+func TestShutdownRaisesNoSessionEndedNotification(t *testing.T) {
+	fake := newExitFakePTY()
+	raiser := &fakeNotifyRaiser{}
+	ws, reg := newSessionEndedServer(t, fake, raiser)
+	sid, _ := openExitSession(t, ws)
+
+	if err := ws.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	// A session the shutdown has already let go of is not a session that
+	// ended: it is the one the next coordinator adopts (internal/session's
+	// Reg.Close doc says so in as many words).
+	if _, err := reg.Get(session.ID(sid)); err == nil {
+		t.Fatal("the registry still holds the session after Stop")
+	}
+
+	boundedFalse(t, "the shutdown raised a session.ended event", 200*time.Millisecond, func() bool {
+		return len(raiser.captured()) > 0
+	})
+}
+
+// And the notification a REAL loss raises must survive that suppression: the
+// suppression is about the shutdown, never about the cause. This is the same
+// seam the exit-notification pair uses (a live registry close, not a Stop),
+// and the same event the feed exists for — a session whose channel died with
+// nobody having asked for it.
+func TestLiveSessionLossStillRaisesSessionEndedNotification(t *testing.T) {
+	fake := newExitFakePTY()
+	raiser := &fakeNotifyRaiser{}
+	ws, reg := newSessionEndedServer(t, fake, raiser)
+	sid, _ := openExitSession(t, ws)
+	host := sessionHost(t, reg, sid)
+
+	if err := reg.Close(session.ID(sid)); err != nil {
+		t.Fatalf("close session to simulate a live loss: %v", err)
+	}
+	waittest.WaitForTimeout(t, "the session.ended raise for a live loss", wantWithin, func() bool {
+		return len(raiser.captured()) == 1
+	})
+
+	got := raiser.captured()[0]
+	if got.Kind != notify.KindSessionEnded {
+		t.Errorf("Kind = %q, want %q", got.Kind, notify.KindSessionEnded)
+	}
+	if want := "Local session was interrupted"; got.Title != want {
+		t.Errorf("Title = %q, want %q — a loss with no shell report is exactly the event the feed exists for", got.Title, want)
+	}
+	if got.SessionID != sid {
+		t.Errorf("SessionID = %q, want %q", got.SessionID, sid)
+	}
+	if host != "" {
+		t.Fatalf("this suite opens LOCAL sessions; the registry reports host %q", host)
+	}
+}
+
 // --- the close the user asked for ---------------------------------------
 //
 // The other half of the interval. Every event that IS raised goes into the

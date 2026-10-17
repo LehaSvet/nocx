@@ -1,6 +1,6 @@
 import { decodeFrame, encodeFrame, isSessionID, MSG_TYPE_METADATA } from './frame'
 import type { DecodedFrame } from './frame'
-import { Dispatcher } from './dispatcher'
+import { Dispatcher, RpcError } from './dispatcher'
 import type { AttachResult } from './generated/attach'
 import type { Exit } from './generated/exit'
 import type { Open } from './generated/open'
@@ -99,6 +99,30 @@ function intentPayload(text: string): string {
   let binary = ''
   for (const byte of bytes) binary += String.fromCharCode(byte)
   return btoa(binary)
+}
+
+/** The claim refusals that mean the BINDING is wrong rather than the session
+ *  being gone (nocx-xn63t.6.33). One vocabulary, declared by the backend
+ *  (refuseClaim, internal/transport/ws_reclaim.go) and read here by the
+ *  `data.reason` discriminator it exists for — never by matching the message,
+ *  which is prose and may be reworded. "unknown-session" is deliberately NOT
+ *  here: that one says this backend holds no such session, and there is no
+ *  other incarnation of it to claim. */
+const FOREIGN_BINDING_REFUSALS = new Set(['foreign-instance', 'foreign-incarnation'])
+
+/** Whether this is one of those refusals. A claim is refused as -32602 with
+ *  `data.reason`; anything else — a timeout, a refused socket, an error with
+ *  no data at all — is not a verdict about the claim and settles nothing. */
+function isForeignBindingRefusal(err: unknown): boolean {
+  if (!(err instanceof RpcError)) return false
+  const data = err.data
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'reason' in data &&
+    typeof data.reason === 'string' &&
+    FOREIGN_BINDING_REFUSALS.has(data.reason)
+  )
 }
 
 /** The kinds of input a person produces, as the wire spells them
@@ -755,24 +779,37 @@ export class WSClient {
             }
             return 'resumed' as const
           })
-          .catch(() => {
-            // A reattach that failed is a loss, not an exit: the backend no
-            // longer holds the session, and the tab must be marked, never
+          .catch((err: unknown) => {
+            // A CLAIM REFUSED BECAUSE IT NAMES ANOTHER INSTANCE IS NOT A LOST
+            // SESSION (nocx-xn63t.6.33). A coordinator can be replaced under
+            // an open window, and the replacement is a NEW backend instance
+            // (session.InstanceID is minted per start), so every binding this
+            // window holds is refused — correctly, and as a fact about the
+            // BINDING rather than about the session (judgeClaim,
+            // internal/transport/ws_reclaim.go). The session itself goes on:
+            // the helper owns the shell and the replacement re-adopts it
+            // under its own identity. So the client asks the one authority on
+            // that identity — `sessions.live`, the same list a window with no
+            // memory of its own reclaims from — and claims the session again
+            // as it is actually held.
+            //
+            // The refusal is judged HERE rather than inside the helper so that
+            // one that is not about the binding — the ordinary "no such
+            // session" — settles in the same microtask it always did: the
+            // helper is only entered when there is something to ask the
+            // backend, and asking nothing must not cost a turn.
+            if (isForeignBindingRefusal(err)) {
+              return this._reclaimReAdopted(sid, state).then((reclaimed) =>
+                reclaimed ? ('resumed' as const) : this._loseSession(sid, state),
+              )
+            }
+            // Everything else is a loss, not an exit: the backend no longer
+            // holds the session, and the tab must be marked, never
             // destroyed (nocx-ictcq). Delivered through the SAME callback
             // as the backend's exit notification, with the same closed-set
             // cause, so a fix that only touches the notification's sender
             // leaves this path uncaused and the tab still dies on it.
-            state.exitCallback?.({
-              sessionId: sid,
-              cause: 'interrupted',
-              // The identity this session was opened with (nocx-3oupk):
-              // echoed, never minted (AD-7) — the backend's pair is the
-              // only one that exists.
-              instanceId: state.instanceId,
-              sessionEpoch: state.sessionEpoch,
-            })
-            this.sessions.delete(sid)
-            return 'lost' as const
+            return this._loseSession(sid, state)
           }),
       )
       // Report once every attach has settled — the socket is back before
@@ -1455,6 +1492,86 @@ export class WSClient {
   }
 
   // --- reattach -----------------------------------------------------------
+
+  /** The verdict a session this client cannot reach is reported as.
+   *
+   *  A LOSS, NEVER AN EXIT (nocx-ictcq): the tab is marked and kept, with its
+   *  scrollback, rather than closed. Delivered through the SAME callback the
+   *  backend's exit notification uses and with the same closed-set cause, so a
+   *  fix that only touches the notification's sender leaves this path uncaused
+   *  and the tab still dies on it. The identity echoed is the pair this client
+   *  last held for the session — the backend's word, never minted here
+   *  (nocx-3oupk, AD-7). */
+  private _loseSession(sessionId: string, state: SessionState): 'lost' {
+    state.exitCallback?.({
+      sessionId,
+      cause: 'interrupted',
+      instanceId: state.instanceId,
+      sessionEpoch: state.sessionEpoch,
+    })
+    this.sessions.delete(sessionId)
+    return 'lost'
+  }
+
+  /**
+   * Claim a session again, under the incarnation the coordinator that replaced
+   * this client's one is holding it under, or answer false and leave the
+   * caller its ordinary verdict (nocx-xn63t.6.33).
+   *
+   * WHY THE ONLY WAY IN IS A REFUSAL. Nothing here asks the backend ahead of
+   * time who it is: an ordinary reconnect — a socket that dropped, a laptop
+   * that slept, a network that blinked — reaches a coordinator whose instance
+   * is the one this binding already names, and paying a round trip per
+   * reconnect to rule that out would buy nothing. The refusal is what carries
+   * the fact, and the fact is machine-readable on purpose: `data.reason` is
+   * "foreign-instance" or "foreign-incarnation" when the CLAIM is wrong and
+   * "unknown-session" when the SESSION is gone (refuseClaim's closed
+   * vocabulary, ws_reclaim.go). The caller judges that verdict
+   * (isForeignBindingRefusal) and reaches this only for the first two.
+   *
+   * WHY THE OFFSET CHANGES WITH THE IDENTITY. The byte offset this client last
+   * acked is a position in a ring that died with the coordinator it belonged
+   * to. AD-9's byte accounting is continuous within one incarnation and never
+   * across two, so the re-claim attaches where THAT ring's replay starts — the
+   * `replayFrom` a fresh window reclaims from — and takes the frontier the ack
+   * answers with. Anything the new ring no longer holds is the ring's own
+   * reset to report, and the client's screen is painted from frames either
+   * way.
+   *
+   * FALSE IS THE HONEST ANSWER for every way this can fail: the session is not
+   * in the list (the replacement really does not hold it), the list could not
+   * be read, or the re-claim itself is refused. Each of those leaves a session
+   * this client cannot reach, which is exactly what the caller's loss says.
+   */
+  private async _reclaimReAdopted(sessionId: string, state: SessionState): Promise<boolean> {
+    let entry: LiveSession | undefined
+    try {
+      entry = (await this.listLiveSessions()).find((s) => s.sessionId === sessionId)
+    } catch {
+      return false
+    }
+    if (!entry) return false
+    const identity = { instanceId: entry.instanceId, sessionEpoch: entry.sessionEpoch }
+    try {
+      const result = await this._sendAttach(sessionId, entry.replayFrom, identity, state.reported)
+      // The incarnation is the backend's word (AD-7) and every later
+      // session-scoped fact is compared against it, so it is re-seated here:
+      // a client left holding the dead coordinator's pair would drop the
+      // lifecycle, integration and liveness facts of the session it has just
+      // taken back.
+      state.instanceId = identity.instanceId
+      state.sessionEpoch = identity.sessionEpoch
+      state.offset = result.from ?? entry.replayFrom
+      state.protocolBlocked = false
+      if (result.reset) {
+        state.decoder.reset()
+        state.resetCallback?.()
+      }
+      return true
+    } catch {
+      return false
+    }
+  }
 
   /** The claim, in the one shape both callers use (contracts/attach.schema
    *  .json). The identity travels with it because a claim names a session

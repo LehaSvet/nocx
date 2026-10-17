@@ -1708,6 +1708,55 @@ func TestWSServer_OpenEmptyHost_NoDialAttempt(t *testing.T) {
 	}
 }
 
+func TestWSServer_StopDoesNotNotifyInterruptedExit(t *testing.T) {
+	logger := log.NewSlogAdapter(nil)
+	ws := NewWSServer(logger, newRegWithStub(logger))
+	ctx := context.Background()
+	if err := ws.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	conn := connectWS(t, ws)
+	openSessionOnConn(t, ws, conn, 71)
+	if err := ws.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	// Nothing is coming: a short, bounded wait finding no notification is
+	// the honest way to check an absence over a socket that could otherwise
+	// wait forever for a frame nobody is going to send (ws_contract_test.go
+	// makes the same judgement for the same reason).
+	if msg, err := awaitFrame(conn, time.Now().Add(200*time.Millisecond), isNotification("exit")); err == nil {
+		t.Fatalf("Stop sent a terminal exit notification for a session it only detached: %s", msg)
+	}
+}
+
+func TestWSServer_LiveSessionLossStillNotifiesInterruptedExit(t *testing.T) {
+	logger := log.NewSlogAdapter(nil)
+	ws := NewWSServer(logger, newRegWithStub(logger))
+	ctx := context.Background()
+	if err := ws.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = ws.Stop(ctx) }()
+	conn := connectWS(t, ws)
+	sid := openSessionOnConn(t, ws, conn, 72)
+	if err := ws.registry.Close(session.ID(sid)); err != nil {
+		t.Fatalf("close session to simulate live-server loss: %v", err)
+	}
+	if _, err := awaitFrame(conn, time.Now().Add(wantWithin), func(data []byte) bool {
+		var got struct {
+			Method string `json:"method"`
+			Params struct {
+				SessionID string `json:"sessionId"`
+				Cause     string `json:"cause"`
+			} `json:"params"`
+		}
+		return json.Unmarshal(data, &got) == nil && got.Method == "exit" &&
+			got.Params.SessionID == sid && got.Params.Cause == "interrupted"
+	}); err != nil {
+		t.Fatalf("a live loss must still reach the renderer as an interrupted exit: %v", err)
+	}
+}
+
 // --- DEFECT regression tests -----------------------------------------------
 
 // TestWSServer_OpenAfterStopOnHijackedConn proves DEFECT 1 is fixed:
