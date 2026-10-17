@@ -79,6 +79,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -823,6 +824,88 @@ func s14RealSpawn(t *testing.T, stand *s14RealStand, client *s14MCPClient, comma
 		return err == nil && stored.Liveness.SessionID != ""
 	})
 	return spawned.ID, stored.Liveness.SessionID
+}
+
+// TestASpawnBriefingQueuedAtPermissionChoiceSubmitsAfterSessionKeysAnswer
+// proves the worker's full real spawner/registrar/TaskQueue path. The mock
+// starts on the corpus permission frame before it paints its first bytes, so
+// spawn observes a question rather than racing an idle startup. The coordinator
+// then answers through the actual session.keys endpoint, and the queue submits
+// one briefing into the worker's real PTY.
+func TestASpawnBriefingQueuedAtPermissionChoiceSubmitsAfterSessionKeysAnswer(t *testing.T) {
+	mockDir := s14RealBuildMock(t)
+	stateDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stateDir, "cue"), 0o750); err != nil {
+		t.Fatalf("mkdir cue dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(stateDir, "log"), 0o750); err != nil {
+		t.Fatalf("mkdir log dir: %v", err)
+	}
+	capturesDir, err := filepath.Abs(filepath.Join("..", "agentdriver", "testdata", "captures"))
+	if err != nil {
+		t.Fatalf("resolve captures dir: %v", err)
+	}
+	t.Setenv("PATH", mockDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("S14_CAPTURES_DIR", capturesDir)
+	t.Setenv("S14_STATE_DIR", stateDir)
+	t.Setenv("S14_INITIAL_PHASE", "menu")
+
+	stand := newS14RealStand(t, mockDir, stateDir)
+	client := newS14MCPClient(t, stand.endpoint.SocketPath())
+	const task = "inspect the permission queue and report exactly once"
+	workerID, workerSession := s14RealSpawn(t, stand, client, "claude", task)
+
+	// The queue is attached after the participant is live. Confirm the actual
+	// worker remains on a permission question and its one briefing is queued,
+	// not yet typed, before answering it.
+	menuRead := s14ReadTarget(t, client, workerID, "menu")
+	if menuRead.Classification != string(agentdriver.StatePermissionChoice) || menuRead.Target == nil || menuRead.Target.Menu == nil {
+		t.Fatalf("worker read = %+v, want a permission_choice menu", menuRead)
+	}
+	queued := s14Read(t, client, workerID)
+	if len(queued.Pending) != 1 || queued.Pending[0].ID != "briefing" || queued.Pending[0].Phase != "queued" {
+		t.Fatalf("pending briefing = %+v, want exactly one queued briefing before the answer", queued.Pending)
+	}
+	beforeAnswer, err := os.ReadFile(stand.logPath(workerSession))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read worker's PTY input log before answer: %v", err)
+	}
+	if strings.Contains(string(beforeAnswer), task) {
+		t.Fatalf("task reached worker while its permission prompt was still displayed: %q", beforeAnswer)
+	}
+
+	answer := client.call(t, "session.keys", map[string]any{
+		"sessionId": workerID, "tokenId": menuRead.Target.TokenID,
+		"option": menuRead.Target.Menu.Options[menuRead.Target.Menu.Selected],
+	})
+	var keysResult struct {
+		State string `json:"state"`
+	}
+	s14DecodeInto(t, answer, &keysResult)
+	if keysResult.State != "executed" {
+		t.Fatalf("session.keys answer = %+v, want executed", keysResult)
+	}
+
+	waittest.WaitFor(t, "queued worker briefing to submit after session.keys answered the question", func() bool {
+		read := s14Read(t, client, workerID)
+		for _, pending := range read.Pending {
+			if pending.ID == "briefing" {
+				return pending.Phase == "submitted"
+			}
+		}
+		return false
+	})
+	logBytes, err := os.ReadFile(stand.logPath(workerSession))
+	if err != nil {
+		t.Fatalf("read worker's PTY input log: %v", err)
+	}
+	if count := strings.Count(string(logBytes), task); count != 1 {
+		t.Fatalf("task text reached worker PTY %d times, want exactly once; bytes=%q", count, logBytes)
+	}
+	final := s14Read(t, client, workerID)
+	if len(final.Pending) != 1 || final.Pending[0].ID != "briefing" || final.Pending[0].Phase != "submitted" {
+		t.Fatalf("final pending briefing = %+v, want one submitted briefing", final.Pending)
+	}
 }
 
 // TestACoordinatorReadsAnswersAndMessagesItsWorkerThroughTheRealHelper is this

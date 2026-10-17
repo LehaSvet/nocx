@@ -207,7 +207,17 @@ func run() error {
 	out := bufio.NewWriter(os.Stdout)
 	defer func() { _ = out.Flush() }()
 
-	m.setPhase(phaseIdle)
+	// S14_INITIAL_PHASE is a test-only launch fixture. It lets a real worker
+	// begin on a captured permission prompt before workers.spawn starts its
+	// readiness wait; unset preserves the ordinary idle start.
+	initialPhase := phase(strings.TrimSpace(os.Getenv("S14_INITIAL_PHASE")))
+	if initialPhase == "" {
+		initialPhase = phaseIdle
+	}
+	if _, ok := moments[initialPhase]; !ok {
+		return fmt.Errorf("unsupported S14_INITIAL_PHASE %q", initialPhase)
+	}
+	m.setPhase(initialPhase)
 	if _, err := out.Write(m.paintCurrent()); err != nil {
 		return err
 	}
