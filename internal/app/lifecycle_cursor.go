@@ -45,6 +45,7 @@ import (
 // coordinator with no store has no record for the next one to resume from.
 type lifecycleCursorStore interface {
 	ApplyLifecycleFrame(ctx context.Context, sessionID string, offset uint64, apply func(ctx context.Context) error) error
+	LifecycleReconciled(ctx context.Context, sessionID string) error
 }
 
 // lifecycleOffsets is the attachment's ingest cursor: the helper stream
@@ -221,6 +222,15 @@ func (c *lifecycleCursor) reached(target proto.StreamOffset) <-chan struct{} {
 
 // end says the adapter's pump has stopped: nothing more will be applied, so
 // nobody waits for it.
+// appliedThrough answers whether every lifecycle frame through target was
+// committed to the ledger. reached may also close because the leg ended, so
+// callers must distinguish a completed replay from an interrupted one.
+func (c *lifecycleCursor) appliedThrough(target proto.StreamOffset) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.applied >= uint64(target)
+}
+
 func (c *lifecycleCursor) end() {
 	c.mu.Lock()
 	c.ended = true

@@ -283,6 +283,11 @@ func (s *ledgerStub) ApplyLifecycleFrame(ctx context.Context, sessionID string, 
 	return apply(ctx)
 }
 
+func (s *ledgerStub) LifecycleReconciled(ctx context.Context, sessionID string) error {
+	s.log.Info("content stub: LedgerRepository.LifecycleReconciled", "id", sessionID)
+	return nil
+}
+
 func (s *ledgerStub) DeleteSession(_ context.Context, id string) error {
 	s.log.Info("content stub: LedgerRepository.DeleteSession", "id", id)
 	return ErrNotImplemented
