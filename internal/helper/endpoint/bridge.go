@@ -79,6 +79,27 @@ func Bridge(ctx context.Context, in io.Reader, out io.Writer, conn net.Conn) err
 // both observable. This is only how often it looks.
 const startRetry = 10 * time.Millisecond
 
+// startAttempts bounds how many helpers ONE Ensure call may start.
+//
+// A helper that finds another of its generation already serving yields to it
+// and exits 0, and that is right: the socket is the only authority present on
+// both sides of the race, and starting twice is not an error to a person. But
+// the socket is NOT an authority on whether that peer is still there a moment
+// later. A daemon that owns no session retires after its startup grace, and one
+// that has just lost its last session retires at once; either way its endpoint
+// is unlinked as it goes (D2). A caller that believed the first yield would
+// then report "no helper is serving" for a generation it is perfectly able to
+// serve — which is exactly what a pane said on CI run 39057679352 (webkit-1):
+// "Nocx installed this machine's helper and it did not start", over a socket a
+// retiring daemon had removed between the yield and the dial that followed it.
+//
+// Three, because each attempt costs a process and the events are rare. The
+// first is the ordinary path; the second covers a helper that yielded to a peer
+// which then left; the third covers a second peer appearing while the
+// replacement comes up. Past that the caller is told what actually happened
+// rather than handed a bare "nothing is serving".
+const startAttempts = 3
+
 // Ensure connects to the endpoint for gen, starting a helper from exe when
 // nothing is serving it yet.
 //
@@ -88,10 +109,26 @@ const startRetry = 10 * time.Millisecond
 // that is what is true: no helper of that generation is serving, and this
 // process is not the one that can change it.
 //
+// # A start yields, and a yield is not a verdict
+//
 // Two processes may reach here at once; both may start a helper. The one that
-// loses the bind answers ErrAlreadyServing to itself and exits, and both then
-// dial the winner. The race is resolved by the socket, which is the only
-// authority present on both sides of it.
+// loses answers ErrAlreadyServing to itself — or finds the winner by handshake
+// — and exits 0, having changed nothing. The race is resolved by the socket,
+// which is the only authority present on both sides of it.
+//
+// WHAT THE LOSER'S EXIT DOES NOT SAY IS THAT THE ENDPOINT IS SERVED. The peer
+// it yielded to may be a daemon that owns no session and is about to retire,
+// and when such a daemon goes it unlinks the very socket the caller was about
+// to dial. So a child that ends SUCCESSFULLY is treated as a YIELD: the dial
+// after it is asked, and if the endpoint is unserved the whole start is made
+// again, up to startAttempts. That is the caller waiting on the socket's
+// creation event rather than on a duration; the two facts it waits on are still
+// the socket accepting and the child ending.
+//
+// A child that ends UNSUCCESSFULLY stays a failure on the first attempt and is
+// not retried: the binary did not come up, and starting it again would only
+// repeat that. What is left when every attempt yields is ErrNoEndpoint with the
+// yielding in the sentence, so the refusal a person meets names what happened.
 //
 // # A cancelled caller does not kill the child, and that is the right answer
 //
@@ -114,26 +151,42 @@ const startRetry = 10 * time.Millisecond
 // (the kernel queues the connection). A stale one is unlinked by the next
 // helper about to bind (Listen → clearStale) and reported as ErrNoEndpoint by
 // anyone else; nothing else repairs it, deliberately.
-//
-// What is left over is therefore at most one extra helper process of our own
-// generation, and the design already has an answer for that: a second helper
-// finding one serving exits 0 without changing anything. What it does NOT
-// cover is the daemon nobody ends up wanting — nothing retires a generation
-// yet, so it runs until it is signalled. That is D2's, unimplemented, and it
-// is stated here rather than papered over.
 func Ensure(ctx context.Context, dir string, gen, exeGen proto.GenerationID, exe string) (net.Conn, error) {
-	conn, err := Dial(ctx, dir, gen)
-	if err == nil {
-		return conn, nil
+	for attempt := 1; ; attempt++ {
+		conn, err := Dial(ctx, dir, gen)
+		if err == nil {
+			return conn, nil
+		}
+		if !errors.Is(err, ErrNoEndpoint) {
+			return nil, err
+		}
+		if gen != exeGen {
+			return nil, fmt.Errorf("%w: this binary is generation %s and may not serve %s",
+				ErrNoEndpoint, short(exeGen), short(gen))
+		}
+		conn, yielded, err := startAndAwait(ctx, dir, gen, exe)
+		if err != nil {
+			return nil, err
+		}
+		if !yielded {
+			return conn, nil
+		}
+		if attempt == startAttempts {
+			return nil, fmt.Errorf("%w: %d helpers were started for %s and each one yielded the endpoint to another that left it unserved",
+				ErrNoEndpoint, attempt, short(gen))
+		}
 	}
-	if !errors.Is(err, ErrNoEndpoint) {
-		return nil, err
-	}
-	if gen != exeGen {
-		return nil, fmt.Errorf("%w: this binary is generation %s and may not serve %s",
-			ErrNoEndpoint, short(exeGen), short(gen))
-	}
+}
 
+// startAndAwait starts ONE helper and waits on the two observable facts — the
+// endpoint accepting and the child ending — never on a duration.
+//
+// yielded is true when the child ended SUCCESSFULLY and left the endpoint
+// unserved: it decided another helper of this generation serves, and that
+// helper is not there any more. The caller owns what to do about that, and
+// Ensure answers it by making the start again (see startAttempts). Every other
+// outcome is a connection, or an error the caller keeps.
+func startAndAwait(ctx context.Context, dir string, gen proto.GenerationID, exe string) (conn net.Conn, yielded bool, err error) {
 	cmd := exec.Command(exe, ServeCommand) // #nosec G204 — exe is os.Executable(), never a caller's string
 	// Detached from this process's streams and its terminal: an ssh exec lane
 	// does not return while a child holds its stdout, so a helper that
@@ -142,37 +195,36 @@ func Ensure(ctx context.Context, dir string, gen, exeGen proto.GenerationID, exe
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	cmd.SysProcAttr = detachAttr()
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("endpoint: start a helper for %s: %w", short(gen), err)
+		return nil, false, fmt.Errorf("endpoint: start a helper for %s: %w", short(gen), err)
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 
-	// Waiting on two observable facts — the socket accepting, and the child
-	// ending — and never on a duration. A child that ends first is not
-	// necessarily a failure: the race loser exits 0 while the winner serves,
-	// so the socket is asked once more before its exit is believed.
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, false, ctx.Err()
 		case werr := <-exited:
 			conn, derr := Dial(ctx, dir, gen)
 			if derr == nil {
-				return conn, nil
+				return conn, false, nil
 			}
 			if werr != nil {
-				return nil, fmt.Errorf("endpoint: the helper for %s exited before it served: %w", short(gen), werr)
+				return nil, false, fmt.Errorf("endpoint: the helper for %s exited before it served: %w", short(gen), werr)
 			}
-			return nil, derr
+			// Ended successfully, and the socket it yielded to is gone: a
+			// yield, not a failure. The endpoint is asked last so that a peer
+			// still serving is answered with a connection rather than retried.
+			return nil, true, nil
 		case <-timer.C:
 			conn, derr := Dial(ctx, dir, gen)
 			if derr == nil {
-				return conn, nil
+				return conn, false, nil
 			}
 			if !errors.Is(derr, ErrNoEndpoint) {
-				return nil, derr
+				return nil, false, derr
 			}
 			timer.Reset(startRetry)
 		}
