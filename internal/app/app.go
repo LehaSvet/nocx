@@ -2438,7 +2438,14 @@ func New(opts ...Option) (*App, error) {
 	workerRecord := workers.NewRegistrar(
 		workerStore,
 		&workerSpawner{
-			layout: contentDB.Layout(), opener: tp, sessions: sess,
+			layout: contentDB.Layout(), opener: tp,
+			// askedEnd, not the bare registry (nocx-xn63t.6.38): the session
+			// this spawner opens is one this package may later KILL to undo a
+			// failed spawn, and every end this package performs has to tell
+			// the transport it was asked for — see askedEnd's own doc in
+			// workers.go. The seams that only ever Get a session are given
+			// the registry itself.
+			sessions: askedEnd{sessions: sess, asked: tp},
 			// tp is also the shell-integration axis's one owner (AD-8): the
 			// same server instance that registers a session's axis at open
 			// is what a spawn asks whether it ever answered (nocx-ui8q6.4).
@@ -2489,7 +2496,12 @@ func New(opts ...Option) (*App, error) {
 		// which is the right answer: reporting a worker ended that is still
 		// running is the one thing a close must never do.
 		workers.WithCloser(&workerCloser{
-			sessions: sess,
+			// The same pairing the spawner was given, and here it is the
+			// whole of the bead (nocx-xn63t.6.38): a coordinator's
+			// workers.close ends its worker's session on purpose, so it must
+			// record the ask before the registry close or the transport
+			// files a session-ended warning over it.
+			sessions: askedEnd{sessions: sess, asked: tp},
 			// The same layout chain the spawner mints the tab through, and
 			// the same seats record — one owner of "which tab is this
 			// participant's", read from the close's rather than the spawn's

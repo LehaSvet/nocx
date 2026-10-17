@@ -980,16 +980,19 @@ type WSServer struct {
 	// sessionRecorders.Add shares the stopped fence under ringsMu; the group
 	// outlives rx removal so Stop drains recorders for ended sessions too.
 	sessionRecorders sync.WaitGroup
-	// closeRequested holds the session ids whose end the user asked for:
-	// written by the "close" handler before the registry close, read and
-	// cleared by monitorExit when that close produces the exit. It is the
-	// only thing that can tell a teardown apart from a loss, because a
-	// forced teardown leaves no shell report and ExitOutcome correctly
-	// refuses to invent one — so both arrive as ExitInterrupted.
+	// closeRequested holds the session ids whose end somebody asked for:
+	// written before the registry close by every caller that ends a session
+	// on purpose — the "close" handler, the layout chain's own close
+	// (closeSessionsForPanes) and anything outside this package that ends
+	// one, through NoteCloseRequested — read and cleared by monitorExit when
+	// that close produces the exit. It is the only thing that can tell a
+	// teardown apart from a loss, because a forced teardown leaves no shell
+	// report and ExitOutcome correctly refuses to invent one — so both
+	// arrive as ExitInterrupted.
 	//
 	// The interval, both ends: an id is in this map from just before the
-	// registry close that the "close" handler runs until the monitorExit
-	// woken by that close takes it out (takeCloseRequested). Exactly one
+	// registry close the asking caller runs until the monitorExit woken by
+	// that close takes it out (takeCloseRequested). Exactly one
 	// monitorExit exists per session (sessionRx.monitorOnce) and it always
 	// runs — at the latest when Stop closes the registry — so an entry left
 	// by a close whose registry close failed is cleared by the session's
@@ -2544,6 +2547,22 @@ func (s *WSServer) removeRx(id session.ID) *sessionRx {
 	}
 	delete(s.rx, id)
 	return rx
+}
+
+// NoteCloseRequested records that the end of this session was ASKED for by
+// something that is not this server's own close handler: the composition
+// root's worker closer, which ends a participant by ending its session on the
+// registry directly (nocx-xn63t.6.38).
+//
+// IT IS THE SAME MARKER the "close" handler and closeSessionsForPanes write,
+// and it has to be written BEFORE whatever ends the session: the registry
+// close is what wakes monitorExit, which reads and clears the marker to
+// decide whether this end is news. Without it a close the coordinator
+// performed files a warning over the most ordinary thing a coordinator does
+// — "Local session was interrupted", or the "exit status -1" a killed
+// process reports, which is not a status a person can read.
+func (s *WSServer) NoteCloseRequested(id session.ID) {
+	s.markCloseRequested(id)
 }
 
 // markCloseRequested records that the user asked for this session's end.

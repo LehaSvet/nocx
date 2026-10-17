@@ -144,6 +144,58 @@ type sessionCloser interface {
 	EndSession(id session.ID) error
 }
 
+// closeRequestNoter is the transport's record that a session's end was ASKED
+// for, as the one method this package needs from it (nocx-xn63t.6.38). It is
+// a second seam rather than a method on some wider view of *transport.WSServer
+// for the reason every seam in this file is two: ending a session on purpose
+// is this package's, and the marker is the transport's.
+type closeRequestNoter interface {
+	NoteCloseRequested(id session.ID)
+}
+
+// askedEnd is HOW THIS PACKAGE ENDS A SESSION, and both halves of that are its
+// two fields: the registry that ends it, and the transport that has to be told
+// the end was asked for (nocx-xn63t.6.38).
+//
+// THE ORDER INSIDE EndSession IS THE WHOLE POINT. A close this package
+// performs ends the session on the registry directly, which is what wakes the
+// transport's monitorExit; monitorExit reads and clears the ask before it
+// decides whether the end is news, so an ask recorded after the registry
+// close is an ask nobody reads. Written any other way round, a coordinator's
+// workers.close filed a warning over the most ordinary thing it does — the
+// owner's own working day, 2026-10-17: "Local session ended — exit status
+// -1", where -1 is a killed process and not a status a person can read.
+//
+// IT IS AN ADAPTER AND NOT TWO CALLS AT THE CALL SITES, deliberately: ending
+// a session from this package is ALWAYS an ask — the end nobody asked for is
+// the process's own and reaches the transport through the registry's Done,
+// never through here — so every caller of this seam wants the same pair, and
+// a caller that had to remember the second half is a caller that one day
+// will not. Both ends of a participant's life use it: the closer a task's
+// close reaches, and the Kill a failed spawn compensates through.
+type askedEnd struct {
+	sessions sessionCloser
+	asked    closeRequestNoter
+}
+
+// Get is the registry's own. Reading whether a session is still there is not
+// an end and asks nothing: the closer's whole use of it is to leave a session
+// that is already gone alone, and that branch must not record an ask, because
+// no exit of ours is coming to consume one.
+func (e askedEnd) Get(id session.ID) (session.Session, error) { return e.sessions.Get(id) }
+
+// EndSession records the ask, then ends the session — in that order, for the
+// reason the type doc gives. A nil asked is the absence case every seam in
+// this file has: a test or a stand that wired no transport records no ask and
+// ends the session exactly as before, which is what keeps this adapter
+// harmless where the marker means nothing.
+func (e askedEnd) EndSession(id session.ID) error {
+	if e.asked != nil {
+		e.asked.NoteCloseRequested(id)
+	}
+	return e.sessions.EndSession(id)
+}
+
 // integrationAwaiterSeam is the spawner's narrow view of the transport's
 // shell-integration axis (nocx-ui8q6.4): tell me when this pane's shell has
 // answered. It is a second sentence beside sessionOpenerSeam's, in the same

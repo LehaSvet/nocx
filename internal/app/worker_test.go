@@ -93,9 +93,16 @@ type workerStand struct {
 	ptys      *workerTestPTYFactory
 	tp        *transport.WSServer
 	reg       *session.Reg
-	enrol     *workerEnrolments
-	lanes     *sessionRegistry
-	record    *workers.Registrar
+	// raises is the notify pipeline the stand's transport was built with
+	// (nocx-xn63t.6.38): which events a session's end RAISED, so a test can
+	// assert membership rather than a channel the router would have to
+	// deliver through. Wired here and not in one test, because a stand whose
+	// server has no pipeline cannot tell "nothing was raised" from "nobody
+	// was listening".
+	raises *recordedRaises
+	enrol  *workerEnrolments
+	lanes  *sessionRegistry
+	record *workers.Registrar
 	// The pieces record was built from, kept so a test can build a SECOND
 	// record over the same seams with one of them swapped — the shape a test
 	// needs to make a single half of a close fail while everything else is
@@ -138,7 +145,8 @@ func newWorkerStand(t *testing.T, opts ...workers.Option) *workerStand {
 
 	ptys := &workerTestPTYFactory{log: logger}
 	reg := session.New(logger, ptys)
-	tp := transport.NewWSServer(logger, reg)
+	raises := &recordedRaises{}
+	tp := transport.NewWSServer(logger, reg, transport.WithNotifyRaiser(raises))
 	// Registered AFTER the store's cleanup so it runs BEFORE it: a session
 	// torn down by the harness reports its exit on its own goroutine, and a
 	// store already closed underneath that report turns an ordinary teardown
@@ -168,7 +176,12 @@ func newWorkerStand(t *testing.T, opts ...workers.Option) *workerStand {
 	sup := &workerSupervisor{sessions: reg, log: logger}
 	tabs := newWorkerTabs()
 	spawner := &workerSpawner{
-		layout: db.Layout(), opener: tp, sessions: reg,
+		layout: db.Layout(), opener: tp,
+		// The product's own pairing (nocx-xn63t.6.38), so a close this stand
+		// performs tells the stand's transport the end was asked for — the
+		// half a stand wired to the bare registry would leave the tests
+		// unable to see.
+		sessions:   askedEnd{sessions: reg, asked: tp},
 		enrolments: enrol, workspace: string(workspace.Default),
 		// announce is the product's own push to a connected renderer
 		// (nocx-ui8q6.3), and its tab-close counterpart below is the same
@@ -194,7 +207,8 @@ func newWorkerStand(t *testing.T, opts ...workers.Option) *workerStand {
 			// no state in the RECORD" checkable (nocx-xn63t.4.6 added the
 			// tab half; the record is still not this closer's to write).
 			workers.WithCloser(&workerCloser{
-				sessions: reg, layout: db.Layout(), tabs: tabs, announce: tp, log: logger,
+				sessions: askedEnd{sessions: reg, asked: tp},
+				layout:   db.Layout(), tabs: tabs, announce: tp, log: logger,
 			}),
 		}, opts...)...,
 	)
@@ -212,7 +226,8 @@ func newWorkerStand(t *testing.T, opts ...workers.Option) *workerStand {
 
 	*stand = workerStand{
 		db: db, workerStore: workerStore, dir: dir, ptys: ptys, tp: tp, reg: reg,
-		enrol: enrol, lanes: lanes, record: record,
+		raises: raises,
+		enrol:  enrol, lanes: lanes, record: record,
 		spawner: spawner, sup: sup, tabs: tabs, log: logger,
 	}
 	stand.ensureWorker(t, "worker-1", "sess-coordinator")
