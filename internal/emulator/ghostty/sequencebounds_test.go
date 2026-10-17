@@ -4,13 +4,12 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
-	"runtime"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/shady2k/nocx/internal/emulator"
+	"github.com/shady2k/nocx/internal/emulator/ghostty/ghosttytest"
 )
 
 // The library's own bound on an unterminated sequence (nocx-ygxjv.11).
@@ -33,7 +32,8 @@ import (
 //
 // # What is measured, and how
 //
-// The process's resident set is read from /proc/self/statm, the sequence is fed
+// glibc's C allocations in use and held by mmap are read with mallinfo2.
+// The sequence is fed
 // in 64 KiB chunks, and a reading is taken after each of three lengths: 1 MiB,
 // 16 MiB and 64 MiB. Two numbers come out of those readings for each shape of
 // sequence, and both are asserted — because a single "it is small" reading
@@ -46,8 +46,9 @@ import (
 //     makes "bounded" a claim about the input length rather than about the size
 //     of today's test.
 //
-// The reading is process-wide. Each sequence case runs in its own test-binary
-// subprocess, so earlier package tests and sequence cases cannot contribute
+// The reading covers the C allocator, not process residency. Each sequence
+// case runs in its own test-binary subprocess, so earlier package tests and
+// sequence cases cannot contribute
 // their allocator history. TestTheResidentReadingSeesWhatIsRetained is the
 // control: an instrument that answered the same number whatever happened
 // would pass every case below and fail that one.
@@ -68,41 +69,15 @@ import (
 // memory is: an OSC 52 clipboard write and an XTGETTCAP query are the two
 // captures that grow at all, and both stop at a constant.
 
-// settle brings the process to a floor before a reading. A plain runtime.GC
-// is not enough: the Go runtime returns freed pages to the OS lazily, so a test
-// that ran before this one can still be releasing tens of megabytes into the
-// window being measured, and a reading that falls by 25 MiB while 64 MiB is
-// being fed cannot show what the feed retained.
+// settle releases Go-owned temporary chunks before reading the C heap.
 func settle() { debug.FreeOSMemory() }
 
-// residentKiB is the process's resident set, in KiB, read from the kernel.
-//
-// /proc/self/statm's second field is the resident page count, and it is the
-// reading that shows a CURRENT figure rather than a high-water mark:
-// syscall.Rusage.Maxrss was tried first and could not see a retained 8 MiB,
-// because the peak of the test binary is already above it.
-func residentKiB(t *testing.T) int64 {
-	t.Helper()
-	raw, err := os.ReadFile("/proc/self/statm")
-	if err != nil {
-		t.Skipf("the resident set is read from /proc/self/statm, which this platform does not have, so the library's bound cannot be measured on it: the measurement is a Linux reading of the process the pinned archive is linked into (doc.go)")
-	}
-	fields := strings.Fields(string(raw))
-	if len(fields) < 2 {
-		t.Fatalf("/proc/self/statm answered %q, want at least two fields", raw)
-	}
-	pages, err := strconv.ParseInt(fields[1], 10, 64)
-	if err != nil {
-		t.Fatalf("parsing the resident page count in %q: %v", raw, err)
-	}
-	return pages * int64(os.Getpagesize()) / 1024
-}
+// heapKiB measures glibc's allocated-and-in-use bytes, excluding cached free
+// arenas and kernel residency.
+func heapKiB() int64 { return int64(ghosttytest.HeapInUseBytes() / 1024) } // #nosec G115 -- mallinfo2 reports process allocation bytes, far below MaxInt64.
 
-// feedUnterminated hands the terminal n further bytes of a sequence that will
-// not terminate it, in chunks, and answers the resident set afterwards. The
-// chunk buffer is allocated once and reused: what the reading must see is what
-// the TERMINAL retains, and a per-chunk allocation of the test's own would be
-// an allocation of the same size as the thing being measured.
+// feedUnterminated hands the terminal n further bytes in reusable chunks and
+// reports C-heap bytes retained afterwards.
 func feedUnterminated(t *testing.T, term emulator.Terminal, n int) int64 {
 	t.Helper()
 	const chunkSize = 64 << 10
@@ -113,38 +88,38 @@ func feedUnterminated(t *testing.T, term emulator.Terminal, n int) int64 {
 		}
 	}
 	settle()
-	return residentKiB(t)
+	return heapKiB()
 }
 
-// TestTheResidentReadingSeesWhatIsRetained is the control the measurement below
-// depends on: the reading has to move when memory is retained. Without it, four
-// cases passing would be equally consistent with a library that bounds nothing
-// and an instrument that measures nothing.
+// TestTheResidentReadingSeesWhatIsRetained remains the positive control for
+// the measurement: a retained allocation must move the C-heap reading.
 func TestTheResidentReadingSeesWhatIsRetained(t *testing.T) {
+	if !ghosttytest.HeapSupported() {
+		t.Skip("mallinfo2 is available only with the pinned Linux glibc archive")
+	}
 	settle()
-	before := residentKiB(t)
+	before := heapKiB()
 
 	const size = 32 << 20
-	retained := make([]byte, size)
-	for i := range retained {
-		retained[i] = byte(i)
+	retained := ghosttytest.HeapProbeAlloc(size)
+	if retained == nil {
+		t.Fatal("allocating retained C-heap control buffer")
 	}
+	defer ghosttytest.HeapProbeFree(retained)
+	ghosttytest.HeapProbeTouch(retained, size)
 	settle()
-	after := residentKiB(t)
-
+	after := heapKiB()
 	if got := after - before; got < size/1024/2 {
-		t.Errorf("the resident set moved by %d KiB after %d KiB was allocated and touched, want at least %d: the instrument does not see retained memory, so the measurement below proves nothing",
-			got, size>>10, size/1024/2)
+		t.Errorf("the C-heap reading moved by %d KiB after %d KiB was allocated and touched, want at least %d: the instrument does not see retained memory", got, size>>10, size/1024/2)
 	}
-	runtime.KeepAlive(retained)
 }
 
 // TestTheLibraryBoundsWhatItHoldsForAnUnterminatedSequence feeds the pinned
 // parser 1 MiB, 16 MiB and 64 MiB of four sequences that never terminate and
 // holds what it retains to the bound the source states.
 func TestTheLibraryBoundsWhatItHoldsForAnUnterminatedSequence(t *testing.T) {
-	if _, err := os.ReadFile("/proc/self/statm"); err != nil {
-		t.Skipf("the resident set is read from /proc/self/statm, which this platform does not have, so the library's bound cannot be measured on it: the measurement is a Linux reading of the process the pinned archive is linked into (doc.go)")
+	if !ghosttytest.HeapSupported() {
+		t.Skip("the pinned Linux glibc archive is required for mallinfo2 heap measurements")
 	}
 
 	const (
@@ -215,12 +190,12 @@ func TestTheLibraryBoundsWhatItHoldsForAnUnterminatedSequence(t *testing.T) {
 			t.Fatalf("ingesting the sequence's introducer %q: %v", c.prefix, err)
 		}
 		settle()
-		base := residentKiB(t)
+		base := heapKiB()
 
 		at1 := feedUnterminated(t, term, small) - base
 		at16 := feedUnterminated(t, term, middle-small) - base
 		at64 := feedUnterminated(t, term, large-middle) - base
-		t.Logf("resident set above the start of the sequence: +%d KiB at 1 MiB fed, +%d KiB at 16 MiB, +%d KiB at 64 MiB (bound: %s)",
+		t.Logf("C-heap allocation above the start of the sequence: +%d KiB at 1 MiB fed, +%d KiB at 16 MiB, +%d KiB at 64 MiB (bound: %s)",
 			at1, at16, at64, c.where)
 
 		if growth := at64 - at1; growth > c.ceilingKiB {
@@ -228,7 +203,7 @@ func TestTheLibraryBoundsWhatItHoldsForAnUnterminatedSequence(t *testing.T) {
 				growth, c.ceilingKiB, c.where)
 		}
 		if move := at64 - at16; move > plateauKiB {
-			t.Errorf("the resident set moved by %d KiB between 16 MiB and 64 MiB fed, want at most %d: 48 MiB of further input made the library retain more, so what it holds grows with the sequence rather than being bounded",
+			t.Errorf("the C heap moved by %d KiB between 16 MiB and 64 MiB fed, want at most %d: 48 MiB of further input made the library retain more, so what it holds grows with the sequence rather than being bounded",
 				move, plateauKiB)
 		}
 	}
