@@ -25,6 +25,7 @@ import (
 
 	"github.com/shady2k/nocx/internal/agentdriver"
 	"github.com/shady2k/nocx/internal/assistant"
+	"github.com/shady2k/nocx/internal/log"
 	"github.com/shady2k/nocx/internal/paneview"
 	"github.com/shady2k/nocx/internal/session"
 	"github.com/shady2k/nocx/internal/sessionruntime"
@@ -685,8 +686,15 @@ func (m *paneMessages) deliverOne(ctx context.Context, sessionID string, pm *pen
 			m.terminate(pm, assistant.PhaseRefused, 0, "")
 			return
 		}
+		// Subscribe BEFORE reading readiness. The observation callback can
+		// classify the pane as free while Read is in flight; allocating the
+		// wake channel afterwards loses that change and leaves the queue
+		// waiting for the safety interval (or indefinitely in a quiet pane).
 		wake := m.paneWake(sessionID)
 		if !m.pasteReady(ctx, pm.access, sessionID) {
+			log.From(ctx).Debug("session.message: pane is not ready for queued delivery",
+				"session_id", sessionID, "message_id", pm.key.ID, "namespace", pm.key.Namespace,
+				"wake_subscribed", true)
 			if pm.when == "now" {
 				m.terminate(pm, assistant.PhaseRefused, 0, "")
 				return
@@ -701,7 +709,11 @@ func (m *paneMessages) deliverOne(ctx context.Context, sessionID string, pm *pen
 			case <-pm.cancelWake:
 				return
 			case <-wake:
+				log.From(ctx).Debug("session.message: pane observation woke queued delivery",
+					"session_id", sessionID, "message_id", pm.key.ID)
 			case <-m.after(freeMessageSafetyInterval):
+				log.From(ctx).Debug("session.message: safety recheck woke queued delivery",
+					"session_id", sessionID, "message_id", pm.key.ID)
 			}
 			continue
 		}
