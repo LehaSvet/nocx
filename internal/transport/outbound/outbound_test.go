@@ -532,32 +532,63 @@ func TestResponseBudgetExhaustionClosesConnection(t *testing.T) {
 	}
 }
 
+// The shared budget bounds QUEUED frames: a reservation is released when the
+// pump dequeues the frame, before its write starts (see Budget). So a frame
+// mid-write holds no budget, and EnqueueOrdered waits only while bytes sit in
+// a queue — going through as soon as a dequeue frees the room, not when the
+// write that freed it completes.
+//
+// Every observation here is a state change, never a duration: the pump's
+// blocked write, the budget's own accounting, and a context cancelled before
+// the call (an admitted call returns nil; a call that reached the budget wait
+// returns the context's error) — so a slow or busy machine cannot make this
+// fail.
 func TestEnqueueOrderedWaitsForSharedBudgetRelease(t *testing.T) {
 	budget := NewBudget(5)
-	firstSocket := newFakeSocket(true)
-	first := New(firstSocket, Config{QueueDepth: 1, Budget: budget})
-	defer first.Close()
-	if err := first.TryEnqueue(TextMessage, []byte("12345")); err != nil {
-		t.Fatalf("first enqueue: %v", err)
-	}
-	<-firstSocket.writeStarted
+	holderSocket := newFakeSocket(true)
+	holder := New(holderSocket, Config{QueueDepth: 1, Budget: budget})
+	defer holder.Close()
 
-	secondSocket := newFakeSocket(false)
-	second := New(secondSocket, Config{QueueDepth: 1, Budget: budget})
-	defer second.Close()
+	// "12345" is dequeued at once, so it frees its own reservation and the
+	// pump blocks mid-write. A frame queued behind it stays queued for as
+	// long as that write is held: that is the reservation an ordered enqueue
+	// has to wait behind.
+	if err := holder.TryEnqueue(TextMessage, []byte("12345")); err != nil {
+		t.Fatalf("holder enqueue: %v", err)
+	}
+	<-holderSocket.writeStarted
+	if err := holder.TryEnqueue(TextMessage, []byte("que")); err != nil {
+		t.Fatalf("holder queued enqueue: %v", err)
+	}
+	if budget.hasRoom(3) {
+		t.Fatalf("budget holds %d of %d bytes while a 3-byte frame is queued: the ordered enqueue would not have to wait",
+			budget.queued.Load(), budget.max)
+	}
+
+	waiterSocket := newFakeSocket(false)
+	waiter := New(waiterSocket, Config{QueueDepth: 1, Budget: budget})
+	defer waiter.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	blocked := make(chan error, 1)
+	go func() { blocked <- waiter.EnqueueOrdered(ctx, TextMessage, []byte("gap")) }()
+	if err := <-blocked; !errors.Is(err, context.Canceled) {
+		t.Fatalf("ordered enqueue with the budget spent returned %v, want context.Canceled: a nil return means it was admitted while 3 of 5 bytes were still queued", err)
+	}
+	if writes := waiterSocket.got(); len(writes) != 0 {
+		t.Fatalf("cancelled ordered enqueue wrote %d frames, want none", len(writes))
+	}
+
+	// Room arrives from the dequeue of the queued frame, which happens before
+	// its write: releasing the held write is what frees the budget.
 	done := make(chan error, 1)
-	go func() { done <- second.EnqueueOrdered(context.Background(), TextMessage, []byte("gap")) }()
-	select {
-	case err := <-done:
-		t.Fatalf("ordered enqueue returned before shared budget room: %v", err)
-	default:
-	}
-
-	close(firstSocket.release)
+	go func() { done <- waiter.EnqueueOrdered(context.Background(), TextMessage, []byte("gap")) }()
+	close(holderSocket.release)
 	if err := <-done; err != nil {
-		t.Fatalf("ordered enqueue after budget release: %v", err)
+		t.Fatalf("ordered enqueue after the queued frame left its queue: %v", err)
 	}
-	writes := waitWrites(t, secondSocket, 1)
+	writes := waitWrites(t, waiterSocket, 1)
 	if string(writes[0].Data) != "gap" {
 		t.Fatalf("writes = %q, want gap", writes[0].Data)
 	}
