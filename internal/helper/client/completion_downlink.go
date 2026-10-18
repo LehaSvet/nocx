@@ -111,7 +111,12 @@ type CompletionDownlink struct {
 	// context's error when the session ends first. It is a field so a test
 	// can retry without a clock; production uses waitToRetry.
 	retryWait func(ctx context.Context, attempt int) error
-	ctx       context.Context
+	// budget is how long ONE fact's delivery may take, all its attempts
+	// together (completionDeliveryBudget). A field for the same reason
+	// retryWait is: a test must reach the end of it without waiting half a
+	// minute.
+	budget time.Duration
+	ctx    context.Context
 	// onLost hears of every accepted boundary that finally did not reach the
 	// helper session (nocx-2v80t.3.29). Nil hears nothing.
 	onLost BoundaryLost
@@ -151,6 +156,28 @@ const completionDeliveryTimeout = 5 * time.Second
 // up to completionDeliveryTimeout. It exists so a helper that refuses to
 // answer quickly is not asked again in a tight loop.
 const firstRetryPause = 100 * time.Millisecond
+
+// completionDeliveryBudget bounds ONE fact's delivery, every attempt
+// together — not one attempt, which completionDeliveryTimeout bounds
+// (nocx-uo8pf). Without it the retry loop is bounded only by the session's
+// life, so a helper that holds the connection open and stops answering keeps
+// the fact at the head of the queue for as long as the pane lives: the block
+// the boundary would have closed never closes, and a caller waiting on that
+// block waits for ever.
+//
+// The budget is what the design already answers such a boundary with
+// ([BoundaryLost], nocx-2v80t.3.29): the helper can never seal that interval,
+// so the coordinator settles the block at what reached its store and says the
+// output is incomplete. Half a minute is chosen against the deadline chain
+// that has to see the settle — one attempt's own bound is
+// completionDeliveryTimeout, five seconds — while the e2e's freeze wait
+// allows sixty seconds for a whole command, so a boundary lost this way still
+// lets the block freeze inside the budget the transcript spec states.
+const completionDeliveryBudget = 30 * time.Second
+
+// errDeliveryBudget is the cause a fact is reported lost with when its
+// attempts ran out of budget rather than out of answers that cannot change.
+var errDeliveryBudget = errors.New("the helper did not answer inside the delivery budget")
 
 // errNeverBound is the cause a completion is dropped with when the queue is
 // full before Bind has named the session.
@@ -207,7 +234,8 @@ func newCompletionDownlink(
 ) *CompletionDownlink {
 	d := &CompletionDownlink{
 		send: send, sendEntered: sendEntered, retryWait: waitToRetry, ctx: ctx,
-		wake: make(chan struct{}, 1),
+		budget: completionDeliveryBudget,
+		wake:   make(chan struct{}, 1),
 	}
 	d.space = sync.NewCond(&d.mu)
 	return d
@@ -409,11 +437,35 @@ func (d *CompletionDownlink) run() {
 // may BEGIN only while the session's context is live, and one already on
 // the wire when the session ends finishes there — its own context ends with
 // the session's, which is as far as a write already made can be recalled.
+//
+// THE BUDGET IS CHECKED THERE TOO, and it is the other end of the same
+// principle (nocx-uo8pf): retrying is the answer to a failure that might
+// pass, but a helper that stops answering entirely is not a failure that
+// passes, and the fact it holds is the block's boundary. When the budget is
+// spent the fact is reported lost, which settles the block at what reached
+// the store and says so (BlockBoundaryLost) — the design's own answer for a
+// boundary the helper will never hear of.
 // deliver answers nil once the fact landed, or the cause it was lost to.
 func (d *CompletionDownlink) deliver(c pendingCompletion) error {
+	started := time.Now()
+	// last is the most recent attempt's own failure, kept for the cause
+	// chain: a budget that ran out is reported WITH what it ran out on, so an
+	// operator reads "the helper did not answer" and not a bare sentinel.
+	var last error
 	for attempt := 1; ; attempt++ {
 		if err := d.ctx.Err(); err != nil {
 			return err
+		}
+		// THE BUDGET IS CHECKED BEFORE EVERY ATTEMPT, on the same footing as
+		// the stop above (nocx-uo8pf): a helper that answers nothing must not
+		// keep the fact at the head of the queue for the session's whole life,
+		// because what waits on it is the block its boundary ends.
+		if waited := time.Since(started); waited >= d.budget {
+			if last == nil {
+				return fmt.Errorf("%w after %s (%d attempt(s))", errDeliveryBudget, waited.Round(time.Millisecond), attempt-1)
+			}
+			return fmt.Errorf("%w after %s (%d attempt(s)); the last attempt failed: %w",
+				errDeliveryBudget, waited.Round(time.Millisecond), attempt-1, last)
 		}
 		err := d.sendOnce(c)
 		if err == nil {
@@ -423,6 +475,7 @@ func (d *CompletionDownlink) deliver(c pendingCompletion) error {
 			}
 			return nil
 		}
+		last = err
 		if !retryable(err) || d.ctx.Err() != nil {
 			return err
 		}
