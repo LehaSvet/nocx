@@ -300,6 +300,88 @@ describe('createCommandBlock', () => {
     }
   })
 
+  it('a double click on a painted row selects the word and takes the whole-block selection back (nocx-zg3k3.15.6)', () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const selectSpy = vi.fn()
+    const el = createCommandBlock(
+      'command',
+      1,
+      'ls',
+      '~',
+      '',
+      '<div class="term-grid-row"><span class="term-cell">profile-usage.json</span></div>',
+      10,
+      0,
+      'success',
+      makeContainer(container),
+      selectSpy,
+      freshStore(),
+      'shell',
+    )
+    container.appendChild(el)
+    // The row a COMMAND block is painted from is `.term-grid-row` — the
+    // serializer's `.term-line` is the answer body's markup (paint-row.ts,
+    // nocx-2v80t.3.19). The word rule must read both, or a double click on a
+    // painted block cancels the native word selection and applies none of its
+    // own.
+    const row = el.querySelector<HTMLElement>('.term-grid-row')
+    const node = (row?.querySelector('.term-cell')?.firstChild as Text | null) ?? null
+    expect(row).not.toBeNull()
+    expect(node).not.toBeNull()
+    const proto = Object.getOwnPropertyDescriptor(document, 'caretRangeFromPoint')
+    Object.defineProperty(document, 'caretRangeFromPoint', {
+      configurable: true,
+      value: () => {
+        const r = document.createRange()
+        r.setStart(node!, 8)
+        r.collapse(true)
+        return r
+      },
+    })
+    try {
+      const press = (type: string, detail: number): void => {
+        el.dispatchEvent(
+          new MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            detail,
+            clientX: 10,
+            clientY: 10,
+          }),
+        )
+      }
+      // THE PERSON'S OWN SEQUENCE: the pair's first click is a click and
+      // selects the block, as it always did (P1-7).
+      press('mousedown', 1)
+      press('mouseup', 1)
+      expect(el.classList.contains('cmd-block-selected')).toBe(true)
+
+      // The second press is where the double click becomes a double click, and
+      // the word rule owns it: the whole-block selection goes back with it.
+      press('mousedown', 2)
+      expect(window.getSelection()?.toString()).toBe('profile-usage.json')
+      expect(
+        el.classList.contains('cmd-block-selected'),
+        'the word is the selection, not the block',
+      ).toBe(false)
+      expect(selectSpy).toHaveBeenCalledWith(1, false)
+
+      // And the release that ENDS the pair is not a click: it must not toggle
+      // the block back on over the word.
+      press('mouseup', 2)
+      expect(el.classList.contains('cmd-block-selected')).toBe(false)
+      expect(window.getSelection()?.toString()).toBe('profile-usage.json')
+    } finally {
+      if (proto) {
+        Object.defineProperty(document, 'caretRangeFromPoint', proto)
+      } else {
+        delete (document as { caretRangeFromPoint?: unknown }).caretRangeFromPoint
+      }
+      container.remove()
+    }
+  })
+
   it('a single mousedown is not intercepted — native selection and click-to-select keep working', () => {
     const el = createCommandBlock(
       'command',
