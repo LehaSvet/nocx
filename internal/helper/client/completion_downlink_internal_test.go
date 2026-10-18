@@ -76,6 +76,13 @@ func (s *spySend) send(_ context.Context, params proto.LifecycleCompleteParams) 
 	return nil
 }
 
+// attemptCount is how many attempts the downlink made, landed or not.
+func (s *spySend) attemptCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attempts
+}
+
 func (s *spySend) delivered() [][32]byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
