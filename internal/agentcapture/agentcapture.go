@@ -283,9 +283,13 @@ type Replay interface {
 //
 // # What survives, and why that is everything a rule can read
 //
-// A Frame is text, width and cursor — paneview answers nothing else, on
-// purpose, because both powers the AD-6 amendment grants are positional. So
-// colour and attributes are not lost here; they were never in the frame. Each
+// A Frame is text, width, RENDERING and cursor. The rendering is the one
+// attribute a rule needs and the only one paneview carries — whether a cell was
+// drawn faint — because both powers the AD-6 amendment grants are positional
+// and a reader of TEXT is not: an agent paints its own grey suggestion into an
+// empty input box, and without that attribute a rule can tell it from a
+// person's typing only by the words (nocx-xn63t.6.56, ADR-0090). So colour and
+// the other decorations are not lost here; they were never in the frame. Each
 // row is written from its first column so a double-width grapheme lands where
 // it stood, the alternate screen is restored because a rule may read it, and
 // the cursor is parked LAST because it is the one marker an agent cannot
@@ -312,6 +316,10 @@ func Paint(f paneview.Frame) []byte {
 // rowBytes renders one row, trimmed of the trailing blanks an erased screen
 // already has. Trimming is safe precisely because the paint begins with an
 // erase: what is not written is blank, and what is blank was not written.
+//
+// The rendering travels with the text as SGR 2 / SGR 22 runs, so a painted
+// frame replays to a frame that says how its cells were drawn — which is what
+// makes a painted frame a frame a rule can be verified against.
 func rowBytes(line []paneview.Cell) string {
 	last := -1
 	for x, c := range line {
@@ -326,6 +334,7 @@ func rowBytes(line []paneview.Cell) string {
 		return ""
 	}
 	var b strings.Builder
+	faint := false
 	for x, c := range line {
 		if x > last {
 			break
@@ -335,11 +344,26 @@ func rowBytes(line []paneview.Cell) string {
 			// the cursor across this column.
 			continue
 		}
+		// SGR 2 opens a faint run and SGR 22 closes it. The run is closed at
+		// the END of this row as well, because a terminal carries the
+		// attributes across a cursor move and an open run would leak into the
+		// next row of the same paint.
+		if c.Faint != faint {
+			if c.Faint {
+				b.WriteString("\x1b[2m")
+			} else {
+				b.WriteString("\x1b[22m")
+			}
+			faint = c.Faint
+		}
 		if c.Text == "" {
 			b.WriteByte(' ')
 			continue
 		}
 		b.WriteString(c.Text)
+	}
+	if faint {
+		b.WriteString("\x1b[22m")
 	}
 	return b.String()
 }

@@ -275,10 +275,10 @@
       }
     },
     "screenCell": {
-      "description": "One column of a screen frame. Width is the load-bearing field and the reason a cell is not just a character: a double-width cluster occupies two columns, its first carries the grapheme at width 2 and its second is a continuation at width 0. A consumer that wants TEXT skips the width-0 cells; a consumer that wants a POSITION — which is what a chrome anchor is — reads the column index directly, and collapsing the two loses the second reading.",
+      "description": "One column of a screen frame: its text, the columns it occupies, and whether it was drawn FAINT. Width is the load-bearing field and the reason a cell is not just a character: a double-width cluster occupies two columns, its first carries the grapheme at width 2 and its second is a continuation at width 0. A consumer that wants TEXT skips the width-0 cells; a consumer that wants a POSITION — which is what a chrome anchor is — reads the column index directly, and collapsing the two loses the second reading. FAINT is SGR 2, and it is required rather than optional because a cell that does not say how it was drawn is a cell a reader has to guess about: the coordinator holds no emulator (ADR-0066), so this is the only place a rule can learn a rendering, and a rule left without it can only match the WORDS an agent happens to use — which is a spelling the agent may change and a sentence a person may type (nocx-xn63t.6.56, ADR-0090).",
       "type": "object",
       "additionalProperties": false,
-      "required": ["text", "width"],
+      "required": ["text", "width", "faint"],
       "properties": {
         "text": {
           "description": "The whole grapheme cluster, and empty for a blank cell or a continuation. Text is a string and carries no position: a caller that needs to know where it sits reads its cell index.",
@@ -289,11 +289,15 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 2
+        },
+        "faint": {
+          "description": "SGR 2 — the rendering an agent uses to draw text nobody has given it, most visibly the grey prompt suggestion an agent paints into an empty input box. It is the CELL's own attribute and never a row's: the prompt marker beside such a suggestion is drawn solid, and only the cells the drawing covers are faint. A reader that has to tell 'the person typed this' from 'the agent drew this' has this field and nothing else; reading the two alike is what makes an empty box look occupied (nocx-xn63t.6.56).",
+          "type": "boolean"
         }
       }
     },
     "screenFrame": {
-      "description": "One screen as the emulator holds it: a rectangle of cells, the caret, and which buffer it is. The rows are a RECTANGLE and not trimmed text — lines is rows long and every line is cols long — because a consumer that reads a position must be able to index a column without knowing where a program stopped writing. This is the shape both readers of this ABI speak: a live session's screen and one screen of a replay.",
+      "description": "One screen as the emulator holds it: a rectangle of cells — each carrying its text, its width and whether it was drawn faint — the caret, and which buffer it is. The rows are a RECTANGLE and not trimmed text: lines is rows long and every line is cols long, because a consumer that reads a position must be able to index a column without knowing where a program stopped writing. This is the shape both readers of this ABI speak: a live session's screen and one screen of a replay.",
       "type": "object",
       "additionalProperties": false,
       "required": ["cols", "rows", "cursorX", "cursorY", "cursorVisible", "altScreen", "lines"],

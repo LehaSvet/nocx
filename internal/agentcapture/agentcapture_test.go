@@ -70,6 +70,15 @@ func TestPaintReplaysToTheSameFrame(t *testing.T) {
 			bytes: "\x1b[2J\x1b[1;1H日本語 ok\x1b[2;5Hx\x1b[1;4H",
 		},
 		{
+			// The rendering is part of the frame (nocx-xn63t.6.56): a mark
+			// painted from a frame that carries a faint run replays with that
+			// run still faint, which is the whole of what a rule reads an
+			// agent's own drawing off.
+			name: "a faint run keeps its rendering",
+			cols: 24, rows: 3,
+			bytes: "\x1b[2J\x1b[2;1H❯\u00a0\x1b[2mTry \"fix lint errors\"\x1b[22m typed\x1b[3;1H─",
+		},
+		{
 			name: "an empty screen paints to an empty screen",
 			cols: 8, rows: 3,
 			bytes: "",
@@ -154,6 +163,12 @@ func sameCell(a, b paneview.Cell) bool {
 	}
 	if a.Width == 0 {
 		return true
+	}
+	// The rendering is compared for the same reason the text is: a frame that
+	// lost the faint run on the way through a paint is a frame a rule reads
+	// differently (nocx-xn63t.6.56).
+	if a.Faint != b.Faint {
+		return false
 	}
 	at, bt := a.Text, b.Text
 	if at == " " {

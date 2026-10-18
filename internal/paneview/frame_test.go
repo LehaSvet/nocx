@@ -65,6 +65,28 @@ func TestAFrameCarriesWhatTheProgramDrew(t *testing.T) {
 // continuation cell into the cluster's own cell would move every column after
 // it. The text reading is asserted in the same breath, because a mapping that
 // got one right and the other wrong is the failure this pins.
+// TestAFrameCarriesTheRenderingEachCellWasDrawnWith is the field that makes a
+// frame more than text (nocx-xn63t.6.56, ADR-0090): SGR 2 is a property of the
+// CELLS it was in force for, so the cells a program drew faint are faint and
+// the cells around them are not.
+//
+// Measured on the shape that needed it: an agent paints a grey prompt
+// suggestion inside an empty input box, and the marker that opens the box is
+// drawn SOLID beside it. A reader that could see only the characters could not
+// tell that drawing from a sentence a person typed.
+func TestAFrameCarriesTheRenderingEachCellWasDrawnWith(t *testing.T) {
+	f := frameOf(t, 20, 3, "\x1b[1;1H\u276f\u00a0\x1b[2mdrawn\x1b[22m typed")
+
+	if got := f.Text(0); !strings.HasPrefix(got, "\u276f\u00a0drawn typed") {
+		t.Fatalf("row 0 reads %q, want the marker, the suggestion and the typed text", got)
+	}
+	for x, want := range map[int]bool{0: false, 1: false, 2: true, 3: true, 4: true, 5: true, 6: true, 7: false, 8: false} {
+		if got := f.Lines[0][x].Faint; got != want {
+			t.Errorf("cell %d (%q): Faint = %v, want %v", x, f.Lines[0][x].Text, got, want)
+		}
+	}
+}
+
 func TestAWideClusterOccupiesTwoColumns(t *testing.T) {
 	f := frameOf(t, 10, 2, "\x1b[1;1Hこん")
 

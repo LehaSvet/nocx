@@ -44,7 +44,8 @@ import (
 	"github.com/shady2k/nocx/internal/sessionruntime"
 )
 
-// Cell is one column of a Frame.
+// Cell is one column of a Frame: its text, the columns it occupies, and the
+// one rendering fact a reader of TEXT can need.
 //
 // Width is the load-bearing field and the reason this type is not just a
 // string. A double-width character occupies two columns: the first carries the
@@ -52,9 +53,25 @@ import (
 // that wants text skips Width 0 cells; a consumer that wants a POSITION — which
 // is what a chrome anchor is — reads the column index directly. Collapsing the
 // two loses the second reading, which is the one both permitted powers need.
+//
+// Faint is the terminal's SGR 2 attribute, and it is here because a frame is
+// not text: what a program DREW is part of what is on the screen, and a reader
+// that can see only the characters cannot tell a sentence a person typed from
+// the sentence an agent painted into the same box as a suggestion
+// (nocx-xn63t.6.56; ADR-0090). It is a BOOLEAN and not the emulator's own
+// attributes bitset, because a frame crosses a frozen wire and the one reader
+// that needs a rendering fact needs this one: a bitset would spend the width of
+// eight decorations to carry the single one any rule reads, and the next
+// decoration somebody wanted would then be a wire change again.
 type Cell struct {
-	Text  string
+	Text string
+	// Width is 0 (a continuation or spacer), 1 or 2.
 	Width int
+	// Faint reports SGR 2 on this cell — the rendering an agent uses to draw
+	// text nobody has given it. A cell's own attribute, never a row's: the
+	// prompt marker beside a suggestion is drawn solid, and only the cells the
+	// drawing covers are faint.
+	Faint bool
 }
 
 // Frame is everything a caller may learn about a pane's screen: what is on it,
@@ -203,7 +220,11 @@ func FromRows(geom emulator.Geometry, altScreen bool, rows []emulator.Row, curso
 	for y, row := range rows {
 		line := make([]Cell, len(row.Cells))
 		for x, c := range row.Cells {
-			line[x] = Cell{Text: c.Grapheme, Width: cellWidth(c.Width)}
+			line[x] = Cell{
+				Text:  c.Grapheme,
+				Width: cellWidth(c.Width),
+				Faint: c.Style.Attributes&emulator.AttrFaint != 0,
+			}
 		}
 		f.Lines[y] = line
 	}

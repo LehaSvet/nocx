@@ -315,6 +315,19 @@ package proto
 // This is 21 rather than 20 because TypeSessionEffect gained the
 // commandSnapshot kind. A 20-helper rejects its kind value, so both peers must
 // fence the new typed session-local command state at hello.
-const Version = "22"
-
-// Version 22 adds the optional screen-row anchor document to TypeOutputStartRow.
+// This is 23 rather than 22 because the wire's SCREEN CELL gained a field, and a
+// field on a frozen shape is the half that cannot be added: `screenCell` is
+// `additionalProperties: false` on both sides, so a 22-helper REJECTS a frame
+// whose cells carry `faint` and answers `bad_params` — a sentence about the
+// request, which is a lie, because the request is well-formed and the helper is
+// old. What the field carries is the one thing a rule reading a screen through
+// this ABI could not otherwise know: whether a cell was drawn FAINT. The
+// coordinator holds no emulator to derive it from (ADR-0066), so without it a
+// rule can recognise an agent's own grey prompt suggestion only by its WORDS —
+// a spelling the agent may change, and a sentence a person is free to type,
+// measured 2026-10-18 reading both alike as an empty box (nocx-xn63t.6.56,
+// ADR-0090). Two peers that disagree refuse each other at hello in both
+// directions, which is what makes the number the whole of the compatibility
+// story, and no shim reads one shape as the other: a generation that cannot
+// state the rendering does not answer this coordinator at all.
+const Version = "23"

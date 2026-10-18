@@ -177,6 +177,47 @@ func TestTheReplayResultConformsToItsContractOverTheWire(t *testing.T) {
 	}
 }
 
+// TestTheFaintRenderingCrossesTheSocket is the field the previous generation
+// cannot carry (nocx-xn63t.6.56): the helper's emulator is fed SGR 2, and the
+// frame the COORDINATOR's rule reads — through the real socket, the real
+// service, the wire's own JSON and the client's own decode — says which cells
+// were drawn faint.
+//
+// It is asserted on the REPLAY op because that is where a test can put the bytes
+// itself: the drawing under test is an agent's grey prompt suggestion, and this
+// is the same emulator, the same frame shape and the same conversion a live
+// session's screen takes.
+func TestTheFaintRenderingCrossesTheSocket(t *testing.T) {
+	c := hostedSessions(t)
+	params := proto.ReplayParams{
+		Cols:    16,
+		Rows:    2,
+		Through: []int{1},
+		Chunks:  [][]byte{[]byte("\x1b[2J\x1b[1;1H\x1b[2mfaint\x1b[22m solid")},
+	}
+	var raw json.RawMessage
+	if err := c.Call(context.Background(), proto.ServiceSession, proto.OpReplay, params, &raw); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if err := validateHelperJSON(loadHelperSchema(t, "session.replay.schema.json"), raw); err != nil {
+		t.Fatalf("the replay result off the socket does not satisfy its contract:\n%v\n\npayload was:\n%s", err, raw)
+	}
+
+	frames, err := c.Replay(context.Background(), params.Cols, params.Rows, params.Chunks, params.Through)
+	if err != nil {
+		t.Fatalf("client.Replay: %v", err)
+	}
+	if len(frames) != 1 {
+		t.Fatalf("client replay answered %d frames, want 1", len(frames))
+	}
+	row := frames[0].Lines[0]
+	for x, want := range map[int]bool{0: true, 1: true, 2: true, 3: true, 4: true, 5: false, 6: false, 7: false, 8: false, 9: false} {
+		if got := row[x].Faint; got != want {
+			t.Errorf("cell %d (%q): faint = %v, want %v — SGR 2 is a fact about the cell that was drawn in it", x, row[x].Text, got, want)
+		}
+	}
+}
+
 // spawnOverTheWire starts one shell through the real service, the way the
 // sibling contract test does: the params satisfy their own schema, so what the
 // result proves is about an answer somebody would really send for.

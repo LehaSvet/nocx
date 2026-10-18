@@ -157,9 +157,15 @@ func TestCommandSnapshotEffectFrameRoundTripsItsTypedPayload(t *testing.T) {
 	}
 }
 
-func TestHelperProtocolVersionBumpedForOutputStartAnchor(t *testing.T) {
-	if Version != "22" {
-		t.Fatalf("helper protocol version = %q, want 22", Version)
+// The version is PINNED LITERALLY, and that is the whole of what this test is
+// for: the fence's job is to refuse a peer that does not agree about this
+// number, so a bump that nothing asserts is a bump a later edit takes back
+// inside a change about something else. It names the LAST reason the number
+// moved — the faint cell on `screenCell` (nocx-xn63t.6.56), whose predecessor
+// was the screen-row anchor document on TypeOutputStartRow at 22.
+func TestHelperProtocolVersionBumpedForTheFaintCell(t *testing.T) {
+	if Version != "23" {
+		t.Fatalf("helper protocol version = %q, want 23", Version)
 	}
 }
 

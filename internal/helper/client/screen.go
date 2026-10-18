@@ -77,7 +77,7 @@ func (c *Client) ScreenCapture(ctx context.Context, id HostSessionID, region *pr
 	for y, row := range result.Rows {
 		cells := make([]paneview.Cell, len(row))
 		for x, cell := range row {
-			cells[x] = paneview.Cell{Text: cell.Text, Width: cell.Width}
+			cells[x] = paneview.Cell{Text: cell.Text, Width: cell.Width, Faint: cell.Faint}
 		}
 		rows[y] = cells
 	}
@@ -160,7 +160,10 @@ func (c *Client) Replay(ctx context.Context, cols, rows int, chunks [][]byte, th
 //
 // It is the coordinator's ONE conversion in this direction, and it does not
 // invent what the wire does not carry: completeness and revision are the
-// runtime's and are set by the two readers that know them.
+// runtime's and are set by the two readers that know them. What it DOES carry
+// whole is each cell's rendering — a cell that arrived faint reaches the rule
+// that reads the frame faint, because the coordinator holds no emulator to
+// derive it from (ADR-0066, nocx-xn63t.6.56).
 func frameFromWire(w proto.ScreenFrame) paneview.Frame {
 	f := paneview.Frame{
 		Cols:          w.Cols,
@@ -174,7 +177,7 @@ func frameFromWire(w proto.ScreenFrame) paneview.Frame {
 	for y, line := range w.Lines {
 		cells := make([]paneview.Cell, len(line))
 		for x, c := range line {
-			cells[x] = paneview.Cell{Text: c.Text, Width: c.Width}
+			cells[x] = paneview.Cell{Text: c.Text, Width: c.Width, Faint: c.Faint}
 		}
 		f.Lines[y] = cells
 	}
