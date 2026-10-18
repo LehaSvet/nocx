@@ -798,7 +798,7 @@ func (s *Service) Call(ctx context.Context, op string, params json.RawMessage) (
 		if err := decode(params, &p); err != nil {
 			return nil, err
 		}
-		return s.lifecycleComplete(p)
+		return s.lifecycleComplete(ctx, p)
 	case proto.OpLifecycleEntered:
 		var p proto.LifecycleEnteredParams
 		if err := decode(params, &p); err != nil {
@@ -2062,6 +2062,13 @@ func (s *Service) LifecycleData(ctx context.Context, f proto.SessionFrame) {
 	}
 }
 
+// completionWaitReport is how long a completion may wait on the session
+// runtime before it is reported. An ordinary completion is a lock and a
+// short decision (sub-millisecond); a second is a thousand times that, and
+// reporting at that bound keeps a report out of every ordinary run while
+// catching the hold this exists for long before its delivery budget.
+const completionWaitReport = time.Second
+
 // lifecycleComplete hands one already-authenticated completion to the session
 // runtime that owns the pane (owner decision 2026-09-19). This side adds no
 // gate: the coordinator's kernel has validated version, domain liveness,
@@ -2074,7 +2081,7 @@ func (s *Service) LifecycleData(ctx context.Context, f proto.SessionFrame) {
 // reconciliation already reads; a nonce that is not 64 lowercase hex
 // characters never came from an accepted completion, so it is refused as
 // malformed rather than zero-filled into a rendezvous nothing sighted.
-func (s *Service) lifecycleComplete(p proto.LifecycleCompleteParams) (proto.LifecycleCompleteResult, error) {
+func (s *Service) lifecycleComplete(ctx context.Context, p proto.LifecycleCompleteParams) (proto.LifecycleCompleteResult, error) {
 	hs, err := s.find(p.Session)
 	if err != nil {
 		return proto.LifecycleCompleteResult{}, err
@@ -2083,10 +2090,25 @@ func (s *Service) lifecycleComplete(p proto.LifecycleCompleteParams) (proto.Life
 	if err != nil {
 		return proto.LifecycleCompleteResult{}, err
 	}
+	// THE WAIT IS THE SYMPTOM (nocx-xn63t.6.47). Completed takes the
+	// runtime's lock for a single short decision, so a call that does not
+	// return promptly is the lock's HOLDER being long — the ingest watchdog
+	// on the owner's side names that holder from the other side
+	// (ingestwatch.go). This half names the completion's own wait, so a
+	// recurrence carries both numbers and the two are read together.
+	started := time.Now()
 	hs.runtime.Completed(sessionruntime.Incarnation{
 		Session:    sessionruntime.SessionID(p.Incarnation.Session),
 		Generation: sessionruntime.Generation(p.Incarnation.Generation),
 	}, nonce, exitCodeFromWire(p.ExitCode))
+	if waited := time.Since(started); waited >= completionWaitReport {
+		// Through the REQUEST's context, so this line joins the exchange that
+		// was waiting and is printed with the test's own trace_id
+		// (nocx-xn63t.6.47).
+		nocxlog.From(ctx).Warn("lifecycle-complete waited on the session runtime",
+			"session", p.Session.Session,
+			"waited_ms", waited.Milliseconds())
+	}
 	return proto.LifecycleCompleteResult{}, nil
 }
 

@@ -69,6 +69,7 @@ import (
 	"time"
 
 	"github.com/shady2k/nocx/internal/emulator"
+	"github.com/shady2k/nocx/internal/log"
 	"github.com/shady2k/nocx/internal/monoclock"
 	"github.com/shady2k/nocx/internal/sessionruntime"
 )
@@ -262,6 +263,13 @@ type sessionOwner struct {
 	// §5.4). Everything else below is run()'s alone.
 	completedFence atomic.Uint64
 
+	// ingest is the watchdog over this owner's one ingest in flight
+	// (ingestwatch.go, nocx-xn63t.6.47). Its fields are atomics for the
+	// reason completedFence's are: run()'s own goroutine begins and ends a
+	// hold, and the watchdog goroutine reads it, so the two must not share
+	// plain memory.
+	ingest ingestWatch
+
 	// tokens is this session's one-shot token book (nocx-6q1uh.4, spec
 	// §6.2), bound once by SetTokens before the first token-bearing intent
 	// can arrive — the same one-time-binding shape [sessionruntime.Session
@@ -329,13 +337,20 @@ type sessionOwner struct {
 // runtime already directing it. It does not start anything — run does — so a
 // caller can bind this owner as the runtime's ReplySink (Session.SetReplies)
 // before the first byte is ever read.
-func newSessionOwner(proc Process, rt *sessionruntime.Session, win *window, log *slog.Logger) *sessionOwner {
+func newSessionOwner(proc Process, rt *sessionruntime.Session, win *window, lg *slog.Logger) *sessionOwner {
 	readCtx, cancelRead := context.WithCancel(context.Background())
+	// THE SESSION'S LOGGER RIDES ITS CONTEXT (nocx-xn63t.6.47). The daemon's
+	// sink is its own *slog.Logger (cmd/nocx-helper/servelog.go), not
+	// internal/log's root, so a line written through log.From would otherwise
+	// go nowhere this helper can see. Binding it here means the watchdog can
+	// log through the context like every other module — module, trace and
+	// span included — and still reach helper.log.
+	readCtx = log.WithLogger(readCtx, log.NewSlogAdapter(lg))
 	o := &sessionOwner{
 		proc:          proc,
 		rt:            rt,
 		win:           win,
-		log:           log,
+		log:           lg,
 		incoming:      make(chan ownerItem, intentQueueMax),
 		closingSignal: make(chan struct{}),
 		stopped:       make(chan struct{}),
@@ -374,6 +389,7 @@ func (o *sessionOwner) run() {
 	defer o.cancelReadAndWake()
 
 	go o.runWriter()
+	go o.watchIngest()
 
 	var readEvents chan readEvent
 	// readinessEnded carries the error the readiness goroutine stopped on.
@@ -695,7 +711,10 @@ func (o *sessionOwner) ingestOne(b []byte) {
 	if len(b) == 0 {
 		return
 	}
-	if err := o.rt.Ingest(b); err != nil {
+	o.ingest.begin(len(b))
+	err := o.rt.Ingest(b)
+	o.ingest.end()
+	if err != nil {
 		if errors.Is(err, emulator.ErrClosed) || errors.Is(err, sessionruntime.ErrUnavailable) {
 			o.log.Debug("session output arrived after the terminal closed", "bytes", len(b), "err", err)
 		} else {
@@ -703,6 +722,38 @@ func (o *sessionOwner) ingestOne(b []byte) {
 		}
 	}
 	o.win.write(b)
+}
+
+// watchIngest samples the ingest watchdog once a second, so a call that
+// passes ingestWatchAfter is reported while it is still happening
+// (ingestwatch.go, nocx-xn63t.6.47). The runtime's own hold record rides
+// along: only it can say the call is INSIDE the critical section, which is
+// what makes the call the lock's holder rather than a waiter. It costs
+// nothing when no ingest is in flight and returns with the owner.
+func (o *sessionOwner) watchIngest() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-o.stopped:
+			return
+		case <-ticker.C:
+			o.ingest.sample(log.From(o.readCtx), o.ingestHold)
+		}
+	}
+}
+
+// ingestHold answers how long the runtime's Ingest critical section has been
+// open, and whether one is open at all — the fact that separates a call that
+// HOLDS Session.mu from one queued behind another holder
+// (internal/sessionruntime's IngestHold, written after the lock and cleared
+// before it is released).
+func (o *sessionOwner) ingestHold() (time.Duration, bool) {
+	hold, ok := o.rt.IngestHold()
+	if !ok {
+		return 0, false
+	}
+	return time.Since(hold.Entered), true
 }
 
 // finishRead marks the read side over — EOF or an error, either is terminal

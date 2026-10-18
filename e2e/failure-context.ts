@@ -54,6 +54,8 @@
  * control-plane frames this module listens for in the first place, so there
  * is nothing here to filter it OUT of — it was never IN).
  */
+import { existsSync, readFileSync } from 'node:fs'
+
 import type { Page, TestInfo } from '@playwright/test'
 
 import { formatFrame, redactFrame, type RedactedFrame } from './redact-frame.mts'
@@ -66,6 +68,10 @@ import { linesForTrace } from './trace-context.mts'
 export interface RegisterableBackend {
   logFile: string
   logTail(maxBytes?: number): string
+  /** The helper daemon's own log under this backend's home, and the copy
+   *  preserveLog keeps of it: the watchdog's lines are in the helper, never
+   *  in the backend's log (nocx-xn63t.6.47). */
+  helperLogFile?: string
   goroutineDump?: string
   preservedLogFile?: string
   helperGoroutineDump?: string
@@ -375,6 +381,10 @@ export async function reportFailureContext(info: TestInfo, traceId: string): Pro
           ),
         )
       }
+      const watchdog = helperWatchdogSection(
+        backend.preservedHelperLogFile || backend.helperLogFile || '',
+      )
+      if (watchdog) sections.push(watchdog)
     }
 
     for (const watched of pages) {
@@ -467,6 +477,53 @@ export function formatGoroutineDumpSection(
   if (dropped === 0 || !dump.startsWith('SIGQUIT: quit')) return section
   const artifact = preservedLogFile ? `: ${preservedLogFile}` : ''
   return `${section}\n(full dump is retained in the preserved ${owner} log artifact${artifact})`
+}
+
+/**
+ * The helper's ingest watchdog (nocx-xn63t.6.47): a PTY ingest that does not
+ * return holds the session runtime's lock for its whole call, and the
+ * watchdog reports the call in flight — with whether the lock is held, the
+ * feed, the thread's own CPU and the participant stacks — from inside the
+ * helper while it is still happening
+ * (internal/helper/session/ingestwatch.go). None
+ * of that reaches the backend's log, and the backend's log is all this report
+ * used to print, so a recurrence read as "the completion waited" with no
+ * holder named. These lines are read from the helper's own log and printed
+ * verbatim.
+ *
+ * Bounded twice: the markers are a fixed list, and only WATCHDOG_LINES of them
+ * are kept. A helper log is several megabytes of per-request lines, and a
+ * report that quoted all of it would bury the failure it describes.
+ *
+ * Absent rather than empty when no watchdog line exists: the watchdog says
+ * nothing unless an ingest outlived its threshold, so a section that is not
+ * there is the ordinary case and not a missing measurement.
+ */
+const WATCHDOG_MARKERS = [
+  'the runtime ingest call is still in flight',
+  'ingest watchdog stack',
+  'lifecycle-complete waited on the session runtime',
+]
+const WATCHDOG_LINES = 80
+
+function helperWatchdogSection(path: string): string | null {
+  if (!path || !existsSync(path)) return null
+  let text: string
+  try {
+    text = readFileSync(path, 'utf8')
+  } catch {
+    return null
+  }
+  const kept = text
+    .split('\n')
+    .filter((line) => WATCHDOG_MARKERS.some((marker) => line.includes(marker)))
+  if (kept.length === 0) return null
+  const shown = kept.slice(-WATCHDOG_LINES)
+  const dropped = kept.length - shown.length
+  return linesSection(
+    `helper ingest watchdog (${path})`,
+    dropped > 0 ? [...shown, `(${dropped} earlier watchdog line(s) not shown)`] : shown,
+  )
 }
 
 /** How long the block-DOM probe may take before the report moves on without
