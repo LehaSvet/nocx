@@ -239,6 +239,16 @@ type batch struct {
 	// under, which is what stops two readers from both observing `lines ==
 	// 0` and typing two lines for one batch.
 	inFlight bool
+	// refusalReported is the refused type this batch last wrote a line about,
+	// as "<reason>|<messages>|<observations>" (nocx-xn63t.6.52). A refused type
+	// is retried on the next settled reading — that is the retry the design
+	// gives it — so the same sentence used to be written once a second for as
+	// long as the situation stood: about sixty-five identical lines on the
+	// owner's stand of 2026-10-18, with the mail they were about still unread
+	// underneath them. What is suppressed is the repeat of a situation that did
+	// not change; the counts are in the key because a backlog that grew IS a
+	// change, and a person reading the log should see it.
+	refusalReported string
 	// notified is that the human has been told about this batch, and
 	// blockedNotified is that it has been told this coordinator is blocked.
 	// Both are suppressed until the batch is read or the blocked episode
@@ -463,6 +473,8 @@ func (w *Wake) Read(mailbox ReaderID, through int64) {
 	b.lines = 0
 	b.notified = false
 	b.blockedNotified = false
+	// The batch is gone, so is any refusal it reported (nocx-xn63t.6.52).
+	b.refusalReported = ""
 	// blockedRetry goes with the timer it describes: the mark means "a retry is
 	// waiting for the pause", and this method has just stopped the timer. It is
 	// left true here otherwise — a mark claiming a retry that is not on the
@@ -576,6 +588,7 @@ func (w *Wake) typeNow(ctx context.Context, mailbox ReaderID, gen int) {
 		b.inFlight = false
 		b.lines = 0
 		b.notified = false
+		b.refusalReported = ""
 		w.stopLocked(b)
 		w.mu.Unlock()
 		return
@@ -610,6 +623,9 @@ func (w *Wake) typeNow(ctx context.Context, mailbox ReaderID, gen int) {
 	}
 	if out.Delivered {
 		cur.lines++
+		// The refusal episode, if there was one, is over (nocx-xn63t.6.52):
+		// a later refusal in the same words is a new stall.
+		cur.refusalReported = ""
 		log.From(ctx).Info("worker: the coordinator was woken for its workers' mail",
 			"session_id", string(mailbox), "messages", n.messages, "observations", n.observations,
 			"line", cur.lines, "of", w.attempts)
@@ -631,9 +647,25 @@ func (w *Wake) typeNow(ctx context.Context, mailbox ReaderID, gen int) {
 		// mechanism working. What would be a defect is calling it a delivery,
 		// and what would be a defect twice over is spending an attempt on it:
 		// the screen changed, so the coordinator was told nothing.
-		log.From(ctx).Info("worker: the coordinator was not woken, and its mail stays unread",
-			"session_id", string(mailbox), "messages", n.messages, "observations", n.observations,
-			"reason", out.Reason, "lines", cur.lines)
+		//
+		// ONE LINE PER CHANGE, NOT PER POLL (nocx-xn63t.6.52). A refusal is
+		// retried on the next settled reading, so this branch runs once a
+		// second for as long as the screen stands — and the screen standing is
+		// precisely what a refusal means. Written unconditionally it produced
+		// sixty-five identical lines on the owner's stand while one worker's
+		// mail went unread behind them, which is how a person learns that this
+		// log has nothing to say.
+		//
+		// The key carries the reason AND the counts: the reason is what
+		// identifies the situation, and a count that moved means the situation
+		// grew, which is worth a line of its own.
+		reported := fmt.Sprintf("%s|%d|%d", out.Reason, n.messages, n.observations)
+		if cur.refusalReported != reported {
+			cur.refusalReported = reported
+			log.From(ctx).Info("worker: the coordinator was not woken, and its mail stays unread",
+				"session_id", string(mailbox), "messages", n.messages, "observations", n.observations,
+				"reason", out.Reason, "lines", cur.lines)
+		}
 	}
 	w.mu.Unlock()
 }

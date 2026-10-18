@@ -1001,6 +1001,95 @@ func TestALineOwedAtIdleIsTypedAtOnceWhileABlockedRetryIsPending(t *testing.T) {
 	}
 }
 
+// ── 9. a refusal is reported once per change of situation ────────────────
+
+// AN UNCHANGED REFUSAL IS ONE LINE, NOT ONE PER READING (nocx-xn63t.6.52).
+//
+// The design gives a refused type its retry on the next settled reading, and a
+// coordinator's pane is read once a second — so a screen that REFUSES and then
+// STANDS, which is what a refusal means, had this line written sixty times a
+// minute. The owner's stand of 2026-10-18 measured about sixty-five of them
+// under one worker's unread mail.
+//
+// The line is news when the situation changes: a different reason, or a backlog
+// that grew. Both are asserted, because a suppression that also swallowed those
+// would turn the flood into silence — the opposite defect, and the worse one.
+func TestAStandingRefusalIsReportedOnceAndAChangeIsReportedAgain(t *testing.T) {
+	sl := logtest.Slog(t)
+	lg := log.NewSlogAdapter(sl)
+	ctx := log.WithLogger(context.Background(), lg)
+	s := newWakeStandCtx(t, ctx, 3*time.Second, 3, WithLogger(lg))
+	p := s.worker
+
+	notWokenLines := func() int {
+		n := 0
+		for _, r := range logtest.RecordsSlog(sl) {
+			if r.Message == "worker: the coordinator was not woken, and its mail stays unread" {
+				n++
+			}
+		}
+		return n
+	}
+
+	s.harness.wake.out = WakeOutcome{Reason: "that pane is asking you something"}
+	s.says(t, ObservedIdle)
+	s.settles(t, p, ObservedIdle)
+	if got := len(s.attempts()); got != 1 {
+		t.Fatalf("attempts = %d, want the one this test needs to have been refused", got)
+	}
+	if got := notWokenLines(); got != 1 {
+		t.Fatalf("%d lines about the first refusal, want 1", got)
+	}
+
+	// THE SWEEP KEEPS POLLING an idle coordinator whose wake it still owes, and
+	// every poll is refused by the same standing screen.
+	for i := 0; i < 4; i++ {
+		s.says(t, ObservedIdle)
+	}
+	if got := len(s.attempts()); got < 5 {
+		t.Fatalf("attempts = %d: this test needs the retries it counts", got)
+	}
+	if got := notWokenLines(); got != 1 {
+		t.Fatalf("%d lines while the same screen stood, want 1 — a line per poll is an alarm clock", got)
+	}
+
+	// A DIFFERENT REASON IS NEWS.
+	s.harness.wake.out = WakeOutcome{Reason: "that pane is showing a menu"}
+	s.says(t, ObservedIdle)
+	if got := notWokenLines(); got != 2 {
+		t.Fatalf("%d lines after the reason changed, want 2", got)
+	}
+
+	// AND SO IS A BACKLOG THAT GREW, because the line says how much is waiting
+	// and a number that moved is a different situation to read.
+	other := mustRegister(t, s.harness)
+	s.settles(t, other, ObservedIdle)
+	s.says(t, ObservedIdle)
+	if got := notWokenLines(); got != 3 {
+		t.Fatalf("%d lines after the backlog grew, want 3", got)
+	}
+
+	// A DELIVERED LINE ENDS THE EPISODE, and the coordinator's own read ends
+	// the batch: a later stall in the SAME words is a new situation, and a
+	// suppression that hid it would turn a flood into silence.
+	s.harness.wake.out = delivered()
+	s.says(t, ObservedIdle)
+	if got := len(s.lines()); got != 1 {
+		t.Fatalf("lines = %d, want the one this test needs to have been typed", got)
+	}
+	s.read(t)
+	// The reason is the one already reported, on purpose: what has changed is
+	// the situation, not the sentence. It is set BEFORE the mail arrives,
+	// because the arrival is itself what makes the wake try.
+	s.harness.wake.out = WakeOutcome{Reason: "that pane is showing a menu"}
+	third := mustRegister(t, s.harness)
+	s.settles(t, third, ObservedIdle)
+	s.says(t, ObservedIdle)
+	if got := notWokenLines(); got != 4 {
+		t.Fatalf("%d lines after a delivered wake and a new batch was refused for the same reason, want a new line", got)
+	}
+}
+
 // ── 7. nothing is raised from a per-fact deadline ─────────────────────────
 
 // A FACT ALONE ARMS NO TIMER AND CALLS NOBODY (nocx-luqz9.3's deletion, design

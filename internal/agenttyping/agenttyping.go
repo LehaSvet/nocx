@@ -128,6 +128,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/shady2k/nocx/internal/agentcalib"
@@ -266,7 +267,23 @@ type Typist struct {
 	calib    Authority
 	enrolled Enrolment
 	input    Input
+
+	// refusalMu guards refusalReason, and it is here rather than beside the
+	// seams because the two are the only mutable state this type has:
+	// everything else is handed to it once and never written again.
+	refusalMu sync.Mutex
+	// refusalReason is the reason each pane's last refusal was REPORTED for
+	// (nocx-xn63t.6.52). See warn for why a repeat is not a line.
+	refusalReason map[string]string
 }
+
+// maxReportedRefusals bounds refusalReason, at the same number that bounds the
+// panes nocx may watch — the only panes a refusal can be about. Entries for
+// panes that have since gone are the only way past it, so a map at the bound is
+// DROPPED WHOLE rather than grown: losing the memory re-reports one refusal per
+// pane, which is the harmless direction, while a map keyed by session ids and
+// never pruned would outlive every pane it ever described.
+const maxReportedRefusals = paneview.MaxWatched
 
 // New wires the typing seam at the composition root.
 func New(lg log.Logger, screens Screens, rules Rules, calib Authority, enrolled Enrolment, input Input) *Typist {
@@ -302,6 +319,9 @@ func (t *Typist) put(ctx context.Context, paneID, text string, submit bool) Resu
 	if r := p.write(ctx, []byte(pasteStart+body+pasteEnd), true); r != nil {
 		return *r
 	}
+	// The pane took the text, so whatever refused before this has stopped
+	// being true (see wrote).
+	t.wrote(p.pane)
 	typed := Result{
 		PaneID: p.pane, Agent: p.agent,
 		Outcome: OutcomeTyped, State: agentdriver.StateFreeText,
@@ -522,9 +542,59 @@ func (p permit) write(_ context.Context, b []byte, intoEmptyBox bool) *Result {
 // shows them now, and a soft degrade visible only in a log is how a feature
 // that does not exist survives a release.
 func (t *Typist) refuse(paneID, agent string, state agentdriver.State, reason string) *Result {
+	t.warn(paneID, agent, state, reason)
+	return &Result{PaneID: paneID, Agent: agent, Outcome: OutcomeRefused, State: state, Reason: reason}
+}
+
+// warn writes the refusal to the log ONCE PER CHANGE OF REASON (nocx-xn63t.6.52).
+//
+// A refused attempt is retried on the next settled reading, and a coordinator's
+// pane is read once a second (transport.DefaultPaneObserverSweep) — so a
+// situation that STANDS, which is the whole point of refusing it, used to write
+// the same sentence sixty times a minute. Measured on the owner's stand of
+// 2026-10-18: about sixty-five identical lines, and a worker's mail unread
+// underneath them. A line that repeats is a line a person learns to skip, which
+// costs exactly the refusal somebody needed to read.
+//
+// What is worth a line is the CHANGE. The same pane refusing for the same
+// reason is one fact however many times it is asked; a different reason is
+// news, and so is the same reason after a write that went through (see wrote).
+// That is why this is not a rate limit: a rate limit would swallow a NEW
+// situation that arrived inside the window, while this compares the reason
+// itself, so nothing new is ever suppressed.
+//
+// The result a caller gets is unchanged: the refusal is returned on every
+// attempt, because the caller acts on it and the log only records it.
+func (t *Typist) warn(paneID, agent string, state agentdriver.State, reason string) {
+	t.refusalMu.Lock()
+	if t.refusalReason == nil {
+		t.refusalReason = make(map[string]string, 1)
+	} else if len(t.refusalReason) >= maxReportedRefusals {
+		clear(t.refusalReason)
+	}
+	// Exact equality, and not a prefix and not the state: the reason is the
+	// whole of what changed, and two refusals that READ the same are one
+	// situation a person cannot act on twice.
+	if last, reported := t.refusalReason[paneID]; reported && last == reason {
+		t.refusalMu.Unlock()
+		return
+	}
+	t.refusalReason[paneID] = reason
+	t.refusalMu.Unlock()
 	t.log.Warn("nocx refused to type into a pane",
 		"pane_id", paneID, "agent", agent, "state", string(state), "reason", reason)
-	return &Result{PaneID: paneID, Agent: agent, Outcome: OutcomeRefused, State: state, Reason: reason}
+}
+
+// wrote ends the refusal episode for a pane whose bytes the queue ACCEPTED.
+//
+// The memory exists to suppress a repeat of a situation that still stands, and
+// a write that went through says it no longer stands — so a later refusal in
+// the same words is a new stall and must be reported as one. Without this a
+// coordinator that stalled twice in a process's life would say so once.
+func (t *Typist) wrote(paneID string) {
+	t.refusalMu.Lock()
+	delete(t.refusalReason, paneID)
+	t.refusalMu.Unlock()
 }
 
 // said names a state in the words a person reads. The closed set is the
