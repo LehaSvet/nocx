@@ -18,7 +18,13 @@ export interface LiveSelectionGestureOptions {
   readonly surface: HTMLElement
   readonly gestureRoot?: HTMLElement
   readonly surfaceId: string
-  /** The backend frame's mouse mode owns reporting; selection must not consume those clicks. */
+  /** Whether the accepted backend frame says the program reports the mouse.
+   *
+   *  A DRAG is the person's either way (nocx-zg3k3.15.5): the pointer sequence
+   *  reaches the program through the pane's own input renderer, never through
+   *  this gesture, so standing down for a reporting program took the drag from
+   *  the person and gave it to nobody. A DOUBLE click stays the program's
+   *  (nocx-zg3k3.15.4). */
   readonly mouseReportingActive?: () => boolean
   /** Return keyboard input to the terminal input element after a joined gesture. */
   readonly focusInput?: () => void
@@ -151,10 +157,23 @@ export function installLiveSelectionGesture(
 
   const down = (event: PointerEvent) => {
     if (!root.contains(event.target as Node) || event.button !== 0) return
-    // The input renderer is the authority on DEC mouse modes. A reporting
-    // program must receive the original pointer sequence, not a selection
-    // gesture that prevents its default handling.
-    if (opts.mouseReportingActive?.()) return
+    // A REPORTING PROGRAM IS NO REASON TO STAND DOWN (nocx-zg3k3.15.5). This
+    // returned early whenever the accepted frame said the program reports the
+    // mouse, on the reasoning that a reporting program "must receive the
+    // original pointer sequence, not a selection gesture that prevents its
+    // default handling". That reasoning was about xterm, whose mousedown this
+    // gesture's preventDefault suppressed, and xterm is gone (ADR-0072): the
+    // sequence is emitted by the pane's own input renderer, from its own
+    // listeners, and this listener is not in front of it. Measured against a
+    // real full-screen reporting program: press, drag motions and the release
+    // all still reach it with this gesture active.
+    //
+    // What standing down did instead was hand the drag to the BROWSER — a
+    // native selection over the painter's rows, a second claimant on one input
+    // — which the pane clears again at the release when it returns the
+    // keyboard to its input element. So the highlight a person made vanished
+    // as they let go, and no frame repainted it, because the painter's model
+    // never held it.
     pinned = opts.model.current()
     pinnedMapping = opts.painter.mapping()
     if (!pinned || !pinnedMapping) return
