@@ -110,6 +110,15 @@ func newLocalPaneApp(t *testing.T, opts ...Option) *App {
 	src := realHelperArtifacts(t)
 	home := storagetest.IsolateWithHome(t)
 	binary := filepath.Join(helperRoot(home, src.hash()), "nocx-helper")
+	// WHAT THE DAEMON FORKED, collected before anything closes it and waited
+	// for after the daemon is gone (nocx-xn63t.6.54). The two are separate
+	// cleanups because what they need arrives in opposite order: t.Cleanup runs
+	// last-registered-first, so collecting has to be registered LAST — while
+	// the panes are still open and their pids still recorded — and the wait
+	// BEFORE endTheDaemon, which is the only other thing that ends a pane's
+	// shell and does not wait for it.
+	var shells []int
+	t.Cleanup(func() { waitForThePanes(t, shells) })
 	// Registered BEFORE the app starts, so a Start or an open that fails
 	// half-way still has its daemon ended. t.Cleanup runs last-registered
 	// first, so this one runs after the shutdown below.
@@ -123,6 +132,14 @@ func newLocalPaneApp(t *testing.T, opts ...Option) *App {
 	t.Cleanup(func() {
 		a.Shutdown(context.Background())
 		cancel()
+	})
+	// The LAST cleanup registered, so it is the FIRST to run: the app's own
+	// shutdown is what drops each session's recorded pid, and the home's
+	// removal is what a shell still writing there would trip over.
+	t.Cleanup(func() {
+		if a != nil {
+			shells = thePaneShells(a.Session)
+		}
 	})
 	if err := a.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -298,6 +315,135 @@ func endTheDaemon(t *testing.T, binary string) {
 		for alive(pid) && time.Now().Before(deadline) {
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+}
+
+// ── the shells the daemon forked, and the home they were given ──────────────
+
+// thePaneShells reads the pid of every pane this registry is running, from the
+// pid the product itself recorded when the pane opened (the helper reports the
+// shell it forked and internal/app's local open records it —
+// localHelperOpener.RecordOwnedProcessPID, which local_pane_test.go's
+// TestLocalPaneRecordsOwnedLaunchPID asserts on).
+//
+// IT MUST BE READ WHILE THE SESSIONS ARE OPEN: closing one drops its record,
+// and the pid is then not obtainable from anywhere else on this machine.
+func thePaneShells(reg *session.Reg) []int {
+	var pids []int
+	for _, sess := range reg.List() {
+		if pid, known := reg.OwnedProcessPID(sess.ID()); known && pid > 0 {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// waitForThePanes waits until the shells this stand's panes ran are gone —
+// everything they forked included — and PRINTS whatever outlives the bound.
+//
+// THE DAEMON IS NOT ENOUGH (nocx-xn63t.6.54). endTheDaemon ends and waits for
+// the helper alone, and the helper's own shutdown signals each pane's process
+// group and returns without waiting for it (internal/helper/session's
+// Service.Close calls hs.stop per session). So the pane's shell outlives the
+// daemon by however long its own exit takes, reparented to init, with HOME
+// still set to the disposable home and the right to write into it on its way
+// out. Measured on this machine 2026-10-18, running
+// TestASpawnedWorkerFindsItsToolsThroughTheSurfaceItsPaneStaged: in 3 of 9 runs
+// the home's removal began with `/run/current-system/sw/bin/bash --rcfile
+// /dev/fd/3 -i` still alive, ppid 1, cwd and HOME under the disposable home —
+// and in the run that caught both ends of it, its pid was exactly the pid the
+// product recorded for that pane, leading its own process group. That is the
+// straggler CI's ci-mac job met: `unlinkat /private/tmp/nocx-home-783600994:
+// directory not empty` is os.RemoveAll finding one more entry where it had
+// already read the directory's names, and the only process that can put one
+// there is the one whose HOME it still is.
+//
+// THE WAIT IS ON THE PROCESS GROUP, which is what makes it cover everything
+// the daemon forked rather than the shell alone: internal/helper/session's
+// local spawner creates every pane's PTY with setsid, so the shell leads its
+// own group and the agent it launched is in that group. A group with no
+// members left is the observable that says the last of them cannot write
+// again — and it is bounded, and it prints what it tolerated, because a
+// straggler that outlives the bound is a fact the next failure message has to
+// carry rather than one this wait may hide.
+func waitForThePanes(t *testing.T, pids []int) {
+	t.Helper()
+	for _, pid := range pids {
+		if pid <= 0 {
+			continue
+		}
+		deadline := time.Now().Add(paneExitBound)
+		for processGroupAlive(pid) && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if processGroupAlive(pid) {
+			t.Logf("the shell of the pane whose pid %d is still running %s after its daemon was ended, so a straggler of it can still write into the disposable home; the removal below names what it finds", pid, paneExitBound)
+		}
+	}
+}
+
+// paneExitBound is how long a pane's shell is given to finish dying. The wait
+// costs nothing when the shell is already gone (the ordinary case) and this
+// bound is the same one endTheDaemon gives the daemon itself, for the same
+// reason: it is a bound on somebody else's shutdown, not a budget anything
+// asserts on.
+const paneExitBound = 30 * time.Second
+
+// processGroupAlive reports whether any process is left in the group pid leads.
+// Signal 0 asks the kernel without disturbing anybody: ESRCH means the group is
+// gone, and EPERM means it is there and not ours, which still answers it.
+func processGroupAlive(pid int) bool {
+	err := syscall.Kill(-pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// TestTheWaitForThePanesEndsWithTheLastProcessInTheGroup is the check
+// nocx-xn63t.6.54's second half rests on: what this stand calls "the shell is
+// gone" has to mean the GROUP is gone, because the shell it names is only the
+// first member of it.
+//
+// It uses no pane and no daemon: the shape it is about — a shell leading its
+// own group (internal/helper/session spawns every pane that way), a program
+// that shell forked inside it, and the shell dying before the program does —
+// is made here directly with a real process group. The program announces
+// itself by file rather than by a delay, so the check never races the shell's
+// own fork.
+func TestTheWaitForThePanesEndsWithTheLastProcessInTheGroup(t *testing.T) {
+	dir := t.TempDir()
+	started := filepath.Join(dir, "the-program-started")
+	shell := exec.Command("/bin/sh", "-c", "sleep 1 & echo > "+started+"; wait") //nolint:gosec // this test's own fixed command
+	shell.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := shell.Start(); err != nil {
+		t.Fatalf("start a stand-in pane shell: %v", err)
+	}
+	pgid := shell.Process.Pid
+	t.Cleanup(func() {
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		_, _ = shell.Process.Wait()
+	})
+	if !processGroupAlive(pgid) {
+		t.Fatal("a shell started with its own session does not lead a process group, so this check cannot say anything about the wait")
+	}
+	waittest.WaitFor(t, "the shell's own program to be running in its group", func() bool {
+		_, err := os.Stat(started)
+		return err == nil
+	})
+
+	// The leader goes first and the program it forked stays: exactly the state
+	// a pane's shell leaves when it dies before the agent it launched, and the
+	// state a wait answered by the leader alone would call "gone".
+	if err := syscall.Kill(pgid, syscall.SIGKILL); err != nil {
+		t.Fatalf("end the group's leader: %v", err)
+	}
+	_, _ = shell.Process.Wait()
+	if !processGroupAlive(pgid) {
+		t.Fatal("the shell's own program did not outlive the shell, so this check cannot tell a wait on the group from a wait on its leader")
+	}
+
+	waitForThePanes(t, []int{pgid})
+
+	if processGroupAlive(pgid) {
+		t.Fatal("the wait returned while the group its shell led still had a member, so a program it forked can still write into the home the removal is about to take")
 	}
 }
 

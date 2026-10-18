@@ -356,6 +356,15 @@ func newS14RealStand(t *testing.T, mockDir, stateDir string, opts ...s14RealOpti
 	src := realHelperArtifacts(t)
 	home := storagetest.IsolateWithHome(t)
 	binary := filepath.Join(helperRoot(home, src.hash()), "nocx-helper")
+	// WHAT THE DAEMON FORKED, waited for after the daemon is gone and
+	// collected while the panes are still open (nocx-xn63t.6.54). This is the
+	// teardown the CI failure came through: /tmp/nocx-home-783600994 was still
+	// the HOME of a shell the daemon had forked when its removal began. See
+	// waitForThePanes for the measurement and for why the wait is on the
+	// process group, and the cleanup at the end of this function for where the
+	// pids come from.
+	var panes []int
+	t.Cleanup(func() { waitForThePanes(t, panes) })
 	t.Cleanup(func() { endTheDaemon(t, binary) })
 
 	installed, err := helperlocal.Install(ctx, src, home)
@@ -752,6 +761,10 @@ func newS14RealStand(t *testing.T, mockDir, stateDir string, opts ...s14RealOpti
 	}
 
 	t.Cleanup(func() {
+		// FIRST, and before anything below closes them: a closed session
+		// drops the pid the product recorded for its shell, which is the only
+		// name the wait above has for the process that outlives the daemon.
+		panes = thePaneShells(reg)
 		_ = endpoint.Close()
 		for _, sess := range reg.List() {
 			_ = reg.Close(sess.ID())
