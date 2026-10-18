@@ -606,6 +606,45 @@ func TestACoordinatorWakeDoesNotTypeOverThePersonsDraft(t *testing.T) {
 	}
 }
 
+// TestACoordinatorWakeIsTypedWhileClaudeDrawsItsOwnSuggestion is the shape the
+// owner's stand of 2026-10-18 measured on a real session, minus the part that
+// only a recording could settle: the coordinator's box is EMPTY and Claude has
+// painted its own prompt suggestion into it, and a worker's mail lands.
+//
+// The drawing is not text anybody typed (nocx-xn63t.6.32), so the wake must go
+// through ONCE rather than waiting for the suggestion to clear — the waiting is
+// the defect: the mail stays unread for as long as the drawing stands, which is
+// as long as the coordinator is idle.
+//
+// The frame is the corpus's own (claude-idle at 1470ms, inside the window where
+// the paint is on screen and before the same capture erases it at 1505ms), read
+// off the live grid rather than assembled here.
+func TestACoordinatorWakeIsTypedWhileClaudeDrawsItsOwnSuggestion(t *testing.T) {
+	w := newWakeStand(t)
+	turn := openCapture(t, "claude-idle")
+	turn.to(t, w, 1470, agentdriver.StateFreeText, "Claude's own prompt suggestion to be on screen")
+	if got := w.coordBox(t); got != "" {
+		t.Fatalf("the coordinator's box reads %q, want it empty: this frame is Claude's own drawing, painted in SGR 2", got)
+	}
+
+	p := w.register(t, "reports while the suggestion stands")
+	w.reads(t, agentdriver.StateFreeText)
+	before := len(w.coordPTY.read())
+	w.settledIdle(t, p)
+
+	waittest.WaitFor(t, "the wake to reach the box Claude is drawing in", func() bool {
+		typed := w.coordPTY.read()[before:]
+		return strings.Contains(typed, "workers.inbox") && strings.HasSuffix(typed, "\r")
+	})
+	typed := w.coordPTY.read()[before:]
+	if got := strings.Count(typed, "workers.inbox"); got != 1 {
+		t.Fatalf("the coordinator was typed at %d times for one batch while its suggestion stood: %q", got, typed)
+	}
+	if got := strings.Count(typed, "\r"); got != 1 {
+		t.Fatalf("%d submit keys reached the pane for one line: %q", got, typed)
+	}
+}
+
 // coordBox is what the shipped rule reads as typed in the coordinator's own
 // input box, off the live grid — never a string this test assembled.
 func (w *wakeStand) coordBox(t *testing.T) string {
