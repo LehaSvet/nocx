@@ -1,0 +1,24 @@
+{
+  "envNames": [
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CONFIG_DIR",
+    "DISABLE_TELEMETRY",
+    "HOME",
+    "PATH"
+  ],
+  "launcherEnvNames": [
+    "DISABLE_AUTOUPDATER",
+    "DISABLE_INSTALLATION_CHECKS",
+    "FORCE_AUTOUPDATE_PLUGINS",
+    "LD_LIBRARY_PATH",
+    "PATH",
+    "USE_BUILTIN_RIPGREP"
+  ],
+  "program": "claude",
+  "programVersion": "2.1.296 (Claude Code)",
+  "resolved": "/run/current-system/sw/bin/claude",
+  "sha256": "6a6a9b1aa0745f49e92b4bcd4dfc9a70f4021973f41a35e5c7803c5777c9ee9b"
+}

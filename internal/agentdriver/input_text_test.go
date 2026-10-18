@@ -173,6 +173,57 @@ func TestInputTextReadsASingleParagraphAcrossEveryWrappedRow(t *testing.T) {
 	}
 }
 
+// collapsedPasteCapture is the recording of a REALISTIC paste — 818 bytes,
+// one paragraph, no newline in it, which is workers.Preamble's own shape — on
+// Claude Code 2.1.296, taken 2026-10-18 through
+// .claude/skills/nocx-detection-verify/record.sh against a dead endpoint with
+// no Enter after the paste (nocx-xn63t.6.50; the README's own table has the
+// five measured paste shapes side by side).
+const collapsedPasteCapture = "claude-2.1.296-collapsed-paste"
+
+// TestInputTextReadsClaudesCollapsedPaste is the reading a delivery confirms
+// its own paste on when Claude does not draw the paste at all.
+//
+// Above a length Claude stops drawing what was pasted and draws a placeholder
+// instead: `❯␣[Pasted text #1]` for a long single-paragraph paste (this
+// capture — 818 bytes, no newline), `❯␣[Pasted text #1 +M lines]` for one that
+// carries newlines (measured at M=9 and M=60, the README's table). The rule
+// reads BOTH — the collapse row is a content row like any other, its text is
+// what the box holds, and BoxEmpty must say "not empty" so nothing pastes a
+// second message on top of it.
+//
+// This test is the reason the defect it was written for is NOT in the rule:
+// session.message's echo check answered "the box does not show this text" on
+// this frame, while the rule had read the box correctly all along.
+func TestInputTextReadsClaudesCollapsedPaste(t *testing.T) {
+	reg := registry(t)
+	f := replay(t, collapsedPasteCapture, 45000)
+	o := reg.Observe("claude", f)
+	if o.State != agentdriver.StateFreeText {
+		t.Fatalf("%s@45s: state = %q, want free_text — a box holding a paste is the live prompt", collapsedPasteCapture, o.State)
+	}
+	text, ok := o.InputText()
+	if !ok {
+		t.Fatalf("%s@45s: InputText ok=false, want true — the rule reads this box", collapsedPasteCapture)
+	}
+	const want = "[Pasted text #1]"
+	if text != want {
+		t.Errorf("%s@45s: InputText = %q, want %q — Claude's placeholder, with no line count in it, is what a long one-paragraph paste becomes", collapsedPasteCapture, text, want)
+	}
+	if o.BoxEmpty() {
+		t.Errorf("%s@45s: BoxEmpty = true, want false — the box holds the placeholder of a paste that is waiting to be submitted, so a second message must not paste on top of it", collapsedPasteCapture)
+	}
+	// The premise, checked so this test cannot quietly stop covering the
+	// collapse it exists for: the pasted text itself is NOWHERE on screen.
+	// Claude drew a placeholder, which is the whole reason the echo check
+	// could not match the text it had just pasted.
+	for y := range f.Lines {
+		if strings.Contains(f.Text(y), "You are a worker, and your coordinator is") {
+			t.Fatalf("%s@45s: row %d still carries the pasted text — this frame no longer exercises Claude's collapse", collapsedPasteCapture, y)
+		}
+	}
+}
+
 // ── BoxEmpty: the ONE statement both writers ask ─────────────────────────
 
 // BoxEmpty fixes what "the box is empty" means for BOTH writers that need it

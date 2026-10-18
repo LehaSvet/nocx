@@ -1,0 +1,20 @@
+# The paste session.message makes of a realistic briefing, left unsubmitted so
+# the box can be read as it stands (nocx-xn63t.6.50).
+#
+# The text is workers.Preamble's own rules — the first half of every briefing,
+# 818 bytes in ONE paragraph with no newline in it, exactly as preamble.go
+# builds it. A real Claude Code 2.1.296 at 120x40 does NOT draw it: it collapses
+# the paste into its own placeholder, "❯ [Pasted text #1]" with no line count,
+# and the box's status line says "paste again to expand" (mark 45000 below).
+# The earlier session-message-wrapped-echo.script pasted 368 bytes and Claude
+# drew THAT one verbatim over four rows (2.1.272), which is why the collapse
+# shape had no capture and boxContainsEcho never accepted it.
+#
+# Onboarding first (theme, security notes, folder trust), exactly as the
+# lmstudio-* scripts do; then the paste, with no Enter at any point after it.
+14000 \r
+6000 \r
+7000 \x1b[B
+1500 \r
+9000 \x1b[200~You are a worker, and your coordinator is nocx session coordinator-session-abc123. Your calls are workers.report and workers.inbox — in Claude Code the MCP tools mcp__nocx__workers_report and mcp__nocx__workers_inbox, which it defers until loaded: load one with ToolSearch before your first call, by selector select:mcp__nocx__workers_report or select:mcp__nocx__workers_inbox, and a bare name is not a missing tool. Tell it how you are doing with workers.report: kind "done" when you finish, "progress" at a milestone, and "question" when you cannot continue without an answer — ask, then END YOUR TURN: the call does not wait, and the answer arrives as your next message. workers.inbox reads the mail your coordinator leaves you. nocx records no success and no failure — your coordinator judges what your words mean.\x1b[201~
+25000

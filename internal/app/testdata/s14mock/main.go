@@ -74,6 +74,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -611,6 +612,30 @@ func (m *mock) handleChunk(chunk []byte) []byte {
 	if isDownKey(chunk) {
 		return m.onDown()
 	}
+	// A BRACKETED PASTE IS A PASTE, not a control sequence to ignore
+	// (nocx-xn63t.6.50). The product sends a text atom as
+	// sessionruntime.IntentKindPaste, which the runtime encodes with ghostty's
+	// paste encoder: wrapped in ESC[200~ … ESC[201~ whenever the program has
+	// enabled bracketed paste — which a real Claude has, and which this
+	// fixture does not model the mode handshake for. So the wrapper is
+	// stripped here if it is present and taken as absent if it is not, and
+	// either way what reaches onText is the text the person would have pasted.
+	// Before this, a bracketed chunk hit containsEscape below and was dropped
+	// as "a control sequence this flow never needs" — the screen then showed
+	// no paste at all, which is a failure from the FIXTURE that would read as
+	// one from the product.
+	if bytes.HasPrefix(chunk, []byte("\x1b[200~")) {
+		chunk = chunk[len("\x1b[200~"):]
+	}
+	if bytes.HasSuffix(chunk, []byte("\x1b[201~")) {
+		chunk = chunk[:len(chunk)-len("\x1b[201~")]
+	}
+	if len(chunk) == 0 {
+		// Nothing but the closing marker (a paste whose text arrived in the
+		// chunk before this one): there is no text to draw, and drawing an
+		// empty one would CLEAR the box instead.
+		return nil
+	}
 	if containsEscape(chunk) {
 		// Another control sequence this test's own flow never needs to move.
 		// Logged already; nothing to repaint.
@@ -733,8 +758,41 @@ func (m *mock) onText(text string) []byte {
 	if m.cur == phaseMenu {
 		return nil
 	}
-	m.echo = text
+	m.echo = pastedEcho(text)
 	return m.paintLocked()
+}
+
+// pastedEcho is what a real Claude's input box shows once a paste has landed
+// (nocx-xn63t.6.50). Above a length it does NOT draw the paste: it collapses it
+// into its own placeholder, and the two forms are measured rather than guessed
+// — recorded 2026-10-18 on Claude Code 2.1.296 at 120x40 through
+// .claude/skills/nocx-detection-verify/record.sh. The one-paragraph form is
+// committed as the corpus capture claude-2.1.296-collapsed-paste, and the
+// captures README's own table has all five recorded shapes side by side:
+//
+//	1438 bytes, 9 newlines   ->  "❯␣[Pasted text #1 +9 lines]"
+//	3281 bytes, 60 newlines  ->  "❯␣[Pasted text #1 +60 lines]"
+//	 818 bytes, no newline   ->  "❯␣[Pasted text #1]"   ("paste again to expand" below the box)
+//	3621 bytes, no newline   ->  "❯␣[Pasted text #1]"
+//	 368 bytes, no newline   ->  the text itself, over four content rows (2.1.272)
+//
+// So "+M lines" counts the paste's own newlines, and the no-line-count form is
+// what a long SINGLE-PARAGRAPH paste becomes — which is every briefing whose
+// task carries no newline. The boundary between "drawn verbatim" and
+// "collapsed" is not measured: 368 was drawn and 818 was collapsed, so
+// pasteCollapsesBeyond sits inside that gap. Every text the product actually
+// pastes as a briefing is well above it, which is why the tests this fixture
+// serves are insensitive to where in the gap the number sits.
+const pasteCollapsesBeyond = 512
+
+func pastedEcho(text string) string {
+	if newlines := strings.Count(text, "\n"); newlines > 0 {
+		return fmt.Sprintf("[Pasted text #1 +%d lines]", newlines)
+	}
+	if len(text) > pasteCollapsesBeyond {
+		return "[Pasted text #1]"
+	}
+	return text
 }
 
 // isEnter reports whether chunk is nothing but CR and/or LF bytes — the

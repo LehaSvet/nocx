@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +56,14 @@ const freeMessageSafetyInterval = time.Second
 // package's own hard-coded timeout the same way AGENTS.md already asks of
 // a test's own waits.
 const defaultEchoWait = 3 * time.Second
+
+// deliveryEndedMessage is the line every delivery writes when it reaches a
+// terminal phase (nocx-xn63t.6.50), whatever that phase is. A delivery is the
+// one part of session.message nobody is waiting on, so a phase it commits
+// without saying so is a phase nobody learns: the owner's 2026-10-18 run had a
+// briefing pasted into a worker's input box and never submitted, with no Enter,
+// no refusal, no partial phase in the log and nothing to read afterwards.
+const deliveryEndedMessage = "session.message: delivery ended"
 
 // authorityInterval is MessageKey's own comparable projection of
 // pane_access.go's Authority (design §8.4: "endpoint -> the admission epoch
@@ -166,12 +175,13 @@ func (pm *pendingMessage) claim(next assistant.MessagePhase) (generation uint64,
 // claim() handed out — design §8.5's "commit the phase only if the record's
 // generation still matches." A stale commit (generation moved under it,
 // because a concurrent cancel or a later step's claim already advanced the
-// record) is silently dropped: the record already reflects something newer.
-func (pm *pendingMessage) commit(generation uint64, phase assistant.MessagePhase, bytesWritten int, boxContents string) {
+// record) is dropped: the record already reflects something newer, and the
+// bool says so — finish uses it to keep its log line and the record agreeing.
+func (pm *pendingMessage) commit(generation uint64, phase assistant.MessagePhase, bytesWritten int, boxContents string) bool {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	if pm.generation != generation {
-		return
+		return false
 	}
 	pm.phase = phase
 	if bytesWritten > 0 {
@@ -180,6 +190,7 @@ func (pm *pendingMessage) commit(generation uint64, phase assistant.MessagePhase
 	if boxContents != "" {
 		pm.boxContents = boxContents
 	}
+	return true
 }
 
 // cancel is design §8.6's cancel form, linearised on the SAME claim: it
@@ -443,18 +454,25 @@ func (m *paneMessages) Send(ctx context.Context, access any, sessionID, text, wh
 	q.mu.Unlock()
 
 	if when == "now" {
-		// The delivery runs on a DETACHED background context, never ctx: a
-		// delivery belongs to the pane's queue, not to this call, and a
-		// caller disconnect (ctx cancelled) must not cancel a paste or
-		// Enter already under way (design §8.6, "a caller disconnect does
-		// not cancel"). This call still normally waits for it — "when=now
-		// ... runs the delivery within the call" (§8.1) — but returns early
-		// on ctx.Done() with whatever phase the record holds at that
-		// moment, leaving the background delivery to finish on its own.
+		// The delivery runs on a DETACHED context — cancellation gone, and
+		// nothing else: a delivery belongs to the pane's queue, not to this
+		// call, and a caller disconnect (ctx cancelled) must not cancel a
+		// paste or Enter already under way (design §8.6, "a caller disconnect
+		// does not cancel"). It is WithoutCancel and not Background because
+		// everything the context CARRIES has to survive: the delivery's own
+		// log lines are how a person learns a message that never submitted
+		// stopped where it did (nocx-xn63t.6.50), and a Background context
+		// lands every one of them at the process root with no request, trace
+		// or caller bindings — the same mistake internal/workers' wake
+		// fire-time context already records. This call still normally waits
+		// for it — "when=now ... runs the delivery within the call" (§8.1) —
+		// but returns early on ctx.Done() with whatever phase the record holds
+		// at that moment, leaving the background delivery to finish on its
+		// own.
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			m.deliverOne(context.Background(), sessionID, pm)
+			m.deliverOne(context.WithoutCancel(ctx), sessionID, pm)
 		}()
 		select {
 		case <-done:
@@ -464,8 +482,10 @@ func (m *paneMessages) Send(ctx context.Context, access any, sessionID, text, wh
 	}
 	// "free": answers the phase this call left the message in — queued —
 	// immediately; delivery happens in the background, one at a time,
-	// whenever this pane's queue is not already running a delivery.
-	go m.runQueue(sessionID, q)
+	// whenever this pane's queue is not already running a delivery. The
+	// context travels the same way a when=now delivery's does (WithoutCancel
+	// inside runQueue): what it carries is kept, what it cancels is not.
+	go m.runQueue(context.WithoutCancel(ctx), sessionID, q)
 	return enqueued, nil
 }
 
@@ -555,7 +575,7 @@ func (m *paneMessages) EnqueueBriefing(ctx context.Context, coordinatorSession s
 	}
 	q.order = append(q.order, pm)
 	q.byKey[key] = pm
-	go m.runQueue(sessionID, q)
+	go m.runQueue(context.WithoutCancel(ctx), sessionID, q)
 	return nil
 }
 
@@ -613,7 +633,7 @@ func (m *paneMessages) Cancel(ctx context.Context, access any, sessionID, id str
 // outcome could gate a first and nothing left for this loop to decide: the
 // ordering is the value's (workers.Briefing.Text) and the refusal of half a
 // briefing is the value's too (workers.Briefing.Validate).
-func (m *paneMessages) runQueue(sessionID string, q *paneQueue) {
+func (m *paneMessages) runQueue(ctx context.Context, sessionID string, q *paneQueue) {
 	for {
 		q.mu.Lock()
 		if q.delivering {
@@ -658,7 +678,7 @@ func (m *paneMessages) runQueue(sessionID string, q *paneQueue) {
 		q.delivering = true
 		q.mu.Unlock()
 
-		m.deliverOne(context.Background(), sessionID, head)
+		m.deliverOne(ctx, sessionID, head)
 
 		q.mu.Lock()
 		q.delivering = false
@@ -683,7 +703,7 @@ func (m *paneMessages) deliverOne(ctx context.Context, sessionID string, pm *pen
 			return
 		}
 		if !m.hub.registrar.StillHolds(ctx, pm.chain) {
-			m.terminate(pm, assistant.PhaseRefused, 0, "")
+			m.terminate(ctx, sessionID, pm, assistant.PhaseRefused, "authority no longer holds")
 			return
 		}
 		// Subscribe BEFORE reading readiness. The observation callback can
@@ -696,7 +716,7 @@ func (m *paneMessages) deliverOne(ctx context.Context, sessionID string, pm *pen
 				"session_id", sessionID, "message_id", pm.key.ID, "namespace", pm.key.Namespace,
 				"wake_subscribed", true)
 			if pm.when == "now" {
-				m.terminate(pm, assistant.PhaseRefused, 0, "")
+				m.terminate(ctx, sessionID, pm, assistant.PhaseRefused, "the pane was not ready for a when=now message, so nothing was written")
 				return
 			}
 			// A pane classification change is the normal wake path. The long
@@ -705,8 +725,18 @@ func (m *paneMessages) deliverOne(ctx context.Context, sessionID string, pm *pen
 			// messagePollInterval.
 			select {
 			case <-ctx.Done():
+				// The backend is going away with the message still queued:
+				// say so rather than leaving the record's "queued" as the only
+				// account (nocx-xn63t.6.50). The phase is unchanged — the
+				// message genuinely never left the queue, and the next
+				// incarnation reports it lost (DeliveryLost).
+				log.From(ctx).Info(deliveryEndedMessage,
+					"session_id", sessionID, "message_id", pm.key.ID, "namespace", pm.key.Namespace,
+					"when", pm.when, "phase", string(assistant.PhaseQueued),
+					"reason", "the backend stopped while the message was still waiting for the pane")
 				return
 			case <-pm.cancelWake:
+				// cancel() set the phase and answered its caller with it.
 				return
 			case <-wake:
 				log.From(ctx).Debug("session.message: pane observation woke queued delivery",
@@ -726,36 +756,51 @@ func (m *paneMessages) deliverOne(ctx context.Context, sessionID string, pm *pen
 	}
 	pasteResult, pasteErr := m.pasteStep(ctx, pm.access, sessionID, pm.text)
 	if pasteErr != nil {
-		pm.commit(gen, assistant.PhaseIndeterminate, 0, "")
+		m.finish(ctx, sessionID, pm, gen, assistant.PhaseIndeterminate, 0, "",
+			"the paste step's own outcome could not be learned")
 		return
 	}
 	switch pasteResult.State {
 	case "executed":
 		pm.commit(gen, assistant.PhaseAwaitingEcho, pasteResult.BytesWritten, "")
 	case "failed_partial":
-		pm.commit(gen, assistant.PhaseFailedPartial, pasteResult.BytesWritten, "")
+		m.finish(ctx, sessionID, pm, gen, assistant.PhaseFailedPartial, pasteResult.BytesWritten, "",
+			"the paste was only partly written")
 		return
 	case "delivery_unknown":
-		pm.commit(gen, assistant.PhaseDeliveryUnknown, pasteResult.BytesWritten, "")
+		m.finish(ctx, sessionID, pm, gen, assistant.PhaseDeliveryUnknown, pasteResult.BytesWritten, "",
+			"whether the paste was written could not be learned")
 		return
 	default:
 		// refused, cancelled, indeterminate, in_progress: nothing written,
 		// and there is no further step to take on this attempt.
-		pm.commit(gen, assistant.PhaseRefused, 0, "")
+		m.finish(ctx, sessionID, pm, gen, assistant.PhaseRefused, 0, "",
+			"the paste step refused, so nothing was written")
 		return
 	}
 
 	echoed, boxNow := m.waitForEcho(ctx, pm.access, sessionID, pm.text)
 	if pm.isCancelled() {
+		// The phase is already "cancelled" (cancel() set it, and answered the
+		// caller with it): reported, not silent.
 		return
 	}
 	if !echoed {
-		pm.commit(gen, assistant.PhasePartial, pasteResult.BytesWritten, boxNow)
+		// THE PATH THAT USED TO DISAPPEAR (nocx-xn63t.6.50). The paste is in
+		// the box and Enter is never sent, so this is the phase a person has
+		// to be able to find: the record carries it for session.read, and the
+		// line below says which phase, how much was written and what the box
+		// actually showed — the last of those being the only thing that tells
+		// "a real Claude collapsed the paste into its own placeholder" apart
+		// from "nothing landed".
+		m.finish(ctx, sessionID, pm, gen, assistant.PhasePartial, pasteResult.BytesWritten, boxNow,
+			"the pasted text never appeared in the input box, so Enter was not sent")
 		return
 	}
 
 	if !m.hub.registrar.StillHolds(ctx, pm.chain) {
-		pm.commit(gen, assistant.PhasePartial, pasteResult.BytesWritten, boxNow)
+		m.finish(ctx, sessionID, pm, gen, assistant.PhasePartial, pasteResult.BytesWritten, boxNow,
+			"authority no longer holds, so Enter was not sent")
 		return
 	}
 	entering, ok := pm.claim(assistant.PhaseEntering)
@@ -764,33 +809,76 @@ func (m *paneMessages) deliverOne(ctx context.Context, sessionID string, pm *pen
 	}
 	enterResult, enterErr := m.enterStep(ctx, pm.access, sessionID)
 	if enterErr != nil {
-		pm.commit(entering, assistant.PhaseIndeterminate, 0, boxNow)
+		m.finish(ctx, sessionID, pm, entering, assistant.PhaseIndeterminate, 0, boxNow,
+			"the Enter step's own outcome could not be learned")
 		return
 	}
 	switch enterResult.State {
 	case "executed":
-		pm.commit(entering, assistant.PhaseWritten, pasteResult.BytesWritten, "")
+		// "written" is NOT committed here. It is a TERMINAL phase (design
+		// §8.3: Enter written, submission not confirmed), and the record must
+		// not claim a delivery has ended while this same goroutine is still
+		// waiting to see whether it did — a reader during that window would
+		// be told the delivery stopped, which is the class of lie
+		// nocx-xn63t.6.50 is about. The record stays "entering" (in flight)
+		// until confirmSubmission's own answer picks between submitted and
+		// written below.
 	default:
-		pm.commit(entering, assistant.PhasePartial, pasteResult.BytesWritten, boxNow)
+		m.finish(ctx, sessionID, pm, entering, assistant.PhasePartial, pasteResult.BytesWritten, boxNow,
+			"the Enter step refused, so the box still holds the message")
 		return
 	}
 
 	if m.confirmSubmission(ctx, pm.access, sessionID) {
-		pm.commit(entering, assistant.PhaseSubmitted, pasteResult.BytesWritten, "")
+		m.finish(ctx, sessionID, pm, entering, assistant.PhaseSubmitted, pasteResult.BytesWritten, "",
+			"the box cleared, or the agent started working")
+		return
 	}
 	// A submission this check could not confirm within its own bounded wait
 	// stays "written" rather than being escalated to indeterminate: the
 	// Enter step's own outcome IS known (executed), only the agent's own
 	// reaction to it was not observed in time.
+	m.finish(ctx, sessionID, pm, entering, assistant.PhaseWritten, pasteResult.BytesWritten, "",
+		"Enter was written, and the agent's own reaction was not observed within the wait")
 }
 
 // terminate is deliverOne's shared "claim straight to a terminal phase"
 // path, for the two preconditions that end a delivery before any bytes are
 // written (revoked authority, or — when=="now" — the box not being ready).
-func (m *paneMessages) terminate(pm *pendingMessage, phase assistant.MessagePhase, bytesWritten int, box string) {
+func (m *paneMessages) terminate(ctx context.Context, sessionID string, pm *pendingMessage, phase assistant.MessagePhase, reason string) {
 	if gen, ok := pm.claim(phase); ok {
-		pm.commit(gen, phase, bytesWritten, box)
+		m.finish(ctx, sessionID, pm, gen, phase, 0, "", reason)
 	}
+}
+
+// finish commits a delivery's TERMINAL phase and reports it — the one exit
+// from deliverOne (nocx-xn63t.6.50).
+//
+// A delivery is the part of session.message nobody is waiting on: a when=free
+// message is answered "queued" and then delivered by a background goroutine,
+// so the phase it ends in is the only account of what happened, and a delivery
+// that wrote something and stopped used to leave no account at all. Measured
+// 2026-10-18 in the owner's own run: a worker's briefing was pasted into its
+// input box at 19:05:22.318Z, never entered, and the log mentions neither Enter
+// nor a refusal nor a phase. Writing the line here — beside the commit, from
+// the same call — is what keeps the log and the record from disagreeing: the
+// line is written only if the commit actually applied (a generation bumped
+// under a step leaves a newer truth on the record, and a line about the stale
+// one would be a second, wrong account).
+//
+// phase and reason are the facts a person needs to act: whether the delivery
+// was submitted, remains queued, stopped partial, or was refused, how many
+// bytes reached the pane, and — for "partial" — what the box actually showed,
+// which is what separates "the paste never landed" from "the agent drew
+// something else in its place".
+func (m *paneMessages) finish(ctx context.Context, sessionID string, pm *pendingMessage, generation uint64, phase assistant.MessagePhase, bytesWritten int, box, reason string) {
+	if !pm.commit(generation, phase, bytesWritten, box) {
+		return
+	}
+	log.From(ctx).Info(deliveryEndedMessage,
+		"session_id", sessionID, "message_id", pm.key.ID, "namespace", pm.key.Namespace,
+		"when", pm.when, "phase", string(phase), "reason", reason,
+		"bytes_written", bytesWritten, "box_contents", box)
 }
 
 // agentAwareReader is the optional half a paneKeysReader may implement —
@@ -976,10 +1064,9 @@ func (m *paneMessages) enterStep(ctx context.Context, da *DescendantPaneAccess, 
 }
 
 // waitForEcho polls (bounded by echoWait) for the pasted text to appear in
-// the input box (design §8.2 step 2). It accepts either the text verbatim
-// (a single-line paste) or Claude's own bracket echo form for a multi-line
-// paste ("[Pasted text #N +M lines]") — matched loosely, on the "+M lines]"
-// suffix alone, since #N is a counter this side of the call cannot predict.
+// the input box (design §8.2 step 2). It accepts the text verbatim, or
+// Claude's own placeholder in either of the forms a real one draws it in —
+// see boxContainsEcho, which is where the measurement lives.
 //
 // It READS and never mints: an echo is confirmed off the frame a snapshot
 // carries, and §8.2's step 2 says snapshot for exactly that reason. Minting
@@ -1009,18 +1096,66 @@ func (m *paneMessages) waitForEcho(ctx context.Context, da *DescendantPaneAccess
 	}
 }
 
-// boxContainsEcho is waitForEcho's own predicate: the pasted text verbatim,
-// or (for a multi-line paste) Claude's bracket placeholder naming the same
-// number of extra lines.
+// claudePastedTextThumbnail is the placeholder a real Claude Code draws
+// INSTEAD of a paste once the paste is long enough — the other half of what
+// this box can hold (nocx-xn63t.6.50). Measured 2026-10-18 on Claude Code
+// 2.1.296 at 120x40 (the corpus capture claude-2.1.296-collapsed-paste, and the
+// captures README's table of all five recorded paste shapes):
+//
+//	1438 bytes,  9 newlines  ->  "[Pasted text #1 +9 lines]"
+//	3281 bytes, 60 newlines  ->  "[Pasted text #1 +60 lines]"
+//	 818 bytes, no newline   ->  "[Pasted text #1]"   ("paste again to expand" under the box)
+//	3621 bytes, no newline   ->  "[Pasted text #1]"
+//	 368 bytes, no newline   ->  the text itself, over four content rows (2.1.272)
+//
+// Two forms, and which one is drawn follows from the paste's own shape: a
+// paste that carries newlines gets the line count (M is the number of them,
+// measured at 9 and at 60), a long one-paragraph paste gets the count-free
+// form. Both are anchored on "[Pasted text" so a transcript row that merely
+// mentions the words cannot match.
+//
+// The "#N" is Claude's own paste counter and cannot be predicted from this
+// side, so it is matched and not compared (the same reason the old check
+// matched only the "+M lines]" suffix). What IS compared is the part that
+// binds the placeholder to OUR paste: its line count against the newlines in
+// the text we sent, and whether it claims a line count at all.
+var claudePastedTextThumbnail = regexp.MustCompile(`\[Pasted text #\d+(?: \+(\d+) lines?)?\]`)
+
+// boxContainsEcho is waitForEcho's own predicate: the pasted text verbatim, or
+// the placeholder Claude drew in its place, in whichever of the two measured
+// forms the text's own shape calls for.
+//
+// THE PLACEHOLDER HAD TO BE ACCEPTED, AND THAT IS THE WHOLE OF nocx-xn63t.6.50.
+// It used to be accepted only with a line count, which is the multi-line form:
+// a realistic briefing — one paragraph of rules and a task with no newline in
+// it, so one long line — is drawn as "[Pasted text #1]" with no count at all,
+// matched neither form, and the delivery stopped at phase partial with the
+// paste in the box and Enter never sent. Measured, not reasoned: the paste
+// intent is in the owner's log at 19:05:22.318Z and nothing about that message
+// follows it.
+//
+// Accepting a placeholder without binding it to a text is safe here because
+// the box was EMPTY immediately before this paste — pasteReady refuses a box
+// that holds anything, and a placeholder is not empty (BoxEmpty answers false
+// on exactly this frame; agentdriver's TestInputTextReadsClaudesCollapsedPaste
+// asserts it). So a placeholder seen after our own paste is our own paste, and
+// the shape check below keeps it from being a placeholder of the OTHER shape.
 func boxContainsEcho(box, text string) bool {
 	if strings.Contains(box, text) {
 		return true
 	}
-	lines := strings.Count(text, "\n") + 1
-	if lines <= 1 {
+	m := claudePastedTextThumbnail.FindStringSubmatch(box)
+	if m == nil {
 		return false
 	}
-	return strings.Contains(box, fmt.Sprintf("+%d lines]", lines-1))
+	newlines := strings.Count(text, "\n")
+	if m[1] == "" {
+		// The count-free form: what Claude draws for a long paste with no
+		// newline in it. A text that carries newlines is drawn as the other
+		// form, so this one is not its echo.
+		return newlines == 0
+	}
+	return newlines > 0 && m[1] == strconv.Itoa(newlines)
 }
 
 // confirmSubmission waits (bounded) for design §8.2 step 4's own close: the
