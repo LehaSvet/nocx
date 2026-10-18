@@ -212,9 +212,18 @@ import (
 //
 // AND GREW by 980 bytes when Ctrl+C became the cancel for the whole agent
 // enrolment rather than only its wait (nocx-xn63t.6.29): 86997, calls unchanged.
+//
+// AND GREW by 64 bytes when a launch that keeps its literal command began
+// receiving the tool surface (nocx-xn63t.6.49): 87061, calls unchanged at 63.
+// The 64 bytes are the `tool_surface` classification in two places of the
+// shell's launch state — the declaration, the read, the clear, and the
+// branch that stages on it — in both wrappers. This is the ratchet doing its
+// job rather than complaining about it: the byte count is the one thing that
+// makes the published bundle's size a number somebody re-reads rather than a
+// fact nobody has looked at since it was written.
 const (
 	measuredMaxPublishCalls = 63
-	measuredMaxPublishBytes = 86997
+	measuredMaxPublishBytes = 87061
 
 	// measuredMaxBoundedResidue is the same figure for the worst attempt
 	// that is still inside the residue bounds the design asks P3 to enforce

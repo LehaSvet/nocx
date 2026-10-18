@@ -53,13 +53,16 @@ func launchResolveEvent(rid lifecycle.RequestID, agent string) lifecycle.Event {
 }
 
 func TestLocalLaunchResolutionUsesAuthenticatedBindingAndReturnsData(t *testing.T) {
-	resolver := &fakeLaunchResolver{result: lifecyclepub.AgentLaunchResolution{Local: true, Ticket: "0123456789abcdef0123456789abcdef0123456789A", Payload: "v1\n1\n2f62696e2f6167656e74\n0\n"}}
+	resolver := &fakeLaunchResolver{result: lifecyclepub.AgentLaunchResolution{Local: true, ToolSurface: true, Ticket: "0123456789abcdef0123456789abcdef0123456789A", Payload: "v1\n1\n2f62696e2f6167656e74\n0\n"}}
 	pub, port, handle := establishedLaunchPublisher(t, resolver)
 	mustIngest(t, pub, "T", env("L", handle, 2, launchResolveEvent("r-resolve-0", "myagent")))
 
 	answer := answerFrom(t, port, lifecycle.KindAgentLaunchResolved).Event.AgentLaunchResolved
 	if answer == nil || !answer.Local || answer.Agent != "myagent" || answer.RequestID != "r-resolve-0" {
 		t.Fatalf("launch response = %+v", answer)
+	}
+	if !answer.ToolSurface {
+		t.Fatalf("a record launch on this machine lost its tool surface: %+v", answer)
 	}
 	if answer.Ticket != resolver.result.Ticket || answer.Payload != resolver.result.Payload {
 		t.Fatalf("response omitted resolved ticket/payload: %+v", answer)
@@ -80,6 +83,29 @@ func TestLaunchResolutionBoundsTheWholeEncodedResponseAndDiscardsTicket(t *testi
 	}
 	if len(resolver.cancelled) != 1 || resolver.cancelled[0] != resolver.result.Ticket {
 		t.Fatalf("oversized response left ticket live: cancelled=%v", resolver.cancelled)
+	}
+}
+
+// A WORKER-LITERAL ANSWER CARRIES THE SURFACE AND NOTHING ELSE
+// (nocx-xn63t.6.49). The classification is two independent facts and the
+// publisher must not fold them into one: a launch with no record still runs on
+// this machine, so the shell has to hear that a tool surface exists. The
+// ticket and payload are the record's, and there is no record here — the
+// assertion that they are empty is what keeps a worker command literal.
+func TestWorkerLiteralLaunchResolutionKeepsTheToolSurfaceAndNoRecord(t *testing.T) {
+	resolver := &fakeLaunchResolver{result: lifecyclepub.AgentLaunchResolution{Local: false, ToolSurface: true}}
+	pub, port, handle := establishedLaunchPublisher(t, resolver)
+	mustIngest(t, pub, "T", env("L", handle, 2, launchResolveEvent("r-resolve-3", "claude")))
+
+	answer := answerFrom(t, port, lifecycle.KindAgentLaunchResolved).Event.AgentLaunchResolved
+	if answer == nil {
+		t.Fatal("no launch answer reached the shell")
+	}
+	if answer.Local || answer.Ticket != "" || answer.Payload != "" {
+		t.Fatalf("a worker-literal answer carried record configuration: %+v", answer)
+	}
+	if !answer.ToolSurface {
+		t.Fatalf("a worker-literal answer dropped the tool surface, which is what left the worker with no tools: %+v", answer)
 	}
 }
 

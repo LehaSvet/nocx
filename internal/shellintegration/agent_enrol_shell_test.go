@@ -1,6 +1,7 @@
 package shellintegration
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -688,6 +689,174 @@ func agentWrapperDoesNotRunTypedNameAfterMalformedLocalResolution(t *testing.T, 
 	}
 }
 
+// A WORKER'S LAUNCH STAYS LITERAL AND STILL GETS NOCX'S TOOLS
+// (nocx-xn63t.6.49). These are the two facts that must hold at once, and the
+// owner's stand is what a single field answering both of them cost: a worker
+// spawned through `workers.spawn {command: claude}` ran with argv `claude` and
+// no --mcp-config, so it could not see `mcp__nocx__workers_report` and its
+// coordinator had to read its screen instead of receiving its report.
+//
+// Driven at the seam a spawned worker actually reaches: a real shell on a real
+// pty, the pane's own tool socket and helper path exported the way a spawned
+// pane's environment carries them, and a frame shaped exactly as the
+// backend's worker-lane answer is (agent_launch.go: Local false, ToolSurface
+// true). What is asserted is the program that ran — its whole argv, and the
+// environment the record would have added — not the shell's variables.
+func TestBashAgentWrapperPointsAWorkerLaunchAtTheToolSurface(t *testing.T) {
+	agentWrapperPointsAWorkerLaunchAtTheToolSurface(t, startNestedBashParent)
+}
+
+func TestZshAgentWrapperPointsAWorkerLaunchAtTheToolSurface(t *testing.T) {
+	agentWrapperPointsAWorkerLaunchAtTheToolSurface(t, startNestedZshParent)
+}
+
+func agentWrapperPointsAWorkerLaunchAtTheToolSurface(t *testing.T, start nestedParentStarter) {
+	t.Helper()
+	k := newNestedKernel(t)
+	k.launchLiteral = true
+	k.launchToolSurface = true
+	// A record that must NOT reach the worker. The fixture carries it so a
+	// shell that applied it would be caught by the argv and environment
+	// assertions below rather than merely unobserved — the literal answer has
+	// no payload, so the only way it could arrive is the wrapper inventing it.
+	k.launchArgs = []string{"record-one", "record two"}
+	k.launchEnv = []string{"NOCX_AGENT_ENV=record env"}
+
+	socket := filepath.Join(t.TempDir(), "tool.sock")
+	helper := filepath.Join(t.TempDir(), "nocx-helper")
+	argvFile := filepath.Join(t.TempDir(), "argv.txt")
+	body := "#!/bin/sh\n" +
+		"printf 'WORKER-AGENT-RAN\\n'\n" +
+		"printf 'RECORD_ENV=%s\\n' \"${NOCX_AGENT_ENV:-unset}\"\n" +
+		"printf '%s\\n' \"$#\" \"$@\" > " + ShellQuote(argvFile) + "\n"
+	s := start(t, k, "claude", body)
+
+	line := "export NOCX_TOOL_SOCKET=" + ShellQuote(socket) +
+		" NOCX_AGENT_HELPER_PATH=" + ShellQuote(helper) +
+		"; claude --model test 'two words'\n"
+	if _, err := s.ptmx.Write([]byte(line)); err != nil {
+		t.Fatalf("type worker command: %v", err)
+	}
+	resolve := waitForEvent(t, k, "agent_launch_resolve")
+	enrol := waitForEvent(t, k, "agent_enrol")
+	if enrol.Seq <= resolve.Seq {
+		t.Fatalf("enrolment preceded resolution: resolve=%d enrol=%d", resolve.Seq, enrol.Seq)
+	}
+	if _, hasTicket := enrol.Body["ticket"]; hasTicket {
+		t.Fatalf("a worker launch used a local agent record: %v", enrol.Body)
+	}
+	waitUntil(t, "the worker agent to run", func() bool {
+		return strings.Contains(s.output(), "WORKER-AGENT-RAN")
+	})
+
+	raw, err := os.ReadFile(argvFile) //nolint:gosec // argvFile is inside this test's temp directory
+	if err != nil {
+		t.Fatalf("the worker agent recorded no argv: %v; output=%q", err, s.output())
+	}
+	argv := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+	if len(argv) < 5 {
+		t.Fatalf("worker argv = %q, want the typed arguments plus --mcp-config and its file", argv)
+	}
+	wantFirst := []string{"5", "--model", "test", "two words", "--mcp-config"}
+	for i, want := range wantFirst {
+		if argv[i] != want {
+			t.Fatalf("worker argv = %q, want %q at position %d", argv, want, i)
+		}
+	}
+	configPath := argv[5]
+	if !strings.Contains(configPath, "/nocx-agent-launch.") || !strings.HasSuffix(configPath, "/mcp.json") {
+		t.Fatalf("the tool surface was passed as %q, want a staged nocx launch config", configPath)
+	}
+	if strings.Contains(strings.Join(argv, " "), "record-one") || strings.Contains(strings.Join(argv, " "), "record two") {
+		t.Fatalf("the record's arguments reached the worker: argv=%q", argv)
+	}
+	// THE INTERVAL'S OTHER END: the staged directory is gone once the agent has
+	// returned, because it carried the pane's bearer. The agent has run and
+	// exited by now; wait for the withdrawal that closes the interval first.
+	waitForEvent(t, k, "agent_withdraw")
+	waitUntil(t, "the launch directory to be swept", func() bool {
+		_, statErr := os.Stat(filepath.Dir(configPath))
+		return os.IsNotExist(statErr)
+	})
+
+	out := strings.ReplaceAll(s.output(), "\r", "")
+	if strings.Contains(out, "tool surface unavailable") {
+		t.Fatalf("a worker pane with a configured socket refused its tool surface: %q", out)
+	}
+	if !strings.Contains(out, "RECORD_ENV=unset") {
+		t.Fatalf("the record's environment reached the worker: %q", out)
+	}
+}
+
+// The staged file itself is asserted here rather than in the test above so the
+// failure reads as one question: what did the worker get pointed at? It is the
+// same frame and the same fixture; only the reading differs, because the file
+// is gone by the time the worker has returned (the sweep is the interval's
+// other end, and the test above proves that).
+func TestBashAgentWrapperStagesTheWorkerToolSurfaceFromThePanesOwnPaths(t *testing.T) {
+	agentWrapperStagesTheWorkerToolSurfaceFromThePanesOwnPaths(t, startNestedBashParent)
+}
+
+func TestZshAgentWrapperStagesTheWorkerToolSurfaceFromThePanesOwnPaths(t *testing.T) {
+	agentWrapperStagesTheWorkerToolSurfaceFromThePanesOwnPaths(t, startNestedZshParent)
+}
+
+func agentWrapperStagesTheWorkerToolSurfaceFromThePanesOwnPaths(t *testing.T, start nestedParentStarter) {
+	t.Helper()
+	k := newNestedKernel(t)
+	k.launchLiteral = true
+	k.launchToolSurface = true
+
+	socket := filepath.Join(t.TempDir(), "tool.sock")
+	helper := filepath.Join(t.TempDir(), "nocx-helper")
+	configFile := filepath.Join(t.TempDir(), "mcp.json")
+	body := "#!/bin/sh\n" +
+		"while [ \"$#\" -gt 0 ]; do\n" +
+		"  if [ \"$1\" = --mcp-config ]; then shift; cp \"$1\" " + ShellQuote(configFile) + "; fi\n" +
+		"  shift\n" +
+		"done\n" +
+		"echo WORKER-AGENT-RAN\n"
+	s := start(t, k, "claude", body)
+	line := "export NOCX_TOOL_SOCKET=" + ShellQuote(socket) +
+		" NOCX_AGENT_HELPER_PATH=" + ShellQuote(helper) +
+		"; claude --model test\n"
+	if _, err := s.ptmx.Write([]byte(line)); err != nil {
+		t.Fatalf("type worker command: %v", err)
+	}
+	waitForEvent(t, k, "agent_enrol")
+	waitUntil(t, "the worker agent to read its config", func() bool {
+		_, statErr := os.Stat(configFile)
+		return statErr == nil
+	})
+	raw, err := os.ReadFile(configFile) //nolint:gosec // configFile is inside this test's temp directory
+	if err != nil {
+		t.Fatalf("read the staged config the worker was pointed at: %v", err)
+	}
+	var config stagedMCPConfig
+	if err := json.Unmarshal(raw, &config); err != nil {
+		t.Fatalf("decode the staged config: %v; raw=%q", err, raw)
+	}
+	server, ok := config.MCPServers["nocx"]
+	if !ok || len(config.MCPServers) != 1 {
+		t.Fatalf("MCP servers = %#v, want exactly one server named nocx", config.MCPServers)
+	}
+	if server.Command != helper {
+		t.Fatalf("the worker's tool surface names %q, want this pane's helper %q", server.Command, helper)
+	}
+	wantArgs := []string{"mcp", "--socket", socket}
+	if len(server.Args) != len(wantArgs) {
+		t.Fatalf("MCP args = %#v, want %#v", server.Args, wantArgs)
+	}
+	for i := range wantArgs {
+		if server.Args[i] != wantArgs[i] {
+			t.Fatalf("MCP args = %#v, want %#v", server.Args, wantArgs)
+		}
+	}
+	// The wrapper is still running after the copy above: let the interval close
+	// before this test does (the reason the worker-literal test states in full).
+	waitForEvent(t, k, "agent_withdraw")
+}
+
 func TestBashAgentWrapperKeepsServerClassifiedWorkerCommandLiteral(t *testing.T) {
 	k := newNestedKernel(t)
 	k.launchLiteral = true
@@ -711,4 +880,13 @@ func TestBashAgentWrapperKeepsServerClassifiedWorkerCommandLiteral(t *testing.T)
 	if err != nil || string(got) != want {
 		t.Fatalf("external argv = %q (err %v), want %q", got, err, want)
 	}
+	// THE INTERVAL'S OTHER END, and this test does not get to skip it. The
+	// program above returns as soon as the file is written, while the wrapper
+	// is still running: it withdraws, and the kernel answers that withdrawal.
+	// A test that finished first tore the socketpair down under the answer and
+	// the fixture's own write failed inside a goroutine, which is a panic and
+	// not a failure ("Fail in goroutine after ... has completed"). Waiting on
+	// the frame is waiting on an observable, never on a duration, which is the
+	// rule every other test in this file already follows.
+	waitForEvent(t, k, "agent_withdraw")
 }

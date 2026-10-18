@@ -605,6 +605,17 @@ launch or a server-classified `workers.spawn` pane gets `local:false`, no ticket
 payload; `workers.spawn` therefore keeps its literal command and arguments. The payload
 encodes the resolved executable followed by record arguments, then environment key/value
 pairs.
+
+`tool_surface` is a **second and independent** classification: it says this launch runs
+where nocx's own MCP tool surface exists, which is a fact about the machine and not about
+the record. The backend sets it true for every launch on a local transport and leaves it
+absent otherwise, because a published generation on a host nobody here controls has no
+helper and no socket of ours to point at. The two fields are separate because a
+`workers.spawn` pane answers them differently — `local:false` with `tool_surface:true` —
+and one field answering both is what left a spawned worker running with no nocx tools at
+all (nocx-xn63t.6.49). `local` alone still decides whether a record's command, arguments
+and environment are what runs; `tool_surface` alone decides whether the shell stages the
+private `mcp.json` and appends `--mcp-config` to the literal command.
 Fields are hex data, not shell text. The publisher measures the fully JSON-encoded
 `agent_launch_resolved` frame against `MaxFrameBytes`; an oversized response is refused and
 its ticket is discarded.

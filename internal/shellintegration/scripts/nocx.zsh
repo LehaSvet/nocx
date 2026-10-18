@@ -442,6 +442,11 @@ __nocx_agent_helper_path="${NOCX_AGENT_HELPER_PATH:-nocx-helper}"
 __nocx_agent_tool_socket="${NOCX_TOOL_SOCKET:-}"
 __nocx_agent_launch_dir=
 __nocx_agent_launch_lease=
+# Whether this launch has a nocx tool surface to be pointed at, classified by
+# the backend separately from whether a record applies (agent_launch.go,
+# nocx-xn63t.6.49). Declared here because zsh's (( )) refuses an unset name and
+# a published generation never resolves.
+__nocx_agent_launch_surface=0
 __nocx_agent_old_int=
 __nocx_agent_old_term=
 __nocx_agent_old_hup=
@@ -794,6 +799,7 @@ __nocx_agent_launch_readable() {
 __nocx_agent_launch_read_answer() {
     local __rid="$1" __t=0 __raw __ticket __payload
     __nocx_agent_launch_local=0
+    __nocx_agent_launch_surface=0
     __nocx_agent_launch_valid=0
     __nocx_agent_launch_ticket=
     __nocx_agent_launch_payload=
@@ -825,6 +831,13 @@ __nocx_agent_launch_read_answer() {
                 __nocx_lc_json_unescape "$__raw"
                 __nocx_agent_launch_reason="$__nocx_lc_json_unescaped"
                 ;;
+        esac
+        # THE SURFACE IS A SECOND QUESTION, asked of every answer
+        # (nocx-xn63t.6.49): a worker's command stays literal while its pane is
+        # still on this machine, and reading `local` alone started it without
+        # tools.
+        case "$__nocx_lc_frame" in
+            *'"tool_surface":true'*) __nocx_agent_launch_surface=1 ;;
         esac
         case "$__nocx_lc_frame" in
             *'"local":true'*)
@@ -899,24 +912,37 @@ __nocx_agent_launch_clear() {
     __nocx_agent_launch_args=()
     __nocx_agent_launch_env=()
     __nocx_agent_launch_local=0
+    __nocx_agent_launch_surface=0
     __nocx_agent_launch_valid=0
     __nocx_agent_launch_reason=
 }
 
+# Run the agent this pane resolved, with or without the tool surface ($1 = 1
+# appends --mcp-config). The bash twin carries the full reasoning: a record
+# launch runs the record's program while a launch with no record runs the name
+# that was typed, and the surface is an independent answer to a question about
+# this machine (nocx-xn63t.6.49). `__agent` is the wrapper's own name, kept by
+# __nocx_agent_run, which is where every caller of this function lives.
 __nocx_agent_launch_exec() {
     local __surface="$1" __assignment
     shift
-    (
-        for __assignment in "${__nocx_agent_launch_env[@]}"; do
-            export "$__assignment" || exit 126
-        done
-        if [[ "$__surface" == "1" ]]; then
-            command "$__nocx_agent_launch_command" "${__nocx_agent_launch_args[@]}" \
-                "$@" --mcp-config "$__nocx_agent_launch_dir/mcp.json"
-        else
-            command "$__nocx_agent_launch_command" "${__nocx_agent_launch_args[@]}" "$@"
-        fi
-    )
+    if (( __nocx_agent_launch_local )); then
+        (
+            for __assignment in "${__nocx_agent_launch_env[@]}"; do
+                export "$__assignment" || exit 126
+            done
+            if [[ "$__surface" == "1" ]]; then
+                command "$__nocx_agent_launch_command" "${__nocx_agent_launch_args[@]}" \
+                    "$@" --mcp-config "$__nocx_agent_launch_dir/mcp.json"
+            else
+                command "$__nocx_agent_launch_command" "${__nocx_agent_launch_args[@]}" "$@"
+            fi
+        )
+    elif [[ "$__surface" == "1" ]]; then
+        command "$__agent" "$@" --mcp-config "$__nocx_agent_launch_dir/mcp.json"
+    else
+        command "$__agent" "$@"
+    fi
 }
 # @NOCX_AGENT_LAUNCH_HELPERS_END@
 
@@ -944,7 +970,9 @@ __nocx_agent_run() {
         fi
         # @NOCX_AGENT_ENROL_REFUSAL@
     fi
-    if (( __nocx_agent_launch_local )); then
+    # THE SURFACE IS STAGED WHENEVER THE BACKEND SAYS THERE IS ONE: a worker's
+    # launch carries no record and still gets tools (nocx-xn63t.6.49).
+    if (( __nocx_agent_launch_surface )); then
         if __nocx_agent_stage "${NOCX_AGENT_HELPER_PATH:-$__nocx_agent_helper_path}" \
             "${NOCX_TOOL_SOCKET:-$__nocx_agent_tool_socket}"; then
             __staged=1

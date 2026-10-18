@@ -300,7 +300,14 @@ var (
 // not only once a question is known to be up; a shell still sourcing 60
 // aborts the wrapper on an interrupt in that round trip, so the ticket is not
 // cancelled and zsh reports status 2 (nocx-xn63t.6.29).
-const version = "61"
+// 62: a launch that keeps its literal command still gets nocx's tool surface.
+// The wrapper staged the private mcp.json and appended --mcp-config only when
+// the answer said `local`, so a spawned worker — whose command is deliberately
+// literal and whose pane is still on this machine — ran with no nocx tools at
+// all and could not report to its coordinator (nocx-xn63t.6.49). A shell still
+// sourcing 61 ignores the new `tool_surface` classification and leaves every
+// spawned worker where it was.
+const version = "62"
 
 // ScriptVersion is the integration script version other packages may read.
 // Command discovery puts it in its cache key (internal/commandnames): the

@@ -195,12 +195,24 @@ const agentEnrolRefusalLocal = `if (( __nocx_agent_launch_local )); then
 // toolSurfaceLocal is what a LOCAL pane runs: nocx's tool surface reaches the
 // agent through an argument, and this is the only delivery that carries one.
 //
+// THE SURFACE AND THE RECORD ARE TWO QUESTIONS, and the shell asks both
+// (nocx-xn63t.6.49). `__nocx_agent_launch_surface` says an argument can be
+// appended; `__nocx_agent_launch_local` says a record's command, argv and
+// environment are the program to run. A worker's pane answers yes and no —
+// workers.spawn owns its literal command line, and its pane is still on this
+// machine — and before the two were separate the worker ran with neither the
+// record nor the tools.
+//
+// The `||` is not redundancy: a record launch whose answer somehow carried no
+// surface must still run its record rather than fall back to the typed name,
+// because falling back would run a different program than the one resolved.
+//
 // Claude's --mcp-config option is variadic, so it goes LAST: placed before
 // "$@" it would swallow a user's positional prompt as another config path. If a
 // future Claude subcommand rejects trailing flags, update this argv proof and
 // feed the prompt through stdin instead of moving the flag ahead of the user's
 // arguments.
-const toolSurfaceLocal = `if (( __nocx_agent_launch_local )); then
+const toolSurfaceLocal = `if (( __nocx_agent_launch_local || __nocx_agent_launch_surface )); then
         if (( __staged )); then
             __nocx_agent_launch_exec 1 "$@"
         else
