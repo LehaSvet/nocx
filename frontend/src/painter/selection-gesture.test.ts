@@ -315,4 +315,79 @@ describe('live selection gesture', () => {
     painter.dispose()
     root.remove()
   })
+  // THE PERSON'S DRAG IS THEIRS, WHETHER OR NOT THE PROGRAM REPORTS THE MOUSE
+  // (nocx-zg3k3.15.5). This gesture used to stand down for a reporting program,
+  // and what owned the drag instead was the BROWSER's own selection over the
+  // painter's rows — a second claimant on one input, cleared at the release
+  // when the pane returned the keyboard to its hidden input, so the highlight a
+  // person had just made disappeared as they let go. The pointer sequence
+  // reaches the program through the input renderer, which this gesture never
+  // sits in front of, so standing down bought the program nothing.
+  it('a drag selects while the program reports the mouse, and a click still does not', () => {
+    const model = createCellModel()
+    const root = document.createElement('div')
+    const surface = document.createElement('div')
+    root.append(surface)
+    document.body.append(root)
+    const frame = frameOf(
+      1,
+      [
+        [
+          ['a', 1, true],
+          ['b', 1, true],
+          ['c', 1, true],
+          ['d', 1, true],
+        ],
+      ],
+      { x: 0, y: 0, visible: false },
+      { cols: 4, rows: 1, cellWidthPx: 8, cellHeightPx: 20 },
+    )
+    model.apply(frame)
+    const painter = createCellPainter({ surface, palette: () => DEFAULT_SNAPSHOT })
+    painter.apply(snapshotOf(frame))
+    vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 32,
+      bottom: 20,
+      width: 32,
+      height: 20,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    })
+    const copy = vi.fn()
+    const gesture = installLiveSelectionGesture({
+      model,
+      painter,
+      surface,
+      gestureRoot: root,
+      surfaceId: 'live',
+      mouseReportingActive: () => true,
+      copy,
+    })
+    const event = (type: string, x: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: 5 })
+    root.dispatchEvent(event('pointerdown', 1))
+    window.dispatchEvent(event('pointermove', 28))
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+    window.dispatchEvent(event('pointerup', 28))
+    expect(copy).toHaveBeenCalledWith('abcd')
+    // Still painted once the button is up, and still painted after a frame
+    // arrives: the model holds it, not the engine.
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+    painter.apply(snapshotOf(frame))
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+
+    // A click on one cell is still a click — how a person gives the terminal
+    // focus, and what a reporting program's buttons are pressed with.
+    copy.mockClear()
+    root.dispatchEvent(event('pointerdown', 12))
+    window.dispatchEvent(event('pointerup', 12))
+    expect(copy).not.toHaveBeenCalled()
+    expect(surface.querySelector('.term-grid-selection')).toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
 })

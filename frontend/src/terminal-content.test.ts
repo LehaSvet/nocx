@@ -17948,9 +17948,13 @@ describe('the live region is the painter picture (nocx-zg3k3.2.5)', () => {
       }
       surface.dispatchEvent(pointer('pointerdown', 1))
       window.dispatchEvent(pointer('pointermove', 1))
-      // The accepted backend mode owns mouse reporting and suppresses local
-      // selection without a renderer-side mode mirror.
-      expect(surface.querySelector('.term-grid-selection')).toBeNull()
+      // THE DRAG IS THE PERSON'S EVEN WHILE THE PROGRAM REPORTS THE MOUSE
+      // (nocx-zg3k3.15.5). The intents asserted below are what the program
+      // receives, and they travel this pane's own intent path — not the
+      // selection gesture — so standing that gesture down for a reporting
+      // program bought the program nothing and left the highlight to the
+      // browser, which cleared it at the release.
+      expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
       surface.dispatchEvent(pointer('pointerup', 0))
       surface.dispatchEvent(
         new WheelEvent('wheel', { bubbles: true, clientX: 26, clientY: 44, deltaY: -1 }),
