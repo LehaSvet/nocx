@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/shady2k/nocx/internal/emulator"
 )
@@ -237,6 +239,15 @@ type Session struct {
 	// numbers so that "bounded" is checkable rather than asserted.
 	ingestWork uint64
 	ingestLost uint64
+
+	// ingestHoldSince is when the Ingest call currently inside this session's
+	// critical section acquired mu, and ingestHoldBytes the feed it was
+	// handed; zero means no Ingest holds the lock. They are atomics because
+	// [Session.IngestHold] reads them from another goroutine WITHOUT the lock
+	// it is describing (nocx-xn63t.6.47), and they are written from inside the
+	// critical section, never before it.
+	ingestHoldSince atomic.Int64
+	ingestHoldBytes atomic.Int64
 
 	// observation is the interval in flight (nocx-zg3k3.5.2, its shape
 	// retired by nocx-zg3k3.5.4): the boundary and output-mark bookkeeping
@@ -1199,9 +1210,63 @@ func (s *Session) repairLocked() error {
 // NEXT command's prompt had already drawn into it. Splitting costs nothing
 // when no fence is present: the loop below runs its body exactly once, over
 // the whole of b, and behaves exactly as it did before this split existed.
+// An IngestHold is one [Session.Ingest] call's presence inside the session's
+// critical section: it is recorded AFTER the call acquires Session.mu and
+// cleared BEFORE it releases it, so while it is open the session's lock is
+// held by an Ingest call and by nothing else (nocx-xn63t.6.47).
+//
+// WHY IT EXISTS. A PTY feed that does not return holds that lock for its
+// whole call, and everything waiting on the session — a lifecycle completion,
+// a screen subscriber — waits with it. A monitor outside this package can see
+// that a call has not returned; only this records can say the call was
+// INSIDE the section, which is the fact that makes it the holder rather than a
+// waiter. A call that is queued behind another holder has no open IngestHold,
+// and its stack says so.
+type IngestHold struct {
+	// Entered is when this call acquired Session.mu.
+	Entered time.Time
+	// FeedBytes is the length of the feed it was handed — so a long hold is
+	// never mistaken for a large one.
+	FeedBytes int
+}
+
+// IngestHold reports the Ingest critical section open in this session right
+// now, and whether there is one. It is diagnostic: nothing in the product
+// decides anything from it, and it costs two atomic stores per ingest (see
+// ingestHold's own comment).
+func (s *Session) IngestHold() (IngestHold, bool) {
+	since := s.ingestHoldSince.Load()
+	if since == 0 {
+		return IngestHold{}, false
+	}
+	return IngestHold{
+		Entered:   time.Unix(0, since),
+		FeedBytes: int(s.ingestHoldBytes.Load()),
+	}, true
+}
+
+// enterIngestHold and exitIngestHold bracket the critical section, and their
+// placement is the whole point: enter runs after Lock returns, exit runs
+// before the deferred Unlock. They are atomics because a monitor reads them
+// from another goroutine, without the lock it is asking about.
+func (s *Session) enterIngestHold(n int) {
+	s.ingestHoldBytes.Store(int64(n))
+	s.ingestHoldSince.Store(time.Now().UnixNano())
+}
+
+func (s *Session) exitIngestHold() {
+	s.ingestHoldSince.Store(0)
+}
+
 func (s *Session) Ingest(b []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Entered AFTER the lock and exited BEFORE it is released (defers run
+	// last-registered-first, so exit is registered after Unlock's own defer
+	// and runs ahead of it): while this record is open, Session.mu is held by
+	// an Ingest call and by nothing else (nocx-xn63t.6.47).
+	s.enterIngestHold(len(b))
+	defer s.exitIngestHold()
 	if err := s.live(); err != nil {
 		return err
 	}
