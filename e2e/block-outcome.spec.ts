@@ -24,6 +24,15 @@ const THEMES = [
   'solarized-light',
 ]
 
+/** The active pane's command blocks, in DOM order. A POSITION in this list is
+ *  how the block under test is found, never how it is addressed — see the
+ *  identity pin in the test (nocx-zg3k3.14.25). */
+const COMMAND_BLOCKS = '.pane.active .scrollback-inner > .cmd-block[data-block-kind="command"]'
+/** The settled status word: the header's own meta that is not the duration. */
+const STATUS = ':scope > .cmd-header .cmd-header-right > .ui-meta:not([data-column])'
+/** The body a settled command's stored rows are painted into. */
+const OUTPUT = ':scope > .cmd-output'
+
 async function run(page: Page, command: string) {
   await page.keyboard.type(command)
   await page.keyboard.press('Enter')
@@ -39,25 +48,47 @@ test('success is silent, failure is legible, in every theme', async ({ page }) =
   // OUTPUT, so a failure with nothing to show carries only its Exit word.
   await run(page, 'echo failing; false')
 
-  const blocks = page.locator(
-    '.pane.active .scrollback-inner > .cmd-block[data-block-kind="command"]',
-  )
+  const blocks = page.locator(COMMAND_BLOCKS)
   // `nth(-1)` is documented as the last match; a second negative index is not,
   // so the one before it is addressed by position instead.
   const count = await blocks.count()
   const ok = blocks.nth(count - 2)
   const bad = blocks.nth(-1)
-  const statusOf = (b: typeof ok) =>
-    b.locator(':scope > .cmd-header .cmd-header-right > .ui-meta:not([data-column])')
+  const statusOf = (b: typeof bad) => b.locator(STATUS)
 
   await expect(ok).toHaveAttribute('data-outcome', 'success')
   await expect(statusOf(ok)).toHaveCount(0)
   await expect(bad).toHaveAttribute('data-outcome', 'failure')
   await expect(statusOf(bad)).toHaveText('Exit 1')
 
+  // BY ITS OWN IDENTITY from here (nocx-zg3k3.14.25). A position finds the
+  // block; it does not name it, and the list it indexes is one the renderer
+  // replaces elements in — `freezeBlock` swaps a settled block's element into
+  // the DOM, `_freezeCard` and `paintStoredRows` go on mutating the block after
+  // that, and this test reads thirteen themes while all of it is in flight. The
+  // entry id the block carries is what the test means, so every read below
+  // names it and re-resolves to whatever element carries it now.
+  const entryId = await bad.getAttribute('data-entry-id')
+  expect(entryId, 'the failure block carries no data-entry-id to address it by').not.toBeNull()
+  const failing = page.locator(`${COMMAND_BLOCKS}[data-entry-id="${entryId}"]`)
+  await expect(failing).toHaveCount(1)
+
   for (const theme of THEMES) {
     await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
-    const measured = await bad.evaluate((block) => {
+    // A SETTLED BLOCK HAS NO BODY YET, and the gap is one ledger read wide
+    // (nocx-zg3k3.14.25). The header — status word, duration, `data-outcome` —
+    // is painted from the lifecycle fact that closes the block, and that fact
+    // only STARTS the rows read: `onBlockClosed` (terminal-content.ts) asks for
+    // the final read and then calls `blockClosed`, which freezes the block on
+    // screen; `_freezeCard` builds the element with an empty body (`freezeBlock`
+    // takes `outputHtml` and it is always `''` now); the `.cmd-output` a stored
+    // block shows is appended by `paintStoredRows` when that read answers, one
+    // or two RPC round trips later. So `data-outcome="failure"` and its `Exit 1`
+    // are on screen BEFORE the body is, and a read of the body must wait for the
+    // body. Both waits are on the block's own state and neither is a duration.
+    await expect(statusOf(failing)).toHaveText('Exit 1')
+    await expect(failing.locator(OUTPUT)).toHaveCount(1)
+    const measured = await failing.evaluate((block, theme) => {
       const parse = (c: string) => (c.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number)
       const lum = ([r, g, b]: number[]) => {
         const f = (v: number) => {
@@ -66,9 +97,36 @@ test('success is silent, failure is legible, in every theme', async ({ page }) =
         }
         return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
       }
+      // ASSERTED, NOT ASSERTED AWAY (nocx-zg3k3.14.25). Both of these were
+      // non-null assertions, and a missing element then arrived at
+      // getComputedStyle as "Argument 1 ('element') to Window.getComputedStyle
+      // must be an instance of Element" — a type error standing where the fact
+      // was "this block shows no body", which is why that failure cost a CI run
+      // to read. What is missing is named here, with the block's own identity
+      // and the children it does have, so the next occurrence is one line.
       const status = block.querySelector(
         ':scope > .cmd-header .cmd-header-right > .ui-meta:not([data-column])',
-      )!
+      )
+      const output = block.querySelector(':scope > .cmd-output')
+      if (status === null || output === null) {
+        const children = Array.from(block.children).map((child) => {
+          const classes = Array.from(child.classList).join('.')
+          const tag = child.tagName.toLowerCase()
+          return classes === '' ? tag : `${tag}.${classes}`
+        })
+        const missing = [
+          ...(status === null
+            ? ['status (:scope > .cmd-header .cmd-header-right > .ui-meta:not([data-column]))']
+            : []),
+          ...(output === null ? ['body (:scope > .cmd-output)'] : []),
+        ]
+        throw new Error(
+          `the ${theme} read found no ${missing.join(' and no ')} on block ` +
+            `entry-id=${block.getAttribute('data-entry-id') ?? '(none)'} ` +
+            `data-outcome=${block.getAttribute('data-outcome') ?? '(none)'}; ` +
+            `its children are ${children.join(', ') || '(none)'}`,
+        )
+      }
       const fg = lum(parse(getComputedStyle(status).color))
       // The row paints no ground of its own now (the failure is the rail), so
       // the status sits on the nearest ancestor that paints one.
@@ -81,7 +139,6 @@ test('success is silent, failure is legible, in every theme', async ({ page }) =
       const bg = lum(parse(getComputedStyle(ground ?? document.body).backgroundColor))
       // The failure rail runs beside the OUTPUT only (reference pass, owner
       // review 2026-09-15), so it is the output's pseudo-element, not the row's.
-      const output = block.querySelector(':scope > .cmd-output')!
       const bar = getComputedStyle(output, '::before')
       return {
         ratio: (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05),
@@ -90,7 +147,7 @@ test('success is silent, failure is legible, in every theme', async ({ page }) =
         dangerSurfaceSet:
           getComputedStyle(block).getPropertyValue('--color-danger-surface').trim() !== '',
       }
-    })
+    }, theme)
     expect(measured.dangerSurfaceSet, theme).toBe(true)
     expect(measured.ratio, theme).toBeGreaterThanOrEqual(4.5)
     // Not by colour alone: the rail is drawn.
