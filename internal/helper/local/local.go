@@ -43,16 +43,19 @@ package local
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/shady2k/nocx/internal/helper/client"
 	"github.com/shady2k/nocx/internal/helper/deploy"
 	"github.com/shady2k/nocx/internal/helper/endpoint"
 	"github.com/shady2k/nocx/internal/helper/proto"
+	nocxlog "github.com/shady2k/nocx/internal/log"
 )
 
 // Platform is this machine's build target. It is what the remote path learns
@@ -184,21 +187,42 @@ type Config struct {
 // up — the process failed, or every helper this call started yielded to
 // another that then left the endpoint unserved (endpoint.Ensure makes the
 // start again before it concludes that); client.ErrHashMismatch,
-// ErrNotOurHelper, ErrSentinelTimeout and ErrLost are all "something answered
-// and it is not the generation we installed".
+// ErrNotOurHelper, ErrSentinelTimeout and ErrLost are all answers from
+// something that is not the generation we installed or that went away as it
+// was being asked — and the last of those, alone, is the one this function
+// does not take as final (see below).
 //
-// ONE CASE HAS NO STABLE SENTINEL YET, and it is written down rather than
-// smoothed over, because L4's refusal is owed a reason from a CLOSED SET and
-// this one is not in any set. A peer that answers on the socket and then hangs
-// up mid-handshake produces three different errors depending on which
-// goroutine wins: ErrNotOurHelper (the pump saw what was said), ErrLost (the
-// carrier calls a peer close transport loss — SocketConn, and its own test
-// pins that), or a bare EPIPE from the hello write. Over an ssh exec lane
-// those are three distinct events; over a socket they are one event with
-// three observers, and client.Dial selects over them, which Go resolves at
-// random. Nothing here papers over it: a caller cannot switch on that answer
-// today, and the fix belongs where the carrier decides what a peer close IS,
-// not in a wrapper that renames it.
+// A PEER THAT WENT AWAY BEFORE IT ANSWERED COSTS ONE REACH (nocx-xn63t.6.41).
+//
+// The endpoint can be answered and then leave under the handshake. A daemon
+// whose last session has ended retires and shutdown closes the connections it
+// accepted — the listener first, then every connection in flight
+// (endpoint.Serve) — and a daemon that dies does the same by dying. What the
+// caller sees is the end that produced the pane refusal "did not answer as the
+// build that installed it: helper: connection lost: EOF" on CI run
+// 39149340188 (ci-e2e webkit-1): one pane open, refused, with no helper op
+// ever sent.
+//
+// THAT IS NOT A VERDICT ABOUT THE GENERATION, and this is where the answer to
+// it belongs: reaching this machine's helper — the dial, the start when
+// nothing is serving, the handshake — is this package's, and a peer that was
+// there and then was not is a fact about the ENDPOINT, not about the build
+// installed on disk. So the reach is made again, up to openAttempts: if the
+// endpoint is unserved the start boundary runs again, and if a helper is
+// already coming up the dial waits on the socket's creation event, which is
+// what endpoint.Ensure does and why nothing here holds a timer of its own.
+//
+// WHAT IS NOT RETRIED is every answer that IS a verdict, and they are the
+// majority: a peer whose hello-ok carries another content hash (ErrHashMismatch)
+// or that answers some other protocol entirely (ErrNotOurHelper) is a fact
+// about what is installed, which retrying cannot change (ADR-0057), and a peer
+// that answers and then says nothing (ErrSentinelTimeout) is not going away —
+// it is there, and asking it twice would only spend a second budget on it.
+//
+// The last attempt's error is returned UNCHANGED, so the classifier above this
+// package keeps its closed set and its sentence: a start-up race that survived
+// every attempt is still shown to a person as the handshake failure it is, with
+// the action that reason names.
 //
 // NOTHING IS REPAIRED ON A REFUSAL. A socket that accepts and then answers
 // something unexpected stays exactly where it is: it may be somebody's live
@@ -208,7 +232,69 @@ type Config struct {
 // (endpoint.Listen). A daemon this call started and then failed to handshake
 // with is left running for the same reason — it may already hold a PTY, and
 // the next attempt will ask it again rather than guess.
+//
+// WHAT REMAINS OF THE THREE-OBSERVER GAP (nocx-d2nqo). A peer that answers and
+// then hangs up is ONE event with three observers, and two of them are now
+// the same answer: the carrier answers the loss WITH its reason (SocketConn.
+// Wait), so the pump's classification and the loss watcher's agree and a
+// caller can switch on ErrLost. A bare EPIPE from the hello write is the third
+// observer of that same event, and peerWentAway carries it here for exactly
+// that reason. Over a socket a peer that said something wrong and then left is
+// still indistinguishable from one that said nothing and left — a socket
+// carries no exit status — and that residue is nocx-d2nqo's, not this fix's.
+//
+// THE RECOVERY IS LOGGED, and that is part of the fix rather than a courtesy.
+// On CI run 39149340188 this event left NOTHING anywhere to diagnose it from:
+// the pane was refused, the coordinator's log carried the dispatch and no
+// helper op, and the helper's own log is not collected for a stand the suite
+// shares (nocx-ln4o5). A retry that recovered in silence would put the next
+// occurrence in exactly the same place, so each one names the generation, the
+// attempt and the reason — through log.From(ctx), which is what carries the
+// trace and request id the coordinator's own lines are read by.
 func Open(ctx context.Context, cfg Config) (*client.Client, error) {
+	for attempt := 1; ; attempt++ {
+		c, err := openOnce(ctx, cfg)
+		if err == nil || !peerWentAway(err) {
+			return c, err
+		}
+		if attempt == openAttempts {
+			nocxlog.From(ctx).Error("the endpoint answered and then went away under every handshake for this generation",
+				"generation", short(cfg.Generation), "attempts", attempt, "err", err)
+			return nil, err
+		}
+		nocxlog.From(ctx).Warn("the endpoint answered and then went away mid-handshake; reaching this machine's helper again",
+			"generation", short(cfg.Generation), "attempt", attempt, "of", openAttempts, "err", err)
+	}
+}
+
+// openAttempts bounds how many times ONE Open may reach for this generation's
+// endpoint. Each attempt after the first is made only when the previous one
+// ended because the peer went away, and each one is a dial — plus a start, and
+// only when nothing is serving. Three, because the events behind it are rare
+// and a peer that goes away twice is already a machine in trouble; the bound
+// is here so that a machine which NEVER answers the handshake ends in the
+// refusal it earned rather than in a loop.
+const openAttempts = 3
+
+// peerWentAway answers whether a failed handshake failed because the peer
+// accepted and then left, rather than because of anything it SAID. It is
+// deliberately two sentinels and not a set of messages: ErrLost is the
+// carrier's own answer for a stream that ended under us — with its reason
+// inside, which is what the pump reports too — and EPIPE is the same event
+// seen by the hello write, where the caller never gets as far as reading.
+//
+// The refusal a person is shown groups these two the same way, one layer up
+// (internal/app's helper-arm lists ErrLost beside EPIPE), and it is stated
+// here rather than imported because the helper binary links this package and
+// must not link the coordinator's refusal vocabulary.
+func peerWentAway(err error) bool {
+	return errors.Is(err, client.ErrLost) || errors.Is(err, syscall.EPIPE)
+}
+
+// openOnce makes ONE reach: dial (starting the installed binary when nothing
+// is serving and this caller supplied one), then perform the full handshake
+// over that socket.
+func openOnce(ctx context.Context, cfg Config) (*client.Client, error) {
 	conn, err := reach(ctx, cfg)
 	if err != nil {
 		return nil, err

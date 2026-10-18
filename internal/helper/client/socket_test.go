@@ -7,6 +7,7 @@ package client
 
 import (
 	"errors"
+	"io"
 	"net"
 	"testing"
 
@@ -78,5 +79,16 @@ func TestASocketCarrierCallsItLossOnlyWhenTheLossIsNotOurs(t *testing.T) {
 	<-theirs.Done()
 	if theirs.LostErr() == nil {
 		t.Fatal("the loss carries no reason")
+	}
+	// AND WAIT REPORTS IT, which is the half a socket carrier owes the
+	// handshake: a peer that accepted and then went away has no exit status to
+	// give, and (0, nil) is the answer for "it ended and said nothing about
+	// how" — the same answer a peer that ended by OUR OWN close gets. The two
+	// are not the same event, and a caller that cannot tell them apart reads a
+	// vanished helper as one that answered and was refused.
+	if code, err := theirs.Wait(); code != 0 || err == nil {
+		t.Fatalf("Wait after the peer went away = (%d, %v), want an error carrying why", code, err)
+	} else if !errors.Is(err, io.EOF) {
+		t.Fatalf("Wait = %v, want the peer's own end (io.EOF)", err)
 	}
 }

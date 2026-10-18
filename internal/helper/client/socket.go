@@ -102,14 +102,27 @@ func (c *SocketConn) Start(command string) error {
 }
 
 // Wait answers the question the exec lane answers with an exit status: how
-// did the peer end. A socket has no exit status, so this reports the stream
-// ending and nothing more — which is the honest answer, and is why the
-// version-mismatch code (42) is a fact only the exec lane can carry. Over a
-// socket a mismatch cannot arise unnoticed anyway: the socket names its
-// generation, and the handshake checks the content hash against what was
-// installed (D21).
+// did the peer end. A socket has no exit status, so what it answers is the one
+// thing there is: whether the stream ended UNDER US. That is an ERROR and not
+// (0, nil), because "it ended and said nothing about how" is also what a peer
+// this side closed answers, and the handshake must not read those two as one
+// event. It is also why the version-mismatch code (42) is a fact only the exec
+// lane can carry — over a socket a mismatch cannot arise unnoticed anyway,
+// because the socket names its generation and the handshake checks the content
+// hash against what was installed (D21).
+//
+// THE REASON TRAVELS (LostErr), not a bare error, so that the pump classifies
+// a pre-sentinel end the way the loss watcher does (nocx-d2nqo). client.Dial
+// watches both producers, and without this they disagree for one event: the
+// pump took an end with no exit status as "not our helper", the watcher took
+// the same end as transport loss, and Go selects between them — so a peer that
+// accepted and went away was a coin flip between two sentences, one of which
+// sends a person to quit another copy of nocx.
 func (c *SocketConn) Wait() (int, error) {
 	<-c.over
+	if err := c.LostErr(); err != nil {
+		return 0, err
+	}
 	return 0, nil
 }
 
