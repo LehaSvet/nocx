@@ -3724,68 +3724,130 @@ describe('a worker participant tab leaves when its worker is closed (nocx-xn63t.
   }
 
   it('takes the tab, its pane and the connection-gone card off the screen', async () => {
-    const client = makeClient()
-    const workerSession = makeSession()
-    client.reclaimSession.mockImplementation(() => Promise.resolve(workerSession))
-    const chain = makeLayoutStore()
-    const { bar, layout } = await mountPaneManager(client, undefined, undefined, undefined, chain)
-    const before = stripPaneIDs(bar).length
+    // BOTH FACTS ARRIVE THE WAY THE BACKEND SENDS THEM, and that is the
+    // criterion rather than decoration: a real WSClient over a socket, the
+    // real dispatcher's subscription, the generated contract type — never the
+    // fixture's own _fireWorkerTabClosed, which calls the handlers directly and
+    // would pass over a notification no subscriber ever received or one the
+    // staleness rule drops.
+    //
+    // The PaneManager is still mounted over the fixture client — its OTHER
+    // calls (openSession, the layout reads) are the fixture's, which is what
+    // keeps this a test of the strip rather than of the wire — but the two
+    // subscriptions this test is about are delegated to the real client, so
+    // the fact has to come off the socket and through the subscription to
+    // reach the surface.
+    vi.stubGlobal('WebSocket', MockWebSocket)
+    MockWebSocket.last = null
+    const realClient = new WSClient(new Dispatcher(fixedEndpoint(9878)))
+    realClient.start()
+    await Promise.resolve()
+    const constructed: MockWebSocket | null = MockWebSocket.last
+    if (!constructed) throw new Error('no WebSocket was constructed')
+    const socket: MockWebSocket = constructed
+    socket.serverAccepts()
+    try {
+      // One session on this connection, which is what teaches the client its
+      // backend instance id (AD-7): the facts below carry that id, so a
+      // mismatch here would be a dropped fact and a tab left standing.
+      const openedPromise = realClient.openSession({ cols: 80, rows: 24, xpixel: 0, ypixel: 0 })
+      const opened = await vi.waitFor(() => {
+        const req = socket.requests().find((r) => r.method === 'open')
+        if (!req || req.id === undefined) throw new Error('no open request yet')
+        return req
+      })
+      socket.deliverText({
+        jsonrpc: '2.0',
+        id: opened.id,
+        result: {
+          sessionId: '1123456789abcdef0011223344556677',
+          instanceId: 'fedcba9876543210fedcba9876543210',
+          sessionEpoch: 1,
+          cwd: FIXTURE_CWD,
+          desiredMode: 'script',
+          workspaceId: 'default',
+          parent: null,
+        },
+      })
+      await openedPromise
 
-    // THE BACKEND'S OWN ROW FIRST, exactly as the created fact's tests seed
-    // it: workers.spawn writes the tab before it announces it, so the read
-    // the fold triggers would rightly drop a tab the backend never held.
-    const made = await chain.backend.createTab({
-      id: 'worker-tab-close',
-      workspaceId: layout.defaultWorkspaceId(),
-      firstPane: {
-        id: 'worker-pane-close',
-        cwd: '/repo/worker',
-        kind: 'local',
-        endpoint: null,
-        sizeShare: 1,
-      },
-    })
-    client._fireWorkerTabCreated(
-      createdFact(made.tab, made.firstPane, '99123456789abcdef0011223344556699'),
-    )
+      const client = makeClient()
+      client.onWorkerTabCreated = vi.fn((cb: (fact: WorkersTabCreated) => void) =>
+        realClient.onWorkerTabCreated(cb),
+      )
+      client.onWorkerTabClosed = (cb) => realClient.onWorkerTabClosed(cb)
+      const workerSession = makeSession()
+      client.reclaimSession.mockImplementation(() => Promise.resolve(workerSession))
+      const chain = makeLayoutStore()
+      const { bar, layout } = await mountPaneManager(client, undefined, undefined, undefined, chain)
+      const before = stripPaneIDs(bar).length
 
-    await vi.waitFor(() => {
-      expect(stripPaneIDs(bar).length).toBe(before + 1)
-    })
-    await vi.waitFor(() => {
-      expect(workerSession.onExit.mock.calls.length).toBe(1)
-    })
+      // THE BACKEND'S OWN ROW FIRST, exactly as the created fact's tests seed
+      // it: workers.spawn writes the tab before it announces it, so the read
+      // the fold triggers would rightly drop a tab the backend never held.
+      const made = await chain.backend.createTab({
+        id: 'worker-tab-close',
+        workspaceId: layout.defaultWorkspaceId(),
+        firstPane: {
+          id: 'worker-pane-close',
+          cwd: '/repo/worker',
+          kind: 'local',
+          endpoint: null,
+          sizeShare: 1,
+        },
+      })
+      socket.deliverText({
+        jsonrpc: '2.0',
+        method: 'workers.tabCreated',
+        params: createdFact(made.tab, made.firstPane, '99123456789abcdef0011223344556699'),
+      })
 
-    // The worker's turn ends and its session is lost, which is the state the
-    // person was looking at: the tab stayed, with the card over its pane.
-    fireLostSession(workerSession)
-    await vi.waitFor(() => {
-      expect(document.querySelector('.nocx-reconnect-offer')).not.toBeNull()
-    })
+      await vi.waitFor(() => {
+        expect(stripPaneIDs(bar).length).toBe(before + 1)
+      })
+      await vi.waitFor(() => {
+        expect(workerSession.onExit.mock.calls.length).toBe(1)
+      })
 
-    // THE CLOSE ITSELF: workers.close wrote the tab out of the content store
-    // and told this window. The store write comes first because that is the
-    // order the backend performs it in, and because the read this fact
-    // triggers would rightly put back a tab the backend still held.
-    await chain.backend.closeTab(made.tab.id, {
-      tabId: 'tab-replacement',
-      paneId: 'pane-replacement',
-      cwd: '',
-    })
-    client._fireWorkerTabClosed(closedFact(made.tab.id))
+      // The worker's turn ends and its session is lost, which is the state the
+      // person was looking at: the tab stayed, with the card over its pane.
+      fireLostSession(workerSession)
+      await vi.waitFor(() => {
+        expect(document.querySelector('.nocx-reconnect-offer')).not.toBeNull()
+      })
 
-    // THE TAB IS OFF THE STRIP, WITHOUT A RELOAD: same document, same
-    // PaneManager, no openSession, no window.location — the row leaves because
-    // the window was TOLD, which is the whole of the criterion.
-    await vi.waitFor(() => {
-      expect(stripPaneIDs(bar)).toHaveLength(before)
-    })
-    expect(stripPaneIDs(bar)).not.toContain('worker-pane-close')
-    expect(layout.tabs().map((t) => t.id)).not.toContain(made.tab.id)
-    expect(layout.panes().map((p) => p.id)).not.toContain(made.firstPane.id)
-    // AND NO CARD SURVIVES IT: the offer lives inside the pane the tab held,
-    // and the pane is what the row leaving the cache takes with it.
-    expect(document.querySelector('.nocx-reconnect-offer')).toBeNull()
+      // THE CLOSE ITSELF: workers.close wrote the tab out of the content store
+      // and told this window — the frame the backend sends, on the socket this
+      // window is holding. The store write comes first because that is the
+      // order the backend performs it in, and because the read this fact
+      // triggers would rightly put back a tab the backend still held.
+      await chain.backend.closeTab(made.tab.id, {
+        tabId: 'tab-replacement',
+        paneId: 'pane-replacement',
+        cwd: '',
+      })
+      socket.deliverText({
+        jsonrpc: '2.0',
+        method: 'workers.tabClosed',
+        params: closedFact(made.tab.id),
+      })
+
+      // THE TAB IS OFF THE STRIP, WITHOUT A RELOAD: same document, same
+      // PaneManager, no openSession, no window.location — the row leaves
+      // because the window was TOLD, which is the whole of the criterion.
+      await vi.waitFor(() => {
+        expect(stripPaneIDs(bar)).toHaveLength(before)
+      })
+      expect(stripPaneIDs(bar)).not.toContain('worker-pane-close')
+      expect(layout.tabs().map((t) => t.id)).not.toContain(made.tab.id)
+      expect(layout.panes().map((p) => p.id)).not.toContain(made.firstPane.id)
+      // AND NO CARD SURVIVES IT: the offer lives inside the pane the tab held,
+      // and the pane is what the row leaving the cache takes with it.
+      expect(document.querySelector('.nocx-reconnect-offer')).toBeNull()
+    } finally {
+      realClient.close()
+      vi.unstubAllGlobals()
+    }
   })
 
   it('drops a fact naming a different backend instance than the one already known', async () => {
