@@ -235,6 +235,15 @@ const heldStopPane = "01930000-0000-7000-8000-0000000000b1"
 // carrier a restored block is drawn from.
 func newHeldStopStandWithStore(t *testing.T) *heldStopStand {
 	t.Helper()
+	return newHeldStopStandWithStoreAndGrace(t, heldStopGrace)
+}
+
+// newHeldStopStandWithStoreAndGrace is the store-backed stand with the
+// caller's grace. A case that reports the command's completion AFTER the byte
+// was written needs one long enough to hold the confirmation wait open until
+// that report arrives — deterministically, with nothing slept for.
+func newHeldStopStandWithStoreAndGrace(t *testing.T, grace time.Duration) *heldStopStand {
+	t.Helper()
 	db := newLedgerStore(t)
 	if _, err := db.Layout().CreateWorkspace(context.Background(),
 		content.Workspace{ID: "ws-held-stop", Name: "held-stop"},
@@ -242,7 +251,7 @@ func newHeldStopStandWithStore(t *testing.T) *heldStopStand {
 		content.Pane{ID: heldStopPane, TabID: "tab-held-stop", Cwd: "/tmp", Kind: content.PaneLocal, SizeShare: 1}); err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
-	return newHeldStopStandWith(t, heldStopGrace, db)
+	return newHeldStopStandWith(t, grace, db)
 }
 
 func newHeldStopStandWith(t *testing.T, grace time.Duration, db content.ContentDB) *heldStopStand {
@@ -832,7 +841,9 @@ func TestHeldStop_AStalledWriterStillSettlesExactlyOnce(t *testing.T) {
 			delivered, undelivered, inflight)
 	}
 
-	// The stall ends. The writer's verdict is the only settlement there is.
+	// The stall ends. The writer's verdict is the only settlement there is —
+	// and it is the WRITTEN verdict: the byte landed, so the settlement came
+	// from the writer and not from anything expiring while the byte waited.
 	stand.recorder.releaseWrites()
 	waittest.WaitForDetail(t, "the writer's verdict on the stalled byte",
 		func() string {
@@ -841,17 +852,19 @@ func TestHeldStop_AStalledWriterStillSettlesExactlyOnce(t *testing.T) {
 		},
 		func() bool { _, _, inflight := stand.stopRecord(attempt); return inflight == 0 })
 
-	// EXACTLY ONE of the two, never both: the byte landed, so nothing may have
-	// been reported undelivered.
+	// THE BYTE LANDED AND THE COMMAND DID NOT GO, so the record says so
+	// (nocx-zg3k3.14.16): "delivered" is no longer the write's word, it is the
+	// command's, and this stand never reports the completion this byte asked
+	// for. Exactly one of the two is ever recorded, never both.
 	delivered, undelivered, _ := stand.stopRecord(attempt)
-	if !delivered || undelivered {
-		t.Fatalf("settled delivered=%v undelivered=%v, want the byte delivered and nothing else", delivered, undelivered)
+	if delivered || !undelivered {
+		t.Fatalf("settled delivered=%v undelivered=%v, want the undelivered record of a written byte over a command that did not go", delivered, undelivered)
 	}
 	if n := stand.recorder.interrupts(); n != 1 {
 		t.Fatalf("interrupts = %d, want exactly the one held byte", n)
 	}
-	if n := stand.notices(); n != 0 {
-		t.Fatalf("undelivered notices = %d after the byte landed; a stall must not be reported as a failed write", n)
+	if n := stand.notices(); n != 1 {
+		t.Fatalf("undelivered notices = %d, want exactly the one that says the stop did not take", n)
 	}
 
 	// And the person's retry is a SEPARATE gesture: one more Stop while the
@@ -1095,6 +1108,61 @@ func TestHeldStop_ASessionThatIsGoneSettlesWithoutANotice(t *testing.T) {
 }
 
 // ── 2. the discard ────────────────────────────────────────────────────────
+
+// TestHeldStop_AWrittenInterruptThatDoesNotEndTheCommandIsNeverDelivered is the
+// second half of the bead's criterion (nocx-zg3k3.14.16): the held interrupt is
+// WRITTEN and the attempt stays open, so the record may not call it delivered.
+//
+// The window is the one the occurrence was hypothesised in and the one the
+// protected-group path always had to deal with: the terminal's interrupt is a
+// byte the line discipline turns into SIGINT for whoever is in front, and bash
+// authenticates a start from preexec — before it forks the program and hands it
+// the terminal (CI run 38708006962: the byte was written 18 ms after the start
+// and `sleep 30` was still running 15 s later). Nothing about that write looks
+// wrong, which is exactly why the write cannot be the evidence.
+//
+// The command here never reports a completion, so "the attempt is still open"
+// is a state the test holds rather than one it races for, and the only way to
+// delivered is that closure.
+func TestHeldStop_AWrittenInterruptThatDoesNotEndTheCommandIsNeverDelivered(t *testing.T) {
+	stand := newHeldStopStand(t)
+	stand.establish(t)
+	stand.submit(t, 5, "sleep 30")
+	attempt := lifecycle.AttemptID(stand.appAttemptID)
+	if got := stand.stop(t, 6); got != string(foregroundHeld) {
+		t.Fatalf("a Stop before the start answered %q, want %q", got, foregroundHeld)
+	}
+	submitCommand(t, stand.conn, stand.sid, "sleep 30")
+	stand.ingest(t, lifecycleStartEvt(new(stand.shellIDFor(1)), "sleep 30"))
+
+	// THE BYTE LANDS. That is asserted first, because the case is empty
+	// otherwise: an undelivered record from a byte nobody wrote is the old
+	// behaviour, not this one.
+	waittest.WaitForDetail(t, "the held Stop's interrupt to reach the pty",
+		func() string { return fmt.Sprintf("interrupts=%d (want 1)", stand.recorder.interrupts()) },
+		func() bool { return stand.recorder.interrupts() == 1 })
+
+	// The command does not go, and the person is told rather than left with a
+	// block that took the stop mark and a program that runs on.
+	params := stand.awaitUndelivered(t)
+	if params.Attempt != stand.appAttemptID {
+		t.Fatalf("session.signalUndelivered named attempt %q, want %q", params.Attempt, stand.appAttemptID)
+	}
+	if params.Reason != undeliveredWriteFailed {
+		t.Fatalf("session.signalUndelivered reason = %q, want %q — the byte landed, the command did not go",
+			params.Reason, undeliveredWriteFailed)
+	}
+	delivered, undelivered, inflight := stand.stopRecord(attempt)
+	if delivered {
+		t.Fatal("a written interrupt over a command that never went was recorded as delivered")
+	}
+	if !undelivered || inflight != 0 {
+		t.Fatalf("record delivered=%v undelivered=%v inflight=%d, want the one undelivered settlement", delivered, undelivered, inflight)
+	}
+	if n := stand.recorder.interrupts(); n != 1 {
+		t.Fatalf("interrupts = %d, want exactly the one held byte", n)
+	}
+}
 
 // TestSessionSignal_AHeldStopIsDiscardedWhenTheAttemptNeverStarts: the line
 // was discarded before bash's DEBUG trap ever fired (case 2 of
@@ -1734,7 +1802,11 @@ func TestHeldStop_ALadderStopIsTheAttemptsOutcomeToo(t *testing.T) {
 // returns to its prompt while nobody is watching, and a fresh connection
 // reattaches and reads the pane's rows.
 func TestHeldStop_AReattachedPaneReadsTheStopFromTheLedger(t *testing.T) {
-	stand := newHeldStopStandWithStore(t)
+	// A grace long enough to hold the delivery's confirmation wait open until
+	// the completion below arrives: a held Stop's record now settles on the
+	// command leaving `open`, not on the byte being written (nocx-zg3k3.14.16),
+	// and this case reports that closure by hand instead of racing a bound.
+	stand := newHeldStopStandWithStoreAndGrace(t, 30*time.Second)
 	stand.establish(t)
 	stand.submit(t, 5, "sleep 30")
 	attempt := lifecycle.AttemptID(stand.appAttemptID)
@@ -1743,18 +1815,24 @@ func TestHeldStop_AReattachedPaneReadsTheStopFromTheLedger(t *testing.T) {
 	}
 	submitCommand(t, stand.conn, stand.sid, "sleep 30")
 	stand.ingest(t, lifecycleStartEvt(new(stand.shellIDFor(1)), "sleep 30"))
-	waittest.WaitForDetail(t, "the held Stop's byte to be settled as delivered",
-		func() string {
-			d, u, n := stand.stopRecord(attempt)
-			return fmt.Sprintf("delivered=%v undelivered=%v inflight=%d", d, u, n)
-		},
-		func() bool { delivered, _, inflight := stand.stopRecord(attempt); return delivered && inflight == 0 })
+	waittest.WaitForDetail(t, "the held Stop's interrupt to reach the pty",
+		func() string { return fmt.Sprintf("interrupts=%d (want 1)", stand.recorder.interrupts()) },
+		func() bool { return stand.recorder.interrupts() == 1 })
 
 	// Detach, as a network drop would. The command's completion and the
 	// prompt after it happen while the pane is away.
 	stand.ws.getRx(session.ID(stand.sid)).setSubscriber(nil, nil)
 	stand.ingest(t, lifecycleCompleteEvt(attempt, 130, lifecycleFence(0x12)))
 	stand.ingest(t, lifecyclePromptEvt())
+
+	// The byte was written and the command went: the delivery is the attempt's
+	// own record, settled by that closure with nobody watching.
+	waittest.WaitForDetail(t, "the held Stop's byte to be settled as delivered",
+		func() string {
+			d, u, n := stand.stopRecord(attempt)
+			return fmt.Sprintf("delivered=%v undelivered=%v inflight=%d", d, u, n)
+		},
+		func() bool { delivered, _, inflight := stand.stopRecord(attempt); return delivered && inflight == 0 })
 
 	// A fresh connection reattaches and reads what a restore reads.
 	connB := connectWS(t, stand.ws)

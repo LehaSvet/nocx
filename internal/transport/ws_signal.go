@@ -1032,12 +1032,22 @@ func (s *WSServer) deliverHeldStop(ctx context.Context, held heldStop, attempt l
 			return nil
 		}
 		handedOff := false
+		// THE WRITER'S VERDICT COMES BACK AS A VALUE, NOT AS THE SETTLEMENT
+		// (nocx-zg3k3.14.16). A written byte is not a stopped command: a Stop
+		// written into the window between bash's start report and the fork
+		// reached the shell, was lost, and the record still said delivered
+		// (CI run 38708006962 — written 18 ms after the start, `sleep 30` still
+		// running 15 s later). So the settlement waits for the exact attempt to
+		// leave `open`, the one piece of evidence this side of the pty has. The
+		// channel is buffered and the writer only sends, so the session's write
+		// goroutine is never parked behind that wait.
+		verdict := make(chan heldWriteVerdict, 1)
 		fb := sessionProtectedForeground{
 			ctx: runCtx, s: s, sid: sid, sess: sess,
 			exactAttempt: func() (lifecycle.AttemptID, bool) { return attempt, true },
 			handedOff:    &handedOff,
 			settled: func(written bool, werr error) {
-				s.settleHeldStop(held.ctx, sid, attempt, written, undeliveredReasonFor(werr))
+				verdict <- heldWriteVerdict{written: written, err: werr}
 			},
 		}
 		ladder := &stopRecordingSignaller{
@@ -1046,7 +1056,8 @@ func (s *WSServer) deliverHeldStop(ctx context.Context, held heldStop, attempt l
 		}
 		outcome := stopForeground(lg, sid, ladder, s.effectiveRunLease().SignalGrace, fb)
 		if handedOff {
-			return nil // the writer settles it, or already has
+			s.settleHeldStopOnEvidence(held.ctx, runCtx, sid, attempt, verdict, fb, s.effectiveRunLease().SignalGrace)
+			return nil
 		}
 		if outcome == foregroundDelivered {
 			s.settleHeldStop(held.ctx, sid, attempt, true, "")
@@ -1062,6 +1073,58 @@ func (s *WSServer) deliverHeldStop(ctx context.Context, held heldStop, attempt l
 			"session_id", string(sid), "attempt", string(attempt), "error", err)
 		s.settleHeldStop(held.ctx, sid, attempt, false, undeliveredLaneRefused)
 	}
+}
+
+// heldWriteVerdict is what the session's writer said became of a held Stop's
+// byte: it was written, or it was discarded because its addressee had gone
+// (err == nil), or the input path refused it (err != nil).
+type heldWriteVerdict struct {
+	written bool
+	err     error
+}
+
+// settleHeldStopOnEvidence discharges one held Stop whose byte was handed to
+// the writer, and it is where Stop's promise is kept honestly: DELIVERED only
+// when the attempt it was addressed to has left `open`, undelivered when it has
+// not (nocx-zg3k3.14.16).
+//
+// A refused or discarded byte is settled by what the writer said, which is the
+// verdict blocker 1 of the review of 6830b43d made the only one allowed to
+// speak — a caller that stops waiting knows nothing about the byte it
+// abandoned.
+//
+// A WRITTEN byte is settled by the attempt's closure instead, because the write
+// is not the thing the person asked for. The terminal's interrupt is a byte the
+// line discipline turns into SIGINT for whoever is in front, and "whoever" is
+// not always the program: bash authenticates a start from preexec, before it
+// forks the program and hands it the terminal, so an interrupt written in that
+// window is consumed by the shell and lost while nothing about the write looked
+// wrong (CI run 38708006962: written 18 ms after the start, `sleep 30` still
+// running 15 s later). The record may not say "reached the command" over a
+// command that is plainly still running, so it waits for the one observation
+// that means the command is gone, and reports undelivered when the wait ends
+// without it.
+//
+// lane is the delivery's own context: a lane that ends before the writer
+// answered leaves nothing to claim about its byte.
+func (s *WSServer) settleHeldStopOnEvidence(ctx context.Context, lane context.Context, sid session.ID, attempt lifecycle.AttemptID, verdict <-chan heldWriteVerdict, fb sessionProtectedForeground, grace time.Duration) {
+	select {
+	case v := <-verdict:
+		if !v.written {
+			s.settleHeldStop(ctx, sid, attempt, false, undeliveredReasonFor(v.err))
+			return
+		}
+	case <-lane.Done():
+		s.settleHeldStop(ctx, sid, attempt, false, undeliveredLaneRefused)
+		return
+	}
+	if fb.Ended(attempt, grace) {
+		s.settleHeldStop(ctx, sid, attempt, true, "")
+		return
+	}
+	log.From(ctx).Warn("foreground signal: the held Stop was written and the command did not go",
+		"session_id", string(sid), "attempt", string(attempt))
+	s.settleHeldStop(ctx, sid, attempt, false, undeliveredReasonForOutcome(foregroundUnreconciled))
 }
 
 // undeliveredReasonFor names what the WRITER said, in the closed vocabulary the

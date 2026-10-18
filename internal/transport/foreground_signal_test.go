@@ -8,6 +8,7 @@ import (
 
 	"github.com/shady2k/nocx/internal/lifecycle"
 	"github.com/shady2k/nocx/internal/log"
+	"github.com/shady2k/nocx/internal/log/logtest"
 	"github.com/shady2k/nocx/internal/pty"
 	"github.com/shady2k/nocx/internal/session"
 )
@@ -311,4 +312,93 @@ func TestStopForeground_TheHandoverWaitEndsWithoutAJob(t *testing.T) {
 			t.Fatalf("writes = %d, signals = %v; want the one terminal interrupt and no group signal", fb.writes, sess.got)
 		}
 	})
+}
+
+// TestStopForeground_ACommandTheShellHasNotStartedIsHeldRatherThanSignalledAtWhoeverIsInFront
+// is the mechanism the CI occurrence of 2026-10-18 was (nocx-zg3k3.14.16, run
+// 39149340188): the person's command is open and NOT started, and the kernel
+// names a job in front that has nothing to do with it — the shell was running
+// something of its own at the prompt, which is what a job in front of a prompt
+// is. The Stop went down the ladder at that group, answered `delivered`, and
+// the command the person stopped started 55 ms later and ran on.
+//
+// The projection is the authority on the person's OWN command, so it is asked
+// before the kernel: an attempt that is open and unstarted is held for its
+// start, and no group is signalled.
+func TestStopForeground_ACommandTheShellHasNotStartedIsHeldRatherThanSignalledAtWhoeverIsInFront(t *testing.T) {
+	const attempt = lifecycle.AttemptID("att-on-its-way")
+	// err nil: the kernel answers "a job is in front", which the fake names as
+	// group 4242 — an INDEPENDENT group, so this is the ladder's branch.
+	sess := &fakeForegroundSession{}
+	fb := &fakeProtected{attempt: attempt, pending: true, holdable: true, accept: true}
+
+	got := stopForeground(log.NewSlogAdapter(nil), "sid", sess, 10*time.Millisecond, fb)
+
+	if got != foregroundHeld {
+		t.Fatalf("outcome = %q, want %q: a Stop for a command the shell has not begun is held", got, foregroundHeld)
+	}
+	if len(sess.calls) != 0 {
+		t.Fatalf("signals sent = %v, want none: the group in front is not the command the person stopped", sess.calls)
+	}
+	if fb.held != 1 {
+		t.Fatalf("hold armed %d times, want 1", fb.held)
+	}
+	if fb.writes != 0 {
+		t.Fatalf("terminal interrupts written = %d, want 0", fb.writes)
+	}
+}
+
+// TestStopForeground_TheLadderStopSpeaksAsTheRequestThatAsked is the first half
+// of the bead's criterion (nocx-zg3k3.14.16): the Stop path must log through
+// log.From(ctx) with the request's trace, on every path.
+//
+// The held delivery already did; the LADDER did not, and the ladder is what the
+// CI occurrence took — its trace held 49 backend lines and not one from the
+// Stop, so the failure could not be read after it happened (CI run
+// 39149340188). This drives the ladder's own branch and asserts that what it
+// did is recorded under the request's trace: which group, which rung, and how
+// it ended.
+func TestStopForeground_TheLadderStopSpeaksAsTheRequestThatAsked(t *testing.T) {
+	const traceID = "3ef1854c8dc8fdbf2acc41ff89d9da80"
+	ctx, _ := logtest.New(t)
+	// The handler's context is the connection's, which carries the trace the
+	// renderer sent; the e2e failure context filters the backend log by it.
+	ctx = log.ContinueTrace(ctx, "00-"+traceID+"-94d8e2fddd5d4551-01")
+
+	const attempt = lifecycle.AttemptID("att-ladder")
+	sess := &fakeForegroundSession{}
+	fb := &fakeProtected{attempt: attempt, accept: true, ends: true}
+
+	if got := stopForeground(log.From(ctx), "sid", sess, 10*time.Millisecond, fb); got != foregroundDelivered {
+		t.Fatalf("outcome = %q, want %q", got, foregroundDelivered)
+	}
+	for _, want := range []string{
+		"foreground signal: stop is addressed to the foreground job's group",
+		"foreground signal: stop signal sent to the execution's group",
+		"foreground signal: stop over the foreground job settled",
+	} {
+		if !logtest.WaitFor(ctx, time.Second, func(r logtest.Record) bool { return r.Message == want }) {
+			t.Fatalf("the ladder Stop did not log %q: a Stop path invisible to the trace cannot be diagnosed", want)
+		}
+	}
+	// AND UNDER THE REQUEST'S TRACE, with the group it addressed: the line is
+	// what a stranger reads the occurrence from, and a line without the trace
+	// is one the per-test failure context never shows.
+	if !logtest.WaitFor(ctx, time.Second, func(r logtest.Record) bool {
+		if r.Message != "foreground signal: stop over the foreground job settled" {
+			return false
+		}
+		var trace, pgid string
+		for _, a := range r.Attrs {
+			switch a.Key {
+			case "trace_id":
+				trace = a.Value.String()
+			case "pgid":
+				pgid = a.Value.String()
+			}
+		}
+		return trace == traceID && pgid == "4242"
+	}) {
+		t.Fatalf("the ladder Stop's settlement did not carry trace_id=%s and the group it addressed", traceID)
+	}
 }
