@@ -77,3 +77,58 @@ domain acquires a vendor.
 An empty `tools` array is a valid answer and means the grant reaches nothing. It
 is not an error, and a caller must render it as "no tools", never as a failure to
 list them.
+
+## `tools.instructions` — what this caller is TOLD
+
+`tools.catalogue` answers what a caller MAY call. It does not say anything to the
+agent, and that gap was measured: a coordinator's Claude session initialized
+nocx's stdio MCP server, received `serverInfo` and nothing else, and — asked to
+spawn a worker — followed the global terminal-multiplexer skill it already had
+while the `workers.*` calls granted to it sat unused one namespace away
+(nocx-xn63t.6.45). The MCP `initialize` result has a field for exactly this
+sentence, and this is the method that fills it.
+
+Params: none, for `tools.catalogue`'s reason: the grant is the admitted
+invocation's, never a parameter.
+
+Result:
+
+```json
+{
+  "instructions": "This session runs inside nocx. Start and manage workers with its own tools and nothing else: …"
+}
+```
+
+The text is chosen from the admitted grant, because the two callers can do
+different things and an instruction that outruns its grant sends an agent to a
+call that is refused:
+
+- **A grant that permits `delegate`** is a coordinator's (`workers.spawn` is that
+  delegation), and it is told which `workers.*` calls start and manage work, that
+  they are the only way to do it — not another terminal multiplexer — and, for a
+  client that defers MCP tools, how to load one first (Claude Code's `ToolSearch`
+  with `select:mcp__nocx__workers_spawn`).
+- **A grant that permits `observe` alone** is a worker's, and it is told to report
+  and read its mail (`workers.report`, `workers.inbox`) and nothing about
+  spawning.
+- **A grant that is neither** is told where it is and nothing more. Silence is
+  not an option: an empty answer is the state this method exists to end.
+
+`mcp__<server>__<tool>` is the CLIENT's naming, and `<server>` is the key the
+staged MCP config writes (`internal/shellintegration/scripts/nocx.bash`). A
+selector naming a key that config does not write names a tool that does not
+exist, and the failure is silent, so the text's server name is pinned to that
+script by `internal/toolendpoint/instructions_test.go`.
+
+The MCP adapter (`internal/mcpstdio`) asks this once, at `initialize`, and copies
+the answer into the result's `instructions` verbatim — it holds no text of its
+own, and its boundary test refuses the domain's vocabulary outright. The ask is
+bounded: an endpoint that declines, or is not there, leaves the field out of the
+result and the handshake still completes, because an initialize that fails costs
+the client every tool it would have had.
+
+There is no JSON Schema file for this method, and none for `tools.catalogue`
+either: both are tool-endpoint methods, whose wire documents live under
+[`tools/`](tools/) when the method is a tool. The MCP `initialize` result is a
+client-protocol shape, not a renderer one, so it is declared by the MCP
+specification rather than in this directory.

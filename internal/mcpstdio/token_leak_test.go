@@ -119,6 +119,9 @@ func TestTheBridgesLogsNeverCarryTheBearer(t *testing.T) {
 	logs := &lockedLogs{}
 	saw := make(chan string, 4)
 	socket := startBearerEndpoint(t, func(conn net.Conn, request rpcEnvelope) {
+		if answerInstructions(t, conn, request) {
+			return
+		}
 		if request.Method != "tools.catalogue" {
 			return
 		}

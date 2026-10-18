@@ -304,6 +304,9 @@ func TestASecondCallIsAnsweredWhileTheFirstIsHeld(t *testing.T) {
 	held := make(chan struct{}, 1)
 	release := make(chan struct{})
 	endpoint := startScriptedEndpoint(t, func(conn net.Conn, request rpcEnvelope) {
+		if answerInstructions(t, conn, request) {
+			return
+		}
 		switch request.Method {
 		case "tools.catalogue":
 			writeJSONLine(t, conn, rpcEnvelope{JSONRPC: "2.0", ID: request.ID, Result: json.RawMessage(twoTools)})
@@ -341,6 +344,9 @@ func TestOverlappingCallsShareOneConnectionAndAnswerByID(t *testing.T) {
 	secondSeen := make(chan struct{})
 	secondAnswered := make(chan struct{})
 	endpoint := startScriptedEndpoint(t, func(conn net.Conn, request rpcEnvelope) {
+		if answerInstructions(t, conn, request) {
+			return
+		}
 		switch request.Method {
 		case "tools.catalogue":
 			writeJSONLine(t, conn, rpcEnvelope{JSONRPC: "2.0", ID: request.ID, Result: json.RawMessage(twoTools)})
@@ -391,6 +397,9 @@ func TestACallWaitsForTheListInFlightAndUsesItsCatalogue(t *testing.T) {
 	listRelease := make(chan struct{})
 	var catalogues atomic.Int64
 	endpoint := startScriptedEndpoint(t, func(conn net.Conn, request rpcEnvelope) {
+		if answerInstructions(t, conn, request) {
+			return
+		}
 		if request.Method == "tools.catalogue" {
 			if catalogues.Add(1) == 1 {
 				close(listSeen)
@@ -430,6 +439,9 @@ func TestCancellingOneCallLeavesItsSiblingAlone(t *testing.T) {
 	answered := make(chan struct{}, 2)
 	release := make(chan struct{})
 	endpoint := startScriptedEndpoint(t, func(conn net.Conn, request rpcEnvelope) {
+		if answerInstructions(t, conn, request) {
+			return
+		}
 		switch request.Method {
 		case "tools.catalogue":
 			writeJSONLine(t, conn, rpcEnvelope{JSONRPC: "2.0", ID: request.ID, Result: json.RawMessage(twoTools)})
@@ -776,6 +788,9 @@ func TestACallCancelledWhileItWaitsForTheTurnSendsNothing(t *testing.T) {
 // sides and no write can land in it.
 func TestTheNextCallRedialsWhenTheEndpointClosedTheIdleConnection(t *testing.T) {
 	endpoint := startScriptedEndpoint(t, func(conn net.Conn, request rpcEnvelope) {
+		if answerInstructions(t, conn, request) {
+			return
+		}
 		if request.Method == "tools.catalogue" {
 			writeJSONLine(t, conn, rpcEnvelope{JSONRPC: "2.0", ID: request.ID, Result: json.RawMessage(twoTools)})
 			_ = conn.Close()
@@ -879,6 +894,9 @@ func (d *firstWriteFailsDialer) count() int {
 // never delivered cannot have run anything twice.
 func TestACallWhoseWriteFailsRedialsRatherThanLosingTheCall(t *testing.T) {
 	endpoint := startScriptedEndpoint(t, func(conn net.Conn, request rpcEnvelope) {
+		if answerInstructions(t, conn, request) {
+			return
+		}
 		writeJSONLine(t, conn, rpcEnvelope{JSONRPC: "2.0", ID: request.ID, Result: json.RawMessage(`{"after":true}`)})
 	})
 	dialer := &firstWriteFailsDialer{inner: &net.Dialer{}}
@@ -968,6 +986,9 @@ func (d *shortWriteDialer) count() int {
 // the length of a test binary's alarm to say so.
 func TestAFrameCutShortIsRetriedRatherThanWaitedOn(t *testing.T) {
 	endpoint := startScriptedEndpoint(t, func(conn net.Conn, request rpcEnvelope) {
+		if answerInstructions(t, conn, request) {
+			return
+		}
 		writeJSONLine(t, conn, rpcEnvelope{JSONRPC: "2.0", ID: request.ID, Result: json.RawMessage(`{"after":true}`)})
 	})
 	dialer := &shortWriteDialer{inner: &net.Dialer{}}
@@ -1176,6 +1197,9 @@ func TestAnInterruptedWriteDoesNotParkTheCaller(t *testing.T) {
 func TestAFailedReadClosesTheSocket(t *testing.T) {
 	closed := make(chan struct{}, 1)
 	endpoint := startScriptedEndpoint(t, func(conn net.Conn, request rpcEnvelope) {
+		if answerInstructions(t, conn, request) {
+			return
+		}
 		if request.Method == "tools.catalogue" {
 			// A line this adapter cannot frame is what its reader dies on.
 			_, _ = io.WriteString(conn, "this is not a response\n")
@@ -1222,6 +1246,9 @@ func TestAStaleCatalogueLoadDoesNotUnseatANewerOne(t *testing.T) {
 	current := tool("alpha.one") + "," + tool("alpha.two")
 
 	endpoint := startScriptedEndpoint(t, func(conn net.Conn, request rpcEnvelope) {
+		if answerInstructions(t, conn, request) {
+			return
+		}
 		if request.Method == "tools.catalogue" {
 			if catalogues.Add(1) == 1 {
 				// The call's own refresh, held until the list has installed.
