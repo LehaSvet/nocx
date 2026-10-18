@@ -220,7 +220,16 @@ func TestASessionsScreenOutlivesTheCoordinatorThatOpenedIt(t *testing.T) {
 	if _, err := restored.Write([]byte("echo " + winchMarker + "-$WINCH_SEEN; stty size\n")); err != nil {
 		t.Fatalf("asking the re-adopted shell to report SIGWINCH: %v", err)
 	}
-	resized := waitForMarkerAnywhere(t, second, sid, winchMarker)
+	// THE SIZE IS WAITED FOR, NOT THE MARKER (nocx-xn63t.6.49). The line just
+	// typed CARRIES the marker as text the shell echoes, so a wait on the
+	// marker alone returns while `stty size` has not printed yet: measured on
+	// 2026-10-18 under a loaded machine, the frame the wait returned held
+	// `echo RESTART-RESIZE-WINCH-$WINCH_SEEN; stty size` and
+	// `RESTART-RESIZE-WINCH-1` and no size at all, and this test failed an
+	// assertion about a number it had never waited for. Waiting on both is
+	// waiting on the observable; widening the bound would not be, because the
+	// wait was never short of time — it was short of a reason to keep reading.
+	resized := waitForScreenTexts(t, second, sid, winchMarker, "43 132")
 	var screen strings.Builder
 	for row := 0; row < resized.Rows; row++ {
 		screen.WriteString(resized.Text(row))
@@ -348,6 +357,51 @@ func waitForMarkerAnywhere(t *testing.T, a *App, sid session.ID, marker string) 
 		}
 		if !time.Now().Before(deadline) {
 			t.Fatalf("the marker %q never reached the screen read (last error: %v)", marker, lastErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// waitForScreenTexts waits until ONE frame carries every text given, and
+// returns it.
+//
+// It is waitForMarkerAnywhere for the case that one function cannot express: a
+// marker the shell ECHOES before it produces the answer the caller asserts on.
+// A wait for the marker alone can be satisfied by the echo — the same bytes the
+// caller typed — so the caller then reads a frame whose next line has not been
+// written yet. Waiting for the marker AND the answer is waiting on an
+// observable; the alternative, a longer bound, waits on a duration for a fact
+// that may already have arrived. (nocx-xn63t.6.49, measured under load.)
+func waitForScreenTexts(t *testing.T, a *App, sid session.ID, texts ...string) paneview.Frame {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	var lastErr error
+	var last string
+	for {
+		f, err := a.paneViews.Frame(string(sid))
+		if err == nil {
+			var screen strings.Builder
+			for row := 0; row < f.Rows; row++ {
+				screen.WriteString(f.Text(row))
+				screen.WriteByte('\n')
+			}
+			last = screen.String()
+			carries := true
+			for _, want := range texts {
+				if !strings.Contains(last, want) {
+					carries = false
+					break
+				}
+			}
+			if carries {
+				return f
+			}
+		} else {
+			lastErr = err
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("the screen never carried %q (last error: %v); the screen held:\n%s",
+				strings.Join(texts, " and "), lastErr, last)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
