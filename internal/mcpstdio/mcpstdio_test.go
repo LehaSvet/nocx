@@ -22,6 +22,9 @@ import (
 
 func TestServeInitializesAbsorbsNotificationAndLists(t *testing.T) {
 	socket := startEndpoint(t, func(conn net.Conn, request rpcEnvelope) {
+		if answerInstructions(t, conn, request) {
+			return
+		}
 		if request.Method != "tools.catalogue" {
 			t.Errorf("endpoint method = %q, want tools.catalogue", request.Method)
 		}
@@ -83,6 +86,9 @@ func TestServeForwardsCallAndWrapsDomainRefusal(t *testing.T) {
 	var mu sync.Mutex
 	var forwarded []rpcEnvelope
 	socket := startEndpoint(t, func(conn net.Conn, request rpcEnvelope) {
+		if answerInstructions(t, conn, request) {
+			return
+		}
 		mu.Lock()
 		forwarded = append(forwarded, request)
 		mu.Unlock()

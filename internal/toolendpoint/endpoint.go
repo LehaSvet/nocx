@@ -690,7 +690,16 @@ func (e *Endpoint) serve(conn *net.UnixConn, peer Peer, onLane bool) {
 			requestInvocation.RawParams = append(json.RawMessage(nil), request.Params...)
 			var result string
 			var dispatchErr error
-			if request.Method == "tools.catalogue" {
+			// TWO ANSWERS COME FROM THE GRANT RATHER THAN FROM THE
+			// DISPATCHER, and they are answers about the CALLER: what it may
+			// call, and what it is told about the surface it was given
+			// (nocx-xn63t.6.45). Neither takes params — the authority is the
+			// admitted invocation's, never an argument.
+			if request.Method == "tools.instructions" {
+				var instructions []byte
+				instructions, dispatchErr = buildInstructions(requestInvocation.Grant)
+				result = string(instructions)
+			} else if request.Method == "tools.catalogue" {
 				var catalogueResult []byte
 				catalogueResult, dispatchErr = buildCatalogue(e.cfg.Dispatch, requestInvocation.Grant)
 				result = string(catalogueResult)

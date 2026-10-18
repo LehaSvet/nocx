@@ -12,6 +12,9 @@ func TestUnknownCallIsRefusedWithoutForwarding(t *testing.T) {
 	var mu sync.Mutex
 	var requests []rpcEnvelope
 	socket := startEndpoint(t, func(conn net.Conn, request rpcEnvelope) {
+		if answerInstructions(t, conn, request) {
+			return
+		}
 		mu.Lock()
 		requests = append(requests, request)
 		mu.Unlock()

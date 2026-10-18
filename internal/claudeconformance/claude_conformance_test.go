@@ -347,6 +347,13 @@ func (e *catalogueEndpoint) serve(conn net.Conn) {
 			continue
 		}
 		switch request.Method {
+		case "tools.instructions":
+			// The bridge asks this at initialize (nocx-xn63t.6.45). A fake that
+			// left it unanswered would hold every Claude run in this file for
+			// the bridge's own bound, and this check is about what Claude does
+			// with the tools, not about that wait.
+			raw := json.RawMessage(`{"instructions":"Use the tools this server offers."}`)
+			e.write(conn, request.ID, raw)
 		case "tools.catalogue":
 			result := map[string]any{"tools": e.tools}
 			raw, _ := json.Marshal(result)

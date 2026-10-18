@@ -484,11 +484,25 @@ func (s *Server) handle(ctx context.Context, writer *lineWriter, state *sessionS
 	case "initialize":
 		version := negotiateVersion(initializeVersion(request.Params))
 		state.setVersion(version)
-		return writer.result(request.ID, map[string]any{
+		result := map[string]any{
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]string{"name": s.serverName, "version": s.serverVersion},
-		})
+		}
+		// WHAT THIS SESSION SHOULD BE TOLD (nocx-xn63t.6.45). An initialize
+		// that answered only serverInfo left a coordinator with no sentence
+		// saying that the tools beside it are how work is started — measured
+		// in the owner's own run, where the model followed its global
+		// multiplexer skill instead. The words are the ENDPOINT's, not this
+		// adapter's: this package owns protocol translation, and its boundary
+		// test refuses the domain's vocabulary outright, so a sentence naming
+		// a tool here would be a second place that knows the domain. The
+		// endpoint is also the only place that knows the caller's grant,
+		// which is what makes the answer role-appropriate.
+		if instructions := s.initializeInstructions(ctx, link); instructions != "" {
+			result["instructions"] = instructions
+		}
+		return writer.result(request.ID, result)
 	case "tools/list":
 		return s.handleList(ctx, writer, state, link, request.ID)
 	case "tools/call":
@@ -496,6 +510,46 @@ func (s *Server) handle(ctx context.Context, writer *lineWriter, state *sessionS
 	default:
 		return writer.errorResponse(request.ID, -32601, "method not found", "MCP method is not supported")
 	}
+}
+
+// initializeInstructionsWindow bounds the fetch below. initialize is the
+// handshake, so this is a HANG LIMIT: the endpoint answers the question off the
+// grant without dispatching anything, and a second is already generous for a
+// local socket.
+const initializeInstructionsWindow = time.Second
+
+// initializeInstructions asks the endpoint what this session is told, and is
+// silent rather than fatal when it will not say.
+//
+// A client whose initialize fails or never answers has no session, no tools and
+// no way to say so — so a wedged endpoint must not hold the handshake open and
+// turn a missing sentence into a session that never starts. When the call fails
+// or the bound expires, the sentence is omitted and the bridge writes one line
+// about it in its own log.
+//
+// An EMPTY answer is the same as no answer, and both leave the field out of the
+// result rather than sending an empty string: a client renders what it is
+// given, and "" reads as an instruction nobody wrote.
+func (s *Server) initializeInstructions(ctx context.Context, link *endpointLink) string {
+	ctx, cancel := context.WithTimeout(ctx, initializeInstructionsWindow)
+	defer cancel()
+	result, upstream, err := link.call(ctx, "tools.instructions", json.RawMessage(`{}`))
+	switch {
+	case err != nil:
+		s.logger.Warn("mcp initialize instructions unavailable", "socket", s.socket, "err", err)
+		return ""
+	case upstream != nil:
+		s.logger.Warn("mcp initialize instructions refused", "socket", s.socket, "reason", upstream.reason())
+		return ""
+	}
+	var wire struct {
+		Instructions string `json:"instructions"`
+	}
+	if err := json.Unmarshal(result, &wire); err != nil {
+		s.logger.Warn("mcp initialize instructions unreadable", "socket", s.socket, "err", err)
+		return ""
+	}
+	return strings.TrimSpace(wire.Instructions)
 }
 
 func initializeVersion(params json.RawMessage) string {
