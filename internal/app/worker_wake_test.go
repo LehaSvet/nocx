@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -643,6 +644,102 @@ func TestACoordinatorWakeIsTypedWhileClaudeDrawsItsOwnSuggestion(t *testing.T) {
 	if got := strings.Count(typed, "\r"); got != 1 {
 		t.Fatalf("%d submit keys reached the pane for one line: %q", got, typed)
 	}
+}
+
+// TestACoordinatorWakeIsNotTypedIntoASolidBoxCarryingTheSuggestionsWords is
+// the OTHER direction of the same measurement (nocx-xn63t.6.56), on the same
+// recording and the same characters: Claude's suggestion row repainted WITHOUT
+// SGR 2 is a person who typed that sentence.
+//
+// Measured 2026-10-18 by the nocx-xn63t.6.52 worker: the recorded faint drawing
+// and the same characters painted solid both read `BoxEmpty TRUE`, because the
+// rule recognised the suggestion by its WORDS. The cost of that spelling is the
+// sentence below — a person's own `Try "…"` — being submitted with nocx's wake
+// in front of it, which is exactly what the box gate exists to prevent.
+func TestACoordinatorWakeIsNotTypedIntoASolidBoxCarryingTheSuggestionsWords(t *testing.T) {
+	w := newWakeStand(t)
+	ctx := context.Background()
+
+	turn := openCapture(t, "claude-idle")
+	turn.to(t, w, 1470, agentdriver.StateFreeText, "Claude's own prompt suggestion to be on screen")
+
+	const drawn = `Try "fix typecheck errors"`
+	paintCoordinatorPromptRow(t, w, drawn, false)
+	if got := w.coordBox(t); got != drawn {
+		t.Fatalf("the coordinator's box reads %q, want %q — the same characters without SGR 2 are text in the box", got, drawn)
+	}
+
+	p := w.register(t, "reports while a person's sentence stands in the box")
+	w.reads(t, agentdriver.StateFreeText)
+	before := len(w.coordPTY.read())
+
+	w.settledIdle(t, p)
+	// A second settled reading: the sweep retries a refused line on every one,
+	// which is the mechanism the wait depends on, so this is a second chance to
+	// get it wrong rather than a sleep.
+	w.reads(t, agentdriver.StateFreeText)
+	if got := w.coordPTY.read()[before:]; got != "" {
+		t.Fatalf("nocx typed %q into a box holding a sentence a person typed", got)
+	}
+	waiting, err := w.workerStore.Since(ctx, workers.ReaderID(w.coordinator), 0, 10)
+	if err != nil {
+		t.Fatalf("read the mailbox: %v", err)
+	}
+	if len(waiting) == 0 {
+		t.Fatalf("the observation was lost with the refusal, so the coordinator will never hear about it")
+	}
+
+	// And with the SAME characters painted FAINT again — Claude's own drawing,
+	// on the same row of the same recording — the box reads empty and the
+	// waiting wake goes through at once: one line and one submit key, with no
+	// wait for the drawing to clear.
+	paintCoordinatorPromptRow(t, w, drawn, true)
+	if got := w.coordBox(t); got != "" {
+		t.Fatalf("the coordinator's box reads %q after the faint repaint, want it empty", got)
+	}
+	w.reads(t, agentdriver.StateFreeText)
+	waittest.WaitFor(t, "the wake to reach the box the faint drawing stands in", func() bool {
+		typed := w.coordPTY.read()[before:]
+		return strings.Contains(typed, "workers.inbox") && strings.HasSuffix(typed, "\r")
+	})
+	typed := w.coordPTY.read()[before:]
+	if got := strings.Count(typed, "workers.inbox"); got != 1 {
+		t.Fatalf("the coordinator was typed at %d times for one batch: %q", got, typed)
+	}
+	if got := strings.Count(typed, "\r"); got != 1 {
+		t.Fatalf("%d submit keys reached the pane for one line: %q", got, typed)
+	}
+}
+
+// paintCoordinatorPromptRow repaints the coordinator's own prompt row with the
+// SAME characters it already carries, drawn faint (SGR 2) or solid, and waits
+// for the shipped rule to see a free_text pane again.
+func paintCoordinatorPromptRow(t *testing.T, w *wakeStand, drawn string, faint bool) {
+	t.Helper()
+	f, err := w.grid.Frame(string(w.coordinator))
+	if err != nil {
+		t.Fatalf("read the coordinator's own frame: %v", err)
+	}
+	row := -1
+	for y := range f.Lines {
+		if strings.Contains(f.Text(y), drawn) {
+			row = y
+			break
+		}
+	}
+	if row < 0 {
+		t.Fatalf("no row of the coordinator's frame carries %q", drawn)
+	}
+	paint := "\x1b[" + strconv.Itoa(row+1) + ";1H\u276f\u00a0"
+	if faint {
+		paint += "\x1b[2m"
+	}
+	paint += drawn + "\x1b[0m"
+	w.grid.Feed(string(w.coordinator), []byte(paint))
+	waittest.WaitFor(t, "the coordinator's pane to read free_text after the repaint", func() bool {
+		fr, ferr := w.grid.Frame(string(w.coordinator))
+		return ferr == nil && w.rules.Classify(wakeAgent, fr) == agentdriver.StateFreeText
+	})
 }
 
 // coordBox is what the shipped rule reads as typed in the coordinator's own

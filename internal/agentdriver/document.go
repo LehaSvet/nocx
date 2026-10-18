@@ -341,6 +341,28 @@ type Extractor struct {
 	// fails in.
 	Join string `json:"join,omitempty"`
 
+	// FaintIsAbsent declares that this agent draws text it has NOT been given
+	// in the terminal's faint attribute (SGR 2), so a row whose captured values
+	// are wholly faint carries nothing — it is the agent's own drawing, and a
+	// caller reading it as the person's text answers a question nobody asked
+	// (nocx-xn63t.6.56, ADR-0090).
+	//
+	// It exists because the attribute is the only thing that can tell the two
+	// apart, and the alternative is what the rule did before: recognising the
+	// agent's own suggestion by its WORDS, which is a spelling the agent may
+	// change and a sentence a person is free to type. Claude's own case is the
+	// measured one — a grey `Try "…"` painted into an empty input box, read as
+	// text by every caller gating on "the box is empty", so a coordinator's
+	// queued wake waited out the suggestion and a person typing that line was
+	// read as an empty box (nocx-xn63t.6.32, .6.52).
+	//
+	// It is a property of the EXTRACTOR rather than of the frame because it is
+	// a statement about the agent's own drawing, exactly as Join is a
+	// statement about the agent's own wrapping: a rule for an agent that draws
+	// nothing faint sets nothing, and that agent's faint text — if it ever
+	// paints any — is read as the text it is.
+	FaintIsAbsent bool `json:"faintIsAbsent,omitempty"`
+
 	RegionSpec
 }
 
@@ -646,7 +668,7 @@ func (d documentDriver) capture(f paneview.Frame, anchors bound, e compiledExtra
 		spec.To = ""
 		spec.MaxRows = to - row
 	}
-	return spec.at(f, row).capture(f, e.re)
+	return spec.at(f, row).capture(f, e.re, e.spec.FaintIsAbsent)
 }
 
 func allHold(f paneview.Frame, anchors bound, preds []Pred) bool {
