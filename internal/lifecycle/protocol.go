@@ -414,13 +414,24 @@ type (
 	// applies to this invocation; false also covers server-classified worker
 	// panes whose command stays literal. Local and Payload are backend-
 	// generated; they are never claims supplied by the shell.
+	//
+	// ToolSurface is a SECOND classification and not a synonym for Local: it
+	// says this invocation has a nocx MCP tool surface to point an agent at,
+	// which is a fact about the MACHINE rather than about the record
+	// (nocx-xn63t.6.49). A local transport has one — its helper and socket are
+	// this backend's — while a published generation on a host nobody here
+	// controls has none. The two are independent because a worker's command
+	// stays literal (Local false) and still needs the surface; before this
+	// field existed the shell read Local for both questions and a spawned
+	// worker ran with no nocx tools at all.
 	AgentLaunchResolved struct {
-		RequestID RequestID `json:"request"`
-		Agent     string    `json:"agent"`
-		Local     bool      `json:"local"`
-		Ticket    string    `json:"ticket,omitempty"`
-		Payload   string    `json:"payload,omitempty"`
-		Reason    string    `json:"reason,omitempty"`
+		RequestID   RequestID `json:"request"`
+		Agent       string    `json:"agent"`
+		Local       bool      `json:"local"`
+		ToolSurface bool      `json:"tool_surface,omitempty"`
+		Ticket      string    `json:"ticket,omitempty"`
+		Payload     string    `json:"payload,omitempty"`
+		Reason      string    `json:"reason,omitempty"`
 	}
 
 	// AgentLaunchCancel releases an unresolved launch ticket. It is best effort

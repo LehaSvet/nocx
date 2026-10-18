@@ -245,6 +245,11 @@ func TestScriptVersionTracksScriptContent(t *testing.T) {
 		"59": "52c8748122742974e702beb6c91d31838df1ab2c147dd429304161b0950302fd",
 		"60": "c843837f4697a202e654c2a31e1f60369e86d059ba7b92225a521a3fc4e8bc4c",
 		"61": "b22d31a33198bf11dbab0449b1a2026ed74be37e23cbbbd0ea466fb9365ff6a3",
+		// v62: a launch that keeps its literal command still receives the
+		// staged MCP config, because "a record applies" and "this machine has
+		// a tool surface" are two classifications and the shell now reads both
+		// (nocx-xn63t.6.49).
+		"62": "a0d235bcd57a72a690f3fa3d94055dba1a439cea6a3d2dce86197bd4c221fb12",
 	}
 
 	h := sha256.New()

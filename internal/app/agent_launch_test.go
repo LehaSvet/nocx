@@ -205,6 +205,9 @@ func TestAgentLaunchServiceReadsCurrentLocalRecordWithoutLeakingIt(t *testing.T)
 	if !resolved.Local || resolved.Ticket == "" || resolved.Payload == "" {
 		t.Fatalf("local record did not resolve: %+v", resolved)
 	}
+	if !resolved.ToolSurface {
+		t.Fatalf("a local record launch on this machine resolves with no tool surface: %+v", resolved)
+	}
 	for _, private := range []string{"/bin/echo", "--record-arg", "two words", "private-value"} {
 		if strings.Contains(resolved.Payload, private) {
 			t.Errorf("payload exposes private record text %q", private)
@@ -272,6 +275,9 @@ func TestAgentLaunchServiceReturnsNamesOnlyForRemoteAndRefusesDisabledLocal(t *t
 	if remoteResult.Local || remoteResult.Ticket != "" || remoteResult.Payload != "" {
 		t.Fatalf("remote lookup returned local configuration: %+v", remoteResult)
 	}
+	if remoteResult.ToolSurface {
+		t.Fatalf("a launch on somebody else's host was promised this machine's tool surface: %+v", remoteResult)
+	}
 	if len(tickets.byToken) != 0 {
 		t.Fatalf("refusal or remote lookup created tickets: %d", len(tickets.byToken))
 	}
@@ -300,6 +306,32 @@ func TestAgentLaunchServiceDoesNotResolveWorkerSpawnCommandAsRecord(t *testing.T
 	}
 	if resolved.Local || resolved.Ticket != "" || resolved.Payload != "" {
 		t.Fatalf("worker's literal command was resolved through the local record: %+v", resolved)
+	}
+	// AND IT STILL GETS NOCX'S TOOLS (nocx-xn63t.6.49). The literal command
+	// and the tool surface are different answers: the record must not reach a
+	// worker, and the surface must, because the worker's pane is this
+	// machine's and its report is how its coordinator hears anything at all.
+	if !resolved.ToolSurface {
+		t.Fatalf("a worker's launch resolved with no tool surface: %+v", resolved)
+	}
+}
+
+// A WORKER LANE IS NOT A REMOTE ONE, and the difference is the whole defect:
+// on a remote transport there is no surface of ours to point at, so the same
+// literal command runs with none. That answer has to stay false, or a
+// published generation would be handed a per-agent argument for a helper that
+// is not there.
+func TestAgentLaunchServicePromisesNoToolSurfaceOnARemoteTransport(t *testing.T) {
+	transports := newTransportRegistry()
+	transports.register("remote-transport", transportKind{local: false})
+	service := newAgentLaunchService(nil, transports, newAgentLaunchTickets())
+	binding := lifecyclepub.AgentLaunchBinding{Transport: "remote-transport", Lane: "worker-lane", Domain: "domain-1", Epoch: 2, Agent: "myagent"}
+	resolved, err := service.Resolve(context.Background(), binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Local || resolved.ToolSurface || resolved.Ticket != "" || resolved.Payload != "" {
+		t.Fatalf("a remote launch was answered with local configuration or a local surface: %+v", resolved)
 	}
 }
 

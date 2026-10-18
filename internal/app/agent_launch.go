@@ -224,13 +224,25 @@ func (s *agentLaunchService) Resolve(ctx context.Context, binding lifecyclepub.A
 		return lifecyclepub.AgentLaunchResolution{Local: true}, errors.New("agent transport is not registered")
 	}
 	if !kind.local {
+		// A launch on somebody else's host: no record of ours applies, and no
+		// tool surface of ours is reachable there either (a published
+		// generation carries no per-agent argument for exactly this reason).
 		return lifecyclepub.AgentLaunchResolution{}, nil
 	}
 	if s.workerLane != nil && s.workerLane(binding.Lane) {
 		// workers.spawn owns a literal command line, not a Settings record.
 		// Its pane still uses the enrolment wrapper, but resolution stays
 		// conventional so configured record args/env cannot rewrite a worker.
-		return lifecyclepub.AgentLaunchResolution{Local: false}, nil
+		//
+		// THE TOOL SURFACE IS STILL OURS THOUGH (nocx-xn63t.6.49). The lane is
+		// a LOCAL pane: its shell carries this backend's helper path and tool
+		// socket, and the worker's own participant grant is what its calls are
+		// admitted as. Reporting "no record" and "no surface" with one field is
+		// what made a spawned worker run with no nocx tools, so this answer
+		// keeps the literal command and says the surface is there. The shell
+		// stages the config and appends --mcp-config; it never decodes a
+		// payload, because there is none.
+		return lifecyclepub.AgentLaunchResolution{Local: false, ToolSurface: true}, nil
 	}
 	refusal := func(reason string) (lifecyclepub.AgentLaunchResolution, error) {
 		return lifecyclepub.AgentLaunchResolution{Local: true, Reason: reason}, nil
@@ -264,7 +276,9 @@ func (s *agentLaunchService) Resolve(ctx context.Context, binding lifecyclepub.A
 	if err != nil {
 		return refusal(fmt.Sprint(err))
 	}
-	return lifecyclepub.AgentLaunchResolution{Local: true, Ticket: ticket, Payload: payload}, nil
+	// The record applies AND this machine has the surface the record's launch
+	// is pointed at; both are true here, and the shell reads them separately.
+	return lifecyclepub.AgentLaunchResolution{Local: true, ToolSurface: true, Ticket: ticket, Payload: payload}, nil
 }
 
 func (s *agentLaunchService) Cancel(binding lifecyclepub.AgentLaunchBinding, ticket string) {

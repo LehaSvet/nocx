@@ -87,6 +87,7 @@ import (
 	"github.com/shady2k/nocx/internal/log/logtest"
 
 	"github.com/shady2k/nocx/internal/agentdriver"
+	"github.com/shady2k/nocx/internal/agentrecord"
 	"github.com/shady2k/nocx/internal/agenttyping"
 	"github.com/shady2k/nocx/internal/assistant"
 	"github.com/shady2k/nocx/internal/content"
@@ -205,6 +206,32 @@ func (s *s14ExemptScreen) Screen(paneID string) (paneview.Frame, error) {
 // s14RealConfig is everything a caller asks of the stand beyond the
 // composition session_surface_realhelper_test.go's own check needs.
 type s14RealConfig struct {
+	// stagedWorkerLaunch wires the composition root's OWN launch resolution
+	// (agentLaunchService) over agentRecords, and gives every pane this stand
+	// opens afterwards the tool socket and helper path a real local pane is
+	// born with (nocx-xn63t.6.49).
+	//
+	// It is one option rather than three because the three are one fact at
+	// three seams — app.go wires exactly these together — and a stand that had
+	// one without the others would be a stand answering the question with a
+	// different composition than the product's. Nothing in the coordinator
+	// journey sets it: that journey is about the wake, not about how a launch
+	// is classified, and its own literal-command double is the classification
+	// this option replaces.
+	stagedWorkerLaunch bool
+	// agentRecords is the agent record store the production resolver reads.
+	// The worker lane never reaches it (that is the point of the lane), which
+	// is why a test can hand it a record whose command does not exist: nothing
+	// that runs may come from it.
+	agentRecords *agentrecord.Store
+	// noAdmissionRoot opens no session whose recorded pid is this test
+	// process, for the reason cockpit's own note gives: a caller INSIDE a pane
+	// is then a descendant of the helper daemon and so of this process, and a
+	// second root makes that caller's tree ambiguous and its calls refused
+	// ("a peer matching two live enrolled roots has no unambiguous session
+	// authority"). Unlike cockpit it changes nothing else — the coordinator's
+	// own pane stays an ordinary idle shell this stand never types into.
+	noAdmissionRoot bool
 	// cockpit turns the stand into the one the coordinator journey
 	// (nocx-luqz9.7) runs on, and it changes TWO things that are the same
 	// fact about who calls the endpoint.
@@ -236,6 +263,21 @@ type s14RealConfig struct {
 
 type s14RealOption func(*s14RealConfig)
 
+// withStagedWorkerLaunch answers a spawned worker's launch the way the product
+// does, and gives its pane the surface the wrapper stages.
+func withStagedWorkerLaunch(records *agentrecord.Store) s14RealOption {
+	return func(c *s14RealConfig) {
+		c.stagedWorkerLaunch = true
+		c.agentRecords = records
+	}
+}
+
+// withNoAdmissionRoot is for a check whose caller runs inside a pane (see the
+// field's own note).
+func withNoAdmissionRoot() s14RealOption {
+	return func(c *s14RealConfig) { c.noAdmissionRoot = true }
+}
+
 // withCockpit turns the stand into the one nocx-luqz9.7's check runs on. The
 // two numbers are deliberately small: they compress the product's own two
 // minutes into something a test can reach, and nothing asserts on them.
@@ -259,9 +301,13 @@ type s14RealStand struct {
 	store    *workers.MemoryStore
 	record   *workers.Registrar
 	endpoint *toolendpoint.Endpoint
-	local    *localHelperOpener
-	stateDir string
-	coord    session.Session
+	// dispatcher is the same tool dispatcher the endpoint serves, kept so a
+	// check can make a call AS the coordinator — reading its own mailbox the
+	// way the coordinator's own pane does, through the shipped pipeline.
+	dispatcher assistant.ToolDispatcher
+	local      *localHelperOpener
+	stateDir   string
+	coord      session.Session
 	// db is the real content store: the layout chain the spawner mints a
 	// worker's tab in is the same one the close takes it out of, and a journey
 	// that asserts the tab left the window reads it here.
@@ -396,10 +442,23 @@ func newS14RealStand(t *testing.T, mockDir, stateDir string, opts ...s14RealOpti
 	paneEnrol = enrol.hookInto(paneEnrol)
 	launchTransports := newTransportRegistry()
 	paneEnrol.transports = launchTransports
+	// THE STAND'S ORDINARY ANSWER IS A LITERAL COMMAND with no record: the
+	// journeys that run on it are about the session surface and the wake, and
+	// `command claude` is what a coordinator typed. withStagedWorkerLaunch
+	// swaps in the product's own resolver instead, for the check that is
+	// about how a launch is classified (nocx-xn63t.6.49).
+	var launchResolver lifecyclepub.AgentLaunchResolver = literalAgentLaunchResolver{transports: launchTransports}
+	if cfg.stagedWorkerLaunch {
+		launchTickets := newAgentLaunchTickets()
+		service := newAgentLaunchService(cfg.agentRecords, launchTransports, launchTickets)
+		service.workerLane = paneEnrol.isWorkerLaunch
+		paneEnrol.launchTickets = launchTickets
+		launchResolver = service
+	}
 	kernel := lifecycle.New(lifecycle.Options{})
 	pub := lifecyclepub.New(kernel,
 		lifecyclepub.WithAgentEnroller(paneEnrol),
-		lifecyclepub.WithAgentLaunchResolver(literalAgentLaunchResolver{transports: launchTransports}),
+		lifecyclepub.WithAgentLaunchResolver(launchResolver),
 	)
 	pub.SetEmitter(happyLifecycleEmitter{})
 	// The pty factory drove the channel against the publisher in the fake
@@ -417,7 +476,13 @@ func newS14RealStand(t *testing.T, mockDir, stateDir string, opts ...s14RealOpti
 	// mock claude sends is refused with "the lane maps to no session" —
 	// which is what made workers.spawn time out waiting for an enrolment
 	// that could never arrive, on the very first worker this test spawns.
-	local.noteChildDomainParent = func(_ lifecycle.TransportID, lane lifecycle.LaneID, sid string) {
+	local.noteChildDomainParent = func(t lifecycle.TransportID, lane lifecycle.LaneID, sid string) {
+		// BOTH HALVES, as the composition root wires them (app.go's own
+		// closure): which transport a lane rides, and which session it speaks
+		// for. The first is what agentLaunchService.Resolve reads to answer
+		// "is this a launch on THIS machine" — without it a local pane's
+		// resolution is refused as an unregistered transport.
+		launchTransports.register(t, transportKind{local: true})
 		lanes.register(lane, sid)
 	}
 
@@ -637,6 +702,14 @@ func newS14RealStand(t *testing.T, mockDir, stateDir string, opts ...s14RealOpti
 	if startErr := endpoint.Start(); startErr != nil {
 		t.Fatalf("start endpoint: %v", startErr)
 	}
+	// THE SOCKET A LOCAL PANE IS BORN WITH, read per spawn exactly as app.go
+	// binds it (SetLocalToolSocketPath → localHelperOpener.toolEndpoint), so a
+	// pane opened after this line carries NOCX_TOOL_SOCKET and the shell's
+	// staging has somewhere to point. The coordinator's own pane was opened
+	// before it and has none — it is not the pane under test here.
+	if cfg.stagedWorkerLaunch {
+		local.setToolSocketPath(endpoint.SocketPath())
+	}
 
 	// THE ADMISSION ROOT, which the cockpit does not open at all (see
 	// s14RealConfig.cockpit for the measured reason).
@@ -664,7 +737,7 @@ func newS14RealStand(t *testing.T, mockDir, stateDir string, opts ...s14RealOpti
 	// so it mints this one session for exactly that purpose instead.
 	var pinCh *s14PinChannel
 	var pinSess session.Session
-	if !cfg.cockpit {
+	if !cfg.cockpit && !cfg.noAdmissionRoot {
 		pinCh = &s14PinChannel{done: make(chan struct{})}
 		pinSess, err = reg.Adopt(ctx, session.Config{Cols: 80, Rows: 24}, session.ID(s14AdmissionRootSessionID), pinCh)
 		if err != nil {
@@ -696,7 +769,7 @@ func newS14RealStand(t *testing.T, mockDir, stateDir string, opts ...s14RealOpti
 
 	return &s14RealStand{
 		reg: reg, tp: tp, store: store, record: record,
-		endpoint: endpoint, local: local, stateDir: stateDir, coord: coord,
+		endpoint: endpoint, dispatcher: dispatcher, local: local, stateDir: stateDir, coord: coord,
 		db: db, binary: binary, root: pinCh,
 		observe: obs, wake: wake, raiser: raiser, seats: seats,
 		rules: paneDrivers, views: paneViews, watch: realWatch, typist: typing,

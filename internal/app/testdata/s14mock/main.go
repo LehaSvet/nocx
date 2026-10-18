@@ -62,9 +62,18 @@
 // with the ordinary authorizer in front of it. Nothing here writes a mailbox
 // or a record: the call is a real one and its answer is written beside the cue.
 //
-// The two paths the bridge needs are non-secret and arrive in a fourth file
-// the stand writes ({"helper": …, "socket": …}) — a local caller presents no
-// bearer (ADR-0058), which is why there is no token anywhere in this program.
+// WHERE THE BRIDGE'S PATHS COME FROM is the launch itself, when the launch
+// names them: a `--mcp-config <path>` argument — which is what the shell
+// integration's wrapper appends, and what a real agent reads — is preferred
+// over the fourth file the stand writes, and its `env` is handed to the bridge
+// the way a real client hands its server the pane's bearer. That preference is
+// what makes a launched worker's TOOL SURFACE itself observable
+// (nocx-xn63t.6.49): a pane given no config cannot fall back to one the stand
+// happens to have written, and says so instead.
+//
+// The stand's own file ({"helper": ..., "socket": ...}) is the fallback: a local
+// caller presents no bearer (ADR-0058), which is why the stand's file has no
+// token and why the staged one may.
 //
 // The `exit` cue is the last one: a pane whose process ends. The stand spawns
 // that worker with `claude; exit`, so returning from run() ends the agent and
@@ -81,6 +90,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -145,6 +155,103 @@ const exitCue = "exit"
 type mcpConfig struct {
 	Helper string `json:"helper"`
 	Socket string `json:"socket"`
+	// Env is what the config file told this program to start the bridge WITH,
+	// which a real MCP client passes to its server process. It is empty for
+	// the stand's own file and carries the pane's bearer when the file is the
+	// shell integration's own staged one — the one place a bearer arrives.
+	Env []string `json:"-"`
+}
+
+// stagedConfig is the shell integration's mcp.json (nocx.bash's __nocx_agent_stage):
+// the MCP client shape a real Claude is handed with --mcp-config, and a
+// different shape from mcpConfig above. It exists as its own type so a config
+// this program cannot read is a loud refusal rather than two empty paths.
+type stagedConfig struct {
+	MCPServers map[string]struct {
+		Type    string            `json:"type"`
+		Command string            `json:"command"`
+		Args    []string          `json:"args"`
+		Env     map[string]string `json:"env"`
+	} `json:"mcpServers"`
+}
+
+// launchRecord is what this launch was started with: its own arguments, and
+// which config it took its bridge paths from.
+type launchRecord struct {
+	Argv   []string `json:"argv"`
+	Staged bool     `json:"staged"`
+	Config string   `json:"config"`
+}
+
+// recordLaunch writes that record where the stand reads it. It is written as
+// ONE line and flushed before anything else happens, so a test that waits for
+// it is waiting on a fact about the launch rather than on the agent's mood.
+func recordLaunch(path string, argv []string, staged bool, config string) error {
+	raw, err := json.Marshal(launchRecord{Argv: argv, Staged: staged, Config: config})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(raw, '\n'), 0o600)
+}
+
+// mcpConfigFromArgv answers the path the shell integration staged for THIS
+// launch, from the arguments this process was started with: `--mcp-config
+// <path>`, appended after the caller's own arguments (agents.go says why it
+// goes last).
+//
+// It is the whole point of a launched agent reading its own argv: the paths a
+// pane's tools come from are the ones the pane was GIVEN, never ones this
+// program found by itself. A worker whose wrapper passed no argument gets ""
+// and falls back to the stand's file, which is exactly the state
+// nocx-xn63t.6.49 was: a spawned worker with no staged config at all.
+func mcpConfigFromArgv(args []string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--mcp-config" {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// loadMCPConfig reads one of the two shapes: the stand's own two-field file,
+// or the shell integration's staged MCP client config, which is translated
+// here — including the `env` a real client hands its server, so the bearer the
+// wrapper staged travels the way it really travels.
+func loadMCPConfig(path string, staged bool) (mcpConfig, error) {
+	raw, err := os.ReadFile(path) // #nosec G304 -- this test's own file, named by the launch or by the stand
+	if err != nil {
+		return mcpConfig{}, err
+	}
+	if !staged {
+		var cfg mcpConfig
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return mcpConfig{}, err
+		}
+		return cfg, nil
+	}
+	var file stagedConfig
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return mcpConfig{}, err
+	}
+	server, ok := file.MCPServers["nocx"]
+	if !ok || len(file.MCPServers) != 1 {
+		return mcpConfig{}, fmt.Errorf("the staged config names %d MCP servers and none of them is this one: %s", len(file.MCPServers), raw)
+	}
+	socket := ""
+	for i := 0; i+1 < len(server.Args); i++ {
+		if server.Args[i] == "--socket" {
+			socket = server.Args[i+1]
+		}
+	}
+	if server.Command == "" || socket == "" {
+		return mcpConfig{}, fmt.Errorf("the staged config names no helper or socket: %s", raw)
+	}
+	env := make([]string, 0, len(server.Env))
+	for key, value := range server.Env {
+		env = append(env, key+"="+value)
+	}
+	sort.Strings(env)
+	return mcpConfig{Helper: server.Command, Socket: socket, Env: env}, nil
 }
 
 // callRequest is one call cue: which tool to call, and with what arguments.
@@ -191,7 +298,8 @@ func run() error {
 	logDir := filepath.Join(stateDir, "log")
 	callDir := filepath.Join(stateDir, "call")
 	callLogDir := filepath.Join(stateDir, "calllog")
-	for _, dir := range []string{cueDir, logDir, callDir, callLogDir} {
+	launchDir := filepath.Join(stateDir, "launch")
+	for _, dir := range []string{cueDir, logDir, callDir, callLogDir, launchDir} {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return err
 		}
@@ -200,7 +308,24 @@ func run() error {
 	logFile := filepath.Join(logDir, sessionID)
 	callFile := filepath.Join(callDir, sessionID)
 	callLogFile := filepath.Join(callLogDir, sessionID)
+	// WHERE THIS LAUNCH'S BRIDGE PATHS COME FROM. The staged file wins when the
+	// launch carries one, because that is what a real agent does with
+	// --mcp-config, and it is the only reason this program can prove a worker
+	// was pointed at the tool surface its own pane staged (nocx-xn63t.6.49).
 	mcpConfigFile := filepath.Join(stateDir, "mcp.json")
+	mcpConfigStaged := false
+	if staged := mcpConfigFromArgv(os.Args[1:]); staged != "" {
+		mcpConfigFile, mcpConfigStaged = staged, true
+	}
+	// WHAT THIS LAUNCH WAS STARTED WITH, recorded where a test can read it.
+	// The arguments are the whole question a spawned worker's tool surface
+	// turns on — the owner's own evidence was an argv of `claude` with no
+	// `--mcp-config` — and a program that only ever shows its argv to its own
+	// process leaves that question answerable only by inference from what it
+	// later managed to do (nocx-xn63t.6.49).
+	if err := recordLaunch(filepath.Join(launchDir, sessionID), os.Args[1:], mcpConfigStaged, mcpConfigFile); err != nil {
+		return err
+	}
 
 	m, err := newMock(capturesDir)
 	if err != nil {
@@ -339,7 +464,7 @@ func run() error {
 				continue
 			}
 			lastCall = raw
-			outcome := m.callTool(raw, mcpConfigFile)
+			outcome := m.callTool(raw, mcpConfigFile, mcpConfigStaged)
 			if _, werr := callLog.WriteString(outcome + "\n"); werr != nil {
 				return werr
 			}
@@ -443,7 +568,7 @@ func (m *mock) paintLocked() []byte {
 // retried would hide exactly the failure a test is looking for, and this
 // program is the only agent in a worker's or a coordinator's pane, so every
 // call a journey needs is written here as a cue.
-func (m *mock) callTool(raw, configPath string) string {
+func (m *mock) callTool(raw, configPath string, staged bool) string {
 	var req callRequest
 	if err := json.Unmarshal([]byte(raw), &req); err != nil {
 		return fmt.Sprintf("CUE-MALFORMED %v", err)
@@ -451,13 +576,12 @@ func (m *mock) callTool(raw, configPath string) string {
 	if req.Tool == "" {
 		return "CUE-WITHOUT-TOOL"
 	}
-	cfgRaw, err := os.ReadFile(configPath) // #nosec G304 -- this test's own state directory
+	cfg, err := loadMCPConfig(configPath, staged)
 	if err != nil {
+		if staged {
+			return fmt.Sprintf("MCP-CONFIG-UNREADABLE %v", err)
+		}
 		return fmt.Sprintf("NO-MCP-CONFIG %v", err)
-	}
-	var cfg mcpConfig
-	if err := json.Unmarshal(cfgRaw, &cfg); err != nil {
-		return fmt.Sprintf("MCP-CONFIG-MALFORMED %v", err)
 	}
 	// tools/list is the one MCP method that is not a tools/call, and it is
 	// here because discovering which tools a pane's agent has IS a call an
@@ -501,6 +625,11 @@ func callMCPMethod(cfg mcpConfig, method string, params any) (string, error) {
 		return "", fmt.Errorf("the mcp config names no helper or socket: %+v", cfg)
 	}
 	cmd := exec.Command(cfg.Helper, "mcp", "--socket", cfg.Socket) // #nosec G204 -- this test's own config file
+	// THE ENVIRONMENT THE CONFIG NAMED, which is how a real MCP client hands
+	// its server the pane's bearer. Empty for the stand's own two-field file.
+	if len(cfg.Env) > 0 {
+		cmd.Env = append(os.Environ(), cfg.Env...)
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return "", err

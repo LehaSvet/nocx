@@ -79,6 +79,15 @@ type nestedKernel struct {
 	launchEnv       []string
 	launchLiteral   bool
 	launchMalformed bool
+	// launchToolSurface carries the second classification a real answer
+	// makes (lifecycle.AgentLaunchResolved.ToolSurface): this launch runs
+	// where nocx's own MCP tool surface exists. A server-classified worker
+	// pane is a LOCAL pane, so the backend says yes while keeping the
+	// command literal (nocx-xn63t.6.49); the two are independent and the
+	// shell must read both. False is a launch with no surface of ours — a
+	// published generation on somebody else's host — and the wrapper then
+	// passes no per-agent argument at all.
+	launchToolSurface bool
 	// agentMalformed sends a malformed lifecycle frame, so the wrapper must
 	// treat an answer it cannot parse as a refusal.
 	agentMalformed bool
@@ -200,9 +209,10 @@ func (k *nestedKernel) accept(f frame, body []byte) {
 			k.encodeAgentAnswerLocked(f, lifecycle.Event{
 				Kind: lifecycle.KindAgentLaunchResolved,
 				AgentLaunchResolved: &lifecycle.AgentLaunchResolved{
-					RequestID: lifecycle.RequestID(f.Request),
-					Agent:     f.Agent,
-					Local:     false,
+					RequestID:   lifecycle.RequestID(f.Request),
+					Agent:       f.Agent,
+					Local:       false,
+					ToolSurface: k.launchToolSurface,
 				},
 			})
 			return
@@ -219,11 +229,12 @@ func (k *nestedKernel) accept(f frame, body []byte) {
 		k.encodeAgentAnswerLocked(f, lifecycle.Event{
 			Kind: lifecycle.KindAgentLaunchResolved,
 			AgentLaunchResolved: &lifecycle.AgentLaunchResolved{
-				RequestID: lifecycle.RequestID(f.Request),
-				Agent:     f.Agent,
-				Local:     true,
-				Ticket:    strings.Repeat("a", 43),
-				Payload:   payload,
+				RequestID:   lifecycle.RequestID(f.Request),
+				Agent:       f.Agent,
+				Local:       true,
+				ToolSurface: true,
+				Ticket:      strings.Repeat("a", 43),
+				Payload:     payload,
 			},
 		})
 	case "agent_launch_cancel":

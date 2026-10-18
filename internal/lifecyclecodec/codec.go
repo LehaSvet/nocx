@@ -353,6 +353,10 @@ type wireEnvelope struct {
 	Payload *string `json:"payload,omitempty"`
 	// Local is a backend-generated classification, not a caller assertion.
 	Local bool `json:"local"`
+	// ToolSurface is the second, independent classification: this launch runs
+	// where nocx's own MCP tool surface exists. Omitted when false, which is
+	// the honest shape for a published generation on somebody else's host.
+	ToolSurface bool `json:"tool_surface,omitempty"`
 	// Bootstrap remains last in the wire struct because remote domain_grant
 	// shells extract it from a fixed trailing position. All fields above it
 	// are omitted on that event.
@@ -469,12 +473,13 @@ func decodeEnvelope(w *wireEnvelope) (lifecycle.Envelope, error) {
 		}
 	case lifecycle.KindAgentLaunchResolved:
 		env.Event.AgentLaunchResolved = &lifecycle.AgentLaunchResolved{
-			RequestID: lifecycle.RequestID(str(w.Request)),
-			Agent:     str(w.Agent),
-			Local:     w.Local,
-			Ticket:    str(w.Ticket),
-			Payload:   str(w.Payload),
-			Reason:    str(w.Reason),
+			RequestID:   lifecycle.RequestID(str(w.Request)),
+			Agent:       str(w.Agent),
+			Local:       w.Local,
+			ToolSurface: w.ToolSurface,
+			Ticket:      str(w.Ticket),
+			Payload:     str(w.Payload),
+			Reason:      str(w.Reason),
 		}
 	case lifecycle.KindAgentLaunchCancel:
 		env.Event.AgentLaunchCancel = &lifecycle.AgentLaunchCancel{Agent: str(w.Agent), Ticket: str(w.Ticket)}
@@ -620,6 +625,7 @@ func Encode(w io.Writer, env lifecycle.Envelope) (int, error) {
 			we.Request = new(string(p.RequestID))
 			we.Agent = new(p.Agent)
 			we.Local = p.Local
+			we.ToolSurface = p.ToolSurface
 			if p.Ticket != "" {
 				we.Ticket = new(p.Ticket)
 			}

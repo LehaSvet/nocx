@@ -359,10 +359,19 @@ type AgentLaunchBinding struct {
 // server-classified worker panes that keep their literal command. Payload is
 // already encoded as shell-safe data; it must never be logged.
 type AgentLaunchResolution struct {
-	Local   bool
-	Ticket  string
-	Payload string
-	Reason  string
+	// Local says local record lookup applies to this invocation.
+	Local bool
+	// ToolSurface says this invocation has a nocx MCP tool surface to point
+	// the agent at, which is a fact about the machine and not about the
+	// record: a local transport has one, a published generation on a host
+	// nobody here controls has none. It is separate from Local because a
+	// worker's command stays literal while still needing the surface
+	// (nocx-xn63t.6.49) — one field answering both questions is what left a
+	// spawned worker with no tools.
+	ToolSurface bool
+	Ticket      string
+	Payload     string
+	Reason      string
 }
 
 // AgentLaunchResolver owns the agent-record lookup and ticket lifecycle.
@@ -675,6 +684,7 @@ func (p *Publisher) answerAgentLaunchResolve(ctx context.Context, transport life
 	}
 	if req == nil {
 		ans.Local = true
+		ans.ToolSurface = false
 		ans.Reason = "the launch request was incomplete"
 	} else {
 		binding.Agent = req.Agent
@@ -682,18 +692,24 @@ func (p *Publisher) answerAgentLaunchResolve(ctx context.Context, transport life
 			// This event is sent only by the local delivery. Without an owner
 			// for records, fail closed rather than executing the record ID.
 			ans.Local = true
+			ans.ToolSurface = false
 			ans.Reason = "local agent launch resolution is not wired"
 		} else if resolved, err := p.agentLaunchResolver.Resolve(ctx, binding); err != nil {
 			ans.Local = true
+			ans.ToolSurface = false
 			ans.Reason = "the local agent record could not be resolved"
 		} else {
 			ans.Local = resolved.Local
+			ans.ToolSurface = resolved.ToolSurface
 			ans.Ticket = resolved.Ticket
 			ans.Payload = resolved.Payload
 			ans.Reason = resolved.Reason
 			if !resolved.Local {
 				// A non-record classification (remote or worker-literal) carries
 				// names only, regardless of what an implementation returned.
+				// ToolSurface is NOT part of that rule: it is the answer to a
+				// different question, and a worker-literal launch on this
+				// machine needs it (nocx-xn63t.6.49).
 				ans.Ticket = ""
 				ans.Payload = ""
 			}
@@ -706,6 +722,11 @@ func (p *Publisher) answerAgentLaunchResolve(ctx context.Context, transport life
 		ans.Ticket = ""
 		ans.Payload = ""
 		ans.Local = true
+		// The answer is a refusal and nothing may be staged for it, so the
+		// surface goes with the ticket and the payload: a shell handed a
+		// refusal that still claimed a surface would have one fact more than
+		// the answer it was given.
+		ans.ToolSurface = false
 		ans.Reason = "the local agent launch configuration exceeds the lifecycle frame limit"
 	}
 	_ = p.kernel.Deliver(out)

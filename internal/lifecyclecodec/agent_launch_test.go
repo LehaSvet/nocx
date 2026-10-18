@@ -12,8 +12,12 @@ func TestAgentLaunchEventsRoundTripDataFields(t *testing.T) {
 	ticket := "0123456789abcdef0123456789abcdef0123456789A"
 	cases := []lifecycle.Event{
 		{Kind: lifecycle.KindAgentLaunchResolve, AgentLaunchResolve: &lifecycle.AgentLaunchResolve{RequestID: "r-launch-1", Agent: "myagent"}},
-		{Kind: lifecycle.KindAgentLaunchResolved, AgentLaunchResolved: &lifecycle.AgentLaunchResolved{RequestID: "r-launch-1", Agent: "myagent", Local: true, Ticket: ticket, Payload: "v1\n2\n2f62696e2f6167656e74\n"}},
+		{Kind: lifecycle.KindAgentLaunchResolved, AgentLaunchResolved: &lifecycle.AgentLaunchResolved{RequestID: "r-launch-1", Agent: "myagent", Local: true, ToolSurface: true, Ticket: ticket, Payload: "v1\n2\n2f62696e2f6167656e74\n"}},
 		{Kind: lifecycle.KindAgentLaunchResolved, AgentLaunchResolved: &lifecycle.AgentLaunchResolved{RequestID: "r-launch-2", Agent: "myagent", Local: false}},
+		// The worker-literal classification: no record, and a surface, in one
+		// answer (nocx-xn63t.6.49). It is the case that made the two fields
+		// necessary, so it is the case the round trip has to carry.
+		{Kind: lifecycle.KindAgentLaunchResolved, AgentLaunchResolved: &lifecycle.AgentLaunchResolved{RequestID: "r-launch-3", Agent: "claude", Local: false, ToolSurface: true}},
 		{Kind: lifecycle.KindAgentLaunchCancel, AgentLaunchCancel: &lifecycle.AgentLaunchCancel{Agent: "myagent", Ticket: ticket}},
 		{Kind: lifecycle.KindAgentEnrol, AgentEnrol: &lifecycle.AgentEnrol{RequestID: "r-enrol-1", Agent: "myagent", LaunchTicket: ticket, Cols: 80, Rows: 24}},
 	}
@@ -26,6 +30,13 @@ func TestAgentLaunchEventsRoundTripDataFields(t *testing.T) {
 			}
 			if event.Kind == lifecycle.KindAgentLaunchResolved && !event.AgentLaunchResolved.Local && !bytes.Contains(frame.Bytes(), []byte(`"local":false`)) {
 				t.Fatal("remote classification omitted the explicit local=false field")
+			}
+			// The shell reads this off the raw frame, so the WIRE spelling is
+			// the contract: a field renamed here is a worker that silently
+			// stops being told it has tools.
+			if event.Kind == lifecycle.KindAgentLaunchResolved && event.AgentLaunchResolved.ToolSurface &&
+				!bytes.Contains(frame.Bytes(), []byte(`"tool_surface":true`)) {
+				t.Fatalf("the tool-surface classification is not on the wire in the spelling the shell reads: %s", frame.Bytes())
 			}
 			got, err := NewDecoder(&frame, Config{}, nil).ReadFrame()
 			if err != nil {
