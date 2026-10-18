@@ -1108,6 +1108,18 @@ export function setBlockWhere(block: HTMLElement, facts: { home?: string; branch
 }
 
 /**
+ * A ROW OF A BLOCK'S OUTPUT, in either of the two markups a block is drawn
+ * with: the serializer's `.term-line` spans, and `.term-grid-row` — the class
+ * a command block's rows carry since the painter cutover (paint-row.ts,
+ * nocx-2v80t.3.19, ADR-0009). They never mix inside one block, and they hold
+ * the same shape, so every reader of "the rows of this output" asks for both.
+ * Spelled once here: a reader that knew only one of the two read a painted
+ * block as having no rows at all, which is how a double click on a word of
+ * painted output came to select nothing (nocx-zg3k3.15.6).
+ */
+const OUTPUT_ROW_SELECTOR = '.term-line, .term-grid-row'
+
+/**
  * Returns true when the serialized output HTML is effectively empty.
  */
 function isOutputEmpty(html: string): boolean {
@@ -1153,7 +1165,7 @@ export function blockOutputText(blockEl: HTMLElement | null): string {
     blockEl.querySelector<HTMLElement>('.cmd-output') ??
     blockEl.querySelector<HTMLElement>('[data-output-incomplete]')
   if (!outputEl) return ''
-  const lines = outputEl.querySelectorAll('.term-line, .term-grid-row')
+  const lines = outputEl.querySelectorAll(OUTPUT_ROW_SELECTOR)
   if (lines.length === 0) return outputEl.textContent ?? ''
   return Array.from(lines)
     .map((line) => line.textContent ?? '')
@@ -1522,6 +1534,14 @@ function wireBlockSelection(
   blockEl.addEventListener('mouseup', (e) => {
     if (!mine(e)) return
     if (mouseMoved) return
+    // A RELEASE THAT ENDS A DOUBLE CLICK IS NOT A CLICK (nocx-zg3k3.15.6).
+    // `detail` is the browser's own count of the clicks a release closes: 2
+    // and above is a double or triple click, whose second press the block's
+    // word rule owns and whose third the painter's row rule owns. Toggling the
+    // block's own selection here answered both of them over the word the
+    // person had just selected. A keyboard activation reports detail 0 and is
+    // still a click.
+    if (e.detail >= 2) return
 
     // Toggle selection: if already selected, deselect; otherwise select
     const currentlySelected = blockEl.classList.contains(SELECTED_CLASS)
@@ -1680,16 +1700,35 @@ export function createCommandBlock(
     if ((e.target as HTMLElement).closest('.cmd-block') !== wrapper) return
     if (e.detail !== 2) return
     e.preventDefault()
+    // THE ROW THE POINTER IS IN, by the same two markups the copy reader
+    // reads (OUTPUT_ROW_SELECTOR above) plus the header's own text — a header
+    // word is a word for this gesture too. Naming only `.term-line` here left
+    // a PAINTED block's rows unrecognised, and since this handler has already
+    // cancelled the native word selection by then, the gesture selected
+    // nothing at all (nocx-zg3k3.15.6).
     const caret = document.caretRangeFromPoint?.(e.clientX, e.clientY)
     if (!caret || caret.startContainer.nodeType !== Node.TEXT_NODE) return
     const line = caret.startContainer.parentElement?.closest<HTMLElement>(
-      '.term-line, .cmd-header-text',
+      `${OUTPUT_ROW_SELECTOR}, .cmd-header-text`,
     )
     if (!line) return
     const range = wordRangeIn(line, caret.startContainer as Text, caret.startOffset)
     if (!range) return
     const sel = window.getSelection()
     if (!sel) return
+    // AND THE WORD IS THE WHOLE OF THE GESTURE (nocx-zg3k3.15.6). Only at the
+    // second press does the browser say the pair is a pair (detail 2), and by
+    // then the pair's FIRST release has already run the block's own
+    // click-to-select (P1-7) and painted the whole block. A double click means
+    // the word under the pointer, so that highlight is taken back here rather
+    // than left standing beside it, and the pair's second release stands down
+    // in wireBlockSelection — the release that used to toggle it off again.
+    // Two surfaces answered one sequence, and the person saw the block light
+    // up and the selection go (AGENTS.md, one owner per input).
+    if (wrapper.classList.contains(SELECTED_CLASS)) {
+      wrapper.classList.remove(SELECTED_CLASS)
+      onSelect(id, false)
+    }
     sel.removeAllRanges()
     sel.addRange(range)
   })
