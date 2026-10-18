@@ -115,16 +115,20 @@ func refuseLocalHelperUnreachable(cause error) error {
 		errors.Is(cause, helperclient.ErrLost),
 		errors.Is(cause, syscall.EPIPE):
 		// The endpoint accepted and then said nothing, died mid-handshake, or
-		// hung up on the hello write. That last one is the SAME event seen by
-		// a different observer: internal/helper/local's own note says a peer
-		// closing mid-handshake produces three errors — ErrNotOurHelper (the
-		// pump saw what was said), ErrLost (the carrier calls a peer close
-		// transport loss) and a bare EPIPE from the hello write — so the bare
-		// EPIPE is classified here rather than left for a message match. The
-		// remaining non-EPIPE forms stay the carrier's documented gap.
-		// Nothing here entitles us to name it as another build, so the remedy
-		// is the mild one — and it is a real one: the socket is being served,
-		// so a second attempt costs a person one gesture.
+		// hung up on the hello write. The last two are the SAME event seen by
+		// two observers — the carrier answers a peer close as transport loss
+		// WITH its reason (client.SocketConn.Wait), and a bare EPIPE from the
+		// hello write is that event's writer side — so both are classified
+		// here rather than left for a message match (nocx-d2nqo was the
+		// ambiguity; the carrier's answer is now one sentence).
+		//
+		// AN ErrLost REACHING HERE ALREADY COST EVERY ATTEMPT: reaching this
+		// machine's helper makes the reach again when the peer went away before
+		// it answered (internal/helper/local.Open, nocx-xn63t.6.41), so what
+		// arrives is either a start-up race that survived all of them or a
+		// probe that may not start one at all. Nothing here entitles us to name
+		// it as another build, so the remedy is the mild one — and it is a real
+		// one: the socket is being served, so a later attempt is not hopeless.
 		return transport.RefuseLocalHelper(transport.HelperRefusal{
 			Reason: transport.HelperHandshakeFailed,
 			Action: transport.HelperActionRetryOpen,
