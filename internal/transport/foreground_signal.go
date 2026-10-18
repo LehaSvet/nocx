@@ -571,7 +571,7 @@ func stopProcessGroup(lg log.Logger, sid session.ID, sess runLeaseSession, pgid 
 				"session_id", string(sid), "signal", int(sig), "pgid", pgid)
 			return foregroundDelivered // KILL — the execution is gone
 		}
-		if groupGone(sess, pgid, grace) {
+		if groupGone(lg, sid, sess, pgid, grace) {
 			lg.Info("foreground signal: the execution is gone",
 				"session_id", string(sid), "signal", int(sig), "pgid", pgid)
 			return foregroundDelivered
@@ -592,18 +592,70 @@ func stopProcessGroup(lg log.Logger, sid session.ID, sess runLeaseSession, pgid 
 	return foregroundUnreconciled
 }
 
-// groupGone polls ONE process group until it is gone — ErrNoForeground means
-// that group has exited — or `grace` elapses. A zombie waits for its parent's
-// reap, so the poll has to outlive it; the shell reaps promptly.
+// groupGone polls ONE process group until the probe PROVES it gone — the
+// sentinel the transport folds ESRCH and `pgid <= 0` into — or `grace`
+// elapses. A zombie waits for its parent's reap, so the poll has to outlive
+// it; the shell reaps promptly.
 //
 // It asks about the group the ladder addressed, never about "is anything in
 // the foreground": the second question answers yes for a command the person
 // started afterwards, which is how the escalation used to walk onto it.
-func groupGone(sess runLeaseSession, pgid int, grace time.Duration) bool {
+//
+// A PROBE THAT FAILED IS NOT PROOF, AND THIS RETURNED TRUE ON ANY ERROR
+// (nocx-01um8). Every error that is not the guard read as "the execution is
+// gone" — the one sentence this ladder exists not to say without evidence.
+// Over a HELPER-hosted session the probe cannot succeed AT ALL: kill(2) is not
+// what carries it, the helper's signal op is, and the helper refuses a
+// non-positive signal on purpose —
+//
+//	if p.Signal <= 0 || p.Signal > maxSignal {
+//		return fmt.Errorf("%w: %d is outside 1..%d", ErrSignal, p.Signal, maxSignal)
+//	}
+//
+// (internal/helper/session/service.go) — so the FIRST poll answered "gone",
+// stopProcessGroup returned delivered after its FIRST rung, and INT → TERM →
+// KILL was never walked. EVERY LOCAL PANE IS SUCH A SESSION (ADR-0057): its
+// helper observes the host's own foreground group, so ForegroundJob names one
+// and the ladder is what a Stop takes. (An ssh pane's helper has no local
+// record to observe, so its ForegroundJob answers "nobody could look" and the
+// stop goes to the terminal interrupt instead — a different path, and the one
+// this fold does not sit on.) Measured over a real helper, 2026-10-18: the
+// probe comes back as `helper: bad_params: session: signal is invalid or
+// unavailable: 0 is outside 1..64`, a *helper/client.RefusalError with no
+// unwrap to pty.ErrNoForeground, and it is the SAME answer whether the group
+// is alive or not — "gone" and "the helper would not take that signal" are two
+// facts wearing one answer here, and neither of them is evidence.
+//
+// So this returns a proof and only a proof — and when it has none it waits the
+// rung's WHOLE grace rather than answering early. The process that rung just
+// signalled may be dying of it, and reporting "not gone" the moment the probe
+// refuses would send the next rung to a command that was about to cooperate.
+// The price is paid in the open: on a transport whose probe cannot answer, a
+// Stop walks the ladder and pays the grace per rung instead of claiming after
+// one rung that the execution is gone — measured at 2 x SignalGrace, one grace
+// after INT and one after TERM, with the shipped default of one second each.
+// What the answer MOVES is the rung count and never the promise: the outcome a
+// person reads still comes from stopProcessGroup, which says delivered only
+// when a rung reached the group and unreconciled when none did.
+func groupGone(lg log.Logger, sid session.ID, sess runLeaseSession, pgid int, grace time.Duration) bool {
 	deadline := time.Now().Add(grace)
+	warned := false
 	for time.Now().Before(deadline) {
-		if err := sess.SignalProcessGroup(pgid, 0); err != nil {
+		err := sess.SignalProcessGroup(pgid, 0)
+		switch {
+		case err == nil:
+			// The group is still there: this is the grace the rung is being
+			// given to be obeyed.
+		case errors.Is(err, pty.ErrNoForeground):
 			return true
+		default:
+			// Warned ONCE per rung and not once per poll: the poll is every
+			// 50 ms and twenty identical lines would say less than one.
+			if !warned {
+				warned = true
+				lg.Warn("foreground signal: the probe could not say whether the execution's group is gone",
+					"session_id", string(sid), "pgid", pgid, "error", err)
+			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
