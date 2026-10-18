@@ -141,3 +141,108 @@ func TestThePreambleNamesTheTwoCallsAWorkerActuallyHas(t *testing.T) {
 		}
 	}
 }
+
+// Criterion (nocx-xn63t.6.46): every tool the preamble names carries the
+// selector a DEFERRING harness needs to load it.
+//
+// A Claude Code session is not handed nocx's tools as native ones: the MCP
+// tools of the nocx server are deferred, and a worker told only
+// `workers.report` answered that "the tool is not exposed as a native tool"
+// and called the socket by hand — the report this finding was filed from. The
+// harness-visible name is `mcp__nocx__workers_report`, and the selector that
+// loads it is `select:` in front of that name, so the expectation is DERIVED
+// from the names the scan above finds in the text rather than written out as a
+// second list: a tool added to the preamble tomorrow reds this test until its
+// selector is written beside it.
+//
+// AND THE CHECK IS PROVED TO BITE, the way the scan above is, with a text that
+// is wrong in each of the two ways it can be. A scan that had quietly stopped
+// matching would pass every real preamble and fail nothing.
+func TestThePreambleCarriesAToolSearchSelectorForEveryToolItNames(t *testing.T) {
+	text := workers.Preamble("sess-coordinator")
+	for _, problem := range preambleSelectorProblems(text) {
+		t.Errorf("%s:\n%s", problem, text)
+	}
+}
+
+// preambleSelectorProblems names every mismatch between the tools the text
+// tells a worker about and the selectors it gives for loading them: a tool
+// with no selector, a selector for a tool the text never names, and a text
+// carrying none at all.
+func preambleSelectorProblems(text string) []string {
+	names := preambleToolName.FindAllString(text, -1)
+	if len(names) == 0 {
+		// Same reasoning as the scan above: a text naming no tool at all is the
+		// one case this check cannot answer, and saying so is what stops a
+		// preamble rewritten into prose from passing by having nothing to check.
+		return []string{"the text names no tool at all, so this check can say nothing about it"}
+	}
+	var problems []string
+	named := make(map[string]bool, len(names))
+	for _, name := range names {
+		selector := claudeToolSearchSelector(name)
+		named[selector] = true
+		if !strings.Contains(text, selector) {
+			problems = append(problems, name+" is named but the text gives no "+selector+" to load it where tools are deferred")
+		}
+	}
+	selectors := preambleSelector.FindAllString(text, -1)
+	if len(selectors) == 0 {
+		problems = append(problems, "the text gives no ToolSearch selector at all")
+	}
+	for _, selector := range selectors {
+		if !named[selector] {
+			problems = append(problems, selector+" loads nothing this text tells a worker about")
+		}
+	}
+	return problems
+}
+
+// The negative half: the same check over the REAL preamble with one part
+// removed or added, so what fails is the change and not the prose around it.
+func TestThePreambleSelectorCheckRejectsAToolWithoutAWayToLoadIt(t *testing.T) {
+	real := workers.Preamble("sess-coordinator")
+	for _, tc := range []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "a tool named with its selector taken away",
+			text: strings.Replace(real, " or select:mcp__nocx__workers_inbox", "", 1),
+			want: "workers.inbox is named but the text gives no select:mcp__nocx__workers_inbox",
+		},
+		{
+			name: "a selector for a tool the text never names",
+			text: real + " select:mcp__nocx__workers_spawn",
+			want: "select:mcp__nocx__workers_spawn loads nothing",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The premise, so a case cannot pass because the change did not land.
+			if tc.text == real {
+				t.Fatalf("the mutation did not apply, so this case asserts nothing:\n%s", tc.text)
+			}
+			problems := preambleSelectorProblems(tc.text)
+			if len(problems) == 0 {
+				t.Fatalf("the check passed a preamble with %s:\n%s", tc.name, tc.text)
+			}
+			joined := strings.Join(problems, "; ")
+			if !strings.Contains(joined, tc.want) {
+				t.Fatalf("problems = %q, want one naming %q", joined, tc.want)
+			}
+		})
+	}
+}
+
+// preambleSelector is the shape of one ToolSearch selector in the text.
+var preambleSelector = regexp.MustCompile(`select:mcp__nocx__[a-z][a-z0-9_]*`)
+
+// claudeToolSearchSelector is the ToolSearch selector that loads one nocx tool
+// in Claude Code: the server's own prefix and the tool's name, with the
+// namespace separator the harness shows spelled as an underscore —
+// `workers.report` is `mcp__nocx__workers_report`, and the selector is that
+// name behind `select:`.
+func claudeToolSearchSelector(tool string) string {
+	return "select:mcp__nocx__" + strings.ReplaceAll(tool, ".", "_")
+}
