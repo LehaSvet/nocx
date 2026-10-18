@@ -981,6 +981,147 @@ func TestASpawnBriefingQueuedAtPermissionChoiceSubmitsAfterSessionKeysAnswer(t *
 	}
 }
 
+// realLengthTask is a coordinator's task as one is actually written: a few
+// sentences of instructions with NO newline in it. That matters, because a
+// briefing is the rules (one paragraph, workers.Preamble) and this task, and
+// a paste with no newline anywhere in it is the shape a real Claude collapses
+// into "[Pasted text #N]" with no line count at all (the corpus capture
+// claude-2.1.296-collapsed-paste; nocx-xn63t.6.50).
+const realLengthTask = "Diagnose the queued delivery before changing anything, then write the failing test before the fix, keep the change scoped to this one bead, run the focused suites for what you touched, and finish with a summary of what you found and what you changed. Do not merge the pull request."
+
+// TestASpawnBriefingAtRealLengthSubmitsAfterSessionKeysAnswer is
+// nocx-xn63t.6.50's own reproduction, through the same real
+// spawner/registrar/TaskQueue path as the two tests above: a REAL
+// workers.Briefing at the length a coordinator actually sends, a worker pane
+// that opens on Claude's folder-trust question, the coordinator answering that
+// question with the real session.keys call, and the briefing then typed into
+// the freed prompt exactly once and submitted exactly once.
+//
+// What the two tests above could not catch is the shape of the paste. Their
+// task is short, so the briefing they deliver is drawn over the box's own few
+// rows — the wrapped-echo shape nocx-xn63t.4.5 fixed — and the echo confirmed.
+// A real briefing is over 800 bytes before the task is even added, and above a
+// length a real Claude does not draw the paste at all: it draws
+// "❯␣[Pasted text #1]" and says "paste again to expand" under the box
+// (measured 2026-10-18 on Claude Code 2.1.296, recorded as the corpus capture
+// claude-2.1.296-collapsed-paste). The delivery's echo check accepted the text
+// verbatim or the "+M lines]" placeholder, so it never confirmed this one: the
+// briefing stayed in the box with Enter never sent and nothing logged, which
+// is exactly what the owner's run shows (paste intent at 19:05:22.318Z, then
+// nothing at all for that message).
+//
+// The mock agent draws the placeholder Claude draws, from the same measured
+// rule (s14mock's own pastedEcho), so what this test counts is bytes
+// production really wrote to a real PTY: the briefing once, and one Enter.
+func TestASpawnBriefingAtRealLengthSubmitsAfterSessionKeysAnswer(t *testing.T) {
+	mockDir := s14RealBuildMock(t)
+	stateDir := t.TempDir()
+	for _, dir := range []string{"cue", "log"} {
+		if err := os.MkdirAll(filepath.Join(stateDir, dir), 0o750); err != nil {
+			t.Fatalf("mkdir %s dir: %v", dir, err)
+		}
+	}
+	capturesDir, err := filepath.Abs(filepath.Join("..", "agentdriver", "testdata", "captures"))
+	if err != nil {
+		t.Fatalf("resolve captures dir: %v", err)
+	}
+	t.Setenv("PATH", mockDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("S14_CAPTURES_DIR", capturesDir)
+	t.Setenv("S14_STATE_DIR", stateDir)
+	// The pane opens on the folder-trust question, BEFORE its first paint, so
+	// the spawn below observes a question rather than racing an idle startup.
+	t.Setenv("S14_INITIAL_PHASE", "trust")
+
+	stand := newS14RealStand(t, mockDir, stateDir)
+	client := newS14MCPClient(t, stand.endpoint.SocketPath())
+	workerID, workerSession := s14RealSpawn(t, stand, client, "claude", realLengthTask)
+
+	// The real dialog, read as a menu target: the pane is asking, and it is
+	// asking BEFORE the briefing has reached it.
+	trustRead := s14ReadTarget(t, client, workerID, "menu")
+	if trustRead.Classification != string(agentdriver.StatePermissionChoice) || trustRead.Target == nil || trustRead.Target.Menu == nil {
+		t.Fatalf("worker read = %+v, want the folder-trust question as a permission_choice menu", trustRead)
+	}
+	queued := s14Read(t, client, workerID)
+	if len(queued.Pending) != 1 || queued.Pending[0].ID != "briefing" || queued.Pending[0].Phase != "queued" {
+		t.Fatalf("pending briefing = %+v, want exactly one queued briefing while the question stands", queued.Pending)
+	}
+	beforeAnswer, err := os.ReadFile(stand.logPath(workerSession))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read worker's PTY input log before the answer: %v", err)
+	}
+	if len(beforeAnswer) > 0 && strings.Contains(string(beforeAnswer), realLengthTask) {
+		t.Fatalf("the task reached the worker while its question was still unanswered: %q", beforeAnswer)
+	}
+
+	answer := client.call(t, "session.keys", map[string]any{
+		"sessionId": workerID, "tokenId": trustRead.Target.TokenID,
+		"option": "Yes, I trust this folder",
+	})
+	var keysResult struct {
+		State string `json:"state"`
+	}
+	s14DecodeInto(t, answer, &keysResult)
+	if keysResult.State != "executed" {
+		t.Fatalf("session.keys answer = %+v, want executed", keysResult)
+	}
+
+	// DELIVERY MUST END, AND IT MUST END SUBMITTED. The wait is on the
+	// delivery leaving its in-flight phases — the record's own state, not a
+	// duration — and the assertion that it ended in "submitted" comes after
+	// it, so a delivery that stops anywhere else fails with the phase and the
+	// box contents it stopped on rather than with a bare timeout. That is the
+	// other half of this bead: a delivery that does not submit has to be
+	// observable, and the owner's run had nothing to observe at all.
+	var ended struct {
+		phase string
+		box   string
+	}
+	waittest.WaitFor(t, "the real-length briefing's delivery to finish after the question was answered", func() bool {
+		read := s14Read(t, client, workerID)
+		for _, pending := range read.Pending {
+			if pending.ID != "briefing" {
+				continue
+			}
+			switch pending.Phase {
+			case "queued", "pasting", "awaiting_echo", "entering", "awaiting_submission":
+				return false
+			}
+			ended.phase, ended.box = pending.Phase, pending.BoxContents
+			return true
+		}
+		return false
+	})
+	if ended.phase != "submitted" {
+		raw, _ := os.ReadFile(stand.logPath(workerSession))
+		screen := s14Read(t, client, workerID)
+		t.Fatalf("the briefing's delivery ended in phase %q with the box showing %q,\nwant %q — the text reached the worker's input box and was never entered (nocx-xn63t.6.50).\nPane now: classification=%q text=%q\nEvery byte the pane received: %q",
+			ended.phase, ended.box, "submitted", screen.Classification, screen.Text, raw)
+	}
+	logged, err := os.ReadFile(stand.logPath(workerSession))
+	if err != nil {
+		t.Fatalf("read worker's PTY input log: %v", err)
+	}
+	if count := strings.Count(string(logged), realLengthTask); count != 1 {
+		t.Fatalf("the task text reached the worker's PTY %d times, want exactly once; bytes=%q", count, logged)
+	}
+	// Everything after the paste is what the delivery typed NEXT: exactly one
+	// Enter, and nothing else. A second Enter would be a duplicated submission
+	// and any other byte would be a second paste.
+	pastedAt := strings.Index(string(logged), realLengthTask)
+	after := string(logged)[pastedAt+len(realLengthTask):]
+	if rest := strings.Trim(after, "\r\n"); rest != "" {
+		t.Fatalf("the delivery wrote %q after the briefing, want only Enter bytes — one submission and no second paste", rest)
+	}
+	if enters := strings.Count(after, "\r") + strings.Count(after, "\n"); enters != 1 {
+		t.Fatalf("the delivery pressed Enter %d times after the briefing (trailing bytes %q), want exactly once", enters, after)
+	}
+	final := s14Read(t, client, workerID)
+	if len(final.Pending) != 1 || final.Pending[0].ID != "briefing" || final.Pending[0].Phase != "submitted" {
+		t.Fatalf("final pending briefing = %+v, want one submitted briefing", final.Pending)
+	}
+}
+
 // TestASpawnBriefingQueuedAtFolderTrustSubmitsAfterSessionKeysAnswer is
 // nocx-xn63t.6.32's own deterministic reproduction of the owner's working day,
 // over the same real spawner/registrar/TaskQueue path as the permission test

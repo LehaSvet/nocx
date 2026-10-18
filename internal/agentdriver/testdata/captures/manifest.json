@@ -443,6 +443,18 @@
       "atMs": 50000,
       "state": "free_text",
       "note": "a one-paragraph task bracketed-pasted into the box and left unsubmitted, drawn over FOUR content rows — the shape whose reading session.message confirms its own paste on (nocx-xn63t.4.5). No moment of its own in the inventory: it is not one of spec §6.4's five states, it is a free_text box that is TALL, and its rule-level expectation lives in input_text_test.go, where the reading itself is asserted rather than a label"
+    },
+    {
+      "capture": "claude-2.1.296-collapsed-paste",
+      "atMs": 30000,
+      "state": "free_text",
+      "note": "the input box after Claude's folder-trust question was answered and before the paste: the idle box as 2.1.296 draws it on a first run, with no suggestion in it (state free_text, inputText empty). The baseline the collapse mark below is a repaint of"
+    },
+    {
+      "capture": "claude-2.1.296-collapsed-paste",
+      "atMs": 45000,
+      "state": "free_text",
+      "note": "an 818-byte ONE-PARAGRAPH paste — workers.Preamble's own rules, no newline anywhere in it — which Claude Code 2.1.296 does NOT draw: it collapses it into its own placeholder, \"\u276f\u00a0[Pasted text #1]\", and the line under the box reads \"paste again to expand\". No line count at all, which is the shape session.message's boxContainsEcho never accepted: it demanded the pasted text verbatim or the \"+M lines]\" form, so a realistic briefing was pasted, never confirmed and never entered (nocx-xn63t.6.50). No moment of its own in the inventory: it is a free_text box that holds a paste, and its rule-level expectation lives in input_text_test.go, where the reading itself is asserted rather than a label"
     }
   ]
 }

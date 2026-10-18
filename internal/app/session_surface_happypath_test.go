@@ -865,6 +865,12 @@ type s14ReadResult struct {
 	Pending []struct {
 		ID    string `json:"id"`
 		Phase string `json:"phase"`
+		// BoxContents is what the delivery last read in the input box
+		// (contracts/tools/session.message.schema.json), reported by the
+		// record when the delivery ends at "partial": the difference between
+		// "the paste never landed" and "the box shows something else"
+		// (nocx-xn63t.6.50).
+		BoxContents string `json:"boxContents"`
 	} `json:"pendingMessages"`
 }
 

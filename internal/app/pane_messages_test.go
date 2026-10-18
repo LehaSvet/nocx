@@ -20,6 +20,8 @@ import (
 	"github.com/shady2k/nocx/internal/assistant"
 	helperclient "github.com/shady2k/nocx/internal/helper/client"
 	"github.com/shady2k/nocx/internal/helper/proto"
+	"github.com/shady2k/nocx/internal/log"
+	"github.com/shady2k/nocx/internal/log/logtest"
 	"github.com/shady2k/nocx/internal/paneview"
 	"github.com/shady2k/nocx/internal/session"
 	"github.com/shady2k/nocx/internal/sessionruntime"
@@ -431,12 +433,25 @@ func happyKeys(reader *fakeMsgReader, text string) *fakeMsgKeys {
 	return k
 }
 
+// collapsedPasteBytes is the length above which a one-paragraph paste is
+// collapsed rather than drawn. It is a fixture number and says so: the real
+// boundary is unmeasured, sitting between the 368-byte paste a 2.1.272 capture
+// drew verbatim and the 818-byte one a 2.1.296 capture collapsed (the corpus
+// README's table). Nothing this package tests is close to it — and the test
+// that matters for the collapse, TestAMessageClaudeCollapsesIntoItsPlaceholderIsStillEchoedAndEntered,
+// drives the REAL collapsed frame rather than a fake's drawing of one.
+const collapsedPasteBytes = 512
+
 // pastedEcho is what a real Claude input box shows once a paste has landed:
-// the text itself when it fits on one line, and its own placeholder naming the
-// extra lines when it does not.
+// the text itself when it is short, its own placeholder naming the extra lines
+// when it carries any, and — above a length, with no line count at all — the
+// bare placeholder a one-paragraph paste becomes (nocx-xn63t.6.50).
 func pastedEcho(text string) string {
 	if extra := strings.Count(text, "\n"); extra > 0 {
 		return fmt.Sprintf("[Pasted text #1 +%d lines]", extra)
+	}
+	if len(text) > collapsedPasteBytes {
+		return "[Pasted text #1]"
 	}
 	return text
 }
@@ -1033,6 +1048,108 @@ func TestAQueuedMessageLongerThanOneBoxRowIsPastedEchoedAndEntered(t *testing.T)
 	}
 }
 
+// collapsedPasteCapture is a real Claude Code 2.1.296 screen (recorded
+// 2026-10-18, dead endpoint, no Enter after the paste) holding a
+// long single-paragraph paste the agent did NOT draw: it collapsed it into
+// "❯␣[Pasted text #1]", with no line count and "paste again to expand" under
+// the box. The corpus README has the five recorded paste shapes side by side
+// (nocx-xn63t.6.50).
+const (
+	collapsedPasteCapture  = "claude-2.1.296-collapsed-paste"
+	collapsedPasteIdleMs   = 30000
+	collapsedPastePastedMs = 45000
+)
+
+// collapsedPasteBox is the reading of that pasted frame, byte for byte.
+const collapsedPasteBox = "[Pasted text #1]"
+
+// TestAMessageClaudeCollapsesIntoItsPlaceholderIsStillEchoedAndEntered is
+// nocx-xn63t.6.50's own defect, on the frame a real Claude draws for a
+// REALISTIC message.
+//
+// Above a length, Claude stops drawing what was pasted and draws its own
+// placeholder instead — "[Pasted text #1]" for a long ONE-PARAGRAPH paste, of
+// which a briefing is one: the rules are a paragraph and a task without a
+// newline in it keeps the whole paste on one line. boxContainsEcho accepted
+// the pasted text verbatim or the "+M lines]" form, and this frame carries
+// neither, so the echo was never confirmed: the delivery committed
+// phase "partial" with the paste sitting in the box and Enter never sent, and
+// nothing was logged (the owner's 2026-10-18 run: paste intent at
+// 19:05:22.318Z, then nothing at all for that message).
+//
+// Every frame here is the corpus's own, replayed in the order a real pane
+// draws them: the idle box the readiness probe reads, the collapsed box the
+// paste fills, and the idle box again once Enter has cleared it.
+func TestAMessageClaudeCollapsesIntoItsPlaceholderIsStillEchoedAndEntered(t *testing.T) {
+	briefing := workers.Briefing{
+		Preamble: workers.Preamble("coordinator-session-abc123"),
+		Task:     "Diagnose the queued delivery first, then write the failing test before any production change, keep the change scoped to the one bead, and report each command's own exit status to your coordinator.",
+	}.Text()
+	pasted := happyReplayCapture(t, collapsedPasteCapture, collapsedPastePastedMs)
+
+	// The premise, checked so no assertion below rests on a frame that
+	// stopped being the shape this test is about: the box reads back as
+	// Claude's collapsed placeholder, and it does NOT hold the pasted text.
+	obs := messagesTestRules(t).Observe("claude", pasted)
+	if text, ok := obs.InputText(); !ok || text != collapsedPasteBox {
+		t.Fatalf("%s@%dms reads back as (%q, ok=%v), want %q — this test's premise is that Claude collapsed the paste",
+			collapsedPasteCapture, collapsedPastePastedMs, text, ok, collapsedPasteBox)
+	}
+	for y := range pasted.Lines {
+		if strings.Contains(pasted.Text(y), briefing) {
+			t.Fatalf("%s@%dms still draws the pasted text on row %d: the frame no longer exercises Claude's collapse",
+				collapsedPasteCapture, collapsedPastePastedMs, y)
+		}
+	}
+	if lines := strings.Count(briefing, "\n"); lines != 0 {
+		t.Fatalf("the briefing carries %d newline(s), want none: a paste with a newline is drawn as the OTHER placeholder form (+M lines), not this one", lines)
+	}
+	idle := happyReplayCapture(t, collapsedPasteCapture, collapsedPasteIdleMs)
+
+	hub, access, sessionID := newMessagesTestAccess(t, "collapsed-paste")
+	reader := newFakeMsgReader("")
+	reader.setFrame(idle, agentdriver.StateFreeText, sessionruntime.TargetInput)
+	keys := &fakeMsgKeys{
+		pasteResult: assistant.KeysResult{State: "executed", BytesWritten: len(briefing)},
+		enterResult: assistant.KeysResult{State: "executed"},
+	}
+	keys.onSend = func(req assistant.KeysRequest) {
+		if req.Text != nil {
+			reader.setFrame(pasted, agentdriver.StateFreeText, sessionruntime.TargetInput)
+			return
+		}
+		if req.Key != nil {
+			reader.setFrame(idle, agentdriver.StateFreeText, sessionruntime.TargetInput)
+		}
+	}
+	pm := newTestPaneMessages(t, hub, reader, keys)
+
+	if _, err := pm.Send(context.Background(), access, sessionID, briefing, "free", "id-collapsed", ""); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	var delivered assistant.MessageView
+	waitForCondition(t, "the collapsed-paste message to reach submitted", func() bool {
+		for _, m := range pm.Pending(sessionID) {
+			if m.ID == "id-collapsed" {
+				delivered = m
+				return m.Phase == assistant.PhaseSubmitted
+			}
+		}
+		return false
+	})
+	if keys.callCount() != 2 || keys.enterCalls() != 1 {
+		t.Fatalf("PaneKeys.Send was reached %d times (%d Enter), want 2 — one paste and one Enter, and no re-paste of a message already in the box",
+			keys.callCount(), keys.enterCalls())
+	}
+	if keys.calls[0].Text == nil || *keys.calls[0].Text != briefing {
+		t.Fatalf("the step PaneKeys was handed was %+v, want the whole briefing as a text atom", keys.calls[0])
+	}
+	if delivered.BytesWritten != len(briefing) {
+		t.Errorf("record says %d bytes were written, want the %d the paste actually carried", delivered.BytesWritten, len(briefing))
+	}
+}
+
 // TestAWhenNowMessageIsDeliveredByItsOwnCallAndNotByTheQueue is
 // nocx-xn63t.4.13's own unit check, and it is about WHO delivers a
 // when=="now" message: design §8.1 says it "runs the delivery within the
@@ -1279,6 +1396,17 @@ func TestAMessageTheBoxDoesNotShowIsNotEntered(t *testing.T) {
 	}
 }
 
+// recordAttr reads one attribute off a logtest record, so a test can assert
+// what a line SAID rather than only that something was written.
+func recordAttr(r logtest.Record, key string) string {
+	for _, a := range r.Attrs {
+		if a.Key == key {
+			return a.Value.String()
+		}
+	}
+	return ""
+}
+
 // TestAnEchoThatNeverAppearsLeavesPartialAndNoEnter: the paste is written,
 // but the box never shows the echo — partial, and Enter is never sent. The
 // PTY-level assertion the task names ("zero \r bytes") is a real-helper
@@ -1294,11 +1422,18 @@ func TestAnEchoThatNeverAppearsLeavesPartialAndNoEnter(t *testing.T) {
 	// production bound (AGENTS.md: wait on an observable state change,
 	// never a duration — applied here to this package's own hard-coded
 	// timeout via the field defaultEchoWait's own doc names).
+	// A logger private to this test, so the phase this delivery ends in can be
+	// read off the log as well as the record (nocx-xn63t.6.50): a delivery
+	// that stops short of submitting used to commit its phase and write
+	// NOTHING, so the only way to learn a briefing had not been entered was to
+	// poll session.read and notice it was never submitted.
+	testLog := logtest.Slog(t)
+	ctx := log.WithLogger(context.Background(), log.NewSlogAdapter(testLog))
 	pm := newTestPaneMessages(t, hub, reader, keys)
 	pm.echoWait = 5 * time.Millisecond
 
 	token := mintInputTarget(t, reader, access, sessionID)
-	view, err := pm.Send(context.Background(), access, sessionID, "hello", "now", "id-1", token)
+	view, err := pm.Send(ctx, access, sessionID, "hello", "now", "id-1", token)
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
@@ -1307,6 +1442,12 @@ func TestAnEchoThatNeverAppearsLeavesPartialAndNoEnter(t *testing.T) {
 	}
 	if keys.enterCalls() != 0 {
 		t.Fatalf("Enter was sent %d times, want 0 (no echo was ever confirmed)", keys.enterCalls())
+	}
+	if !logtest.WaitFor(ctx, 5*time.Second, func(r logtest.Record) bool {
+		return r.Message == deliveryEndedMessage && recordAttr(r, "phase") == string(assistant.PhasePartial)
+	}) {
+		t.Fatalf("no %q line reported phase %q — a delivery that does not submit has to say so, or it disappears silently (log was:\n%s)",
+			deliveryEndedMessage, assistant.PhasePartial, logtest.TextSlog(testLog))
 	}
 }
 
