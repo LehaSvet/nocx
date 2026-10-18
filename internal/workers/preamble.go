@@ -52,6 +52,20 @@ package workers
 //     declarations carry (internal/agenttools), and app's test refuses to let
 //     this text name one the registry does not declare or the worker's own
 //     grant does not offer.
+//   - HOW TO GET AT THEM WHERE THE HARNESS DEFERS THEM (nocx-xn63t.6.46). A
+//     Claude Code worker is not handed nocx's MCP tools as native ones: the
+//     server's tools are deferred behind ToolSearch, and a worker told only
+//     `workers.report` answered "the tool is not exposed as a native tool" and
+//     called `$NOCX_TOOL_SOCKET` by hand — the report this sentence was filed
+//     from, and a worse defect than a missing call because it is a worker
+//     leaving the protocol it was given. So the text names each call twice:
+//     the nocx name the registry declares, and the harness-visible
+//     `mcp__nocx__<tool>` its session lists, with the `select:` selector that
+//     loads it. The mapping is one-way and mechanical (a dot becomes an
+//     underscore under the `mcp__nocx__` prefix, which is what a real Claude
+//     run's own tool calls print), which is why app's test can DERIVE the
+//     expected selector from the registry name and refuse a text that gives a
+//     name without a way to load it.
 //   - THE RULE THAT CANNOT BE GUESSED: A QUESTION DOES NOT BLOCK. Every tool
 //     call you have ever made returns an answer; `workers.report` with
 //     `question` returns as soon as it is recorded and the answer arrives as
@@ -179,6 +193,11 @@ func Preamble(coordinatorSession string) string {
 		who = "You are a worker, and your coordinator is nocx session " + coordinatorSession + "."
 	}
 	return who +
+		" Your calls are workers.report and workers.inbox — in Claude Code the MCP tools " +
+		"mcp__nocx__workers_report and mcp__nocx__workers_inbox, which it defers until " +
+		"loaded: load one with ToolSearch before your first call, by selector " +
+		"select:mcp__nocx__workers_report or select:mcp__nocx__workers_inbox, and a bare " +
+		"name is not a missing tool." +
 		" Tell it how you are doing with workers.report: kind \"done\" when you finish, " +
 		"\"progress\" at a milestone, and \"question\" when you cannot continue without an " +
 		"answer — ask, then END YOUR TURN: the call does not wait, and the answer arrives as " +

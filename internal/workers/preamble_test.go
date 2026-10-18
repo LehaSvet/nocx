@@ -174,3 +174,41 @@ func TestABriefingIsOneMessageWithTheRulesFirst(t *testing.T) {
 		}
 	}
 }
+
+// Criterion (nocx-xn63t.6.46): a worker whose harness DEFERS its MCP tools is
+// told to load one before using it, because in that harness the bare tool name
+// is not a call — measured in the finding this test belongs to, a Claude
+// worker read `workers.report` in its briefing, answered that the tool was not
+// exposed as a native tool, and called the socket by hand instead.
+//
+// Asserted on the SENTENCE that names ToolSearch rather than on three phrases
+// somewhere in the text: the instruction is worth nothing if "defer" is said in
+// one sentence and "load" in another, and the sentence is what a worker reads.
+func TestThePreambleTellsAWorkerToLoadADeferredToolBeforeUsingIt(t *testing.T) {
+	text := Preamble(preambleCoordinator)
+	var sentence string
+	for _, s := range strings.Split(text, ". ") {
+		if strings.Contains(strings.ToLower(s), "toolsearch") {
+			sentence = s
+			break
+		}
+	}
+	if sentence == "" {
+		t.Fatalf("the preamble never mentions ToolSearch, which is how a Claude worker is told to load a deferred MCP tool:\n%s", text)
+	}
+	lower := strings.ToLower(sentence)
+	for _, want := range []struct {
+		phrase string
+		why    string
+	}{
+		{"claude code", "the instruction is for the harness that defers tools, and another harness has no such step"},
+		{"defer", "the worker must know the tool exists but is not loaded, or a bare name reads as a missing tool"},
+		{"load", "the worker must be told to load the tool, not merely told the tools are deferred"},
+		{"before", "loading after the first call is the failure itself: the call is what has to happen second"},
+		{"select:", "a ToolSearch selector begins with select:, and without one the worker searches for a phrase and finds nothing"},
+	} {
+		if !strings.Contains(lower, want.phrase) {
+			t.Errorf("the sentence about ToolSearch lost %q — %s:\n%s", want.phrase, want.why, sentence)
+		}
+	}
+}
