@@ -144,6 +144,15 @@ type App struct {
 	// here, like gitFactory beside it, so the composition root's ownership
 	// is explicit and a wiring test can see what New built.
 	workerCheckouts *workerCheckouts
+	// workerClose is the seam a coordinator's workers.close reaches
+	// (nocx-xn63t.4.6): the participant ends, its tab leaves the window and
+	// every connected renderer is told. Held here, like workerCheckouts
+	// beside it, so a test drives the closer THIS function wired — the whole
+	// point of the bead's acceptance finding of 2026-10-18, where the close
+	// path was complete, every unit was green, and the closer the product
+	// built announced to nobody because this function left one of its seams
+	// out.
+	workerClose *workerCloser
 	// checkoutSweeper removes the checkouts the record shows nobody has
 	// used past the idle period (nocx-xn63t.1.6). Held here, like the
 	// service it sweeps through, so the composition root's ownership is
@@ -2435,6 +2444,44 @@ func New(opts ...Option) (*App, error) {
 	// thing left that can name a finished worker's tab — see workerTabs' own
 	// doc in workers.go for why nothing else in the process holds it.
 	workerSeats := newWorkerTabs()
+	// THE SEAM A COORDINATOR'S workers.close REACHES, built as a named value
+	// rather than inline for one reason: this function is the only place its
+	// seams are WIRED, so a value the root can also hold is a value a wiring
+	// test can drive instead of rebuilding — the arrangement the checkouts
+	// service is held in beside it. Unwired the registrar refuses, which is
+	// the right answer: reporting a worker ended that is still running is the
+	// one thing a close must never do.
+	workerClose := &workerCloser{
+		// The same pairing the spawner was given, and here it is the whole of
+		// the bead (nocx-xn63t.6.38): a coordinator's workers.close ends its
+		// worker's session on purpose, so it must record the ask before the
+		// registry close or the transport files a session-ended warning over
+		// it.
+		sessions: askedEnd{sessions: sess, asked: tp},
+		// The same layout chain the spawner mints the tab through, and the
+		// same seats record — one owner of "which tab is this participant's",
+		// read from the close's rather than the spawn's end.
+		layout: contentDB.Layout(),
+		tabs:   workerSeats,
+		// tp a third time (nocx-xn63t.4.6): the notification that a
+		// participant's tab has LEFT the window rides the same broadcast its
+		// appearance did, so every connected window's strip follows without a
+		// reload. IT IS THE FIELD THIS LITERAL WAS MISSING until 2026-10-18,
+		// with the comment above it already written: the close took the tab
+		// out of the store and left every window drawing it, because a nil
+		// announcer is the absence case the closer skips in silence — and
+		// every test that watched the notification handed the seam in by
+		// hand, so nothing in the repository could see the gap.
+		announce: tp,
+		// The checkout record 1.4 keeps: a close moves its last-used stamp.
+		checkouts: checkouts,
+		// The ONE local factory the composition root already owns — the same
+		// instance the spawner created any checkout with — so the close can
+		// answer what the checkout it leaves holds (nocx-xn63t.1.3). A read
+		// that fails is said in the result, never a failure and never a clean.
+		repos: gitFactory,
+		log:   logger,
+	}
 	workerRecord := workers.NewRegistrar(
 		workerStore,
 		&workerSpawner{
@@ -2492,35 +2539,7 @@ func New(opts ...Option) (*App, error) {
 		workerSup,
 		workers.WithLogger(logger),
 		workers.WithWake(workerWake),
-		// The seam a coordinator's workers.close reaches. Unwired it refuses,
-		// which is the right answer: reporting a worker ended that is still
-		// running is the one thing a close must never do.
-		workers.WithCloser(&workerCloser{
-			// The same pairing the spawner was given, and here it is the
-			// whole of the bead (nocx-xn63t.6.38): a coordinator's
-			// workers.close ends its worker's session on purpose, so it must
-			// record the ask before the registry close or the transport
-			// files a session-ended warning over it.
-			sessions: askedEnd{sessions: sess, asked: tp},
-			// The same layout chain the spawner mints the tab through, and
-			// the same seats record — one owner of "which tab is this
-			// participant's", read from the close's rather than the spawn's
-			// end.
-			// The checkout record 1.4 keeps: a close moves its last-used stamp.
-			checkouts: checkouts,
-			layout:    contentDB.Layout(), tabs: workerSeats,
-			// tp a third time (nocx-xn63t.4.6): the notification that a
-			// participant's tab has LEFT the window rides the same broadcast
-			// its appearance did, so every connected window's strip follows
-			// without a reload.
-			// The ONE local factory the composition root already owns — the
-			// same instance the spawner created any checkout with — so the
-			// close can answer what the checkout it leaves holds
-			// (nocx-xn63t.1.3). A read that fails is said in the result,
-			// never a failure and never a clean.
-			repos: gitFactory,
-			log:   logger,
-		}),
+		workers.WithCloser(workerClose),
 		workers.WithBound(workerParticipantBound),
 		workers.WithEnrolmentDeadline(workerEnrolmentDeadline),
 		// THE RESTART RECORD'S WRITER (ADR-0079). Without it nothing survives
@@ -2771,6 +2790,7 @@ func New(opts ...Option) (*App, error) {
 		discoverySched:          discoverySched,
 		gitFactory:              gitFactory,
 		workerCheckouts:         checkouts,
+		workerClose:             workerClose,
 		checkoutSweeper:         checkoutSweeper,
 		helperRegistry:          helperReg,
 		helperArtifacts:         localHelperArtifacts(o),
