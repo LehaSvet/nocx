@@ -320,6 +320,97 @@ func TestAPaneWithNoLiveScreenReceivesNothing(t *testing.T) {
 	}
 }
 
+// ── THE PERSON'S OWN DRAFT IS NOT APPENDED TO (nocx-xn63t.6.44) ───────────
+
+// A Pane whose input box holds a text the person typed is free_text — it IS
+// waiting for input, which is exactly what the state gate admits — and a line
+// written into it is APPENDED to their draft and submitted with it.
+//
+// This is the state a coordinator's own pane is in when somebody has started
+// typing a question there and a worker's mail lands. The corpus frame is the
+// one that recorded it: the box holds a sentence, and the rule reads that box.
+func TestAFreeTextPaneHoldingThePersonsDraftReceivesNothing(t *testing.T) {
+	f := replay(t, "claude-2.1.266-turn", 47000)
+	o := rulesOf(t).Observe(agent, f)
+	if o.State != agentdriver.StateFreeText {
+		t.Fatalf("the corpus classifies as %q, and this case needs free_text — a state gate would refuse it for the wrong reason", o.State)
+	}
+	if text, ok := o.InputText(); !ok || text == "" {
+		t.Fatalf("the corpus frame must hold the person's own text in the box; got (%q, %v)", text, ok)
+	}
+
+	ty, _, q := typistOn(t, f, verifiedFor(t))
+	got := ty.Submit(context.Background(), pane, "wake up")
+	if got.Outcome != agenttyping.OutcomeRefused {
+		t.Fatalf("outcome = %q (%s), want %q: nocx appended to a draft nobody asked it to touch",
+			got.Outcome, got.Reason, agenttyping.OutcomeRefused)
+	}
+	if !strings.Contains(got.Reason, "input box") {
+		t.Fatalf("reason = %q, want it to name the input box that refused", got.Reason)
+	}
+	if len(q.jobs) != 0 {
+		t.Fatalf("%d byte jobs reached a pane whose box already held the person's text: %q", len(q.jobs), q.all())
+	}
+}
+
+// AND THE SAME AT THE BOX END OF THE INTERVAL: a draft that lands between the
+// permit and the paste sends NOTHING — not the line, and no submit key after
+// it.
+//
+// It is the counterpart of TestAScreenThatChangesBeforeTheFirstWriteSendsNothing,
+// asked of the other thing a write has to know. Read 1 mints the permit on an
+// empty box; read 2 — the one that authorises the paste itself — sees the
+// person's sentence.
+func TestADraftThatAppearsBeforeTheFirstWriteSendsNothing(t *testing.T) {
+	ty, sc, q := typistOn(t, replay(t, "claude-2.1.266-turn", 84000), verifiedFor(t))
+	sc.changeAfter(1, replay(t, "claude-2.1.266-turn", 47000))
+
+	got := ty.Submit(context.Background(), pane, "wake up")
+	if got.Outcome != agenttyping.OutcomeRefused {
+		t.Fatalf("outcome = %q (%s), want %q: the paste was admitted on a box the person had started writing in",
+			got.Outcome, got.Reason, agenttyping.OutcomeRefused)
+	}
+	if got.State != agentdriver.StateFreeText {
+		t.Fatalf("state = %q, want free_text — the pane IS waiting for input, and it is the box that refused", got.State)
+	}
+	if len(q.jobs) != 0 {
+		t.Fatalf("%d writes reached a pane whose box gained the person's text mid-call: %q", len(q.jobs), q.all())
+	}
+}
+
+// AND THE PAIRED OTHER END OF THE SAME INTERVAL: the person clears the box, the
+// pane is still free_text, and the line is then the WHOLE of what nocx types —
+// once, with its own submit key and nothing appended to it.
+//
+// A refusal without this half would pass on a gate that refused every pane.
+func TestTheLineIsTypedOnceThePersonsDraftIsGone(t *testing.T) {
+	draft := replay(t, "claude-2.1.266-turn", 47000)
+	cleared := replay(t, "claude-2.1.266-turn", 84000)
+	if text, ok := rulesOf(t).Observe(agent, cleared).InputText(); !ok || text != "" {
+		t.Fatalf("the corpus frame must be the same pane with an empty box; got (%q, %v)", text, ok)
+	}
+
+	ty, sc, q := typistOn(t, draft, verifiedFor(t))
+	if got := ty.Submit(context.Background(), pane, "wake up"); got.Outcome != agenttyping.OutcomeRefused {
+		t.Fatalf("outcome with the draft still in the box = %q, want a refusal", got.Outcome)
+	}
+
+	sc.frame = cleared
+	got := ty.Submit(context.Background(), pane, "wake up")
+	if got.Outcome != agenttyping.OutcomeSubmitted {
+		t.Fatalf("outcome = %q (%s), want %q once the box was empty", got.Outcome, got.Reason, agenttyping.OutcomeSubmitted)
+	}
+	if len(q.jobs) != 2 {
+		t.Fatalf("%d writes reached the pane, want the line and its submit key as two: %q", len(q.jobs), q.all())
+	}
+	if want := "\x1b[200~wake up\x1b[201~"; string(q.jobs[0]) != want {
+		t.Fatalf("first write = %q, want the line alone as a bracketed paste %q", q.jobs[0], want)
+	}
+	if string(q.jobs[1]) != "\r" {
+		t.Fatalf("second write = %q, want the submit key on its own", q.jobs[1])
+	}
+}
+
 // ── WHAT MAY BE TYPED ─────────────────────────────────────────────────────
 
 // The escape that would end a bracketed paste early, and every other C0

@@ -173,6 +173,57 @@ func TestInputTextReadsASingleParagraphAcrossEveryWrappedRow(t *testing.T) {
 	}
 }
 
+// ── BoxEmpty: the ONE statement both writers ask ─────────────────────────
+
+// BoxEmpty fixes what "the box is empty" means for BOTH writers that need it
+// (nocx-xn63t.6.44): internal/app's session.message before it pastes a queued
+// message, and internal/agenttyping's grant before a wake is typed into a
+// coordinator's pane. Two spellings would agree on every frame anybody tried
+// and disagree on the one nobody did, so the predicate is asserted HERE and
+// not only through its callers.
+//
+// The middle cases are the ones a shorter predicate gets wrong, and they fail
+// in opposite directions. Claude's own faint suggestion is drawn inside the
+// box and is NOT text in it (reading the paint as text refuses every delivery
+// while the prompt stands, nocx-xn63t.6.32). A menu that has displaced the box
+// is a box NOBODY READ — not an empty one — and admitting a write on it is
+// exactly the concatenation this predicate exists to prevent.
+func TestBoxEmptyIsTheOnlyStatementOfWhatAnEmptyBoxIs(t *testing.T) {
+	reg := registry(t)
+	cases := []struct {
+		name    string
+		agent   string
+		capture string
+		atMs    int64
+		read    bool // InputText's ok: the rule read a box on this exact frame
+		want    bool
+	}{
+		{"an idle prompt", "claude", "claude-2.1.266-turn", 36000, true, true},
+		{"claude's own suggestion in the box", "claude", "claude-idle", 1470, true, true},
+		{"the person's own draft", "claude", "claude-2.1.266-turn", 47000, true, false},
+		{"a menu has displaced the box", "claude", "claude-2.1.266-permission", 49000, false, false},
+		{"an agent this build has no rule for", "no-such-agent", "claude-2.1.266-turn", 36000, false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			o := reg.Observe(c.agent, replay(t, c.capture, c.atMs))
+			_, ok := o.InputText()
+			if ok != c.read {
+				read := "not read"
+				if c.read {
+					read = "read"
+				}
+				t.Fatalf("%s@%dms: InputText ok = %v, want %v — this case is written for a box that is %s",
+					c.capture, c.atMs, ok, c.read, read)
+			}
+			if got := o.BoxEmpty(); got != c.want {
+				t.Fatalf("%s@%dms (state %q, InputText read=%v): BoxEmpty = %v, want %v",
+					c.capture, c.atMs, o.State, ok, got, c.want)
+			}
+		})
+	}
+}
+
 // TestInputTextIsUnreadableWhenAMenuDisplacesTheBox is the paired failure
 // this projection must keep: a menu moment has no box to read at all
 // (nocx-6q1uh.10, menuDisplacesInputBox), and InputText must say so with

@@ -501,6 +501,30 @@ func (o Observation) InputText() (text string, ok bool) {
 	return "", false
 }
 
+// BoxEmpty answers whether the box a person types in is EMPTY on this frame:
+// the rule read it and found nothing in it.
+//
+// THIS IS THE ONE STATEMENT OF THAT DECISION (nocx-xn63t.6.44), and it has two
+// callers that must never spell it a second way. internal/app's session.message
+// asks it before pasting a queued message, because a paste into a box that
+// already holds text delivers something nobody wrote, and again after its Enter
+// to see the box cleared. internal/agenttyping asks
+// it before a wake, because the same is true of a line typed at a coordinator
+// whose owner has started a question there: the pane is free_text in both
+// cases — it IS waiting for input — so the STATE alone admits a write that
+// appends to a person's draft and submits it with their own sentence in front
+// of it (measured 2026-10-18).
+//
+// false covers both "there is text in the box" and "this frame does not say",
+// and the direction is deliberate: ok is false for a rule with no inputText
+// extractor and for a frame a menu has displaced the box, and a write decided
+// on a box nobody could read is exactly the concatenation this exists to
+// prevent. A caller that needs to tell the two apart asks InputText itself.
+func (o Observation) BoxEmpty() bool {
+	text, ok := o.InputText()
+	return ok && text == ""
+}
+
 // MenuExtra is the name a rule document gives the extractor that reads a
 // menu's rows AT and ABOVE the cursor — the question, its own selected
 // option, and every option above it. It is a constant here for the same
