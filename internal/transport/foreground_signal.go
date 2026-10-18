@@ -284,10 +284,46 @@ func interruptForeground(lg log.Logger, sid session.ID, sess runLeaseSession, fb
 // protected branch unreachable with the compiler silent about it. Specific
 // before general, and the order is the correctness.
 func stopForeground(lg log.Logger, sid session.ID, sess runLeaseSession, grace time.Duration, fb protectedForeground) foregroundOutcome {
+	// A COMMAND THE SHELL HAS NOT STARTED IS HELD, WHATEVER THE KERNEL NAMES
+	// IN FRONT (nocx-zg3k3.14.16, measured in CI).
+	//
+	// The kernel's foreground group answers "who is in front", and while the
+	// person's command is still on its way to the pty the answer is somebody
+	// ELSE: a job the shell runs at a prompt — a prompt-context command, the
+	// tail of the previous line — or no group at all. Signalling that group is
+	// the ladder walking onto a program the person was not stopping, which is
+	// the failure nocx-uvac6.11 exists to prevent; and the record said
+	// delivered over a command that had not begun (CI run 39149340188: the
+	// Stop at 17:37:26.521Z, `sleep 30` forked at 26.576Z and still running
+	// when the 15 s window closed).
+	//
+	// The projection is the authority on the person's OWN command (ADR-0024
+	// §5), so it is asked first: an attempt it names as open and NOT started is
+	// not interruptible yet, and the gesture is held for that attempt's start
+	// exactly as it is over the shell's own group. A caller that may not hold —
+	// the run lease, whose cancellation is about the present moment — gets no
+	// unstarted target here and falls through to the kernel as before.
+	if fb != nil {
+		if target, ok := fb.StopTarget(); ok && !target.Started {
+			lg.Info("foreground signal: stop held for a command the shell has not started",
+				"session_id", string(sid), "attempt", string(target.Attempt))
+			return foregroundHeld
+		}
+	}
 	pgid, err := sess.ForegroundJob()
 	switch classifyForeground(err) {
 	case reachDelivered:
-		return stopProcessGroup(lg, sid, sess, pgid, grace)
+		// THIS BRANCH USED TO BE SILENT ON SUCCESS, and that is why the failure
+		// it produced could not be diagnosed: the per-test failure context
+		// filters the backend log by trace, and for the Stop's trace it held 49
+		// lines and not one from here (nocx-zg3k3.14.16, CI run 39149340188).
+		// Which group was addressed is the first thing a stranger needs.
+		lg.Info("foreground signal: stop is addressed to the foreground job's group",
+			"session_id", string(sid), "pgid", pgid)
+		outcome := stopProcessGroup(lg, sid, sess, pgid, grace)
+		lg.Info("foreground signal: stop over the foreground job settled",
+			"session_id", string(sid), "pgid", pgid, "outcome", string(outcome))
+		return outcome
 	case reachProtected, reachGone:
 		// NOTHING MAY BE SIGNALLED DIRECTLY, and the two kernel answers that
 		// say so are the same answer here. reachProtected: the foreground group
@@ -326,10 +362,13 @@ func stopForeground(lg log.Logger, sid session.ID, sess runLeaseSession, grace t
 // and a byte written into that window is a byte bash's parser eats: upstream
 // bash 5.2 resumes an accepted line at the index readline had reached, so
 // SIGINT arriving while it consumes the line makes it execute the line's
-// SUFFIX (measured, nocx-xn63t.6.11/.6.12). So the Stop is accepted and held
-// for that attempt (the read in StopTarget armed it), and the transport
-// delivers it when the shell authenticates its start — by then the line is
-// parsed and the program is the one in front.
+// SUFFIX (measured, nocx-xn63t.6.11/.6.12). The gesture is therefore accepted
+// and held for that attempt's start, and the transport delivers it when the
+// shell authenticates one — by then the line is parsed and the program is the
+// one in front. That answer is given BEFORE this function is reached
+// (stopForeground asks the projection first, nocx-zg3k3.14.16), so every
+// target here is a started one; the check is kept because a target that is
+// not started must never be interrupted whatever the caller did.
 //
 // A STARTED COMMAND WITH THE SHELL STILL IN FRONT IS USUALLY ONE THE SHELL IS
 // HANDING THE TERMINAL TO (nocx-zg3k3.14.16). The start is reported from bash's
@@ -352,14 +391,12 @@ func stopByTerminalInterrupt(lg log.Logger, sid session.ID, sess runLeaseSession
 		// protectedAttempt gives the interrupt path.
 		return foregroundNothingRunning
 	}
+	// THE COMMAND THE SHELL HAS NOT BEGUN NEVER REACHES HERE: stopForeground
+	// asks the projection before it asks the kernel and holds the gesture
+	// there (nocx-zg3k3.14.16), so every target named below is a STARTED one.
 	target, ok := conv.StopTarget()
-	if !ok {
+	if !ok || !target.Started {
 		return foregroundNothingRunning
-	}
-	if !target.Started {
-		lg.Info("foreground signal: stop held for an attempt that has not started yet",
-			"session_id", string(sid), "attempt", string(target.Attempt))
-		return foregroundHeld
 	}
 	attempt := target.Attempt
 	if shellInFront {
@@ -395,6 +432,8 @@ func stopByTerminalInterrupt(lg log.Logger, sid session.ID, sess runLeaseSession
 		return foregroundHeld
 	}
 	if conv.Ended(attempt, grace) {
+		lg.Info("foreground signal: the terminal interrupt ended the command",
+			"session_id", string(sid), "attempt", string(attempt))
 		return foregroundDelivered
 	}
 	lg.Warn("foreground signal: the attempt stayed open after the terminal interrupt",
@@ -525,10 +564,16 @@ func stopProcessGroup(lg log.Logger, sid session.ID, sess runLeaseSession, pgid 
 			continue
 		}
 		delivered = true
+		lg.Info("foreground signal: stop signal sent to the execution's group",
+			"session_id", string(sid), "signal", int(sig), "pgid", pgid)
 		if i == len(escalation)-1 {
+			lg.Info("foreground signal: the execution is gone",
+				"session_id", string(sid), "signal", int(sig), "pgid", pgid)
 			return foregroundDelivered // KILL — the execution is gone
 		}
 		if groupGone(sess, pgid, grace) {
+			lg.Info("foreground signal: the execution is gone",
+				"session_id", string(sid), "signal", int(sig), "pgid", pgid)
 			return foregroundDelivered
 		}
 		lg.Info("foreground signal: execution did not cooperate, escalating",
