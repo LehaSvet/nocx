@@ -515,6 +515,150 @@ func replayInto(t *testing.T, w *wakeStand, name string, atMs int64, want agentd
 	return reached
 }
 
+// ── the person's own draft (nocx-xn63t.6.44) ─────────────────────────────
+
+// A WAKE MUST NOT BE APPENDED TO WHAT THE PERSON IS TYPING IN THAT PANE.
+//
+// The pane is free_text either way — that is what the state gate reads, and it
+// is why the state gate alone let a wake be concatenated with a draft and
+// submitted with it on 2026-10-18. What distinguishes "the coordinator is idle
+// and waiting" from "somebody has started a question there" is the BOX.
+//
+// Both halves are the same recorded session: `claude-2.1.266-turn` holds the
+// person's sentence in the box at 47s, submits it, and is back to an idle empty
+// box at 84s. Nothing here is painted over anything else and no frame is made
+// up: the pane is enrolled empty and fed ONE capture forward from its byte
+// zero, in order.
+func TestACoordinatorWakeDoesNotTypeOverThePersonsDraft(t *testing.T) {
+	w := newWakeStand(t)
+	ctx := context.Background()
+
+	// The person is at the keyboard: their question is in the coordinator's
+	// box, and the pane is still waiting for input.
+	turn := openCapture(t, "claude-2.1.266-turn")
+	turn.to(t, w, 47000, agentdriver.StateFreeText, "the person to have typed a draft")
+	if got := w.coordBox(t); got == "" {
+		t.Fatalf("the coordinator's box reads empty, and this test needs the draft the corpus recorded there")
+	}
+
+	p := w.register(t, "reports while the person is typing")
+
+	// The coordinator is idle and settled WITH the draft still in its box.
+	w.reads(t, agentdriver.StateFreeText)
+	before := len(w.coordPTY.read())
+
+	// Mail lands. The wake decides — and the decision has to be "not now".
+	w.settledIdle(t, p)
+	// One more settled reading: the sweep retries a refused line on every one,
+	// which is the mechanism the wait depends on, so this is a second chance to
+	// get it wrong rather than a sleep.
+	w.reads(t, agentdriver.StateFreeText)
+	if got := w.coordPTY.read()[before:]; got != "" {
+		t.Fatalf("nocx typed %q into a box holding the person's draft", got)
+	}
+	// A refusal is a WAIT and not a loss: the mail is still unread.
+	waiting, err := w.workerStore.Since(ctx, workers.ReaderID(w.coordinator), 0, 10)
+	if err != nil {
+		t.Fatalf("read the mailbox: %v", err)
+	}
+	if len(waiting) == 0 {
+		t.Fatalf("the observation was lost with the refusal, so the coordinator will never hear about it")
+	}
+
+	// The person sends their question and the turn ends: the box is empty and
+	// the pane is idle again, which is the state the wake may type in.
+	turn.to(t, w, 84000, agentdriver.StateFreeText, "the person's turn to end with an empty box")
+	if got := w.coordBox(t); got != "" {
+		t.Fatalf("the coordinator's box reads %q, want it empty", got)
+	}
+	w.reads(t, agentdriver.StateFreeText)
+
+	// The line, and the submit key that follows it as a separate write.
+	waittest.WaitFor(t, "the wake to reach the box the person emptied", func() bool {
+		typed := w.coordPTY.read()
+		return strings.Contains(typed, "workers.inbox") && strings.HasSuffix(typed, "\r")
+	})
+	// EXACTLY ONCE. The whole of what reached that pane is one wake line, which
+	// is also what makes the assertion above unambiguous: had the wake typed
+	// while the draft was there, the second line would be here.
+	typed := w.coordPTY.read()
+	if got := strings.Count(typed, "workers.inbox"); got != 1 {
+		t.Fatalf("the coordinator was typed at %d times for one batch: %q", got, typed)
+	}
+	if got := strings.Count(typed, "\r"); got != 1 {
+		t.Fatalf("%d submit keys reached the pane for one line: %q", got, typed)
+	}
+	const want = "nocx: you have 1 new observation of your workers. Call workers.inbox."
+	if !strings.Contains(typed, want) {
+		t.Fatalf("the coordinator's pane was typed at with %q, want it to contain %q", typed, want)
+	}
+
+	// AND A FURTHER SETTLED READING TYPES NOTHING, which is the other half of
+	// "exactly once": a box that is now empty again (the submit key started
+	// the turn) must not tempt the sweep into a second line for the batch the
+	// first one already announced. The line that landed armed the pause, and
+	// the pause is two minutes, so this is the mechanism's own answer rather
+	// than a race with a clock.
+	woken := len(w.coordPTY.read())
+	w.reads(t, agentdriver.StateFreeText)
+	if got := w.coordPTY.read()[woken:]; got != "" {
+		t.Fatalf("a second settled reading typed %q at a coordinator that was already woken", got)
+	}
+}
+
+// coordBox is what the shipped rule reads as typed in the coordinator's own
+// input box, off the live grid — never a string this test assembled.
+func (w *wakeStand) coordBox(t *testing.T) string {
+	t.Helper()
+	f, err := w.grid.Frame(string(w.coordinator))
+	if err != nil {
+		t.Fatalf("read the coordinator's own frame: %v", err)
+	}
+	text, ok := w.rules.Observe(wakeAgent, f).InputText()
+	if !ok {
+		t.Fatalf("the shipped rule cannot read the coordinator's input box on this frame")
+	}
+	return text
+}
+
+// feed is ONE corpus replayed forward onto the coordinator's live grid: the
+// bytes before mark k are fed once, and the next call continues from there.
+// A capture cannot be rewound, only replayed from byte zero, so a test that
+// needs two moments of one session must keep the position rather than feed the
+// whole stream twice over the top of an emulator that already has it.
+type feed struct {
+	name   string
+	chunks []agentcapture.Chunk
+	at     int
+}
+
+func openCapture(t *testing.T, name string) *feed {
+	t.Helper()
+	//nolint:gosec // The path is joined literals naming a corpus in the tree.
+	_, chunks, err := agentcapture.Read(
+		filepath.Join("..", "agentdriver", "testdata", "captures", name+".jsonl"))
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	return &feed{name: name, chunks: chunks}
+}
+
+// to feeds the corpus forward to atMs and waits for the shipped rule to
+// classify the coordinator's pane as want. It waits on the CLASSIFICATION and
+// never on a duration.
+func (f *feed) to(t *testing.T, w *wakeStand, atMs int64, want agentdriver.State, what string) {
+	t.Helper()
+	next := agentcapture.ChunksThrough(f.chunks, atMs, f.at)
+	for _, c := range f.chunks[f.at:next] {
+		w.grid.Feed(string(w.coordinator), c.Data)
+	}
+	f.at = next
+	waittest.WaitFor(t, "the coordinator's pane to reach "+string(want)+" in "+f.name+" ("+what+")", func() bool {
+		fr, err := w.grid.Frame(string(w.coordinator))
+		return err == nil && w.rules.Classify(wakeAgent, fr) == want
+	})
+}
+
 // ── the human, two ways ───────────────────────────────────────────────────
 
 // The far end of the wake: what the person is actually told, and that the two

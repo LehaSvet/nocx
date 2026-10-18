@@ -864,14 +864,29 @@ func (m *paneMessages) agentFor(sessionID string) string {
 // — the same fail-closed direction pasteReady's caller already takes for
 // "the box is not currently identifiable".
 func (m *paneMessages) inputText(sessionID string, f paneview.Frame) (string, bool) {
-	if m.rules == nil {
+	o, ok := m.observation(sessionID, f)
+	if !ok {
 		return "", false
+	}
+	return o.InputText()
+}
+
+// observation is that same re-evaluation, kept as the OBSERVATION rather than
+// its text, so a caller that asks a property of the box asks it of the one
+// reading. pasteReady and confirmSubmission both ask BoxEmpty — the SAME
+// predicate internal/agenttyping's write gate uses (nocx-xn63t.6.44), so a
+// delivery and a wake cannot spell "empty" two ways. ok is false for the same
+// reasons inputText's is (no rule for this agent, nothing enrolled), and every
+// caller below takes that as "the box is not free".
+func (m *paneMessages) observation(sessionID string, f paneview.Frame) (agentdriver.Observation, bool) {
+	if m.rules == nil {
+		return agentdriver.Observation{}, false
 	}
 	agent := m.agentFor(sessionID)
 	if agent == "" {
-		return "", false
+		return agentdriver.Observation{}, false
 	}
-	return m.rules.Observe(agent, f).InputText()
+	return m.rules.Observe(agent, f), true
 }
 
 // pasteReady reports whether the paste precondition holds (design §8.2 step
@@ -908,8 +923,8 @@ func (m *paneMessages) pasteReady(ctx context.Context, da *DescendantPaneAccess,
 	if menuIsUp(read.Classification) {
 		return false
 	}
-	text, ok := m.inputText(sessionID, read.Frame)
-	return ok && text == ""
+	o, ok := m.observation(sessionID, read.Frame)
+	return ok && o.BoxEmpty()
 }
 
 // menuIsUp answers whether a classification names a menu the agent is waiting
@@ -1025,8 +1040,10 @@ func (m *paneMessages) confirmSubmission(ctx context.Context, da *DescendantPane
 			// fills it whether or not a target was asked for), so the box's
 			// own text is read straight off it — no second mint needed now
 			// that the check is the RULE's inputText rather than a trim over
-			// a minted target's span (nocx-6q1uh.18).
-			if text, ok := m.inputText(sessionID, read.Frame); ok && text == "" {
+			// a minted target's span (nocx-6q1uh.18). "Cleared" is the same
+			// predicate pasteReady decides on (BoxEmpty), so a delivery and
+			// its own confirmation cannot disagree about what an empty box is.
+			if o, ok := m.observation(sessionID, read.Frame); ok && o.BoxEmpty() {
 				return true
 			}
 		}

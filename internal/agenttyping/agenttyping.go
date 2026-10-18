@@ -12,14 +12,24 @@
 // recoverable; that is strictly worse than refusing, because Escape ANSWERS the
 // modal too. There is no mitigation here, only refusal.
 //
-// So: type only on a positively identified free_text. A permission menu, a
-// user-opened menu, a spinner, the TUI's own error, an unknown and a pane nocx
-// is not watching all receive NOTHING AT ALL, and the refusal is recorded with
-// the state that refused. unknown is not a gap to be optimistic about: every
-// consumer of internal/agentdriver treats it as busy, precisely so that the
-// failure direction is a refusal.
+// So: type only on a positively identified free_text whose input box is EMPTY.
+// A permission menu, a user-opened menu, a spinner, the TUI's own error, an
+// unknown and a pane nocx is not watching all receive NOTHING AT ALL, and the
+// refusal is recorded with the state that refused. unknown is not a gap to be
+// optimistic about: every consumer of internal/agentdriver treats it as busy,
+// precisely so that the failure direction is a refusal.
 //
-// # The two gates are the permit's constructor, not two ifs in a row
+// The empty box joins that list rather than sitting beside it (nocx-xn63t.6.44):
+// a free_text pane with a draft in its box is a pane whose owner is MID-SENTENCE.
+// A line written there is appended to what they typed and submitted with it —
+// their question to their agent arrives with nocx's sentence in front of it —
+// and the state gate alone cannot see the difference, because free_text is
+// exactly what waiting-for-input looks like whether or not somebody has started
+// writing. The predicate is agentdriver.Observation.BoxEmpty, the same one
+// session.message pastes on, so the two callers cannot disagree about what an
+// empty box is.
+//
+// # The gate is the permit's constructor, not a row of ifs
 //
 // A caller of this package never reaches the pane's input queue. What reaches
 // it is a permit, and grant is the only thing in this package that builds one:
@@ -29,7 +39,11 @@
 //     by the caller;
 //   - the agent's rule has EARNED typing authority (agentcalib.Verdict.MayType,
 //     a value whose backing field is unexported in that package and written in
-//     exactly one statement, so nothing here can manufacture it).
+//     exactly one statement, so nothing here can manufacture it);
+//   - the box the line would go into is empty, read off the frame that mints
+//     the permit and again off the frame that authorises the paste — and
+//     never off the submit key's, because by then the box holds the text this
+//     call just pasted.
 //
 // Every early return in grant returns a refusal and a ZERO permit, and a zero
 // permit's `by` is nil, so put writes nowhere. The pane and the agent live
@@ -137,17 +151,28 @@ const (
 	submitKey  = "\r"
 )
 
+// emptyBoxRefusal is the sentence a box that is not empty refuses with, in the
+// same words at both reads — the permit's and the paste's own frame — so a
+// person is told what stopped the write and not which routine noticed it.
+const emptyBoxRefusal = "nocx types into a pane whose input box it can read and is empty, and this one is neither"
+
 // Screens is the seam onto a pane's live grid (AD-8). One method, because
 // typing may READ a screen and may not enrol, withdraw, resize or classify one.
 type Screens interface {
 	Frame(paneID string) (paneview.Frame, error)
 }
 
-// Rules classifies one frame under one agent's rule. The concrete registry
+// Rules reads one frame under one agent's rule. The concrete registry
 // satisfies it; the seam exists so this package depends on the abstraction and
 // not on the registry's other powers.
+//
+// It is Observe and not Classify because a write needs TWO things from one
+// frame — the state, and whether the box the person types in is empty — and
+// asking twice would be two evaluations of one frame that could disagree
+// (Registry.Classify is Observe's own scalar projection for exactly this
+// reason). One call, one reading, both answers.
 type Rules interface {
-	Classify(agent string, f paneview.Frame) agentdriver.State
+	Observe(agent string, f paneview.Frame) agentdriver.Observation
 }
 
 // Authority answers what an agent's rule has EARNED against the frames a person
@@ -220,6 +245,13 @@ type Result struct {
 	// otherwise the state that refused them. StateUnknown when nothing could
 	// read the screen at all — no rule with authority, no grid, no enrolment —
 	// which is the same value every other consumer treats as busy.
+	//
+	// A REFUSAL CAN NAME free_text, and that is not a contradiction: the box a
+	// line would be appended to is not a member of the driver's closed set, so
+	// a pane that IS waiting for input but holds somebody's draft refuses with
+	// the state it actually read (nocx-xn63t.6.44). A caller that treats
+	// State == free_text as "the write went through" would be reading the
+	// Outcome field, which is the one that answers that question.
 	State agentdriver.State
 	// Reason is why, in the words a person reads. Empty exactly when the whole
 	// submission was accepted.
@@ -267,7 +299,7 @@ func (t *Typist) put(ctx context.Context, paneID, text string, submit bool) Resu
 	if refusal != nil {
 		return *refusal
 	}
-	if r := p.write(ctx, []byte(pasteStart+body+pasteEnd)); r != nil {
+	if r := p.write(ctx, []byte(pasteStart+body+pasteEnd), true); r != nil {
 		return *r
 	}
 	typed := Result{
@@ -278,7 +310,10 @@ func (t *Typist) put(ctx context.Context, paneID, text string, submit bool) Resu
 		t.log.Info("nocx typed into a pane", "pane_id", p.pane, "agent", p.agent, "bytes", len(body))
 		return typed
 	}
-	if r := p.write(ctx, []byte(submitKey)); r != nil {
+	// The submit key is gated on its own frame but NOT on the box: the text
+	// this call just pasted is in it, and a box check here would refuse the key
+	// of every submission.
+	if r := p.write(ctx, []byte(submitKey), false); r != nil {
 		// The one partial state this has, and it is named rather than folded
 		// into either neighbour: the text is in the input region and nothing
 		// answered anything. Better than the alternative by exactly the margin
@@ -308,7 +343,7 @@ type permit struct {
 	agent string
 }
 
-// grant asks both gates and mints the permit, or answers why not.
+// grant asks every gate and mints the permit, or answers why not.
 //
 // The order is deliberate. Authority first, because classifying with a rule
 // that has not earned the right to be believed produces a state nobody should
@@ -320,10 +355,32 @@ func (t *Typist) grant(ctx context.Context, paneID string) (permit, *Result) {
 	if refusal != nil {
 		return permit{}, refusal
 	}
-	if _, lookRefusal := t.look(paneID, agent); lookRefusal != nil {
+	o, lookRefusal := t.look(paneID, agent)
+	if lookRefusal != nil {
 		return permit{}, lookRefusal
 	}
-	// Both answers are in. This is the only statement in this package that
+	// THE BOX IS THE THIRD GATE, AND IT IS NOT PART OF look (nocx-xn63t.6.44).
+	//
+	// free_text says the pane is waiting for input; it does not say the box is
+	// empty. A line written into a box that already holds a draft is APPENDED
+	// to it and submitted with it, so the person's half-written question goes
+	// to their agent with nocx's sentence in front of it — measured 2026-10-18,
+	// on a coordinator whose owner had started typing.
+	//
+	// It is asked HERE, when the permit is minted, and once more in write on
+	// the frame that authorises the TEXT — the same interval discipline the
+	// state gate already follows, so a keystroke landing between the two reads
+	// still stops the paste. It is deliberately NOT asked on the submit key:
+	// by then the box holds the text this very call just pasted, and a box gate
+	// on that segment would refuse the submit key of every submission this
+	// package makes. It is not part of look for the same reason.
+	//
+	// The window that leaves after the last read is the same residual the state
+	// gate names: a person's own keystrokes racing ours to one pty.
+	if !o.BoxEmpty() {
+		return permit{}, t.refuse(paneID, agent, o.State, emptyBoxRefusal)
+	}
+	// Every answer is in. This is the only statement in this package that
 	// builds a permit with a Typist in it.
 	return permit{by: t, pane: paneID, agent: agent}, nil
 }
@@ -351,23 +408,29 @@ func (t *Typist) authority(ctx context.Context, paneID string) (string, *Result)
 // One derivation of "is this pane inviting input", read by the grant and by
 // every write. A second one would agree everywhere anybody looked and disagree
 // on the frame nobody tried, which is the shape this repository has paid for.
-func (t *Typist) look(paneID, agent string) (agentdriver.State, *Result) {
+func (t *Typist) look(paneID, agent string) (agentdriver.Observation, *Result) {
 	f, err := t.screens.Frame(paneID)
 	if err != nil {
 		// The ordinary race: the session ended and the watch closed. A pane
 		// with no screen is not a pane with an idle screen.
-		return agentdriver.StateUnknown, t.refuse(paneID, agent, agentdriver.StateUnknown,
+		return agentdriver.Observation{}, t.refuse(paneID, agent, agentdriver.StateUnknown,
 			"nocx has no live screen for that pane, so it cannot see what typing would answer")
 	}
 	if refusal := t.vouched(paneID, agent, f); refusal != nil {
-		return agentdriver.StateUnknown, refusal
+		return agentdriver.Observation{}, refusal
 	}
-	state := t.rules.Classify(agent, f)
-	if state != agentdriver.StateFreeText {
-		return state, t.refuse(paneID, agent, state,
-			fmt.Sprintf("that pane is %s, and nocx types only into a pane that is waiting for input", said(state)))
+	// ONE evaluation of this frame, and both answers come out of it: the state
+	// that decides whether nocx may type here at all, and whether the box it
+	// would type into is empty — grant asks the second of the permit's frame
+	// and write asks it again of the paste's. Asking the registry twice would be
+	// two readings of one frame that could disagree; Classify is Observe's own
+	// scalar projection for exactly that reason.
+	o := t.rules.Observe(agent, f)
+	if o.State != agentdriver.StateFreeText {
+		return o, t.refuse(paneID, agent, o.State,
+			fmt.Sprintf("that pane is %s, and nocx types only into a pane that is waiting for input", said(o.State)))
 	}
-	return state, nil
+	return o, nil
 }
 
 // vouched is the completeness gate: the reading a write is decided on must be
@@ -421,9 +484,13 @@ func saidCompleteness(c sessionruntime.Completeness) string {
 }
 
 // write re-takes the decision from a frame read HERE and writes b only if that
-// frame still says free_text. Nothing stands between the read and the queue
-// call: b was built before the permit was asked for.
-func (p permit) write(_ context.Context, b []byte) *Result {
+// frame still says free_text — and, on the segment that carries TEXT
+// (intoEmptyBox), still says the box is empty. Nothing stands between the read
+// and the queue call: b was built before the permit was asked for.
+//
+// intoEmptyBox is false for exactly one segment: the submit key, whose own
+// paste is already in the box by the time that key is gated.
+func (p permit) write(_ context.Context, b []byte, intoEmptyBox bool) *Result {
 	if p.by == nil {
 		// The zero permit. Unreachable while grant is the only constructor,
 		// and stated anyway: an invariant held only by a caller's good
@@ -433,8 +500,15 @@ func (p permit) write(_ context.Context, b []byte) *Result {
 			Reason: "nothing granted this write, so nothing was written",
 		}
 	}
-	if _, refusal := p.by.look(p.pane, p.agent); refusal != nil {
+	o, refusal := p.by.look(p.pane, p.agent)
+	if refusal != nil {
 		return refusal
+	}
+	if intoEmptyBox && !o.BoxEmpty() {
+		// The person's keystroke landed between the permit and this read. The
+		// paste is not sent: appending to a draft IS the defect, and it is the
+		// same defect at any window width.
+		return p.by.refuse(p.pane, p.agent, o.State, emptyBoxRefusal)
 	}
 	if !p.by.input.Accept(p.pane, b) {
 		return p.by.refuse(p.pane, p.agent, agentdriver.StateFreeText,
