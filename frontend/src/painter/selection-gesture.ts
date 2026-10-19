@@ -11,6 +11,7 @@ import { snapshotForRows, storedBlockRowsForSelection } from '../scrollback/bloc
 import type { CellPainter } from './painter'
 import { columnToCell } from './mapping'
 import { WORD_SEPARATORS, wordBounds } from '../word-selection'
+import { insideLiveRegion } from '../live-region'
 
 export interface LiveSelectionGestureOptions {
   readonly model: CellModel
@@ -113,6 +114,15 @@ export function installLiveSelectionGesture(
     const element = node instanceof Element ? node : null
     const cardRow = element?.closest('.term-grid-row[data-block-id]')
     if (cardRow) return cardPosition(event)
+    // THE GRID'S OWN ROWS, WHEREVER THE GRID IS SEATED (ADR-0091). While a
+    // command runs the live region is that command's block body, so a live row
+    // has a `.cmd-block` ancestor — and every rule below this one was written
+    // when that could not happen. A row of the grid is a row of the grid: the
+    // press, the drag and the word all resolve through the cell snapshot, as
+    // they did while the region sat outside every block. Read first, because
+    // the block test underneath is about a block's own rows — its stored
+    // `.term-line` output, which has no cells of its own to map.
+    if (insideLiveRegion(node)) return livePosition(event)
     // A plain command block may contain selectable text but does not have
     // stored-row identity. It belongs to native text selection, never a
     // guessed live-grid cell based on coordinates outside the painter.
@@ -242,6 +252,13 @@ export function installLiveSelectionGesture(
   const tripleClick = (event: MouseEvent) => {
     if (event.detail !== 3) return
     const node = asNode(event.target)
+    // A LIVE ROW'S TRIPLE CLICK IS THE BROWSER'S, as it always was (ADR-0091):
+    // the rule below selects a row of the block's own output through the DOM,
+    // and a row of the grid has no block output to select — while the region
+    // sat outside every block this handler never saw one. Standing down keeps
+    // the two surfaces' gestures as they were rather than giving the grid a
+    // second row rule the cell painter does not know about.
+    if (insideLiveRegion(node)) return
     const element = node instanceof Element ? node : null
     if (element?.closest('[data-block-control], .ui-context-menu')) return
     const block = element?.closest<HTMLElement>('.cmd-block')

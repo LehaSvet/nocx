@@ -26,6 +26,7 @@ import { CommandSnapshotStore } from './command-snapshot'
 import type { ShellCommandNames } from './generated/shell.commandNames'
 import { ShellInputTarget, createRegistry, type InputTargetRegistry } from './input-target'
 import { IntentInput, type SessionIntent } from './intent-input'
+import { insideLiveRegion } from './live-region'
 import { AgentInputTarget } from './agent-ask'
 import { TargetState, queryTargetHistory } from './target-state'
 import { AgentClient } from './agent'
@@ -4048,8 +4049,14 @@ export class TerminalContent extends BasePaneContent {
       }
       document.addEventListener('keydown', this._globalKeydown)
 
+      // A PRESS OUTSIDE A BLOCK ENDS A BLOCK SELECTION — and the live grid is
+      // outside it (ADR-0091): the region is a running block's body in the DOM
+      // now, so `closest('.cmd-block')` alone would report the terminal's own
+      // surface as a block and leave a selection standing through a press meant
+      // to take the terminal back. The question is which surface the press is
+      // for, and `insideLiveRegion` is its one answer.
       this.scrollback?.scrollbackArea.addEventListener('mousedown', (e) => {
-        if (!(e.target as HTMLElement).closest('.cmd-block')) {
+        if (insideLiveRegion(e.target) || !(e.target as HTMLElement).closest('.cmd-block')) {
           this.scrollback?.deselectBlocks()
         }
       })

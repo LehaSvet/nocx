@@ -59,7 +59,13 @@ test('a drag from a historical card to live output copies the pinned text and ke
   // into the PTY, where key-rate limits could truncate the test fixture.
   await page.keyboard.type(`printf '${soft}-%*s\\n' 180 '' | tr ' ' x; printf '%s\\n' '${hard}'`)
   await page.keyboard.press('Enter')
-  const card = page.locator('.cmd-block').filter({ hasText: soft }).last()
+  // THE FINISHED CARD, named as such (nocx-zg3k3.14.26, ADR-0091). While the
+  // second command runs its own block holds the LIVE REGION, and the live
+  // region paints the screen — which still carries the first command's rows.
+  // So a text search over `.cmd-block` finds the running block too, and it is
+  // the finished one this drag starts from. The same spelling the ask gesture
+  // reads a historical block by (`ask-gesture.ts`).
+  const card = page.locator('.cmd-block:not(.cmd-block-running)').filter({ hasText: soft }).last()
   await expect(card).toBeVisible()
   const cardRow = card.locator('.term-grid-row[data-block-id]').first()
   await expect(cardRow).toBeVisible()

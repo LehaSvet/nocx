@@ -395,11 +395,14 @@ describe('a turn draws the blocks it caused, in order', () => {
     manager.startBlock(COMMAND, '/repo', 0, 'agent')
     turn.append('41G free')
     turn.close('success')
-    // The TURN's dots are gone with the turn. The query is scoped to the
-    // turn: since nocx-vnirv.1 a still-RUNNING command (this sequence
-    // closes the turn while its run call's block is live) carries its own
-    // stand-in in the live region, which also lives under `inner`.
-    expect(turn.el.querySelector('.cmd-answer-typing')).toBeNull()
+    // The TURN's dots are gone with the turn. The query names the turn's OWN
+    // stand-in, a direct child of its `.cmd-children`: a still-RUNNING command
+    // (this sequence closes the turn while its run call's block is live) carries
+    // its own stand-in in the live region, and since ADR-0091 that region is
+    // inside that command block — which is inside the turn when the turn
+    // claimed it, so a bare `.cmd-answer-typing` search would find the
+    // command's, not the turn's.
+    expect(turn.el.querySelector(':scope > .cmd-children > .cmd-answer-typing')).toBeNull()
     expect(inner.querySelector('.cmd-header-waiting')).toBeNull()
   })
 

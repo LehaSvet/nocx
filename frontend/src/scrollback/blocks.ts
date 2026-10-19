@@ -9,6 +9,7 @@ import type { ScreenSnapshot } from '../cell-model'
 import type { BlockClosed } from '../generated/block.closed'
 import { paintUnreadableRows, type StoredBlockRows } from './block-rows'
 import { wordRangeIn } from '../word-selection'
+import { insideLiveRegion } from '../live-region'
 import { createSecretChipUnresolved } from '../ui/secret-chip'
 import type { AgentRunToolCall } from '../generated/agent.runToolCall'
 import { createDisclosure, type Disclosure } from '../ui/disclosure'
@@ -1519,6 +1520,17 @@ function wireBlockSelection(
   const mine = (e: Event): boolean => {
     const target = e.target as HTMLElement
     if (target.closest('[data-block-control], .ui-context-menu')) return false
+    // THE GRID'S OWN PRESS IS THE GRID'S (ADR-0091). The live region is this
+    // block's body while the command runs, and a press in it reaches this
+    // listener — but the row under the pointer is the painter's, and the
+    // grid's own gesture (painter/selection-gesture.ts) is the one owner of
+    // it. This block's click-to-select claimed that press instead, so the
+    // block-selection keyboard branch ate the next character typed into the
+    // running program (measured, e2e/live-to-card-joined.spec.ts) and the
+    // Escape that should have stopped a streaming answer deselected the block
+    // (e2e/ask-about-a-running-command.spec.ts). One press, one owner: the
+    // block owns its header and its own rows, never the terminal's.
+    if (insideLiveRegion(e.target)) return false
     return target.closest('.cmd-block') === blockEl
   }
 
@@ -1698,6 +1710,19 @@ export function createCommandBlock(
     // a turn contains the blocks it caused, so the same double-click reaches
     // every ancestor's listener (ADR-0040).
     if ((e.target as HTMLElement).closest('.cmd-block') !== wrapper) return
+    // THE GRID'S OWN ROWS ARE THE GRID'S (ADR-0091). The live region is this
+    // block's body while the command runs, so a double click on one of its
+    // rows reaches this listener — and this rule is not the one that owns it.
+    // It reads the row's TEXT NODES, which in painted output are runs of
+    // cells, so it would cut the token at the run the pointer sat in
+    // (measured: `dbl` copied where the word was `~/dbl-mvf8dc0n.txt`,
+    // e2e/clipboard.spec.ts). The painter's own double click
+    // (painter/selection-gesture.ts) reads the CELL SNAPSHOT, where a token is
+    // a run of cells — one rule, and it is the one the live grid has always
+    // had. This block stands down HERE, before its preventDefault: that is
+    // exactly what it did while the region sat outside every block, and the
+    // gesture a person makes is the same gesture.
+    if (insideLiveRegion(e.target)) return
     if (e.detail !== 2) return
     e.preventDefault()
     // THE ROW THE POINTER IS IN, by the same two markups the copy reader
@@ -2182,9 +2207,10 @@ export class BlockManager {
    *  a general test for "first visible command" (a restore boundary, a
    *  reconnect line and a command block are three different element types
    *  sharing one leading position). `.cmd-block` and `.scrollback-restore-
-   *  boundary` are the only "entries" for this purpose — the live region is
-   *  a sibling that never carries the leading rule, and a block nested
-   *  inside a turn is not a TOP-LEVEL entry at all. */
+   *  boundary` are the only "entries" for this purpose — the live region
+   *  never carries the leading rule, whether it is the stack's child or a
+   *  running block's body (ADR-0091), and a block nested inside a turn is not
+   *  a TOP-LEVEL entry at all. */
   private _refreshFirstEntry(): void {
     const first = this._scrollbackInner.querySelector<HTMLElement>(
       ':scope > .cmd-block, :scope > .scrollback-restore-boundary',
@@ -2215,11 +2241,15 @@ export class BlockManager {
    *  person watched during the run survives the freeze: the rows move into
    *  the block and the emptied region stays where it is.
    *
-   *  The region stays a DIRECT child of `.scrollback-inner` — the
-   *  fullscreen rule addresses it there, and the controller measures and
-   *  sizes it as a sibling of the stack — so a block nested inside a turn
-   *  is followed at its turn's seat rather than inside it. */
+   *  WHILE A COMMAND RUNS THE REGION IS NOT HERE AT ALL: it is that block's
+   *  body, inside the block (ADR-0091, `holdLiveInRunningBlock`), so this
+   *  only seats it for the blocks that do not hold it and stands down while
+   *  one does. A block nested inside a turn is followed at its turn's seat
+   *  rather than inside it. */
   private _liveFollows(el: HTMLElement): void {
+    // Held by a block: its seat is that block's body, and moving it out here
+    // would take the rows away from the box whose output they are.
+    if (this._liveContainer.parentElement !== this._scrollbackInner) return
     let seat: HTMLElement = el
     while (seat.parentElement !== null && seat.parentElement !== this._scrollbackInner) {
       seat = seat.parentElement
@@ -2236,6 +2266,72 @@ export class BlockManager {
     const heldFocus = focused instanceof HTMLElement && this._liveContainer.contains(focused)
     this._scrollbackInner.insertBefore(this._liveContainer, seat.nextSibling)
     if (heldFocus && document.activeElement !== focused) focused.focus({ preventScroll: true })
+  }
+
+  /** THE LIVE REGION'S SEAT, IN TWO ANSWERS (ADR-0091).
+   *
+   *  A running command's output is ONE block. While a command runs on the
+   *  normal screen the controller's live region IS that block's body — its
+   *  last child, below the rows the durable record already holds — so the
+   *  block's box and its ground cover every row the command has written,
+   *  past the first screenful and through the joint.
+   *
+   *  Everywhere there are NO blocks the region belongs to nothing: at the
+   *  prompt, in a session with no shell integration, and under an
+   *  alternate-screen program, which takes the pane and hides the block
+   *  layer. There it is a direct child of `.scrollback-inner`, which is where
+   *  the fullscreen rule and the idle height address it.
+   *
+   *  The manager seats it because the manager owns the block elements; the
+   *  controller says WHEN, because the mode is the controller's own fact
+   *  (`setRunning()` holds it, `setIdle()`/`setUnstructured()`/
+   *  `enterFullscreen()` release it). Before ADR-0091 the region was a
+   *  sibling in every mode, and the block's own surface ended one screenful
+   *  into its output — the defect `nocx-zg3k3.14.26` was filed for. */
+  holdLiveInRunningBlock(): void {
+    const rec = this._runningBlock
+    if (!rec) return
+    if (this._liveContainer.parentElement !== rec.el) this._moveLive(rec.el, null)
+  }
+
+  /** Give the region back to the stack: the block it was inside, if any, no
+   *  longer owns it. Seated immediately after that block, where the frozen
+   *  body it becomes will be — the closing rows a completed block still shows
+   *  until its `block.closed` reads below the block, never below a later
+   *  answer. */
+  releaseLiveRegion(): void {
+    const host = this._liveContainer.parentElement
+    if (host === this._scrollbackInner) return
+    const after =
+      host !== null &&
+      host.parentElement === this._scrollbackInner &&
+      host.classList.contains('cmd-block')
+        ? host.nextSibling
+        : null
+    this._moveLive(this._scrollbackInner, after)
+  }
+
+  /** Move the region, and keep the keyboard in it. A DOM move is a removal
+   *  and an insertion, and a removal drops the focus of anything inside the
+   *  region to <body> — the person may be typing into the program that is
+   *  running right now, so the focus goes back in the same task
+   *  (nocx-askcb). */
+  private _moveLive(parent: HTMLElement, before: ChildNode | null): void {
+    const focused = document.activeElement
+    const heldFocus = focused instanceof HTMLElement && this._liveContainer.contains(focused)
+    parent.insertBefore(this._liveContainer, before)
+    if (heldFocus && document.activeElement !== focused) focused.focus({ preventScroll: true })
+  }
+
+  /** The body's order is header, the rows the record holds, then the live
+   *  region — and `paintStoredRows` REPLACES `.cmd-output` on every growth, so
+   *  each paint appends it after the region and the order has to be restored
+   *  here. One rule, one place: the manager paints and the manager holds the
+   *  region's seat. */
+  private _keepLiveBodyLast(block: HTMLElement): void {
+    if (this._liveContainer.parentElement !== block) return
+    if (block.lastElementChild === this._liveContainer) return
+    this._moveLive(block, null)
   }
 
   /** The last element belonging to `el`: its live output when the live
@@ -2521,6 +2617,7 @@ export class BlockManager {
         this._runningBlock.storedRows = pending
         this._pendingStoredRows.delete(attemptId)
         this._paintStoredRows?.(this._runningBlock.el, pending)
+        this._keepLiveBodyLast(this._runningBlock.el)
       }
     }
   }
@@ -2649,6 +2746,7 @@ export class BlockManager {
     rec.storedRows = rows
     rec.rowsUnreadable = undefined
     this._paintStoredRows?.(rec.el, rows)
+    this._keepLiveBodyLast(rec.el)
   }
 
   /** The latest read of an entry's stored rows FAILED (nocx-2v80t.3.27):
@@ -2740,16 +2838,18 @@ export class BlockManager {
       this._runningActions,
     )
     this._ownNext(el)
-    // The running command's BODY is the live region — a sibling of the
-    // blocks, not a child of this one — so the "working, nothing written
-    // yet" stand-in stands THERE, where the first output line will be
-    // written (nocx-vnirv.1). The height constraint holds by construction:
-    // the stand-in is absolutely positioned inside the live container
-    // (style.css, .terminal-live-container.live-running > .cmd-answer-typing),
-    // so it takes no flow height, and the box the controller measures and
-    // sizes is exactly the box the frozen body replaces — nothing moves at
-    // the swap. Removed by the first accepted output frame (noteCommandOutput) or
-    // by the block's terminal freeze.
+    // The running command's BODY is the live region, and it goes INSIDE this
+    // block (ADR-0091): the block's box and its ground then cover every row
+    // the command writes, which is what a person reads as one block. The
+    // "working, nothing written yet" stand-in stands there, where the first
+    // output line will be written (nocx-vnirv.1) — it is absolutely
+    // positioned inside the live container (style.css,
+    // .terminal-live-container.live-running > .cmd-answer-typing), so it
+    // takes no flow height, and the box the controller measures and sizes is
+    // exactly the box the frozen body replaces — nothing moves at the swap.
+    // Removed by the first accepted output frame (noteCommandOutput) or by
+    // the block's terminal freeze.
+    this._moveLive(el, null)
     this._showCommandIndicator()
 
     const rec: BlockRecord = {
@@ -2963,6 +3063,12 @@ export class BlockManager {
     location = this._location,
   ): void {
     rec.endLine = endLine
+    // THE REGION LEAVES BEFORE THE ELEMENT DOES. `freezeBlock` builds a frozen
+    // element and swaps it in, and a child of the element it replaces would
+    // leave the document with it — the terminal would vanish at the freeze
+    // (ADR-0091). The region goes back to the stack, right after the block it
+    // has just stopped being the body of.
+    this.releaseLiveRegion()
 
     const newEl = freezeBlock(
       rec.el,
@@ -3489,6 +3595,9 @@ export class BlockManager {
   }
 
   clearAll(): void {
+    // Out of any block first: removing the element it is inside would take the
+    // terminal's own surface with it (ADR-0091).
+    this.releaseLiveRegion()
     this.closeOverflowMenus()
     this._stopTicker()
     this._awaitingClose.clear()
@@ -3537,6 +3646,17 @@ export class BlockManager {
       return
     }
     const keepingRunning = this._runningBlock !== null && this._runningBlock.el === keep
+    // The same rule as clearAll's: the region must not go with a block that is
+    // being removed — unless that block is the one being KEPT, which then keeps
+    // holding its own body.
+    const host = this._liveContainer.parentElement
+    if (
+      host !== null &&
+      host !== this._scrollbackInner &&
+      keep?.contains(this._liveContainer) !== true
+    ) {
+      this.releaseLiveRegion()
+    }
     this.closeOverflowMenus()
     if (!keepingRunning) {
       this._stopTicker()

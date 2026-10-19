@@ -382,6 +382,128 @@ describe('createCommandBlock', () => {
     }
   })
 
+  it("a press inside the LIVE REGION is the grid's, not the block's (ADR-0091)", () => {
+    // While a command runs, the live region IS this block's body, so a press on
+    // one of its rows reaches this block's own listeners. It is still the
+    // terminal's press: the pane focuses its input on it and the painter
+    // selects and words on it. The block answering too is what ate the next
+    // character typed into the running program — the block-selection keyboard
+    // branch stands in front of the grid — and what made an Escape deselect the
+    // block instead of stopping a streaming answer (both measured in the real
+    // browser: e2e/live-to-card-joined.spec.ts,
+    // e2e/ask-about-a-running-command.spec.ts).
+    const parent = document.createElement('div')
+    document.body.appendChild(parent)
+    const selectSpy = vi.fn()
+    const el = createCommandBlock(
+      'command',
+      1,
+      'sleep 30',
+      '~',
+      '',
+      '<span class="term-line">out</span>',
+      10,
+      0,
+      'success',
+      makeContainer(parent),
+      selectSpy,
+      freshStore(),
+      'shell',
+    )
+    parent.appendChild(el)
+    const live = document.createElement('div')
+    live.className = 'terminal-live-container'
+    const row = document.createElement('div')
+    row.className = 'term-grid-row'
+    row.innerHTML = '<span class="term-cell">painted</span>'
+    live.appendChild(row)
+    el.appendChild(live)
+    try {
+      // The person's whole click: press, release, no movement.
+      row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      row.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+      expect(el.classList.contains('cmd-block-selected')).toBe(false)
+      expect(selectSpy).not.toHaveBeenCalled()
+
+      // ... and the rule is the LIVE REGION, not the block: the block's own
+      // row selects it exactly as it always did.
+      const own = el.querySelector<HTMLElement>('.term-line')
+      own?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      own?.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+      expect(el.classList.contains('cmd-block-selected')).toBe(true)
+    } finally {
+      parent.remove()
+    }
+  })
+
+  it('a double click on a live row leaves the word to the painter (ADR-0091)', () => {
+    // The block's own rule reads the row's TEXT NODES. In painted output those
+    // are runs of cells, so it cut the token at the run the pointer sat in:
+    // `dbl` copied where the word was `~/dbl-mvf8dc0n.txt`
+    // (e2e/clipboard.spec.ts). The painter's double click reads the CELL
+    // SNAPSHOT, where a token is a run of cells — one rule, and it is the one
+    // the live grid has always had. The block stands down before its
+    // preventDefault, exactly as it did while the region sat outside every
+    // block.
+    const parent = document.createElement('div')
+    document.body.appendChild(parent)
+    const el = createCommandBlock(
+      'command',
+      1,
+      'sleep 30',
+      '~',
+      '',
+      'out',
+      10,
+      0,
+      'success',
+      makeContainer(parent),
+      noopSelect,
+      freshStore(),
+      'shell',
+    )
+    parent.appendChild(el)
+    const live = document.createElement('div')
+    live.className = 'terminal-live-container'
+    const row = document.createElement('div')
+    row.className = 'term-grid-row'
+    const cell = document.createElement('span')
+    cell.className = 'term-cell'
+    const text = document.createTextNode('~/dbl-mvf8dc0n.txt')
+    cell.appendChild(text)
+    row.appendChild(cell)
+    live.appendChild(row)
+    el.appendChild(live)
+    // jsdom has no hit-testing; aim the handler's browser seam at the live
+    // row's text so a rule that ran would have something to select.
+    const proto = Object.getOwnPropertyDescriptor(document, 'caretRangeFromPoint')
+    Object.defineProperty(document, 'caretRangeFromPoint', {
+      configurable: true,
+      value: () => {
+        const r = document.createRange()
+        r.setStart(text, 5)
+        r.collapse(true)
+        return r
+      },
+    })
+    try {
+      const ev = new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true,
+        detail: 2,
+        clientX: 10,
+        clientY: 10,
+      })
+      row.dispatchEvent(ev)
+      expect(ev.defaultPrevented).toBe(false)
+      expect(window.getSelection()?.toString() ?? '').toBe('')
+    } finally {
+      if (proto) Object.defineProperty(document, 'caretRangeFromPoint', proto)
+      else delete (document as { caretRangeFromPoint?: unknown }).caretRangeFromPoint
+      parent.remove()
+    }
+  })
+
   it('a single mousedown is not intercepted — native selection and click-to-select keep working', () => {
     const el = createCommandBlock(
       'command',
@@ -844,7 +966,9 @@ describe('BlockManager', () => {
       const duration = rec.el.querySelector<HTMLElement>(durationSelector)
       expect(duration?.textContent).toBe('1m 5s')
       expect(rec.el).toBe(inner.children[0])
-      expect(inner.children).toHaveLength(2)
+      // ONE child: the running block, with the live region as its body
+      // (ADR-0091). Repainting the duration does not re-seat either of them.
+      expect(inner.children).toHaveLength(1)
     } finally {
       vi.useRealTimers()
     }
@@ -928,15 +1052,49 @@ describe('BlockManager', () => {
     expect(rec.command).toBe('ls -la')
     expect(rec.status).toBe('running')
     expect(rec.id).toBe(1)
-    expect(inner.children.length).toBe(2) // running block + live container
+    // ONE child: the running block, which holds the live region as its body
+    // (ADR-0091). The stack itself holds no live surface while a command runs.
+    expect(inner.children.length).toBe(1)
     expect(inner.children[0].classList.contains('cmd-block-running')).toBe(true)
     expect(manager.runningBlock).toBe(rec)
   })
 
-  it('inserts the running block before the live container', () => {
+  it("makes the live region the running block's own body (ADR-0091)", () => {
+    // A running command's output is ONE block: the region that paints its live
+    // rows is inside the block, so the block's box and its ground cover every
+    // row the command has written. Before ADR-0091 it was a sibling, and the
+    // block's surface ended one screenful in (nocx-zg3k3.14.26).
     manager.startBlock('cmd', '~', 5)
     expect(inner.children[0]).toBe(manager.blocks[0]?.el)
-    expect(inner.children[1]).toBe(liveContainer)
+    expect(liveContainer.parentElement).toBe(manager.runningBlock?.el)
+    expect(inner.children.length).toBe(1)
+  })
+
+  it('gives the live region back to the stack when the block freezes', () => {
+    // The frozen element REPLACES the running one, so a child of it would
+    // leave the document with it and take the terminal down at the freeze.
+    const rec = manager.startBlock('cmd', '~', 5)
+    expect(liveContainer.parentElement).toBe(rec.el)
+    const frozen = closeRunningBlock(manager)
+    expect(frozen).not.toBeNull()
+    expect(liveContainer.parentElement).toBe(inner)
+    // ... seated right after the block whose closing rows it still shows.
+    expect(liveContainer.previousElementSibling).toBe(frozen?.el)
+  })
+
+  it('gives the live region back to the stack when the scrollback is cleared', () => {
+    manager.startBlock('cmd', '~', 5)
+    manager.clearAll()
+    expect(liveContainer.parentElement).toBe(inner)
+  })
+
+  it('does not hand the live region to a later block while one holds it (ADR-0091)', () => {
+    // The region belongs to the block whose output it is. An answer seated
+    // during the run used to take it (the sibling rule), which would now mean
+    // taking it out of that block's box.
+    const rec = manager.startBlock('cmd', '~', 0)
+    manager.addAnswerBlock('what is on my screen?', '~')
+    expect(liveContainer.parentElement).toBe(rec.el)
   })
 
   it('finalizes orphaned running block on next start', () => {
@@ -946,13 +1104,13 @@ describe('BlockManager', () => {
     expect(manager.runningBlock).toBe(second)
   })
 
-  it('opening a block keeps the keyboard in the live grid it seats after (nocx-askcb)', () => {
+  it('opening a block keeps the keyboard in the live grid it seats as its body (nocx-askcb)', () => {
     // The authenticated start opens the card while the person may already be
     // typing into the running program: the grid took the keyboard at submit.
-    // Seating the live region after the new block is a DOM move, and a move
-    // drops the focus of anything inside it to <body> — every key typed
-    // between the start and the next focus call was lost (CI run
-    // 36105113564: `read x` got an empty line for a typed `hello`).
+    // Seating the live region in the new block is a DOM move, and a move drops
+    // the focus of anything inside it to <body> — every key typed between the
+    // start and the next focus call was lost (CI run 36105113564: `read x` got
+    // an empty line for a typed `hello`).
     const gridInput = document.createElement('textarea')
     liveContainer.appendChild(gridInput)
     gridInput.focus()
@@ -960,7 +1118,7 @@ describe('BlockManager', () => {
 
     manager.startBlock('read x', '~', 0)
 
-    expect(liveContainer.previousElementSibling).toBe(manager.runningBlock?.el)
+    expect(liveContainer.parentElement).toBe(manager.runningBlock?.el)
     expect(document.activeElement).toBe(gridInput)
   })
 
@@ -1121,9 +1279,10 @@ describe('BlockManager', () => {
 
   it('clearAll removes all blocks and resets state', () => {
     manager.startBlock('test', '~', 0)
-    expect(inner.children.length).toBe(2)
+    expect(inner.children.length).toBe(1) // the running block, holding the live region
     manager.clearAll()
-    expect(inner.children.length).toBe(1) // only live container remains
+    expect(inner.children.length).toBe(1) // only the live container remains
+    expect(inner.children[0]).toBe(liveContainer)
     expect(manager.blocks.length).toBe(0)
     expect(manager.runningBlock).toBeNull()
   })
@@ -4550,7 +4709,7 @@ describe('backend-owned block rows', () => {
       paintStoredRows: (block, rows) =>
         paintStoredRows(block, rows, { metric: null, palette: DEFAULT_SNAPSHOT }),
     })
-    return { inner, manager }
+    return { inner, manager, liveContainer }
   }
 
   it('paints streamed rows while running and replaces them as history grows', () => {
@@ -4585,6 +4744,47 @@ describe('backend-owned block rows', () => {
 
     const frozen = closeRunningBlock(manager, 1)!
     expect(blockOutputText(frozen.el)).toBe('first \nsecond')
+  })
+
+  it("keeps the body's order: its rows above the live region, on every growth (ADR-0091)", () => {
+    // `paintStoredRows` replaces `.cmd-output` on each block.grew, so the rows
+    // it appends land after the live region unless the seat is restored with
+    // them — and then the command's older rows would be painted below its
+    // newest, inside a block that is supposed to read top to bottom.
+    const { manager, inner, liveContainer } = newManager()
+    manager.startBlock('printf rows', '~', 0)
+    manager.bindAttempt('entry-stream')
+    manager.applyStoredRows('entry-stream', {
+      lines: [
+        { from: 0, row: row('first ') },
+        { from: 1, row: row('second') },
+      ],
+      droppedRows: 0,
+      lostRows: 0,
+      truncated: null,
+    })
+    const el = manager.runningBlock!.el
+    expect(liveContainer.parentElement).toBe(el)
+    expect(inner.children).toHaveLength(1)
+    expect(el.lastElementChild).toBe(liveContainer)
+    expect(el.querySelector(':scope > .cmd-output')?.nextElementSibling).toBe(liveContainer)
+    // A second growth replaces the output element; the order is restored with it.
+    manager.applyStoredRows('entry-stream', {
+      lines: [
+        { from: 0, row: row('first ') },
+        { from: 1, row: row('second') },
+        { from: 2, row: row('third ') },
+      ],
+      droppedRows: 0,
+      lostRows: 0,
+      truncated: null,
+    })
+    expect(el.lastElementChild).toBe(liveContainer)
+    expect(el.querySelectorAll(':scope > .cmd-output .term-grid-row')).toHaveLength(3)
+    // And the freeze gives the region back to the stack, right after the block.
+    const frozen = closeRunningBlock(manager)!
+    expect(liveContainer.parentElement).toBe(inner)
+    expect(liveContainer.previousElementSibling).toBe(frozen.el)
   })
 
   it('never lets a block.grew fetch that resolves late shrink an already-painted block', () => {
