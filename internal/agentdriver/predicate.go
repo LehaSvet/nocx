@@ -290,6 +290,14 @@ func (r region) anyRow(f paneview.Frame, match func(text string) bool) bool {
 // not participate in a match contributes no key, so an absent field is absent
 // rather than empty.
 //
+// faintIsAbsent is the extractor's own declaration (Extractor.FaintIsAbsent):
+// a row every one of whose captured values was drawn faint yields NOTHING —
+// the same row a pattern that captured nothing would yield, and for the same
+// reason. The engine keeps this, and not a projection downstream, because it is
+// one statement of one meaning (AD-8): a consumer that read the values anyway
+// would be a second answer to "is the agent drawing this or did somebody type
+// it".
+//
 // Every row also carries "_row", the frame's own visible row index, decimal.
 // It is the engine's own bookkeeping rather than a document's capture group —
 // nothing here can WRITE it (a pattern that also named a group "_row" would
@@ -297,20 +305,28 @@ func (r region) anyRow(f paneview.Frame, match func(text string) bool) bool {
 // turn several matched rows back into a RowSpan, which a generic
 // map[string]string otherwise has no position for. Observation.Menu is the
 // first reader.
-func (r region) capture(f paneview.Frame, re *regexp.Regexp) []map[string]string {
+func (r region) capture(f paneview.Frame, re *regexp.Regexp, faintIsAbsent bool) []map[string]string {
 	names := re.SubexpNames()
 	var out []map[string]string
 	r.eachRow(f, func(y int, text string) bool {
-		m := re.FindStringSubmatch(text)
+		m := re.FindStringSubmatchIndex(text)
 		if m == nil {
 			return true
 		}
 		row := make(map[string]string, len(names)+1)
-		for i, name := range names {
-			if i == 0 || name == "" || m[i] == "" {
-				continue
+		// The row's rendering vector comes from the SAME renderer that produced
+		// text — one renderer, two readings — so the two cannot describe
+		// different bytes. A row whose captured values were all drawn faint
+		// carries NOTHING: the agent drew it (Extractor.FaintIsAbsent).
+		drawnByAgent := faintIsAbsent &&
+			capturedFaint(text, rowReadingFrom(f, y, r.colFrom).faint, m, names)
+		if !drawnByAgent {
+			for i, name := range names {
+				if i == 0 || name == "" || m[2*i] < 0 || m[2*i] == m[2*i+1] {
+					continue
+				}
+				row[name] = text[m[2*i]:m[2*i+1]]
 			}
-			row[name] = m[i]
 		}
 		row["_row"] = strconv.Itoa(y)
 		out = append(out, row)
@@ -420,21 +436,86 @@ func firstNonBlankCol(f paneview.Frame, y int) (int, bool) {
 // rowTextFrom renders a row from a column onwards, so a marker's own cell does
 // not have to be trimmed off the front of the text it introduces.
 func rowTextFrom(f paneview.Frame, y, from int) string {
+	return rowReadingFrom(f, y, from).text
+}
+
+// rowReading is one row as the engine renders it for a reader: the text a
+// predicate or a pattern matches, and — for the one reading that has to know
+// how a value was DRAWN rather than only what it says — which of that text's
+// bytes came from a faint cell.
+//
+// There is ONE renderer, and this is it: rowTextFrom is this with the rendering
+// thrown away, so a predicate and a pattern still match the same bytes they
+// always did. faint is one entry per BYTE of text rather than per cell, because
+// that is what a pattern's own match indices are in — see capturedFaint.
+type rowReading struct {
+	text  string
+	faint []bool
+}
+
+func rowReadingFrom(f paneview.Frame, y, from int) rowReading {
 	if y < 0 || y >= len(f.Lines) {
-		return ""
+		return rowReading{}
 	}
 	var b strings.Builder
+	var faint []bool
 	for x, c := range f.Lines[y] {
 		if x < from || c.Width == 0 {
 			continue
 		}
-		if c.Text == "" {
-			b.WriteByte(' ')
+		text := c.Text
+		if text == "" {
+			text = " "
+		}
+		b.WriteString(text)
+		for i := 0; i < len(text); i++ {
+			faint = append(faint, c.Faint)
+		}
+	}
+	// The right-trim is the rendering's own (rowTextFrom's contract, and what
+	// every region read already does), so the rendering vector is trimmed with
+	// it and the two cannot describe different strings.
+	text := strings.TrimRight(b.String(), " ")
+	return rowReading{text: text, faint: faint[:len(text)]}
+}
+
+// capturedFaint reports whether every non-space byte the pattern CAPTURED on
+// this row was drawn faint, which is what makes a row that matched carry
+// nothing: the agent drew it, nobody typed it.
+//
+// Only the NAMED groups are read, and that is not a detail — group 0 is the
+// whole match, marker and chrome included, so a row whose prompt marker is
+// drawn solid beside a faint suggestion would never be wholly faint. What the
+// extractor yields is exactly the named groups, so what is tested is exactly
+// what it would have read.
+//
+// At least one non-space byte must have been captured: an empty reading is
+// absent text, not faint text, and the two are different claims (a caller
+// gates on "the rule read this box and it is empty").
+func capturedFaint(text string, faint []bool, m []int, names []string) bool {
+	if len(faint) != len(text) {
+		return false
+	}
+	seen := 0
+	for i, name := range names {
+		if i == 0 || name == "" {
 			continue
 		}
-		b.WriteString(c.Text)
+		start, end := m[2*i], m[2*i+1]
+		if start < 0 || end <= start {
+			continue
+		}
+		for at := start; at < end; at++ {
+			if text[at] == ' ' {
+				continue
+			}
+			seen++
+			if !faint[at] {
+				return false
+			}
+		}
 	}
-	return strings.TrimRight(b.String(), " ")
+	return seen > 0
 }
 
 func firstNonBlankRowBelow(f paneview.Frame, y int) (int, bool) {

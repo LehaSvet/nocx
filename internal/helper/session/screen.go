@@ -44,7 +44,11 @@ func (s *Service) readScreenCapture(p proto.ScreenCaptureParams) (proto.ScreenCa
 			if cell.HasText {
 				text = cell.Grapheme
 			}
-			cells[x] = proto.ScreenCell{Text: text, Width: int(cell.Width)}
+			cells[x] = proto.ScreenCell{
+				Text:  text,
+				Width: int(cell.Width),
+				Faint: cell.Style.Attributes&emulator.AttrFaint != 0,
+			}
 		}
 		rows[y] = cells
 	}
@@ -171,10 +175,12 @@ func (s *Service) replay(p proto.ReplayParams) (proto.ReplayResult, error) {
 
 // screenFrame renders a frame onto the wire shape.
 //
-// It is the helper's ONE conversion in this direction, and it drops what the
-// wire does not carry rather than inventing a place for it: the styles a cell
-// holds are not in a Frame at all (a Frame is text, width and caret), so
-// nothing is lost here that a consumer was ever offered.
+// It is the helper's ONE conversion in this direction. A Frame carries one
+// rendering fact per cell — whether it was drawn faint — and that is what
+// crosses: the rest of a cell's style (its colours, its underline, its
+// decorations) is not in a Frame at all, so nothing is lost here that a
+// consumer was ever offered, and nothing latent is exposed either
+// (nocx-xn63t.6.56).
 func screenFrame(f paneview.Frame) proto.ScreenFrame {
 	out := proto.ScreenFrame{
 		Cols:          f.Cols,
@@ -188,7 +194,7 @@ func screenFrame(f paneview.Frame) proto.ScreenFrame {
 	for y, line := range f.Lines {
 		cells := make([]proto.ScreenCell, len(line))
 		for x, c := range line {
-			cells[x] = proto.ScreenCell{Text: c.Text, Width: c.Width}
+			cells[x] = proto.ScreenCell{Text: c.Text, Width: c.Width, Faint: c.Faint}
 		}
 		out.Lines[y] = cells
 	}

@@ -54,21 +54,33 @@ const OpScreenResend = "screen-resend"
 // second emulator beside the runtime is what ADR-0066 refuses.
 const OpReplay = "replay"
 
-// ScreenCell is one column of a ScreenFrame.
+// ScreenCell is one column of a ScreenFrame: its text, the columns it occupies,
+// and whether it was drawn faint.
 //
 // Width is the load-bearing field. A double-width cluster occupies two columns:
 // the first carries the grapheme with width 2, the second is a continuation
 // with width 0 which a text reader skips and a POSITION reader counts. The
 // distinction is also what keeps it out of the message text: a caller that
 // wants a character takes Text, a caller that wants an anchor reads the index.
+//
+// Faint is SGR 2, and it is on this wire because the coordinator has no
+// emulator (ADR-0066) and every frame a RULE reads crosses this socket: a
+// rendering a rule can see only here is a rendering the wire has to carry, or
+// the rule is left guessing at the words an agent happens to use
+// (nocx-xn63t.6.56). It is the cell's own attribute — the prompt marker beside
+// an agent's suggestion is drawn solid — and it is a boolean rather than the
+// emulator's whole attributes bitset, because one reader needs one decoration
+// and a bitset here would be seven fields nothing reads.
 type ScreenCell struct {
 	Text string `json:"text"`
 	// Width is 0 (a continuation or spacer), 1 or 2.
 	Width int `json:"width"`
+	// Faint reports SGR 2 on this cell.
+	Faint bool `json:"faint"`
 }
 
-// ScreenFrame is one screen as the emulator holds it: a rectangle of cells, the
-// caret, and which buffer it is.
+// ScreenFrame is one screen as the emulator holds it: a rectangle of cells — each
+// with its own text, width and rendering — the caret, and which buffer it is.
 //
 // The rows are a RECTANGLE and not trimmed text: Lines is Rows long and every
 // line is Cols long, because a consumer that reads a position must be able to

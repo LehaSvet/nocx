@@ -295,21 +295,30 @@ package agentdriver
 // waiting queue either: its safety recheck reads the same non-empty answer for
 // as long as the prompt does.
 //
-// The rendering is what would tell the two apart, and this frame does not
-// carry it: paneview.Cell is text and width by design, and the helper ABI that
-// carries a frame to the coordinator is frozen against a field added later
-// (contracts/helper/README.md). So the reading states the agent's own FORM: a
-// prompt row whose whole content is Try, a space and a double-quoted phrase —
-// Claude's suggestion grammar, in both spellings its own list takes in the
-// corpus ("fix lint errors" in claude-modal, "fix typecheck errors" in
-// claude-idle) — matches with NOTHING captured, exactly as a bare "❯" does, so
-// the box reads EMPTY and readable rather than unreadable, which is the
-// difference Observation.InputText's "absent is not empty" contract keeps.
+// The rendering is what tells the two apart, and the frame carries it now
+// (nocx-xn63t.6.56). This reading first recognised the suggestion by its FORM —
+// a prompt row whose whole content is Try, a space and a double-quoted phrase,
+// Claude's suggestion grammar, in both spellings the corpus holds ("fix lint
+// errors" in claude-modal, "fix typecheck errors" in claude-idle) — because
+// `paneview.Cell` was text and width and the helper ABI that carries a frame to
+// the coordinator is frozen against a field added later
+// (contracts/helper/README.md). The cost of that was measured on 2026-10-18 and
+// it was paid in both directions: any Claude build whose suggestion is spelled
+// differently blocks the wake again, and a person who typed exactly that line
+// into the box was read as an empty box.
 //
-// The cost is stated rather than hidden: a person who typed exactly that line
-// into the box would be read as an empty box. The alternative — reading the
-// faint attribute, which no frame carries today — is nocx-xn63t.6.32's own
-// follow-up rather than something this rule can do.
+// So the cell carries whether it was drawn faint, `FaintIsAbsent` says Claude
+// draws what nobody gave it in that attribute, and a prompt row whose captured
+// content is WHOLLY faint yields nothing — exactly as a bare "❯" does, so the
+// box reads EMPTY and readable rather than unreadable, which is the difference
+// Observation.InputText's "absent is not empty" contract keeps. The marker
+// itself is drawn solid and is not part of the reading: it is chrome the
+// pattern strips, and the faintness that matters is the content's.
+//
+// The words are gone from the pattern, and that is the point of the change: no
+// spelling of a suggestion is recognised by what it says, so no spelling can
+// fail to be recognised, and a person typing any sentence is read as the person
+// they are.
 //
 // The pattern itself is what "excluding rule rows" means in practice: it
 // matches a prompt row carrying Claude's own suggestion (which is empty, see

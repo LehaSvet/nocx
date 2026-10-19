@@ -16,10 +16,13 @@ package agentdriver_test
 // corpus claude.go's note cites.
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/shady2k/nocx/internal/agentcapture"
 	"github.com/shady2k/nocx/internal/agentdriver"
+	"github.com/shady2k/nocx/internal/paneview"
 )
 
 // TestInputTextIsEmptyAtAnIdleClaudePrompt is the failure path's own
@@ -358,4 +361,175 @@ func TestInputTextIsEmptyWhenClaudeDrawsItsOwnSuggestion(t *testing.T) {
 			t.Errorf("%s@%dms: InputText = %q, want \"\" — Claude's own suggestion is not text in the box, and reading it as text leaves a caller that gates on an empty box refusing every delivery for as long as the prompt stands (nocx-xn63t.6.32)", m.capture, m.atMs, text)
 		}
 	}
+}
+
+// ── BY ATTRIBUTE, NOT BY WORDS (nocx-xn63t.6.56) ──────────────────────────
+
+// THE SUGGESTION IS READ OFF THE RENDERING IT WAS DRAWN WITH, and this test
+// states both directions on ONE recording and ONE set of characters: the row
+// Claude paints its suggestion into, repainted with the same characters solid.
+//
+// Measured before the frame carried the attribute (nocx-xn63t.6.52, on this
+// corpus): the recorded SGR 2 drawing and the same characters painted WITHOUT
+// SGR 2 both read BoxEmpty true, so a person typing `Try "…"` was read as an
+// empty box and had a wake pasted into their sentence. The rule could only tell
+// the two apart by the WORDS, which is a spelling Claude is free to change and
+// a sentence a person is free to type.
+func TestThePromptSuggestionIsReadByItsAttributeAndNotByItsWords(t *testing.T) {
+	reg := registry(t)
+	for _, m := range []struct {
+		capture string
+		atMs    int64
+		drawn   string
+	}{
+		{"claude-modal", 1480, `Try "fix lint errors"`},
+		{"claude-idle", 1470, `Try "fix typecheck errors"`},
+	} {
+		t.Run(m.capture, func(t *testing.T) {
+			r := newReplayer(t, m.capture, m.atMs)
+			recorded, err := r.Frame()
+			if err != nil {
+				t.Fatalf("frame: %v", err)
+			}
+
+			// The premise, checked so this test cannot quietly stop covering
+			// the rendering it exists for: on the RECORDED frame the cells the
+			// suggestion occupies are faint and the marker beside them is not.
+			cells := promptRowCells(t, recorded, m.drawn)
+			if cells[0].Text != promptMarker {
+				t.Fatalf("%s@%dms: the prompt row opens with %q, want the marker %q", m.capture, m.atMs, cells[0].Text, promptMarker)
+			}
+			if cells[0].Faint {
+				t.Fatalf("%s@%dms: the prompt marker is drawn faint, so this frame no longer separates chrome from the drawing", m.capture, m.atMs)
+			}
+			var content strings.Builder
+			typed, faintContent := false, true
+			for _, c := range cells[1:] {
+				// The marker's own separator is chrome: Claude draws ONE
+				// NO-BREAK SPACE cell between "❯" and the box's content, and
+				// the rule's pattern strips it (claude.go's own note).
+				if c.Text == "" || c.Text == "\u00a0" {
+					continue
+				}
+				content.WriteString(c.Text)
+				if strings.TrimSpace(c.Text) == "" {
+					continue
+				}
+				typed = true
+				if !c.Faint {
+					faintContent = false
+				}
+			}
+			if got := strings.TrimRight(content.String(), " "); got != m.drawn {
+				t.Fatalf("%s@%dms: the row after the marker reads %q, want %q", m.capture, m.atMs, got, m.drawn)
+			}
+			if !typed || !faintContent {
+				t.Fatalf("%s@%dms: the recorded suggestion is not wholly faint (content=%v, all faint=%v), so this test no longer exercises the attribute",
+					m.capture, m.atMs, typed, faintContent)
+			}
+
+			// The recorded drawing is the box EMPTY: nothing has been given to
+			// this pane, and every caller that gates on "the box is empty" must
+			// paste rather than wait.
+			o := reg.Observe("claude", recorded)
+			if o.State != agentdriver.StateFreeText {
+				t.Fatalf("%s@%dms: state = %q, want free_text", m.capture, m.atMs, o.State)
+			}
+			if text, ok := o.InputText(); !ok || text != "" {
+				t.Fatalf("%s@%dms: InputText = (%q, %v), want (\"\", true)", m.capture, m.atMs, text, ok)
+			}
+			if !o.BoxEmpty() {
+				t.Errorf("%s@%dms: BoxEmpty = false, want true — Claude's suggestion is drawn into an empty box", m.capture, m.atMs)
+			}
+
+			// The SAME characters, painted WITHOUT SGR 2, on the same recording
+			// and the same row. This is a person typing that line: it is text in
+			// the box and nothing may be pasted into it.
+			solid := paintPromptRow(t, r, recorded, m.drawn, false)
+			so := reg.Observe("claude", solid)
+			if so.State != agentdriver.StateFreeText {
+				t.Fatalf("%s@%dms: state after the solid repaint = %q, want free_text", m.capture, m.atMs, so.State)
+			}
+			text, ok := so.InputText()
+			if !ok {
+				t.Fatalf("%s@%dms: InputText ok=false after the solid repaint, want true", m.capture, m.atMs)
+			}
+			if text != m.drawn {
+				t.Errorf("%s@%dms: the same characters painted solid read %q, want %q — a person typing that line is not an empty box, and reading them alike is the whole defect (nocx-xn63t.6.56)",
+					m.capture, m.atMs, text, m.drawn)
+			}
+			if so.BoxEmpty() {
+				t.Errorf("%s@%dms: BoxEmpty = true with %q typed into the box", m.capture, m.atMs, m.drawn)
+			}
+
+			// And painted FAINT again, the same characters read empty once more.
+			faint := paintPromptRow(t, r, solid, m.drawn, true)
+			fo := reg.Observe("claude", faint)
+			if text, ok := fo.InputText(); !ok || text != "" {
+				t.Errorf("%s@%dms: the same characters painted faint read (%q, %v), want (\"\", true)", m.capture, m.atMs, text, ok)
+			}
+			if !fo.BoxEmpty() {
+				t.Errorf("%s@%dms: BoxEmpty = false for the faint drawing", m.capture, m.atMs)
+			}
+		})
+	}
+}
+
+// paintPromptRow repaints the row of f that carries drawn with the SAME
+// characters, drawn faint (SGR 2) or solid, and answers the screen afterwards.
+// Nothing but the rendering differs between the two directions — same
+// recording, same row, same bytes of text.
+func paintPromptRow(t *testing.T, r *replayer, f paneview.Frame, drawn string, faint bool) paneview.Frame {
+	t.Helper()
+	row := -1
+	for y := range f.Lines {
+		if strings.Contains(f.Text(y), drawn) {
+			row = y
+			break
+		}
+	}
+	if row < 0 {
+		t.Fatalf("no row of this frame carries %q", drawn)
+	}
+	paint := "\x1b[" + strconv.Itoa(row+1) + ";1H" + promptMarker + "\u00a0"
+	if faint {
+		paint += "\x1b[2m"
+	}
+	paint += drawn + "\x1b[0m"
+	if err := r.Feed([]agentcapture.Chunk{{AtMs: r.mark, Data: []byte(paint)}}); err != nil {
+		t.Fatalf("paint: %v", err)
+	}
+	painted, err := r.Frame()
+	if err != nil {
+		t.Fatalf("frame after the repaint: %v", err)
+	}
+	return painted
+}
+
+// promptMarker is the glyph Claude's input box opens with, at column 0. It is
+// spelled once here so the repaint above and the frame it lands on agree.
+const promptMarker = "\u276f"
+
+// promptRowCells answers the non-blank cells of the row of f that draws drawn,
+// left to right.
+func promptRowCells(t *testing.T, f paneview.Frame, drawn string) []paneview.Cell {
+	t.Helper()
+	for y := range f.Lines {
+		if !strings.Contains(f.Text(y), drawn) {
+			continue
+		}
+		cells := make([]paneview.Cell, 0, len(f.Lines[y]))
+		for _, c := range f.Lines[y] {
+			if c.Text == "" {
+				continue
+			}
+			cells = append(cells, c)
+		}
+		if len(cells) == 0 {
+			t.Fatalf("row %d carries %q in its text and no cells", y, drawn)
+		}
+		return cells
+	}
+	t.Fatalf("no row of this frame carries %q", drawn)
+	return nil
 }
