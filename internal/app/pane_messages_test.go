@@ -1396,6 +1396,45 @@ func TestAMessageTheBoxDoesNotShowIsNotEntered(t *testing.T) {
 	}
 }
 
+// TestAWhenNowPasteRefusedWithNothingWrittenStaysTerminalAndNamesWhatAnswered
+// is the other half of nocx-xn63t.6.59's rule. A paste step that answers
+// `refused` with nothing written returns a when=free message to the queue, and
+// a when=now message to its CALLER — when=now means "answer me now", so the
+// refusal IS the answer and there is no second attempt to make. The line says
+// which state answered and the helper's own cause, so the next occurrence is
+// one line of log rather than a guess.
+func TestAWhenNowPasteRefusedWithNothingWrittenStaysTerminalAndNamesWhatAnswered(t *testing.T) {
+	hub, access, sessionID := newMessagesTestAccess(t, "now-refused")
+	reader := newFakeMsgReader("")
+	keys := &fakeMsgKeys{pasteResult: assistant.KeysResult{
+		State: "refused", Refusal: &proto.IntentRefusal{Cause: "stale_target"},
+	}}
+	testLog := logtest.Slog(t)
+	ctx := log.WithLogger(context.Background(), log.NewSlogAdapter(testLog))
+	pm := newTestPaneMessages(t, hub, reader, keys)
+
+	token := mintInputTarget(t, reader, access, sessionID)
+	view, err := pm.Send(ctx, access, sessionID, "hello", "now", "id-1", token)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if view.Phase != assistant.PhaseRefused {
+		t.Fatalf("phase = %q, want refused: a when=now refusal is the caller's answer", view.Phase)
+	}
+	if calls := keys.callCount(); calls != 1 {
+		t.Fatalf("keys calls = %d, want exactly the one refused attempt — when=now does not retry", calls)
+	}
+	if !logtest.WaitFor(ctx, watchdogBound, func(r logtest.Record) bool {
+		reason := recordAttr(r, "reason")
+		return r.Message == deliveryEndedMessage &&
+			recordAttr(r, "phase") == string(assistant.PhaseRefused) &&
+			strings.Contains(reason, "refused") && strings.Contains(reason, "stale_target")
+	}) {
+		t.Fatalf("no %q line naming the state refused and the helper's own cause stale_target (log was:\n%s)",
+			deliveryEndedMessage, logtest.TextSlog(testLog))
+	}
+}
+
 // recordAttr reads one attribute off a logtest record, so a test can assert
 // what a line SAID rather than only that something was written.
 func recordAttr(r logtest.Record, key string) string {
@@ -1798,6 +1837,67 @@ func TestNoDeadlockUnderConcurrentRevocation(t *testing.T) {
 	case <-time.After(watchdogBound):
 		t.Fatal("timed out: a concurrent revocation deadlocked a delivery")
 	}
+}
+
+// recheckClock is the queued delivery's own safety recheck under a test's
+// control (paneMessages.after): it hands the delivery one channel per armed
+// interval and fires it on demand, so a test drives "the next settled
+// reading" by an event rather than by a duration.
+type recheckClock struct {
+	timers  chan chan time.Time
+	pending chan time.Time
+}
+
+func newRecheckClock(t *testing.T, pm *paneMessages) *recheckClock {
+	t.Helper()
+	c := &recheckClock{timers: make(chan chan time.Time, 1)}
+	pm.after = func(d time.Duration) <-chan time.Time {
+		if d != freeMessageSafetyInterval {
+			t.Errorf("safety timer = %s, want %s", d, freeMessageSafetyInterval)
+		}
+		timer := make(chan time.Time, 1)
+		select {
+		case c.timers <- timer:
+		case <-time.After(watchdogBound):
+			t.Errorf("the delivery armed a second safety recheck while one was still pending")
+		}
+		return timer
+	}
+	return c
+}
+
+// await answers the recheck the delivery is waiting on now, arming it if this
+// is the first call since the last one was fired.
+func (c *recheckClock) await(t *testing.T) chan time.Time {
+	t.Helper()
+	if c.pending != nil {
+		return c.pending
+	}
+	select {
+	case c.pending = <-c.timers:
+	case <-time.After(watchdogBound):
+		t.Fatal("the queued delivery armed no safety recheck")
+	}
+	return c.pending
+}
+
+// fire fires the safety recheck the delivery is waiting on now. A test that
+// expects the delivery to still be waiting afterwards uses tick instead.
+func (c *recheckClock) fire(t *testing.T) {
+	t.Helper()
+	timer := c.await(t)
+	c.pending = nil
+	timer <- time.Now()
+}
+
+// tick fires one safety recheck and returns once the delivery has acted on
+// it, proved by the next recheck it arms — never by a duration. It is for a
+// test whose delivery is still waiting after the recheck; one that expects a
+// delivery instead would block here, and uses fire.
+func (c *recheckClock) tick(t *testing.T) {
+	t.Helper()
+	c.fire(t)
+	c.await(t)
 }
 
 // waitForCondition polls cond until it is true, watchdogged rather than
