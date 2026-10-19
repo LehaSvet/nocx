@@ -35,7 +35,6 @@ package app
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
@@ -335,65 +334,67 @@ func TestReconcileSessions_ASessionLeftPendingIsTakenBackOnceAttachedAndUnsealed
 	}
 }
 
-// unsealsThenBlocksRequester models exactly what this bead measured against
-// the real container: a caller unseals the vault OUTSIDE the unlock-prompt
-// handshake — e2e/ssh-helper-happy-path.spec.ts's unsealIfSealed calls
-// vault.unseal directly and never vault.unlockResolved — while an
-// EnsureUnsealed call is already suspended waiting for THIS requester to
-// answer.
-//
-// WHAT IT USED TO PROVE, AND NO LONGER DOES. It was written against an Unseal
-// that resolved no pending ask, so the requester went on blocking until its
-// caller's own context ended — the measured "context deadline exceeded" 15 s
-// after the log's own "vault unsealed" line, from
-// App.retryVaultSealedSessions's single-attempt predecessor. Unseal now
-// retires the ask whose question it answered (internal/vault/unlock.go,
-// nocx-1ebrs.7), so this requester's context ends at its own unseal and the
-// attempt it belongs to is answered instead of lost.
-type unsealsThenBlocksRequester struct {
-	v *vault.Vault
-	// unsealed is closed the instant Unseal has returned, below — the
-	// observable event a caller waits on instead of a duration. once guards
-	// the close: EnsureUnsealed's fast path (StateUnsealed: return nil,
-	// before touching a requester) should keep this called exactly once in
-	// practice, but a second raise finding the state changed underneath it
-	// must not panic the test on a double close.
-	unsealed chan struct{}
-	once     sync.Once
+// suspendingUnlockRequester is an ask nobody answers: the prompt goes out to
+// the client that is attached, the person never types into it, and
+// RequestUnlock blocks until the attempt that raised the ask ends — the
+// transport's RequestUnlock with a notification left unresolved.
+type suspendingUnlockRequester struct {
+	// raised receives one value per ask, the instant the ask is on the wire.
+	// It is the observable a test waits on to know an attempt is SUSPENDED on
+	// a prompt rather than refused at once (refusingUnlockRequester) or
+	// answered by a fast path — the condition this test exists for, made a
+	// fact instead of a bet on which goroutine runs first.
+	raised chan struct{}
 }
 
-func (r *unsealsThenBlocksRequester) RequestUnlock(ctx context.Context, reason string) error {
-	_ = r.v.Unseal(context.Background(), vault.UnsealRequest{Passphrase: "hunter2"})
-	r.once.Do(func() { close(r.unsealed) })
+func (r *suspendingUnlockRequester) RequestUnlock(ctx context.Context, _ string) error {
+	select {
+	case r.raised <- struct{}{}:
+	default:
+	}
 	<-ctx.Done()
 	return ctx.Err()
 }
 
-// The poll App.retryVaultSealedSessions runs (short, repeated attempts
-// rather than one long suspend) is what takes a session back when an attempt
-// met a sealed vault and the vault got opened some OTHER way in the
-// meantime. This drives that shape directly. It no longer has to lose the
-// first attempt to do it: Unseal retires the suspended ask the unseal
-// answered (nocx-1ebrs.7), so attempt one is answered by that unseal, and
-// attempt two — a FRESH EnsureUnsealed call — finds the vault already
-// unsealed (State is checked before any requester is touched) and needs
-// nobody's answer at all. Both are the product's own path, and the
-// assertions below hold either way.
+// The poll App.retryVaultSealedSessions runs (short, repeated attempts rather
+// than one long suspend) is what takes a session back when an attempt met a
+// sealed vault, lost to its own bound, and the vault was opened some OTHER
+// way in the meantime. This drives that shape directly.
 //
-// WHY TWO FIXED ATTEMPTS, NOT A LOOP OF SEVERAL SHORT ONES. An earlier
-// version ran up to five 100ms attempts, betting that the leader goroutine
-// EnsureUnsealed spawns (unlock.go's `go func(){ ... req.RequestUnlock ...
-// }()`) would get scheduled and call Unseal within that wall-clock budget.
-// On a loaded runner it sometimes was not: nothing here bounds how long the
-// Go scheduler takes to run a freshly spawned goroutine, so counting
-// attempts measured scheduler latency and mistook it for the retry
-// mechanism failing to catch the unseal (mac4.log, ci-mac: "verdict after 5
-// short attempts = unknown, want live"; nocx-8m3av). The fix is the same rule
-// AGENTS.md's testing section states for every timing-shaped test: wait on
-// an observable state change, never a duration. requester.unsealed is that
-// event — closed the instant the leader's Unseal call returns — so the
-// second attempt runs only once we KNOW the raw unseal already happened,
-// not once we hope five 100ms windows were enough.
+// WHAT nocx-1ebrs.28 REPAIRED HERE. This test's requester used to call
+// Vault.Unseal from inside RequestUnlock, and it relied on an Unseal that
+// resolved NO pending ask to leave that attempt hanging until its own bound:
+// the attempt was lost, and the test proved the poll catches what it missed.
+// nocx-1ebrs.7 makes an unseal retire the ask it answered, so that requester
+// is released the instant it unseals — the attempt is ANSWERED instead of
+// lost, and a test named for a missed attempt passed without one.
+//
+// THE STATE ITSELF IS NOT GONE, which is why this test is repaired rather
+// than retired. The poll's attempts carry a short bound and a person cannot
+// type a passphrase inside it, so an attempt is lost to its own bound with
+// the ask still on the wire, and only a LATER attempt can take the session
+// back once the vault is open. The requester above therefore answers nobody;
+// the test waits for the ask to be on the wire, lets that attempt lose, and
+// only then unseals. That is also the only order production can produce: the
+// pre-listen pass runs before Transport.Start, so an unseal cannot land
+// inside its attempts at all.
+//
+// The shape that was here — an unseal arriving WHILE an ask is on the wire —
+// is not lost with it. internal/vault owns it where the seam to observe it
+// lives: TestUnseal_RetiresAnAskAlreadyOnTheWire, and
+// TestEnsureUnsealed_AnAskSuspendedWithNoClientIsNotRaisedAfterAnotherPathUnseals
+// for the suspended half.
+//
+// WHY IT WAITS ON EVENTS, NEVER ON DURATIONS. An earlier version ran up to
+// five 100ms attempts, betting that the leader goroutine EnsureUnsealed
+// spawns (unlock.go's `go func(){ ... req.RequestUnlock ... }()`) would get
+// scheduled and call Unseal within that wall-clock budget. On a loaded runner
+// it sometimes was not: nothing here bounds how long the Go scheduler takes
+// to run a freshly spawned goroutine, so counting attempts measured scheduler
+// latency and mistook it for the retry mechanism failing to catch the unseal
+// (mac4.log, ci-mac: "verdict after 5 short attempts = unknown, want live";
+// nocx-8m3av). Every step below waits on an event instead: the ask on the
+// wire, the attempt returned, the unseal done.
 func TestReconcileSessions_APollOfShortAttemptsCatchesARawUnsealASuspendedOneMissed(t *testing.T) {
 	svc := sharedHelperService(t)
 	provider := &fakeLaneProvider{peer: sharedHelperPeer(t, svc)}
@@ -405,7 +406,7 @@ func TestReconcileSessions_APollOfShortAttemptsCatchesARawUnsealASuspendedOneMis
 	first.quit()
 
 	v.Seal()
-	requester := &unsealsThenBlocksRequester{v: v, unsealed: make(chan struct{})}
+	requester := &suspendingUnlockRequester{raised: make(chan struct{}, 4)}
 	v.SetUnlockRequester(requester)
 	v.ClientsAttached(1) // a client IS attached, matching Transport.Start having already returned
 
@@ -415,26 +416,46 @@ func TestReconcileSessions_APollOfShortAttemptsCatchesARawUnsealASuspendedOneMis
 	pass.timeout = 100 * time.Millisecond // vaultSealedRetryAttempt's own shape: short, so this is a poll
 	pending := []content.PendingSession{binding}
 
-	// ATTEMPT ONE raises the ask, and the requester answers it by unsealing
-	// the vault from outside the handshake — the container's own shape. What
-	// this assertion pins is that the attempt is judged and nothing is
-	// abandoned, not which way the race between its own bound and that answer
-	// went.
+	// ATTEMPT ONE raises the ask and nobody answers it: the attempt ends on
+	// its own bound with the ask still up, which is the attempt this test is
+	// named for missing.
 	firstAttempt := &recordingReconciler{pending: pending}
-	reconcileSessions(context.Background(), firstAttempt, second.reg.inventories(), pass, time.Hour, quietLogger(t))
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		reconcileSessions(context.Background(), firstAttempt, second.reg.inventories(), pass, time.Hour, quietLogger(t))
+	}()
+	select {
+	case <-requester.raised:
+	case <-time.After(10 * time.Second):
+		t.Fatal("attempt one never raised an ask, so there was nothing suspended to miss")
+	}
+	select {
+	case <-firstDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("attempt one never returned: its own bound did not end the suspended ask")
+	}
 	if len(firstAttempt.applied) != 1 {
 		t.Fatalf("attempt one: judgements = %+v, want exactly one", firstAttempt.applied)
 	}
-
-	select {
-	case <-requester.unsealed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the requester never reported its raw unseal")
+	if got := firstAttempt.applied[0].Verdict; got != content.VerdictUnknown {
+		t.Fatalf("attempt one verdict = %q, want unknown — an attempt this test needs LOST was answered, so nothing here is being missed", got)
 	}
 
-	// ATTEMPT TWO is a fresh EnsureUnsealed call, made only once the raw
-	// unseal is a known fact rather than a hoped-for race winner: State is
-	// checked before any requester is touched, so this needs nobody's answer.
+	// THE RAW UNSEAL, arriving between the attempts: what the container's
+	// unsealIfSealed does, calling vault.unseal directly and never
+	// vault.unlockResolved.
+	if err := v.Unseal(context.Background(), vault.UnsealRequest{Passphrase: "hunter2"}); err != nil {
+		t.Fatalf("the raw unseal: %v", err)
+	}
+	if got := v.State(); got != vault.StateUnsealed {
+		t.Fatalf("vault state after the raw unseal = %v, want unsealed", got)
+	}
+
+	// ATTEMPT TWO is a fresh EnsureUnsealed call against a vault that is now
+	// open: State is read before any requester is touched, so this needs
+	// nobody's answer — it needs the poll to run at all, which is what the
+	// product does after Transport.Start.
 	secondAttempt := &recordingReconciler{pending: pending}
 	reconcileSessions(context.Background(), secondAttempt, second.reg.inventories(), pass, time.Hour, quietLogger(t))
 	if len(secondAttempt.applied) != 1 || secondAttempt.applied[0].Verdict != content.VerdictLive {
