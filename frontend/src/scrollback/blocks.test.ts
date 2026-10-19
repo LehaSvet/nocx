@@ -382,6 +382,128 @@ describe('createCommandBlock', () => {
     }
   })
 
+  it("a press inside the LIVE REGION is the grid's, not the block's (ADR-0091)", () => {
+    // While a command runs, the live region IS this block's body, so a press on
+    // one of its rows reaches this block's own listeners. It is still the
+    // terminal's press: the pane focuses its input on it and the painter
+    // selects and words on it. The block answering too is what ate the next
+    // character typed into the running program — the block-selection keyboard
+    // branch stands in front of the grid — and what made an Escape deselect the
+    // block instead of stopping a streaming answer (both measured in the real
+    // browser: e2e/live-to-card-joined.spec.ts,
+    // e2e/ask-about-a-running-command.spec.ts).
+    const parent = document.createElement('div')
+    document.body.appendChild(parent)
+    const selectSpy = vi.fn()
+    const el = createCommandBlock(
+      'command',
+      1,
+      'sleep 30',
+      '~',
+      '',
+      '<span class="term-line">out</span>',
+      10,
+      0,
+      'success',
+      makeContainer(parent),
+      selectSpy,
+      freshStore(),
+      'shell',
+    )
+    parent.appendChild(el)
+    const live = document.createElement('div')
+    live.className = 'terminal-live-container'
+    const row = document.createElement('div')
+    row.className = 'term-grid-row'
+    row.innerHTML = '<span class="term-cell">painted</span>'
+    live.appendChild(row)
+    el.appendChild(live)
+    try {
+      // The person's whole click: press, release, no movement.
+      row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      row.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+      expect(el.classList.contains('cmd-block-selected')).toBe(false)
+      expect(selectSpy).not.toHaveBeenCalled()
+
+      // ... and the rule is the LIVE REGION, not the block: the block's own
+      // row selects it exactly as it always did.
+      const own = el.querySelector<HTMLElement>('.term-line')
+      own?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      own?.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+      expect(el.classList.contains('cmd-block-selected')).toBe(true)
+    } finally {
+      parent.remove()
+    }
+  })
+
+  it('a double click on a live row leaves the word to the painter (ADR-0091)', () => {
+    // The block's own rule reads the row's TEXT NODES. In painted output those
+    // are runs of cells, so it cut the token at the run the pointer sat in:
+    // `dbl` copied where the word was `~/dbl-mvf8dc0n.txt`
+    // (e2e/clipboard.spec.ts). The painter's double click reads the CELL
+    // SNAPSHOT, where a token is a run of cells — one rule, and it is the one
+    // the live grid has always had. The block stands down before its
+    // preventDefault, exactly as it did while the region sat outside every
+    // block.
+    const parent = document.createElement('div')
+    document.body.appendChild(parent)
+    const el = createCommandBlock(
+      'command',
+      1,
+      'sleep 30',
+      '~',
+      '',
+      'out',
+      10,
+      0,
+      'success',
+      makeContainer(parent),
+      noopSelect,
+      freshStore(),
+      'shell',
+    )
+    parent.appendChild(el)
+    const live = document.createElement('div')
+    live.className = 'terminal-live-container'
+    const row = document.createElement('div')
+    row.className = 'term-grid-row'
+    const cell = document.createElement('span')
+    cell.className = 'term-cell'
+    const text = document.createTextNode('~/dbl-mvf8dc0n.txt')
+    cell.appendChild(text)
+    row.appendChild(cell)
+    live.appendChild(row)
+    el.appendChild(live)
+    // jsdom has no hit-testing; aim the handler's browser seam at the live
+    // row's text so a rule that ran would have something to select.
+    const proto = Object.getOwnPropertyDescriptor(document, 'caretRangeFromPoint')
+    Object.defineProperty(document, 'caretRangeFromPoint', {
+      configurable: true,
+      value: () => {
+        const r = document.createRange()
+        r.setStart(text, 5)
+        r.collapse(true)
+        return r
+      },
+    })
+    try {
+      const ev = new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true,
+        detail: 2,
+        clientX: 10,
+        clientY: 10,
+      })
+      row.dispatchEvent(ev)
+      expect(ev.defaultPrevented).toBe(false)
+      expect(window.getSelection()?.toString() ?? '').toBe('')
+    } finally {
+      if (proto) Object.defineProperty(document, 'caretRangeFromPoint', proto)
+      else delete (document as { caretRangeFromPoint?: unknown }).caretRangeFromPoint
+      parent.remove()
+    }
+  })
+
   it('a single mousedown is not intercepted — native selection and click-to-select keep working', () => {
     const el = createCommandBlock(
       'command',

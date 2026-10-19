@@ -9,6 +9,7 @@ import type { ScreenSnapshot } from '../cell-model'
 import type { BlockClosed } from '../generated/block.closed'
 import { paintUnreadableRows, type StoredBlockRows } from './block-rows'
 import { wordRangeIn } from '../word-selection'
+import { insideLiveRegion } from '../live-region'
 import { createSecretChipUnresolved } from '../ui/secret-chip'
 import type { AgentRunToolCall } from '../generated/agent.runToolCall'
 import { createDisclosure, type Disclosure } from '../ui/disclosure'
@@ -1519,6 +1520,17 @@ function wireBlockSelection(
   const mine = (e: Event): boolean => {
     const target = e.target as HTMLElement
     if (target.closest('[data-block-control], .ui-context-menu')) return false
+    // THE GRID'S OWN PRESS IS THE GRID'S (ADR-0091). The live region is this
+    // block's body while the command runs, and a press in it reaches this
+    // listener — but the row under the pointer is the painter's, and the
+    // grid's own gesture (painter/selection-gesture.ts) is the one owner of
+    // it. This block's click-to-select claimed that press instead, so the
+    // block-selection keyboard branch ate the next character typed into the
+    // running program (measured, e2e/live-to-card-joined.spec.ts) and the
+    // Escape that should have stopped a streaming answer deselected the block
+    // (e2e/ask-about-a-running-command.spec.ts). One press, one owner: the
+    // block owns its header and its own rows, never the terminal's.
+    if (insideLiveRegion(e.target)) return false
     return target.closest('.cmd-block') === blockEl
   }
 
@@ -1698,6 +1710,19 @@ export function createCommandBlock(
     // a turn contains the blocks it caused, so the same double-click reaches
     // every ancestor's listener (ADR-0040).
     if ((e.target as HTMLElement).closest('.cmd-block') !== wrapper) return
+    // THE GRID'S OWN ROWS ARE THE GRID'S (ADR-0091). The live region is this
+    // block's body while the command runs, so a double click on one of its
+    // rows reaches this listener — and this rule is not the one that owns it.
+    // It reads the row's TEXT NODES, which in painted output are runs of
+    // cells, so it would cut the token at the run the pointer sat in
+    // (measured: `dbl` copied where the word was `~/dbl-mvf8dc0n.txt`,
+    // e2e/clipboard.spec.ts). The painter's own double click
+    // (painter/selection-gesture.ts) reads the CELL SNAPSHOT, where a token is
+    // a run of cells — one rule, and it is the one the live grid has always
+    // had. This block stands down HERE, before its preventDefault: that is
+    // exactly what it did while the region sat outside every block, and the
+    // gesture a person makes is the same gesture.
+    if (insideLiveRegion(e.target)) return
     if (e.detail !== 2) return
     e.preventDefault()
     // THE ROW THE POINTER IS IN, by the same two markups the copy reader

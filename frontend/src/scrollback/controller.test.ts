@@ -10,6 +10,7 @@ import {
   type MockInstance,
 } from 'vitest'
 import { ScrollbackController } from './controller'
+import { LIVE_REGION_SELECTOR, insideLiveRegion } from '../live-region'
 import { CommandSnapshotStore } from '../command-snapshot'
 import type { LiveContentHeightSpy } from '../test-support/panes-fixtures'
 import type { ExecutionAttempt } from '../lifecycle/state'
@@ -379,6 +380,19 @@ describe('the live region follows the pane it fills (nocx-liveheight)', () => {
     controller.setLiveHeight(null)
 
     expect(controller.terminalLiveContainer.style.height).toBe('200px')
+  })
+
+  it('the region answers the shared live-region identity, in every mode (ADR-0091)', () => {
+    // The identity is asked by the block layer, the painter and the pane
+    // (live-region.ts), and the element is built here. One literal, two
+    // modules: this is the assertion that keeps them one answer rather than a
+    // comment asking a reader to check.
+    const { controller } = makeController()
+    for (const mode of ['setIdle', 'setRunning', 'setUnstructured', 'enterFullscreen'] as const) {
+      controller[mode]()
+      expect(controller.terminalLiveContainer.matches(LIVE_REGION_SELECTOR)).toBe(true)
+      expect(insideLiveRegion(controller.terminalLiveContainer)).toBe(true)
+    }
   })
 
   it('leaves an idle pane alone: there is no live box to fill', () => {

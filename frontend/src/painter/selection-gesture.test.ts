@@ -185,6 +185,73 @@ describe('live selection gesture', () => {
     root.remove()
   })
 
+  it("the grid keeps its own rows while they are a running block's body (ADR-0091)", () => {
+    // ADR-0091 seats the live region INSIDE the running block, so a live row
+    // has a `.cmd-block` ancestor — and this gesture refused anything with one,
+    // as "a plain command block's selectable text, never a guessed live-grid
+    // cell". A row of the grid is a row of the grid wherever it is seated: the
+    // press, the drag and the word all resolve through the cell snapshot. With
+    // the refusal standing, a double click in a running program copied one DOM
+    // run of cells — `dbl` — instead of the word
+    // (e2e/clipboard.spec.ts).
+    const model = createCellModel()
+    const root = document.createElement('div')
+    const surface = document.createElement('div')
+    root.append(surface)
+    // The arrangement ADR-0091 creates: block > live region > grid surface.
+    const block = document.createElement('div')
+    block.className = 'cmd-block'
+    const region = document.createElement('div')
+    region.className = 'terminal-live-container'
+    block.appendChild(region)
+    region.appendChild(root)
+    document.body.append(block)
+    const text = 'ls ~/a-b.txt (x)'
+    const frame = frameOf(
+      1,
+      [[...text].map((ch) => (ch === ' ' ? ['', 1, false] : [ch, 1, true]) as CellSpec)],
+      { x: 0, y: 0, visible: false },
+      { cols: text.length, rows: 1, cellWidthPx: 8, cellHeightPx: 20 },
+    )
+    model.apply(frame)
+    const painter = createCellPainter({ surface, palette: () => DEFAULT_SNAPSHOT })
+    painter.apply(snapshotOf(frame))
+    vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      right: text.length * 8,
+      bottom: 20,
+      width: text.length * 8,
+      height: 20,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    })
+    const copy = vi.fn()
+    const gesture = installLiveSelectionGesture({
+      model,
+      painter,
+      surface,
+      gestureRoot: root,
+      surfaceId: 'live',
+      copy,
+    })
+    // Dispatched ON the surface: the target the handlers see is a node inside
+    // the live region, which is the whole question.
+    const at = (type: string, detail: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: 6 * 8 + 2, clientY: 5, detail })
+    surface.dispatchEvent(at('pointerdown', 1))
+    window.dispatchEvent(at('pointerup', 1))
+    surface.dispatchEvent(at('pointerdown', 2))
+    window.dispatchEvent(at('pointerup', 2))
+    surface.dispatchEvent(at('dblclick', 2))
+    expect(copy).toHaveBeenCalledWith('~/a-b.txt')
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    block.remove()
+  })
+
   it('copies a drag from live output into a card in display order using stored rows', () => {
     const model = createCellModel()
     const root = document.createElement('div')
