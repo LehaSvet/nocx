@@ -7,7 +7,7 @@ the filesystem seam and counts calls across publish paths.
 ## Current maximum
 
 - Maximum filesystem-seam calls per publish: **63**.
-- Maximum bytes written per publish: **87,061**.
+- Maximum bytes written per publish: **87,203**.
 - Measured worst path: replacement plus sweep, with the launch carrier absent.
 - Fault position used for the reported worst case: `remove#4`.
 
@@ -25,6 +25,13 @@ is the launch state a spawned worker's tool surface needs: the shell records the
 `tool_surface` classification beside `local`, clears it with the rest of the launch state,
 and stages the private MCP config on it. Both wrappers carry it, so both moved
 (nocx-xn63t.6.49). The filesystem-call maximum did not change.
+
+The 2026-10-19 measurement is 142 bytes above that 87,061-byte figure, at 87,203. The growth
+is the cancel trap moving into one helper the launch resolution and the enrolment are both
+run under, so an interrupt during the resolution is the cancel too instead of an aborted
+wrapper with no sentence (nocx-xn63t.6.30). Both wrappers carry the helper; what they lose is
+each enrol's own copy of the trap dance, which is why the move is smaller than the helper.
+The filesystem-call maximum did not change.
 
 Keep these values in sync with `measuredMaxPublishCalls` and `measuredMaxPublishBytes` in
 `publisher_measure_test.go`. Update this report and both constants whenever the measured

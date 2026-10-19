@@ -657,6 +657,26 @@ __nocx_agent_restore_traps() {
     __nocx_agent_old_hup=
 }
 
+# Run a function under the CANCEL trap, so an interrupt during a wait it makes
+# sets __nocx_agent_cancelled and the wait returns 130 instead of aborting the
+# wrapper with no cancel sentence (nocx-xn63t.6.29, nocx-xn63t.6.30). The bash
+# twin carries the long form, including what job control does to an interrupt
+# during such a wait; LOCAL_TRAPS puts back whatever INT trap was there before,
+# however it ends.
+#
+# TWO WAITS NEED IT AND THEY ARE CONSECUTIVE — the launch resolution first, the
+# enrolment after it — and one owner is what keeps both armed.
+__nocx_agent_cancel_on_int() {
+    setopt localoptions localtraps
+    local __rc
+    __nocx_agent_cancelled=0
+    trap '__nocx_agent_cancelled=1' INT
+    "$@"
+    __rc=$?
+    __nocx_agent_cancelled=0
+    return $__rc
+}
+
 # Enrol this pane for agent $1: 0 when enrolled (request id in
 # __nocx_agent_rid), 130 when the person cancelled with Ctrl+C, 1 for a refusal
 # (the backend's sentence in __nocx_agent_reason). The bash script carries the
@@ -667,17 +687,12 @@ __nocx_agent_restore_traps() {
 # question is known to be up: the person cannot tell those moments apart, and
 # an INT this shell has no trap for aborts the wrapper instead — no cancel
 # sentence, no cancelled ticket, and whatever status zsh leaves (nocx-xn63t.6.29).
-# LOCAL_TRAPS puts back whatever INT trap was there before, however it ends.
+# __nocx_agent_cancel_on_int owns the trap that makes the interrupt this
+# function's answer rather than the wrapper's end.
 __nocx_agent_enrol() {
-    setopt localoptions localtraps
-    local __rc
-    __nocx_agent_cancelled=0
-    trap '__nocx_agent_cancelled=1' INT
-    __nocx_agent_handshake "$1"
-    __rc=$?
-    __nocx_agent_cancelled=0
-    return $__rc
+    __nocx_agent_cancel_on_int __nocx_agent_handshake "$1"
 }
+
 
 __nocx_agent_handshake() {
     local __agent="$1" __rc __ticket_field
@@ -885,7 +900,17 @@ __nocx_agent_launch_read_answer() {
     return 1
 }
 
+# Ask the backend what this launch is: 0 when the pane knows what to run, 130
+# when the person pressed Ctrl+C while it was being resolved, 1 for a refusal.
+# The resolve comes BEFORE the enrolment and waits on the same round trip, so it
+# needs the same trap — one window earlier (nocx-xn63t.6.30). The bash twin
+# carries the reasoning.
 __nocx_agent_launch_resolve() {
+    __nocx_agent_cancel_on_int __nocx_agent_launch_resolve_answer "$1"
+}
+
+# The body of one launch resolution, run under the cancel trap above.
+__nocx_agent_launch_resolve_answer() {
     local __agent="$1" __rid="a-$__nocx_lc_dom-$(( __nocx_agent_n++ ))" __rc
     __nocx_agent_launch_agent="$__agent"
     __nocx_lc_send agent_launch_resolve ',"request":"'"$__rid"'","agent":"'"$__agent"'"' || return 1

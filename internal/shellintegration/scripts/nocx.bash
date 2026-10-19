@@ -861,6 +861,41 @@ __nocx_agent_restore_traps() {
     __nocx_agent_old_hup=
 }
 
+# Run a function under the CANCEL trap, so an interrupt during a wait it makes
+# sets __nocx_agent_cancelled and the wait returns 130 instead of aborting the
+# wrapper with no cancel sentence (nocx-xn63t.6.29, nocx-xn63t.6.30).
+#
+# TWO WAITS NEED IT AND THEY ARE CONSECUTIVE — the launch resolution first, the
+# enrolment after it — and the person cannot tell one window from the other. So
+# the trap, and the job-control handling below, have ONE owner: a second copy is
+# how one of the two windows would stop being armed without anybody noticing.
+#
+# THE INT TRAP IS NOT ENOUGH IN BASH. The waits run children (sleep, dd, the
+# probe helper), and with job control on each child is the terminal's foreground
+# group: the interrupt goes to the child only, and bash answers the child's
+# death by SIGINT by aborting the function without running the trap. Measured:
+# about one Ctrl+C in three aborted the wait that way, reporting 130 with no
+# cancel behind it. With `set +m` the children stay in this shell's group, the
+# shell receives the interrupt too, and the trap runs.
+#
+# The INT trap that was there before is put back, and __nocx_agent_cancelled is
+# cleared, whichever way the wait ends.
+__nocx_agent_cancel_on_int() {
+    local __old_int __rc __monitor=0
+    __old_int="$(trap -p INT 2>/dev/null)" || __old_int=
+    __nocx_agent_cancelled=0
+    [[ $- == *m* ]] && __monitor=1
+    set +m
+    trap '__nocx_agent_cancelled=1' INT
+    "$@"
+    __rc=$?
+    trap - INT
+    (( __monitor )) && set -m
+    [[ -z "$__old_int" ]] || eval "$__old_int"
+    __nocx_agent_cancelled=0
+    return $__rc
+}
+
 # Enrol this pane for agent $1. Returns 0 when enrolled, with the interval's
 # request id in __nocx_agent_rid; 130 when the person pressed Ctrl+C; 1 for
 # every refusal, with the backend's sentence, if it sent one, in
@@ -872,32 +907,12 @@ __nocx_agent_restore_traps() {
 # sentence, no cancelled ticket, and whatever status the shell leaves — zsh
 # left 2 (nocx-xn63t.6.29). The question stays on screen and an answer given
 # later is still kept for the next start, but the agent the person stopped
-# waiting for does not run. The INT trap is this function's alone and the one
-# it replaced is put back, whichever way the enrolment ends.
-#
-# JOB CONTROL IS OFF FOR THE ENROLMENT, because a trap alone is not enough in
-# bash. The reads run children (sleep, dd, the probe helper), and with job
-# control on each child is the terminal's foreground group: the interrupt goes
-# to the child only, and bash answers the child's death by SIGINT by aborting
-# the function without running the trap. Measured: about one Ctrl+C in three
-# aborted the wait that way, reporting 130 with no cancel behind it. With
-# `set +m` the children stay in this shell's group, the shell receives the
-# interrupt too, and the trap runs.
+# waiting for does not run. __nocx_agent_cancel_on_int owns the trap that makes
+# the interrupt this function's answer rather than the wrapper's end.
 __nocx_agent_enrol() {
-    local __old_int __rc __monitor=0
-    __old_int="$(trap -p INT 2>/dev/null)" || __old_int=
-    __nocx_agent_cancelled=0
-    [[ $- == *m* ]] && __monitor=1
-    set +m
-    trap '__nocx_agent_cancelled=1' INT
-    __nocx_agent_handshake "$1"
-    __rc=$?
-    trap - INT
-    (( __monitor )) && set -m
-    [[ -z "$__old_int" ]] || eval "$__old_int"
-    __nocx_agent_cancelled=0
-    return $__rc
+    __nocx_agent_cancel_on_int __nocx_agent_handshake "$1"
 }
+
 
 # THE QUESTION COMES FIRST (nocx-cyhfw). An agent nobody has answered for is not
 # refused: the backend answers "pending" inside the handshake's bound and puts
@@ -1122,7 +1137,21 @@ __nocx_agent_launch_read_answer() {
     return 1
 }
 
+# Ask the backend what this launch is: 0 when the pane knows what to run, 130
+# when the person pressed Ctrl+C while it was being resolved, 1 for a refusal.
+#
+# THE RESOLVE IS A WAIT ON A ROUND TRIP and it comes BEFORE the enrolment, so an
+# interrupt here reaches a wrapper with no trap and no cancel behind it — the
+# same defect the enrolment had, one window earlier (nocx-xn63t.6.30).
+# __nocx_agent_cancel_on_int owns the trap for both windows.
 __nocx_agent_launch_resolve() {
+    __nocx_agent_cancel_on_int __nocx_agent_launch_resolve_answer "$1"
+}
+
+# The body of one launch resolution, run under the cancel trap above. The answer
+# loop already returns 130 on __nocx_agent_cancelled; what it was missing was
+# somebody to set it.
+__nocx_agent_launch_resolve_answer() {
     local __agent="$1" __rid="a-$__nocx_lc_dom-$(( __nocx_agent_n++ ))" __rc
     __nocx_agent_launch_agent="$__agent"
     __nocx_lc_send agent_launch_resolve ',"request":"'"$__rid"'","agent":"'"$__agent"'"' || return 1

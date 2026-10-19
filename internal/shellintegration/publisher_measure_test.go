@@ -221,9 +221,16 @@ import (
 // job rather than complaining about it: the byte count is the one thing that
 // makes the published bundle's size a number somebody re-reads rather than a
 // fact nobody has looked at since it was written.
+//
+// AND GREW by 142 bytes when Ctrl+C during the launch RESOLUTION became the
+// cancel (nocx-xn63t.6.30): 87203, calls unchanged at 63. The growth is the
+// trap helper both waits now run under — a function each wrapper carries —
+// net of each enrol's own copy of the trap dance, which is where the other
+// few hundred bytes went. Paying for one owner of the trap is the point: two
+// copies is how the second window would stop being armed.
 const (
 	measuredMaxPublishCalls = 63
-	measuredMaxPublishBytes = 87061
+	measuredMaxPublishBytes = 87203
 
 	// measuredMaxBoundedResidue is the same figure for the worst attempt
 	// that is still inside the residue bounds the design asks P3 to enforce

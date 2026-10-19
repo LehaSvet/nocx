@@ -111,6 +111,13 @@ type nestedKernel struct {
 	holdEnrolAnswer bool
 	held            *frame
 	question        *frame
+	// holdLaunchAnswer keeps the answer to the first launch resolution back
+	// until the test calls sendHeldLaunchAnswer, so a test can put the person's
+	// Ctrl+C inside the round trip between the shell asking what to launch and
+	// reading the answer — the window nocx-xn63t.6.30 is about, one step before
+	// the enrolment the two fields above open (nocx-xn63t.6.29).
+	holdLaunchAnswer bool
+	heldLaunch       *frame
 	// rejected counts frames the kernel rejects: a wrong addressing tuple,
 	// a stale (non-increasing) sequence, or a frame addressed to the child
 	// domain after the parent restored (the child's interval ended — it
@@ -205,38 +212,13 @@ func (k *nestedKernel) accept(f frame, body []byte) {
 	case "domain_request":
 		k.grantLocked()
 	case "agent_launch_resolve":
-		if k.launchLiteral {
-			k.encodeAgentAnswerLocked(f, lifecycle.Event{
-				Kind: lifecycle.KindAgentLaunchResolved,
-				AgentLaunchResolved: &lifecycle.AgentLaunchResolved{
-					RequestID:   lifecycle.RequestID(f.Request),
-					Agent:       f.Agent,
-					Local:       false,
-					ToolSurface: k.launchToolSurface,
-				},
-			})
+		if k.holdLaunchAnswer && k.heldLaunch == nil {
+			held := f
+			k.heldLaunch = &held
 			return
 		}
-		if k.launchMalformed {
-			k.sendMalformedAgentLaunchAnswerLocked()
-			return
-		}
-		argv := append([]string{k.launchCommand}, k.launchArgs...)
-		payload, err := EncodeAgentLaunchPayload(argv, k.launchEnv)
-		if err != nil {
-			k.t.Fatalf("encode fake launch payload: %v", err)
-		}
-		k.encodeAgentAnswerLocked(f, lifecycle.Event{
-			Kind: lifecycle.KindAgentLaunchResolved,
-			AgentLaunchResolved: &lifecycle.AgentLaunchResolved{
-				RequestID:   lifecycle.RequestID(f.Request),
-				Agent:       f.Agent,
-				Local:       true,
-				ToolSurface: true,
-				Ticket:      strings.Repeat("a", 43),
-				Payload:     payload,
-			},
-		})
+		k.answerLaunchResolveLocked(f)
+
 	case "agent_launch_cancel":
 		// Cancellation is best effort and has no response.
 	case "agent_enrol":
@@ -401,6 +383,58 @@ func (k *nestedKernel) sendHeldEnrolAnswer() {
 		return
 	}
 	k.sendAgentAnswerLocked(*k.held, lifecycle.KindAgentEnrolled)
+}
+
+// answerLaunchResolveLocked answers one launch resolution: the record the
+// fixture resolved, the literal classification a worker's pane asks for, or the
+// malformed shape. Split out of accept so the held path answers with EXACTLY the
+// bytes the ordinary one sends — a held answer a test hand-built would prove
+// nothing about what a shell reads.
+func (k *nestedKernel) answerLaunchResolveLocked(f frame) {
+	if k.launchLiteral {
+		k.encodeAgentAnswerLocked(f, lifecycle.Event{
+			Kind: lifecycle.KindAgentLaunchResolved,
+			AgentLaunchResolved: &lifecycle.AgentLaunchResolved{
+				RequestID:   lifecycle.RequestID(f.Request),
+				Agent:       f.Agent,
+				Local:       false,
+				ToolSurface: k.launchToolSurface,
+			},
+		})
+		return
+	}
+	if k.launchMalformed {
+		k.sendMalformedAgentLaunchAnswerLocked()
+		return
+	}
+	argv := append([]string{k.launchCommand}, k.launchArgs...)
+	payload, err := EncodeAgentLaunchPayload(argv, k.launchEnv)
+	if err != nil {
+		k.t.Fatalf("encode fake launch payload: %v", err)
+	}
+	k.encodeAgentAnswerLocked(f, lifecycle.Event{
+		Kind: lifecycle.KindAgentLaunchResolved,
+		AgentLaunchResolved: &lifecycle.AgentLaunchResolved{
+			RequestID:   lifecycle.RequestID(f.Request),
+			Agent:       f.Agent,
+			Local:       true,
+			ToolSurface: true,
+			Ticket:      strings.Repeat("a", 43),
+			Payload:     payload,
+		},
+	})
+}
+
+// sendHeldLaunchAnswer delivers the launch resolution holdLaunchAnswer kept
+// back, so the shell's wait can end — whether it is still waiting because the
+// interrupt did not abort it, or because nothing has aborted it at all.
+func (k *nestedKernel) sendHeldLaunchAnswer() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.heldLaunch == nil {
+		k.t.Fatal("sendHeldLaunchAnswer before any launch resolution was held")
+	}
+	k.answerLaunchResolveLocked(*k.heldLaunch)
 }
 
 // closeQuestion is the person answering, or nocx failing to put the question:
