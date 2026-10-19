@@ -556,6 +556,44 @@
   position: relative;
 }
 
+/* ONE BODY PAYS ITS PADDING ONCE (nocx-zg3k3.14.26).
+
+   A running command's rows are painted in two boxes, and both are its body.
+   The block paints the rows the durable record has already taken — the ones
+   that left the screen — into its own `.cmd-output`; the live region below
+   paints the screen the command is still writing. That is by design (ADR-0078:
+   the rows above the live screen come from the durable tier, and the live
+   output stays the controller-owned SIBLING, never a descendant of the block).
+   What was not designed is the joint: each box wore the whole body padding
+   (`.cmd-output` its bottom, the live region its top), so the two paddings
+   were paid between two CONSECUTIVE rows of one body — 6px + 2px = 8px, one
+   extra half-row (measured on the owner's stand: a row pitch of 25px across
+   the joint where every other pair is 17px, and 6px of bare block body below
+   the block's last row).
+
+   So both edges of the joint stop paying: the body does not end at the
+   block's last painted row, and it does not start at the live region's first.
+   The body's two OUTER edges keep exactly what they had — the 2px top, now
+   paid by whichever box holds the body's first row, and the bottom's
+   `--cmd-output-pad-bottom` + `--terminal-block-trailing-space`, paid by the
+   live region — so the running region still freezes into a body of the same
+   height (the rule these paddings came from, `.cmd-output` above). */
+.cmd-block.cmd-block-running > .cmd-output {
+  /* This output is not the end of the body while the command runs. */
+  padding-bottom: 0;
+}
+
+/* ... and the live region below such a block continues the body, so it is not
+   the body's start either. Asked of the DOM rather than of a second flag: the
+   block's own `.cmd-output` IS the fact, and a class set beside it could only
+   drift from it (paintStoredRows replaces that element on every growth).
+   A command that has printed nothing yet has no `.cmd-output`, and there the
+   live region is the whole body and keeps its top padding. */
+.scrollback-inner:has(> .cmd-block.cmd-block-running > .cmd-output)
+  > .terminal-live-container.live-running {
+  padding-top: 0;
+}
+
 /* The RUNNING COMMAND's stand-in (nocx-vnirv.1): the live region is the
    running block's body, so the dots stand at the top of it — exactly where
    the first output line will be written, below the body's top padding (the
