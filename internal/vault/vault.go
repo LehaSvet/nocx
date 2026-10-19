@@ -139,13 +139,19 @@ type Vault struct {
 	unlockSuspension time.Duration
 	// unlockAttempt cancels the ask currently on the wire — one ATTEMPT at
 	// the outstanding prompt, not the prompt itself. Set while
-	// UnlockRequester.RequestUnlock is in flight; called when the last
-	// client detaches, because a notification broadcast to connections that
-	// no longer exist can never be answered.
+	// UnlockRequester.RequestUnlock is in flight; called when the ask can no
+	// longer be answered, which is either that the last client detached (a
+	// notification broadcast to connections that no longer exist can never be
+	// answered) or that another path unsealed the vault under it (the
+	// question the prompt was asking has been answered).
 	unlockAttempt context.CancelFunc
 	// unlockAttemptAbandoned records that the cancellation above was ours
 	// rather than the caller's, so the raise loop suspends and re-raises
-	// instead of reporting a cancelled context to every waiter.
+	// instead of reporting a cancelled context to every waiter. "Ours" covers
+	// both reasons an ask is ended: presence, and the question having been
+	// answered elsewhere. The loop reads the vault's state before it raises
+	// either way, so the flag says only that the cancellation was not an
+	// answer.
 	unlockAttemptAbandoned bool
 	// detachWindow is how long the client count must STAY zero before the
 	// detach is read as a departure (presence.go). New sets it to
@@ -612,7 +618,18 @@ func (v *Vault) Unseal(ctx context.Context, req UnsealRequest) error {
 	// Increment epoch so a stale auto-seal timer (armed before this unseal)
 	// will not fire and immediately re-seal.
 	v.autoSealEpoch++
+	// An ask that is on its way to a person is retired here: this unseal IS
+	// the answer to the question that prompt was asking, and a dialog whose
+	// question has been answered must not stay up asking it. The cancel runs
+	// outside the lock, and it is recorded as OURS so the raise loop re-reads
+	// the state and releases every joined waiter with nil rather than with a
+	// cancelled context (unlock.go, nocx-1ebrs.7).
+	retireAsk := v.retireUnlockAskLocked()
 	v.mu.Unlock()
+
+	if retireAsk != nil {
+		retireAsk()
+	}
 
 	v.wakeAutoSeal()
 	v.logger.Info("vault unsealed", "duration", time.Since(t0))

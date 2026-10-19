@@ -294,6 +294,14 @@ func (p *unlockPrompt) wait(ctx context.Context, token uint64) error {
 // In particular a dismissal is NOT retried: a person who said no has
 // answered, and asking again would be the dialog loop nocx-25k9.20 bought.
 //
+// AND THE LOOP ENDS WHEN THE VAULT IS NO LONGER SEALED, with nil for every
+// waiter. An ask is a question about the vault's state, so a state that
+// answers it ends the ask wherever the answer came from: the person may have
+// unlocked from the settings surface, from a second window, or through the
+// upgrade flow, while this operation was suspended with nobody to ask. The
+// re-read happens after every wait, because that is the window in which
+// another path can answer (nocx-1ebrs.7).
+//
 // WHAT HAPPENS WHEN A CLIENT ATTACHES WHILE AN ASK IS PENDING. Nothing, if
 // the ask is still on the wire to a client that can answer it — the prompt
 // is one dialog and it already exists. If the last client left while the ask
@@ -312,8 +320,31 @@ func (v *Vault) raiseUnlock(ctx context.Context, req UnlockRequester, p *unlockP
 			return err
 		}
 
-		actx, cancel := context.WithCancel(ctx)
+		// THE QUESTION MAY HAVE BEEN ANSWERED WHILE NOBODY WAS HERE TO SEE
+		// IT. The wait above is where a suspended ask spends its time: it was
+		// entered because the vault was sealed and there was nobody to ask,
+		// and it ends when a client attaches. Any other path that unseals the
+		// vault can run inside that span — the settings surface, a second
+		// window, the RPC a test drives, or the upgrade flow this ask was
+		// raised during — so the state is read AGAIN here, in the same
+		// critical section that records the attempt, which is the last
+		// instant before the ask goes out.
+		//
+		// What that skipped read cost, measured in the e2e stand: an unlock
+		// sheet raised 1.75 s after the vault had been unsealed, demanding a
+		// passphrase that had already been given, holding focus, with nothing
+		// behind it to answer (nocx-1ebrs.7).
+		//
+		// nil is the answer for every joined waiter, not a shortcut: each of
+		// them called EnsureUnsealed because it needed the vault open, and it
+		// is open. Reporting the retired attempt's cancellation instead would
+		// fail a read that can proceed.
 		v.mu.Lock()
+		if v.stateLocked() == StateUnsealed {
+			v.mu.Unlock()
+			return nil
+		}
+		actx, cancel := context.WithCancel(ctx)
 		v.unlockAttempt = cancel
 		v.unlockAttemptAbandoned = false
 		v.mu.Unlock()
@@ -335,11 +366,38 @@ func (v *Vault) raiseUnlock(ctx context.Context, req UnlockRequester, p *unlockP
 		}
 		switch {
 		case abandoned:
-			// The last client detached under this ask. Suspend and re-raise.
+			// The ask stopped being answerable — the last client detached
+			// under it, or another path unsealed the vault. Suspend and
+			// re-raise; the re-read at the top answers the second case with
+			// nil.
 		case errors.Is(err, ErrNoUnlockClient):
 			// The client left between the check and the broadcast.
 		default:
 			return err
 		}
 	}
+}
+
+// retireUnlockAskLocked ends the ask that is on the wire, if there is one,
+// and returns the cancel func so its caller can run it outside the lock.
+// Called with v.mu held.
+//
+// THE ASK IS A QUESTION, AND A QUESTION THAT HAS BEEN ANSWERED ELSEWHERE IS
+// NOT STILL OPEN. A prompt is raised because the vault is sealed; a person
+// who unlocks it from the settings surface, from another window, or through
+// the upgrade flow has answered that question whether or not they answered
+// the dialog. Leaving the attempt in flight leaves the transport waiting for
+// a resolution that will never come, and leaves every joined waiter holding
+// a dialog nobody has any reason to fill in.
+//
+// The cancellation is OURS, so unlockAttemptAbandoned is set: the raise loop
+// must not report a cancelled context to the waiters as though it were an
+// answer. It re-enters, re-reads the state, and returns nil, which is what
+// every joined waiter needed (nocx-1ebrs.7).
+func (v *Vault) retireUnlockAskLocked() context.CancelFunc {
+	if v.unlockAttempt == nil {
+		return nil
+	}
+	v.unlockAttemptAbandoned = true
+	return v.unlockAttempt
 }

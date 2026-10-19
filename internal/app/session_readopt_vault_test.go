@@ -340,12 +340,16 @@ func TestReconcileSessions_ASessionLeftPendingIsTakenBackOnceAttachedAndUnsealed
 // handshake — e2e/ssh-helper-happy-path.spec.ts's unsealIfSealed calls
 // vault.unseal directly and never vault.unlockResolved — while an
 // EnsureUnsealed call is already suspended waiting for THIS requester to
-// answer. Unseal itself resolves no pending ask (internal/vault/vault.go's
-// Unseal touches rootKey and wakeAutoSeal, nothing in unlock.go), so the
-// requester goes on blocking until its caller's own context ends — the
-// measured "context deadline exceeded" 15s after the log's own "vault
-// unsealed" line, from App.retryVaultSealedSessions's single-attempt
-// predecessor.
+// answer.
+//
+// WHAT IT USED TO PROVE, AND NO LONGER DOES. It was written against an Unseal
+// that resolved no pending ask, so the requester went on blocking until its
+// caller's own context ended — the measured "context deadline exceeded" 15 s
+// after the log's own "vault unsealed" line, from
+// App.retryVaultSealedSessions's single-attempt predecessor. Unseal now
+// retires the ask whose question it answered (internal/vault/unlock.go,
+// nocx-1ebrs.7), so this requester's context ends at its own unseal and the
+// attempt it belongs to is answered instead of lost.
 type unsealsThenBlocksRequester struct {
 	v *vault.Vault
 	// unsealed is closed the instant Unseal has returned, below — the
@@ -366,13 +370,15 @@ func (r *unsealsThenBlocksRequester) RequestUnlock(ctx context.Context, reason s
 }
 
 // The poll App.retryVaultSealedSessions runs (short, repeated attempts
-// rather than one long suspend) is what catches the exact race the test
-// above cannot happen in this shape: an attempt suspended on an ask nobody
-// will ever resolve, while the vault gets unsealed some OTHER way in the
-// meantime. This drives that shape directly — the first attempt is lost
-// exactly as measured, and the second, a FRESH EnsureUnsealed call, finds
-// the vault already unsealed (State is checked before any requester is
-// touched) and needs nobody's answer at all.
+// rather than one long suspend) is what takes a session back when an attempt
+// met a sealed vault and the vault got opened some OTHER way in the
+// meantime. This drives that shape directly. It no longer has to lose the
+// first attempt to do it: Unseal retires the suspended ask the unseal
+// answered (nocx-1ebrs.7), so attempt one is answered by that unseal, and
+// attempt two — a FRESH EnsureUnsealed call — finds the vault already
+// unsealed (State is checked before any requester is touched) and needs
+// nobody's answer at all. Both are the product's own path, and the
+// assertions below hold either way.
 //
 // WHY TWO FIXED ATTEMPTS, NOT A LOOP OF SEVERAL SHORT ONES. An earlier
 // version ran up to five 100ms attempts, betting that the leader goroutine
@@ -409,10 +415,11 @@ func TestReconcileSessions_APollOfShortAttemptsCatchesARawUnsealASuspendedOneMis
 	pass.timeout = 100 * time.Millisecond // vaultSealedRetryAttempt's own shape: short, so this is a poll
 	pending := []content.PendingSession{binding}
 
-	// ATTEMPT ONE raises the ask; unsealsThenBlocksRequester answers nobody
-	// within this attempt's own short timeout, so it is lost exactly as
-	// App.retryVaultSealedSessions's own comment measures — but it is what
-	// starts the leader goroutine that will call Unseal.
+	// ATTEMPT ONE raises the ask, and the requester answers it by unsealing
+	// the vault from outside the handshake — the container's own shape. What
+	// this assertion pins is that the attempt is judged and nothing is
+	// abandoned, not which way the race between its own bound and that answer
+	// went.
 	firstAttempt := &recordingReconciler{pending: pending}
 	reconcileSessions(context.Background(), firstAttempt, second.reg.inventories(), pass, time.Hour, quietLogger(t))
 	if len(firstAttempt.applied) != 1 {
