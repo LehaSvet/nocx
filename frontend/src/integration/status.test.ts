@@ -113,14 +113,35 @@ describe('what the product says about a degraded session', () => {
 
   // The two reasons are now a pair, and each must keep its own claim.
   // handshake-timeout is what is left when the startup DID return and the
-  // shell still never answered, so it must not borrow the startup-file
-  // sentence; startup-did-not-return must say it, because that stage is
-  // exactly what the backend observed (nocx-yww2).
+  // shell still never answered; startup-did-not-return says that nocx's
+  // integration never answered, and that is all it knows (nocx-yww2).
+  //
+  // NEITHER MAY BLAME THE STARTUP FILES (nocx-1ebrs.8). The owner read "your
+  // shell startup files did not return control to nocx" on a shipped tab
+  // whose prompt had come back: the sentence sent them to edit rc files that
+  // were not at fault while the failure was nocx's own delivery. A reason is
+  // a stage the backend observed, never a guess at the culprit.
   it('does not claim an interception it cannot observe', () => {
-    const m = integrationMessage(fact({ reason: 'handshake-timeout' }), 'unknown')!
-    expect(m.description.toLowerCase()).not.toContain('startup file')
-    const s = integrationMessage(fact({ reason: 'startup-did-not-return' }), 'unknown')!
-    expect(s.description.toLowerCase()).toContain('startup file')
+    for (const reason of ['handshake-timeout', 'startup-did-not-return'] as const) {
+      const m = integrationMessage(fact({ reason }), 'unknown')!
+      const text = [m.description, m.happening, m.lastGoodStep, m.fix?.lead ?? '']
+        .join(' ')
+        .toLowerCase()
+      expect(text.includes('startup file'), `${reason} blames the startup files`).toBe(false)
+      expect(
+        text.includes('did not return control'),
+        `${reason} claims control never returned`,
+      ).toBe(false)
+    }
+    // And the one claim each of them DOES make stays distinct: the startup
+    // reason is about the integration never answering, the timeout is about
+    // the shell never answering in time.
+    expect(
+      integrationMessage(fact({ reason: 'startup-did-not-return' }), 'unknown')!.description,
+    ).toContain('integration')
+    expect(
+      integrationMessage(fact({ reason: 'handshake-timeout' }), 'unknown')!.description,
+    ).toContain('did not answer')
   })
 
   it('says nothing about a session that is starting or integrated', () => {
