@@ -93,7 +93,7 @@ func TestConnSignal_FiresForAClientThatOffersNoPublicKey(t *testing.T) {
 
 	fired := make(chan struct{}, 1)
 	var once sync.Once
-	config := buildConfig(userSigner, hostSigner, "banner", "the-password", func() {
+	config := buildConfig(userSigner, nil, hostSigner, "banner", "the-password", modernPubkeyAlgorithms, func() {
 		once.Do(func() { fired <- struct{}{} })
 	})
 
@@ -363,7 +363,7 @@ func dialFixture(t *testing.T) *gossh.Client {
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 
-	config := buildConfig(userSigner, hostSigner, "", "", func() {})
+	config := buildConfig(userSigner, nil, hostSigner, "", "", modernPubkeyAlgorithms, func() {})
 	go func() {
 		for {
 			conn, acceptErr := ln.Accept()
@@ -536,7 +536,7 @@ func startFixture(t *testing.T) (addr string, hostKey gossh.PublicKey, userSigne
 			if err != nil {
 				return
 			}
-			config := buildConfig(userSigner, hostSigner, "", "", func() {})
+			config := buildConfig(userSigner, nil, hostSigner, "", "", modernPubkeyAlgorithms, func() {})
 			go serveConn(conn, config)
 		}
 	}()

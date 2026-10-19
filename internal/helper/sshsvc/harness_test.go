@@ -23,6 +23,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
@@ -99,6 +100,29 @@ func newTestKey(t *testing.T) testKey {
 		t.Fatalf("signer: %v", err)
 	}
 	block, err := gossh.MarshalPrivateKey(priv, "nocx-test")
+	if err != nil {
+		t.Fatalf("marshal private key: %v", err)
+	}
+	return testKey{signer: signer, pem: pem.EncodeToMemory(block)}
+}
+
+// newTestRSAKey is the same pair for an RSA key (nocx-1ebrs.17).
+//
+// RSA is the type whose public key TYPE is not the algorithm a modern server
+// accepts: `ssh-rsa` is SHA-1 and OpenSSH 8.8+ excludes it, so a fixture that
+// accepts only `rsa-sha2-*` is the server the defect was measured against, one
+// layer down from the journal line.
+func newTestRSAKey(t *testing.T) testKey {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate RSA key: %v", err)
+	}
+	signer, err := gossh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	block, err := gossh.MarshalPrivateKey(priv, "nocx-test-rsa")
 	if err != nil {
 		t.Fatalf("marshal private key: %v", err)
 	}
@@ -257,6 +281,20 @@ func (f *fixture) refuseNextSessionOpens(n int) {
 
 func newFixture(t *testing.T, password string, acceptedKey gossh.Signer) *fixture {
 	t.Helper()
+	return newFixtureAccepting(t, password, acceptedKey, nil)
+}
+
+// newFixtureAccepting is newFixture with the host's own list of signature
+// algorithms it will accept for a public key — `PubkeyAcceptedAlgorithms` one
+// layer down (nocx-1ebrs.17).
+//
+// The x/crypto SERVER both advertises this list in its `server-sig-algs`
+// extension and enforces it on the signature it receives, which is exactly
+// what OpenSSH does with `PubkeyAcceptedAlgorithms`. A nil list keeps the
+// fixture's own default, so every caller that predates this argument asks the
+// same question it always did.
+func newFixtureAccepting(t *testing.T, password string, acceptedKey gossh.Signer, algorithms []string) *fixture {
+	t.Helper()
 	f := &fixture{
 		hostSigner:   newSigner(t),
 		userSigner:   acceptedKey,
@@ -306,6 +344,9 @@ func newFixture(t *testing.T, password string, acceptedKey gossh.Signer) *fixtur
 			}
 			return nil, errors.New("key refused")
 		},
+	}
+	if algorithms != nil {
+		config.PublicKeyAuthAlgorithms = algorithms
 	}
 	config.AddHostKey(f.hostSigner)
 
@@ -879,6 +920,28 @@ type coordinator struct {
 	trust           []proto.TrustHostKeyParams
 	prompts         []proto.PromptParams
 	passwordPrompts []proto.PasswordPromptParams
+	// signParams is every signature this coordinator was asked for, in order:
+	// the ALGORITHM field is what the helper negotiated with the server, and
+	// asserting on it is how "the helper asked for rsa-sha2-512" becomes a
+	// fact rather than an inference from the outcome (nocx-1ebrs.17).
+	signParams []proto.SignParams
+}
+
+// signForAlgorithm is the real handler's rule, in one place: sign with the
+// algorithm the request named, and refuse when the key cannot produce it.
+// A signer that implements AlgorithmSigner is asked by name; one that does not
+// is refused rather than answered with its own default, because the default is
+// the type (`ssh-rsa` for RSA, SHA-1) that the peer has just said it will not
+// take.
+func signForAlgorithm(signer gossh.Signer, challenge []byte, algorithm string) (*gossh.Signature, error) {
+	if algorithm == "" {
+		return signer.Sign(rand.Reader, challenge)
+	}
+	as, ok := signer.(gossh.AlgorithmSigner)
+	if !ok {
+		return nil, errors.New("this key cannot be asked for a signature algorithm")
+	}
+	return as.SignWithAlgorithm(rand.Reader, challenge, algorithm)
 }
 
 func (c *coordinator) registry() *client.ReverseRegistry {
@@ -903,9 +966,17 @@ func (c *coordinator) registry() *client.ReverseRegistry {
 			}
 			signer = c.signer
 		}
-		sig, err := signer.Sign(rand.Reader, p.Challenge)
+		// THE ALGORITHM THE REQUEST NAMED, which is what the real handler does
+		// (internal/app's helperReverse.sign, nocx-1ebrs.17). A double that
+		// signed with the key's own type would answer ssh-rsa for an RSA key
+		// and make every negotiation assertion below test the double instead
+		// of the helper.
+		c.mu.Lock()
+		c.signParams = append(c.signParams, p)
+		c.mu.Unlock()
+		sig, err := signForAlgorithm(signer, p.Challenge, p.Algorithm)
 		if err != nil {
-			return nil, err
+			return nil, &proto.Refusal{Code: proto.ErrCodeBadParams, Message: err.Error()}
 		}
 		return proto.SignResult{Signature: gossh.Marshal(sig)}, nil
 	})
@@ -995,6 +1066,18 @@ func (c *coordinator) promptsAsked() []proto.PromptParams {
 	return append([]proto.PromptParams(nil), c.prompts...)
 }
 
+// signedWith reports the signature algorithms this coordinator was asked to
+// sign with, in order: the helper's own negotiation, one entry per signature.
+func (c *coordinator) signedWith() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, 0, len(c.signParams))
+	for _, p := range c.signParams {
+		out = append(out, p.Algorithm)
+	}
+	return out
+}
+
 func (c *coordinator) trusted() []proto.TrustHostKeyParams {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1018,6 +1101,15 @@ type stand struct {
 
 func newStand(t *testing.T, c *coordinator) *stand {
 	t.Helper()
+	return newStandLogging(t, c, discardLogger())
+}
+
+// newStandLogging is newStand with a logger this test can READ, which is what
+// an assertion about a log LINE needs (logtest.Slog, and RecordsSlog beside
+// it). The service's logger is the one that matters: the identity and
+// algorithm lines nocx-1ebrs.18 asks for are written there.
+func newStandLogging(t *testing.T, c *coordinator, logger *slog.Logger) *stand {
+	t.Helper()
 
 	helperEnd, coordEnd := net.Pipe()
 	s := &stand{
@@ -1034,7 +1126,7 @@ func newStand(t *testing.T, c *coordinator) *stand {
 	}
 	t.Cleanup(func() { _ = realClient.Close() })
 
-	s.service = sshsvc.New(realClient, discardLogger())
+	s.service = sshsvc.New(realClient, logger)
 	s.helper = host.New(s.toHelper, s.toHelper, testHash, "instance-1", discardLogger())
 	s.helper.Register(s.service)
 

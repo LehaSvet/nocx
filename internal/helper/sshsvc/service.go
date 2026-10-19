@@ -856,7 +856,32 @@ type reverseSigner struct {
 	conn *host.Host
 	cred proto.SSHCredential
 	pub  gossh.PublicKey
+	// log is this helper's logger, and it is here for the one line that
+	// answers "which identity was offered, and signed how" without a rebuild
+	// (nocx-1ebrs.18). Nil is allowed and means the line is skipped, which is
+	// how a test's signer needs nothing wired.
+	log *slog.Logger
 }
+
+// AND IT IS AN AlgorithmSigner, which is the whole of nocx-1ebrs.17's fix.
+//
+// # Why `Sign` alone was a defect rather than an omission
+//
+// x/crypto/ssh chooses a signature algorithm per signer: an AlgorithmSigner is
+// asked for the one it negotiated with the server (from the server's own
+// `server-sig-algs`), and a plain Signer gets its public key's TYPE and nothing
+// else (client_auth.go's pickSignatureAlgorithm). For an RSA key that type is
+// `ssh-rsa`, SHA-1, which OpenSSH 8.8+ excludes by default — so a helper
+// offering a correct vault-held RSA key had every signature refused, with the
+// server's journal saying `signature algorithm ssh-rsa not in
+// PubkeyAcceptedAlgorithms` while the credential was never the problem.
+//
+// Implementing this interface makes the library negotiate `rsa-sha2-512` or
+// `rsa-sha2-256` and ask for it BY NAME, and the name travels to the
+// coordinator, which is the only party holding the key. ed25519 is unaffected:
+// its type IS its algorithm, which is why one machine's report of "it works
+// here" was half right rather than wrong.
+var _ gossh.AlgorithmSigner = (*reverseSigner)(nil)
 
 // PublicKey is the public half the coordinator PUT in the identity. It is not
 // fetched and not derived: the party that holds both halves said which one it
@@ -864,17 +889,51 @@ type reverseSigner struct {
 // would offer a key the coordinator would then refuse to sign for.
 func (s *reverseSigner) PublicKey() gossh.PublicKey { return s.pub }
 
-// Sign asks the coordinator for one signature over data.
+// Sign asks the coordinator for one signature over data, made with this key's
+// own TYPE.
 //
-// The algorithm travels with the request and the coordinator checks it against
-// the key it resolves, so a mismatch is refused where the key is rather than
-// producing a signature the peer would reject with a message about algorithms.
+// It is the interface's fallback and not the ordinary path: x/crypto calls it
+// only for a signer it cannot negotiate with, and Signer's contract is that the
+// signature matches the public key's type (`ssh-ed25519`, `ssh-rsa`, …). For an
+// RSA key that is SHA-1, which is exactly what a modern server refuses — see
+// SignWithAlgorithm, which is what a real handshake asks for.
 func (s *reverseSigner) Sign(_ io.Reader, data []byte) (*gossh.Signature, error) {
+	return s.sign(data, s.pub.Type())
+}
+
+// SignWithAlgorithm asks the coordinator for one signature over data, made with
+// the algorithm the HANDSHAKE negotiated.
+//
+// The algorithm travels with the request, and the coordinator signs with it and
+// answers the one it actually used, so a key that cannot produce the negotiated
+// algorithm is refused where the key is rather than producing a signature the
+// peer would reject with a message about algorithms (nocx-1ebrs.17).
+//
+// Nothing about the private key crosses: what crosses is a challenge and a
+// signature, and the algorithm is the name of a hash rather than of a secret.
+func (s *reverseSigner) SignWithAlgorithm(_ io.Reader, data []byte, algorithm string) (*gossh.Signature, error) {
+	return s.sign(data, algorithm)
+}
+
+// sign is the one reverse request both entry points make.
+//
+// The line it logs is the one nocx-1ebrs.18 asked for: the FINGERPRINT of the
+// identity being offered and the algorithm it is signed with, never the key.
+// "The server refused a public key" cannot be told apart from "the wrong key
+// was offered" without it, and it is also how a burst of authentications shows
+// up as more than one line.
+func (s *reverseSigner) sign(data []byte, algorithm string) (*gossh.Signature, error) {
+	if s.log != nil {
+		s.log.Info("ssh: signing a challenge with an offered identity",
+			"fingerprint", gossh.FingerprintSHA256(s.pub),
+			"keyType", s.pub.Type(),
+			"algorithm", algorithm)
+	}
 	var out proto.SignResult
 	err := s.conn.Ask(s.ctx, proto.ServiceSSH, proto.OpSign, proto.SignParams{
 		Credential: s.cred,
 		Challenge:  data,
-		Algorithm:  s.pub.Type(),
+		Algorithm:  algorithm,
 	}, &out)
 	if err != nil {
 		return nil, askRefusal(err)
