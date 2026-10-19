@@ -14,6 +14,12 @@ export interface SessionSize {
 }
 import type { Gap as RecoveryGap, SessionRecoveryStatus } from './generated/session.recoveryStatus'
 import type { SessionOutputGap as SessionOutputGapNotification } from './generated/session.outputGap'
+import type { SessionRecoveryChanged } from './generated/session.recoveryChanged'
+// The stretch nothing kept is spelled once, in recovery-account.ts, where the
+// account that renders it is derived. Imported here because this file is what
+// mints the derived range at a reclaim (reclaimSession), and one spelling of
+// the word is the whole point (nocx-fz4qa).
+import { UNRECORDED } from './recovery-account'
 
 import type { SessionDisplaced } from './generated/session.displaced'
 import type { SessionLiveness } from './generated/session.liveness'
@@ -186,25 +192,29 @@ export interface SessionRecovery {
   statusUnavailable?: boolean
 }
 
-/** The gap reason for a stretch that neither the recording nor the ring
- *  holds. The renderer DERIVES this one because only it can: `produced`
- *  belongs to session.output and `replayFrom` to sessions.live, and neither
- *  owner can see the other's number.
- *
- *  The backend mints the same word for a range nobody recorded on its side
- *  (internal/content's GapReasonUnrecorded, nocx-k6p18.2), and that is
- *  deliberate rather than a second owner: it is one fact — nobody has these
- *  bytes — arrived at from two directions, and one fact told to a user in two
- *  vocabularies is the defect. Keep them equal. What must stay distinct is
- *  this and `cap`: the cap dropped bytes that were here, and telling a person
- *  the cap took bytes it never had would send them to a limit that did
- *  nothing.
- *
- *  EXPORTED so the surface that reports the hole (recovery-notice.tsx) reads
- *  the word this file mints rather than spelling a second copy of it
- *  (nocx-fz4qa). Two string literals that must agree and only meet at runtime
- *  is the same delay-fused shape, one layer up. */
-export const UNRECORDED = 'unrecorded'
+/** Whether a session.recoveryChanged payload is an answer this build can use:
+ *  a non-negative safe-integer frontier, and every range a pair of safe offsets
+ *  in stream order. SHAPE ONLY — the numbers are the ledger's, and computing
+ *  them here would be a second owner of its arithmetic (nocx-zg3k3.14.24). */
+function isRecoveryRevision(raw: Record<string, unknown>): boolean {
+  const produced = raw.produced
+  if (typeof produced !== 'number' || !Number.isSafeInteger(produced) || produced < 0) return false
+  const gaps = raw.gaps
+  if (!Array.isArray(gaps)) return false
+  return gaps.every((gap: unknown) => {
+    if (!gap || typeof gap !== 'object') return false
+    const { start, end, reason } = gap as Record<string, unknown>
+    return (
+      typeof start === 'number' &&
+      typeof end === 'number' &&
+      typeof reason === 'string' &&
+      Number.isSafeInteger(start) &&
+      Number.isSafeInteger(end) &&
+      start >= 0 &&
+      end >= start
+    )
+  })
+}
 
 class UTF8StreamDecoder {
   private tail: number[] = [] // incomplete multi-byte leftovers (0–3 bytes)
@@ -388,6 +398,13 @@ interface SessionState {
   // a pane that mounts or remounts after the notification still sees it.
   integrationChangedCallback: ((fact: SessionIntegrationChanged) => void) | null
   integrationFact: SessionIntegrationChanged | null
+  // The recording's own revised answer to "what is missing"
+  // (session.recoveryChanged, nocx-zg3k3.14.24). Kept like the integration
+  // fact and for the same reason: the revision may arrive between the reclaim
+  // and the moment the pane subscribes to it, and a card that missed it would
+  // state the number the reclaim happened to catch.
+  recoveryChangedCallback: ((revision: SessionRecoveryChanged) => void) | null
+  recoveryRevision: SessionRecoveryChanged | null
   // Fires when the backend revises what it believes about REACHING this
   // session: alive, or unknown when the host has stopped answering and
   // nothing has ended (contracts/session.liveness.schema.json). The
@@ -414,6 +431,14 @@ interface AckThrottle {
 }
 
 export class SessionHandle {
+  /** What a reclaim recovered from the recording, and what the recording has
+   *  since revised it to (nocx-zg3k3.14.24). Seated by the constructor and
+   *  replaced only by applyRecoveryRevision — DECLARED rather than a parameter
+   *  property because it is the one fact on this handle that changes after the
+   *  handle exists, and a `readonly` there would have made the revision a
+   *  second field nobody assigns. */
+  recovered: SessionRecovery | null
+
   constructor(
     private client: WSClient,
     readonly sessionId: string,
@@ -458,7 +483,7 @@ export class SessionHandle {
      *  exists; what this carries is the part the terminal cannot show —
      *  the ranges nothing kept. A recovered scrollback with a silent hole
      *  in it is the one outcome worse than a short one. */
-    readonly recovered: SessionRecovery | null = null,
+    recovered: SessionRecovery | null = null,
     /** Whether the session's integration axis currently reads `starting`
      *  (nocx-ui8q6.6, contracts/open.schema.json and — for a reclaimed or
      *  reattached handle, nocx-ty0hc — contracts/attach.schema.json). It
@@ -491,7 +516,17 @@ export class SessionHandle {
      *  open whose helper could not answer carries no epoch, the first intent
      *  presents none, and the refusal names the one in force. */
     public accessEpoch: number | null = null,
-  ) {}
+    /** The stretch this reclaim could not account for at all, derived HERE at
+     *  the claim and kept for the life of the handle: `produced` had not
+     *  reached the ring's replay base when this client attached, so no
+     *  recording holds the bytes between them. It is a fact about the ATTACH,
+     *  not about the ledger, which is why a later revision of the ledger's
+     *  gaps is composed with it rather than replacing it
+     *  (nocx-zg3k3.14.24). Empty for a handle that was opened, not reclaimed. */
+    private readonly derivedRecoveryGaps: readonly RecoveryGap[] = [],
+  ) {
+    this.recovered = recovered
+  }
 
   send(data: string): void {
     this.client.sendToSession(this.sessionId, data)
@@ -543,6 +578,38 @@ export class SessionHandle {
   /** Registers the visible live-stream notice for an output gap. */
   onOutputGap(cb: (gap: SessionOutputGapNotification) => void): void {
     this.client.onSessionOutputGap(this.sessionId, cb)
+  }
+
+  /** Registers for the recording's own revisions of what this session no
+   *  longer holds (nocx-zg3k3.14.24). The callback carries nothing: this handle
+   *  is where the fact lives, so a surface re-reads `recovered` — the same
+   *  field it read when the pane mounted, now stating what the ledger states.
+   *
+   *  The latest revision is delivered at registration as well as on arrival
+   *  (WSClient.onSessionRecoveryChanged), because a revision that landed
+   *  between the reclaim and this subscription is the common case, not the
+   *  rare one: the recorder's catch-up is precisely when they happen. */
+  onRecoveryChanged(cb: () => void): () => void {
+    return this.client.onSessionRecoveryChanged(this.sessionId, (revision) => {
+      this.applyRecoveryRevision(revision)
+      cb()
+    })
+  }
+
+  /** Compose one revision with what only this handle could derive. The ledger
+   *  owns its gaps; this handle owns the stretch nothing kept, and dropping it
+   *  because the ledger has nothing to say about it would shrink the account
+   *  the card states. Null `recovered` — a handle that opened rather than
+   *  reclaimed — learns nothing from a revision: it has no card to correct, and
+   *  giving it one would raise a notice about a session that never lost
+   *  anything. */
+  private applyRecoveryRevision(revision: SessionRecoveryChanged): void {
+    if (this.recovered === null) return
+    this.recovered = {
+      produced: revision.produced,
+      gaps: [...revision.gaps, ...this.derivedRecoveryGaps],
+      statusUnavailable: false,
+    }
   }
 
   /** Registers the session's current integration status. If the status
@@ -902,6 +969,37 @@ export class WSClient {
       this._sendAck(sessionId, end)
       if (state.outputGapCallback) state.outputGapCallback(gap)
       else state.pendingOutputGaps.push(gap)
+    })
+
+    // The recording's own revision of what this session no longer holds
+    // (nocx-zg3k3.14.24). session.recoveryStatus answers that question at the
+    // instant it is asked, and a reclaim asks it ONCE — before it attaches,
+    // while the recorder is still appending the bytes the helper replayed. So
+    // the answer a card is built from is a fact about an instant that has
+    // already passed, and it keeps passing while a person reads the card. This
+    // is the same answer pushed when it changes, so the card states the
+    // ledger's number rather than the number the reclaim caught.
+    //
+    // A malformed revision is DROPPED, not fatal: it cannot corrupt the byte
+    // stream the way a malformed gap can (that one must stop the session), and
+    // the next revision — or the next reclaim — carries the true answer.
+    this.dispatcher.subscribe('session.recoveryChanged', (params: unknown) => {
+      if (!params || typeof params !== 'object') return
+      const raw = params as Record<string, unknown>
+      if (typeof raw.sessionId !== 'string') return
+      const state = this.sessions.get(raw.sessionId)
+      if (!state) return
+      if (!isRecoveryRevision(raw)) {
+        log.debug('nocx: dropped a malformed recovery revision', { sessionId: raw.sessionId })
+        return
+      }
+      const revision: SessionRecoveryChanged = {
+        sessionId: raw.sessionId,
+        produced: raw.produced as number,
+        gaps: raw.gaps as SessionRecoveryChanged['gaps'],
+      }
+      state.recoveryRevision = revision
+      state.recoveryChangedCallback?.(revision)
     })
 
     this.dispatcher.subscribe('exit', (params: unknown) => {
@@ -1483,6 +1581,8 @@ export class WSClient {
       inputStalledCallback: null,
       integrationChangedCallback: null,
       integrationFact: null,
+      recoveryChangedCallback: null,
+      recoveryRevision: null,
       livenessCallback: null,
       observationCallback: null,
       livenessEpoch: 0,
@@ -1672,10 +1772,16 @@ export class WSClient {
       })
       return attach
         .then((result) => {
-          const gaps = metadata ? [...metadata.gaps] : []
-          if (metadata && metadata.produced < entry.replayFrom) {
-            gaps.push({ start: metadata.produced, end: entry.replayFrom, reason: UNRECORDED })
-          }
+          // The stretch nothing kept, derived HERE because only this client
+          // holds both numbers: `produced` belongs to the recording and
+          // `replayFrom` to the ring. Kept as its own list so a later
+          // session.recoveryChanged, which carries the ledger's gaps only,
+          // composes with it instead of erasing it (nocx-zg3k3.14.24).
+          const derived: RecoveryGap[] =
+            metadata && metadata.produced < entry.replayFrom
+              ? [{ start: metadata.produced, end: entry.replayFrom, reason: UNRECORDED }]
+              : []
+          const gaps = metadata ? [...metadata.gaps, ...derived] : []
           return new SessionHandle(
             this,
             entry.sessionId,
@@ -1690,6 +1796,7 @@ export class WSClient {
             },
             result.awaitsIntegration,
             result.accessEpoch ?? null,
+            derived,
           )
         })
         .catch((err) => {
@@ -1956,6 +2063,22 @@ export class WSClient {
     if (state.integrationFact) cb(state.integrationFact)
     return () => {
       if (state.integrationChangedCallback === cb) state.integrationChangedCallback = null
+    }
+  }
+
+  /** Subscribe to the recording's revisions for one session
+   *  (session.recoveryChanged, nocx-zg3k3.14.24), delivering the latest one
+   *  immediately when it is already in hand. */
+  onSessionRecoveryChanged(
+    sessionId: string,
+    cb: (revision: SessionRecoveryChanged) => void,
+  ): () => void {
+    const state = this.sessions.get(sessionId)
+    if (!state) return () => undefined
+    state.recoveryChangedCallback = cb
+    if (state.recoveryRevision) cb(state.recoveryRevision)
+    return () => {
+      if (state.recoveryChangedCallback === cb) state.recoveryChangedCallback = null
     }
   }
 

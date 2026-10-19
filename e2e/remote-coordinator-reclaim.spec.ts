@@ -99,6 +99,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 
+import { recoveryAccount } from '../frontend/src/recovery-account'
 import { formatBytes } from '../frontend/src/ui/format-bytes'
 import { BASE_URL } from './base-url'
 import {
@@ -664,6 +665,11 @@ test('a remote helper build survives a fresh coordinator, names what it lost, an
     // notification cannot race the assertions below.
     let liveOutputGap: { sessionId: string; start: number; end: number; reason: string } | null =
       null
+    // EVERY range the returned client is told about, in arrival order: the
+    // reclaim card subtracts them from the recording's account so the same
+    // lost bytes are never named twice, and the assertion below has to derive
+    // the card's number the same way (nocx-zg3k3.14.24).
+    const liveOutputGaps: { sessionId: string; start: number; end: number; reason: string }[] = []
     returned = await freshClient(browser, endpoint, 'returned client', (frame) => {
       if (typeof frame !== 'string') return
       let envelope: { method?: unknown; params?: Record<string, unknown> }
@@ -687,6 +693,7 @@ test('a remote helper build survives a fresh coordinator, names what it lost, an
           end: params.end,
           reason: params.reason,
         }
+        liveOutputGaps.push(liveOutputGap)
       }
     })
     const returnedPane = paneForSession(returned, liveBefore.sessionId)
@@ -784,24 +791,59 @@ test('a remote helper build survives a fresh coordinator, names what it lost, an
       "The execution host's output window moved past this tab.",
     )
 
-    // ── what remains missing is named without repeating the live range ─────
-    // The historical card keeps the distinct recording loss beside the live
-    // hostWindow notice. Derive its exact byte count from the coordinator's
-    // output ledger, then require the cap clause and exclude the already-named
-    // hostWindow range.
+    // ── what remains missing, and the SAME number the ledger states ───────
+    //
+    // THE CARD'S NUMBER IS NOT A PHOTOGRAPH OF THE RECLAIM (nocx-zg3k3.14.24).
+    // The reclaim read session.recoveryStatus before it attached — while the
+    // recorder was still appending the bytes the helper replayed — and the
+    // retention bound goes on evicting as it does. On PR #380's CI this
+    // assertion compared that stale number with a fresh reading (3.1 MB
+    // against 3.6 MB) and failed on a product that was only doing what it was
+    // written to do. The fix is not a tolerance: the recording now PUSHES its
+    // revised answer (session.recoveryChanged) and the card is rebuilt from
+    // it, so `session.recoveryStatus` and the card are one fact at one instant.
+    //
+    // THE EXPECTED VALUE IS DERIVED BY THE PRODUCT, NOT BY THIS FILE.
+    // `recoveryAccount` is what the card renders: every missing byte across
+    // all reasons, minus the ranges the live notice already names. Summing the
+    // recording's `cap` gaps here instead — which this spec used to do — is a
+    // second owner of that arithmetic, and it states a different fact from the
+    // card's the moment anything but the cap is missing.
+    const notice = returnedPane
+      .locator('.nocx-recovery-notice')
+      .filter({ hasText: /of this session's output is missing/i })
+    await expect(notice).toBeVisible({ timeout: 60_000 })
+
+    // A WAIT ON THE CARD'S OWN VALUE, not on a duration and not a retry: the
+    // poll settles the instant the two agree, and it agrees because the
+    // recording told the pane what its answer became. Both numbers are read
+    // inside the same pass, so what is asserted is that the card and the
+    // ledger agree NOW — which is the whole of the criterion.
+    await expect
+      .poll(
+        async () => {
+          const ledger = await recoveryStatus(endpoint, liveAfter!)
+          const account = recoveryAccount(ledger, liveOutputGaps)
+          const stated =
+            account === null
+              ? null
+              : `${formatBytes(account.missing)} of this session's output is missing`
+          const card = await notice.locator('.ui-status-card__title').textContent()
+          return card === stated ? null : `card ${String(card)} / ledger ${String(stated)}`
+        },
+        {
+          timeout: 60_000,
+          intervals: [250],
+          message: 'the card never reached the number the recording states',
+        },
+      )
+      .toBeNull()
+
     const finalOutput = await recoveryStatus(endpoint, liveAfter!)
     const capLossBytes = finalOutput.gaps
       .filter((gap) => gap.reason === 'cap')
       .reduce((total, gap) => total + gap.end - gap.start, 0)
     expect(capLossBytes).toBeGreaterThan(0)
-
-    const notice = returnedPane
-      .locator('.nocx-recovery-notice')
-      .filter({ hasText: /of this session's output is missing/i })
-    await expect(notice).toBeVisible({ timeout: 60_000 })
-    await expect(notice.locator('.ui-status-card__title')).toHaveText(
-      `${formatBytes(capLossBytes)} of this session's output is missing`,
-    )
     await expect(notice.locator('.ui-status-card__desc')).toContainText(
       "the recording's size limit dropped",
     )

@@ -209,6 +209,14 @@ export interface SessionFake {
   onOutputGap: ReturnType<typeof vi.fn>
   /** Fire the registered output-gap callback. */
   fireOutputGap(gap: SessionOutputGap): void
+  /** The recording's own revision of what it still holds
+   *  (session.recoveryChanged, nocx-zg3k3.14.24). The handle owns the fact,
+   *  so firing it REPLACES `recovered` before telling the surface — exactly
+   *  what SessionHandle.onRecoveryChanged does, and what makes a card that
+   *  reads `recovered` again the behaviour under test. */
+  onRecoveryChanged: (cb: () => void) => () => void
+  /** Fire one revision of the recovery account, as the backend would. */
+  fireRecoveryChanged(recovery: SessionRecovery): void
   onProtocolError: ReturnType<typeof vi.fn>
   onInputStalled: ReturnType<typeof vi.fn>
   /** The reachability axis (nocx-iarf9): the backend's revised belief about
@@ -276,7 +284,8 @@ export function makeSession(overrides?: Partial<SessionFake>): SessionFake {
   let livenessCb: ((l: SessionLiveness) => void) | null = null
   let observationCb: ((o: SessionObservationChanged) => void) | null = null
   const sessionId = `mock-sid-${++sessionCounter}`
-  return {
+  let recoveryChangedCb: (() => void) | null = null
+  const handle: SessionFake = {
     sessionId,
     cwd: FIXTURE_CWD,
     desiredMode: 'script',
@@ -321,6 +330,16 @@ export function makeSession(overrides?: Partial<SessionFake>): SessionFake {
       outputGapCb = cb
     }),
     fireOutputGap: (gap: SessionOutputGap) => outputGapCb?.(gap),
+    onRecoveryChanged: (cb: () => void) => {
+      recoveryChangedCb = cb
+      return () => {
+        if (recoveryChangedCb === cb) recoveryChangedCb = null
+      }
+    },
+    fireRecoveryChanged: (recovery: SessionRecovery) => {
+      handle.recovered = recovery
+      recoveryChangedCb?.()
+    },
     onProtocolError: vi.fn((cb: (message: string) => void) => {
       protocolErrorCb = cb
     }),
@@ -399,6 +418,7 @@ export function makeSession(overrides?: Partial<SessionFake>): SessionFake {
     },
     ...overrides,
   }
+  return handle
 }
 
 /**

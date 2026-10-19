@@ -76,6 +76,7 @@ import type { SessionOutputGap } from './generated/session.outputGap'
 import {
   mountRecoveryNotice,
   mountLiveOutputGapNotice,
+  recoveryAccount,
   uncoveredGapRanges,
 } from './recovery-notice'
 import { mountUnreconciledNotice, type UnreconciledCause } from './unreconciled-notice'
@@ -1582,6 +1583,10 @@ export class TerminalContent extends BasePaneContent {
   private _recoveryNoticeDispose: (() => void) | null = null
   /** User dismissal is sticky for this reclaim only; a session rebind resets it. */
   private _recoveryNoticeDismissedForSession = false
+  /** The account the mounted reclaim card states, as JSON — what a revision is
+   *  compared against before the card is rebuilt (nocx-zg3k3.14.24). Null when
+   *  no card is up. */
+  private _recoveryNoticeSignature: string | null = null
   /** Each disjoint live-gap notice has its own dismissible lifetime. */
   private readonly _liveOutputGapNoticeDisposers = new Map<string, () => void>()
   /** Every live range named during this session, used to partition those
@@ -4616,6 +4621,16 @@ export class TerminalContent extends BasePaneContent {
     // because that is where the fact arrives and where the pane is known.
     this._showRecoveryNotice(session, target)
     session.onOutputGap((gap) => this._showLiveOutputGapNotice(session, gap, target))
+    // AND THE RECORDING KEEPS TALKING AFTER THE RECLAIM (nocx-zg3k3.14.24).
+    // The reclaim read its answer before it attached — while the recorder was
+    // still appending the bytes the helper replayed — so the number that card
+    // states is a fact about an instant that has passed, and it goes on passing
+    // as the retention bound evicts. The handle owns the revised answer; this
+    // rebuilds the card from it, so a person who stays on the pane reads the
+    // number the ledger states. `_showRecoveryNotice` is the same door the
+    // live-gap notice already uses, and it keeps the dismissal sticky: a card
+    // the person closed is not resurrected by a revision.
+    session.onRecoveryChanged(() => this._showRecoveryNotice(session, target))
     session.onProtocolError((message) => showToast({ level: 'danger', message }))
     historySubscription.bindSession(session.sessionId)
     lifecycleSubscription.bindSession(session.sessionId)
@@ -6327,8 +6342,20 @@ export class TerminalContent extends BasePaneContent {
   }
 
   /** Raise the reclaimed-pane card for the historical ranges not already
-   *  named by a live gap card. A fresh session or whole recording mounts none. */
+   *  named by a live gap card. A fresh session or whole recording mounts none.
+   *
+   *  THE MOUNT IS THE ACCOUNT IT STATES (nocx-zg3k3.14.24). The recording
+   *  revises its answer while a saturated session keeps printing — once per
+   *  chunk — so this is called far more often than the number a person reads
+   *  changes. Rebuilding the card for a revision that states the same thing
+   *  would replace a DOM node, and re-measure the live region, for nothing, so
+   *  an account identical to the one on screen is left alone. The comparison is
+   *  on the derivation the card renders, not on the raw wire numbers, because
+   *  those move on every byte and the card does not. */
   private _showRecoveryNotice(session: SessionHandle, target: HTMLElement): void {
+    const account = recoveryAccount(session.recovered, this._liveOutputGaps)
+    const signature = account === null ? null : JSON.stringify(account)
+    if (signature === this._recoveryNoticeSignature) return
     this._dropRecoveryNotice()
     if (this._recoveryNoticeDismissedForSession) return
     this._recoveryNoticeDispose = session.recovered
@@ -6338,6 +6365,7 @@ export class TerminalContent extends BasePaneContent {
           onDismiss: () => this._dismissRecoveryNotice(),
         })
       : null
+    this._recoveryNoticeSignature = this._recoveryNoticeDispose ? signature : null
     // The card takes its height off the top of the pane, so the scroller is
     // smaller than the grid fitted to it — the same re-measure the
     // integration card goes through, and for the same reason: the pane's own
@@ -6386,8 +6414,11 @@ export class TerminalContent extends BasePaneContent {
     this._dropRecoveryNotice()
   }
 
-  /** Take the reclaim card down and give the pane back to the terminal. */
+  /** Take the reclaim card down and give the pane back to the terminal. The
+   *  account it stated goes with it, so the next raise is compared against
+   *  nothing rather than against a card that is no longer there. */
   private _dropRecoveryNotice(): void {
+    this._recoveryNoticeSignature = null
     if (!this._recoveryNoticeDispose) return
     this._recoveryNoticeDispose()
     this._recoveryNoticeDispose = null

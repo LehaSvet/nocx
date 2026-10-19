@@ -89,6 +89,14 @@ type sessionRx struct {
 	screenOfferFailure    uint64
 	screenOfferFrameBytes int
 	screenOfferRunning    bool
+	// recoveryMu guards the recording's newest unsettled answer to
+	// "what does this session's output no longer hold" (nocx-zg3k3.14.24).
+	// The RECORDER publishes it; the session's output pump delivers it. The
+	// slot holds one revision because only the newest is true, and the pump
+	// is the party that may wait for a client's socket.
+	recoveryMu      sync.Mutex
+	recoveryConn    *wsConn
+	recoveryPending json.RawMessage
 	// inputStalled is true from the moment this session's write queue
 	// refuses a frame until it accepts one again. It exists to make the
 	// notification fire once per stall rather than once per keystroke:
@@ -261,6 +269,35 @@ func (rx *sessionRx) signalEffectWake() {
 	close(rx.effectWake)
 	rx.effectWake = make(chan struct{})
 	rx.deliveryMu.Unlock()
+}
+
+// publishRecovery records the recording's newest answer for wconn, replacing
+// any revision not yet delivered, and wakes the session's output pump.
+//
+// REPLACED, NOT QUEUED: every reader wants the newest answer, and a backlog of
+// superseded ones would both make a person watch the number walk through its
+// own history and let the notification become the reason the client is behind.
+func (rx *sessionRx) publishRecovery(wconn *wsConn, params json.RawMessage) {
+	rx.recoveryMu.Lock()
+	rx.recoveryConn = wconn
+	rx.recoveryPending = params
+	rx.recoveryMu.Unlock()
+	rx.signalEffectWake()
+}
+
+// takeRecovery returns the revision waiting for wconn, or nil, and clears the
+// slot: a revision published for a connection that is no longer the
+// subscriber is not this pump's to deliver.
+func (rx *sessionRx) takeRecovery(wconn *wsConn) json.RawMessage {
+	rx.recoveryMu.Lock()
+	defer rx.recoveryMu.Unlock()
+	if rx.recoveryConn != wconn || len(rx.recoveryPending) == 0 {
+		return nil
+	}
+	params := rx.recoveryPending
+	rx.recoveryPending = nil
+	rx.recoveryConn = nil
+	return params
 }
 
 func (rx *sessionRx) deliveryCursor(wconn *wsConn) (uint64, bool) {
@@ -3850,6 +3887,16 @@ func (s *WSServer) ringToConn(ctx context.Context, wconn *wsConn, sidBytes [16]b
 		// has lost the session must not send the byte it is already holding.
 		if cur, _ := rx.getSubscriber(); cur != wconn {
 			return
+		}
+		// The recording's own revision of what this session no longer holds,
+		// when one is waiting (nocx-zg3k3.14.24). Delivered here rather than
+		// from the recorder so a slow client can never stall the recording:
+		// this loop is the party that waits for room, exactly as it does for
+		// the bytes themselves.
+		if params := rx.takeRecovery(wconn); params != nil {
+			if err := wconn.EnqueueOrderedNotify(ctx, "session.recoveryChanged", params); err != nil {
+				return
+			}
 		}
 		// Control effects are small and share the outbound queue with data.
 		// Flush an eligible one before the next byte; if the queue is full,
