@@ -260,12 +260,13 @@ func (s *LocalSpawner) Spawn(req SpawnRequest) (Process, error) {
 				release()
 				return nil, err
 			}
-			// The argv SHAPE and not its contents: the capability rides in
-			// the script text these arguments point at, and printing it would
-			// put a bearer token in a log file.
+			// The argv SHAPE and not its contents: the capability reaches the
+			// shell through a descriptor's text (or, for zsh, through a
+			// transient ZDOTDIR whose bearer is read from that descriptor),
+			// and printing it would put a bearer in a log file.
 			s.log.Info("pane launch: the enhanced tier is built",
 				"session", req.SessionID, "shell", launch.Command, "argv", len(launch.Args),
-				"extra_files", len(launch.ExtraFiles), "bootstrap_bytes", len(launch.Bootstrap),
+				"extra_files", len(launch.ExtraFiles),
 				"lifecycle_fd", opts.LifecycleFD, "lane", opts.Lane, "epoch", opts.Epoch)
 			if lifecycleChild != nil {
 				launch.ExtraFiles = append(launch.ExtraFiles, lifecycleChild)
@@ -278,6 +279,16 @@ func (s *LocalSpawner) Spawn(req SpawnRequest) (Process, error) {
 			cfg.Command = launch.Command
 			cfg.Args = launch.Args
 			cfg.Env = append(cfg.Env, launch.Env...)
+			// THE ACTIVATION MARKER GOES IN THE SPAWN'S ENVIRONMENT, not only
+			// in the script the shell reads later (nocx-1ebrs.8). A startup
+			// file that asks "am I under a terminal that has taken this shell
+			// over" reads it BEFORE any rcfile of ours runs — a Fig-family
+			// wrapper re-execs the login shell from ~/.zprofile — and its guard
+			// is this variable. Absent here, the guard is false, the wrapper
+			// takes the shell, and the integration arrives at a process that is
+			// no longer there. `pty`'s scrub keeps it out of every shell this
+			// launch did not integrate, so the value always means what it says.
+			cfg.Env = append(cfg.Env, shellintegration.SpawnActivationEnv()...)
 			cfg.ExtraFiles = launch.ExtraFiles
 		}
 	}
@@ -288,20 +299,15 @@ func (s *LocalSpawner) Spawn(req SpawnRequest) (Process, error) {
 		release()
 		return nil, err
 	}
-	if len(launch.Bootstrap) > 0 {
-		// The bootstrap is a LINE INTO THE TERMINAL — `. /dev/fd/3` for the
-		// tiers that cannot take a descriptor as an rcfile — so it is the one
-		// thing here that shares a channel with the user's own input.
-		if _, err := lp.Write(launch.Bootstrap); err != nil {
-			s.log.Error("pane launch: the bootstrap line could not be written",
-				"session", req.SessionID, "bytes", len(launch.Bootstrap), "error", err)
-			_ = lp.Close()
-			release()
-			return nil, err
-		}
-		s.log.Debug("pane launch: the bootstrap line is written",
-			"session", req.SessionID, "bytes", len(launch.Bootstrap))
-	}
+	// NOTHING IS TYPED INTO THE TERMINAL (nocx-1ebrs.8). This used to write a
+	// bootstrap LINE into the pty — `. /dev/fd/3` for the zsh tier — which was
+	// the one thing a launch shared with the user's own input: it was echoed
+	// by the tty's line discipline before the shell had read anything, redrawn
+	// by zle when it was finally consumed after the user's startup, and lost
+	// outright whenever a startup file read or closed the descriptor it named.
+	// Every tier now delivers during the shell's own startup — an rcfile on
+	// the descriptor, or a transient ZDOTDIR — so there is no line and no
+	// window, and the transcript carries nothing the person did not type.
 	if launch.Cleanup != nil {
 		launch.Cleanup()
 	}

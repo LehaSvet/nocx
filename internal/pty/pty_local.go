@@ -96,6 +96,15 @@ var launcherSessionVars = []string{
 	"CLAUDE_EFFORT=",
 	"NO_COLOR=",
 	"TERM=",
+	// The activation marker is the same class and the sharpest consequence of
+	// getting it wrong (nocx-1ebrs.8). It says "the shell under this terminal is
+	// integrated", and the only party that can say it is the LAUNCH that
+	// integrated it — a value inherited from whatever started this daemon is a
+	// claim about somebody else's shell. A pane that is plain, or a shell nocx
+	// has no tier for, must start with it absent, or a startup file guarding on
+	// it stands aside for an integration that is not there.
+	"NOCX_SHELL_INTEGRATION=",
+	"NOCX_PROMPT_MODE=",
 	// NOCX_TOOL_SOCKET is the same class and the sharpest case of it: it
 	// names ONE coordinator's agent tool endpoint, and a pane belongs to
 	// whichever coordinator opened it. nocx is developed from inside nocx,

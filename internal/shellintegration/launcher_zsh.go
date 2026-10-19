@@ -29,6 +29,28 @@ const zshEnvTemplate = `# nocx launcher zshenv — the .zshenv phase of the logi
 # points at the launcher's transient directory.
 __nocx_bootstrap="${ZDOTDIR}"
 @TRAP@
+@CAPSRC@
+# THE LIFECYCLE CHANNEL MOVES OUT OF REACH OF USER CODE (nocx-1ebrs.8).
+#
+# The channel is an inherited descriptor and its number is LOW: the second one
+# the spawner hands over, right after the script's. A user startup file may
+# read or close a low descriptor; that is measured, and it is the whole reason
+# the script no longer arrives on one. A channel that dies that way is
+# indistinguishable from a shell that never integrated: it closes having
+# written nothing, no hello arrives, and the pane waits on its integration
+# badge forever.
+#
+# zsh's "exec {var}<&n" takes the first free descriptor at or above 10, a
+# number no startup file has a reason to touch, and the original number is
+# closed in the same breath. This runs before any user code exists, and the
+# script reads whatever number this leaves in NOCX_LIFECYCLE_FD.
+if [[ "${NOCX_LIFECYCLE_FD:-}" == <-> ]]; then
+    if { exec {__nocx_lc_hi}<&"$NOCX_LIFECYCLE_FD" } 2>/dev/null; then
+        { eval "exec ${NOCX_LIFECYCLE_FD}<&-" } 2>/dev/null || :
+        export NOCX_LIFECYCLE_FD="$__nocx_lc_hi"
+        unset __nocx_lc_hi
+    fi
+fi
 __nocx_f="${NOCX_ZDOTDIR_ORIG:-$HOME}/.zshenv"
 if [[ -f "$__nocx_f" ]]; then
     . "$__nocx_f"
@@ -241,9 +263,34 @@ func zshRcfile(envBlock, scriptSource, capSource string) string {
 // remote copy travels inside the bootstrap payload (nocx-z9s9.17), and the two
 // tiers must ship the same bytes or the shared render is a shared name over two
 // texts.
-func zshEnvFile() string {
-	return stripShellComments(strings.ReplaceAll(zshEnvTemplate, "@TRAP@", zshCleanupTrap))
+func zshEnvFile() string { return zshEnvFileWith("") }
+
+// zshEnvFileWith renders the same .zshenv with a capability block at its TOP —
+// before the user's own .zshenv is replayed, which is before any user code has
+// run at all.
+//
+// WHY THE PLACEMENT IS THE POINT (nocx-1ebrs.8). The remote tier reads its
+// bearer where the rcfile template says: after the user's startup files have
+// run and returned. There the descriptor is an unlinked REGULAR FILE that the
+// far side opened for this session, and the user's rc cannot plausibly reach
+// it. The LOCAL tier's descriptor is fd 3 of the shell, a number a user's
+// startup file may legally read, drain or close — measured on a shipped Mac:
+// `cat <&3` in a `.zshrc` took the whole integration with it, because the
+// script ITSELF was that descriptor. Reading the two bearers here, in the
+// phase zsh runs before every user file, means the descriptor is consumed and
+// closed before any user code exists to touch it — and the payload behind it
+// is two short lines rather than a 94 KB script, so the writer has always
+// finished before the reader arrives.
+func zshEnvFileWith(capSource string) string {
+	env := strings.ReplaceAll(zshEnvTemplate, "@TRAP@", zshCleanupTrap)
+	return stripShellComments(strings.ReplaceAll(env, "@CAPSRC@", capSource))
 }
+
+// zshEnvFileLocal is the LOCAL tier's .zshenv: the same file, with the
+// capability read from the inherited descriptor BEFORE the user's own
+// .zshenv runs (capabilityFromDescriptor — one owner of what a descriptor
+// read looks like, not a second one written here).
+func zshEnvFileLocal() string { return zshEnvFileWith(capabilityFromDescriptor(zshUnsetExport)) }
 
 func zshProfileFile() string { return stripShellComments(zshProfileTemplate) }
 

@@ -209,6 +209,12 @@ func TestScrubLauncherSession(t *testing.T) {
 		// on the spawn; whatever this process inherited names a different one
 		// (nocx-e7khb).
 		shellintegration.ToolSocketEnvVar + "=/run/nocx/daemon-start-tool.sock",
+		// The activation marker says "the shell under this terminal is
+		// integrated", and only the launch that integrated it may say so
+		// (nocx-1ebrs.8). A value this daemon inherited is a claim about
+		// somebody else's shell.
+		"NOCX_SHELL_INTEGRATION=1",
+		"NOCX_PROMPT_MODE=marker-only",
 		"HOME=/Users/someone",
 		// Not a session marker: stripping a credential would break the very
 		// tool this fix exists for.
@@ -222,7 +228,7 @@ func TestScrubLauncherSession(t *testing.T) {
 	// tool's spelling, and this one is ours. Naming it here is what stops the
 	// two drifting — a rename in shellintegration that missed the list would
 	// leave the scrub silently matching nothing, and this test red.
-	for _, unwanted := range []string{"CLAUDECODE=", "CLAUDE_CODE_CHILD_SESSION=", "CLAUDE_CODE_SESSION_ID=", "CLAUDE_PID=", "TERM=", "NO_COLOR=", shellintegration.ToolSocketEnvVar + "="} {
+	for _, unwanted := range []string{"CLAUDECODE=", "CLAUDE_CODE_CHILD_SESSION=", "CLAUDE_CODE_SESSION_ID=", "CLAUDE_PID=", "TERM=", "NO_COLOR=", "NOCX_SHELL_INTEGRATION=", "NOCX_PROMPT_MODE=", shellintegration.ToolSocketEnvVar + "="} {
 		for _, kv := range got {
 			if strings.HasPrefix(kv, unwanted) {
 				t.Errorf("launcher session marker survived: %q", kv)
