@@ -2843,6 +2843,12 @@ export class TerminalContent extends BasePaneContent {
         // backend frame; with no accepted mode the pointer remains available
         // to selection and native scrollback.
         mouseTracking: () => this._cellModel?.current()?.state.mouseTracking ?? false,
+        // The wheel is counted in LINES, so it needs the row pitch: the
+        // painter's accepted cell height, which is the same number the caret,
+        // the selection and hit-testing are placed by (nocx-1ebrs.26). A
+        // second derivation here would be a second answer to "how tall is a
+        // row", and the one the program was resized against is this one.
+        lineHeight: () => this.liveCellMetrics()?.cellHeight ?? 0,
         // THE CHORD IS THE PANE'S, not the program's: consumed before it
         // becomes an intent, and handed to the ONE opener every keyboard
         // boundary answers through (design §10.1, AD-8) — the same

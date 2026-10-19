@@ -311,6 +311,106 @@ describe('the layout owns the character, and the client does not', () => {
   })
 })
 
+describe('a wheel gesture is counted in lines, not in events (nocx-1ebrs.26)', () => {
+  /** A pane whose row pitch is 17px, as a real one reports through the
+   *  painter's accepted metric. */
+  function wheelPane(): { surface: HTMLElement; intents: SessionIntent[] } {
+    const intents: SessionIntent[] = []
+    const surface = document.createElement('div')
+    document.body.append(surface)
+    const input = new IntentInput({
+      emit: (intent) => intents.push(intent),
+      surface,
+      cellAt: () => ({ x: 2, y: 3 }),
+      mouseTracking: () => true,
+      lineHeight: () => 17,
+    })
+    document.body.append(input.element)
+    live.push(input)
+    return { surface, intents }
+  }
+
+  const wheel = (deltaY: number, extra: WheelEventInit = {}): WheelEvent =>
+    new WheelEvent('wheel', { deltaY, clientX: 10, clientY: 20, cancelable: true, ...extra })
+
+  it('reports one step per line height of a stream of small pixel deltas', () => {
+    // A trackpad at 4px a frame: 17 events is 68px, which is FOUR rows. One
+    // report per event told the program the person scrolled seventeen times.
+    const { surface, intents } = wheelPane()
+    for (let i = 0; i < 17; i++) surface.dispatchEvent(wheel(4))
+    expect(intents).toHaveLength(4)
+    expect(intents.every((intent) => intent.payload === 'press wheel-down 2 3')).toBe(true)
+  })
+
+  it('carries the remainder into the next event rather than discarding it', () => {
+    // Three deltas of 10px are 30px: one row reported, 13px carried. A second
+    // 10px then crosses the line, so the pair is two reports — a fix that
+    // rounded each event to zero would report one, and one that rounded up
+    // would report three.
+    const { surface, intents } = wheelPane()
+    surface.dispatchEvent(wheel(10))
+    surface.dispatchEvent(wheel(10))
+    surface.dispatchEvent(wheel(10))
+    expect(intents).toHaveLength(1)
+    surface.dispatchEvent(wheel(10))
+    expect(intents).toHaveLength(2)
+  })
+
+  it('counts a momentum tail as one gesture: many shrinking deltas, few reports', () => {
+    // The tail after the fingers lift: 20px, then 12, 9, 6, 4, 2 — 53px of a
+    // decaying curve, which is three rows and not six reports.
+    const { surface, intents } = wheelPane()
+    for (const delta of [20, 12, 9, 6, 4, 2]) surface.dispatchEvent(wheel(delta))
+    expect(intents).toHaveLength(3)
+  })
+
+  it('reports both directions, and a delta of a line is already a line', () => {
+    const { surface, intents } = wheelPane()
+    surface.dispatchEvent(wheel(-17))
+    surface.dispatchEvent(wheel(17))
+    expect(intents.map((intent) => intent.payload)).toEqual([
+      'press wheel-up 2 3',
+      'press wheel-down 2 3',
+    ])
+
+    // DOM_DELTA_LINE: one unit IS one row, so it must not be divided by the
+    // pitch again (that would report a line-mode wheel at a seventeenth of
+    // its speed).
+    intents.length = 0
+    for (let i = 0; i < 3; i++) {
+      surface.dispatchEvent(wheel(1, { deltaMode: WheelEvent.DOM_DELTA_LINE }))
+    }
+    expect(intents).toHaveLength(3)
+  })
+
+  it('spends no leftover remainder on the next gesture', () => {
+    // 8px of a 17px row is left over when the pointer leaves. If it survived,
+    // the next gesture's first 9px would report a row the person never moved.
+    const { surface, intents } = wheelPane()
+    surface.dispatchEvent(wheel(8))
+    surface.dispatchEvent(new PointerEvent('pointerleave', {}))
+    surface.dispatchEvent(wheel(8))
+    expect(intents).toHaveLength(0)
+  })
+
+  it('does not divide a delta from a program that is not tracking the mouse', () => {
+    const intents: SessionIntent[] = []
+    const surface = document.createElement('div')
+    document.body.append(surface)
+    const input = new IntentInput({
+      emit: (intent) => intents.push(intent),
+      surface,
+      cellAt: () => ({ x: 2, y: 3 }),
+      mouseTracking: () => false,
+      lineHeight: () => 17,
+    })
+    document.body.append(input.element)
+    live.push(input)
+    surface.dispatchEvent(wheel(4))
+    expect(intents).toEqual([])
+  })
+})
+
 describe('mouse intent follows the accepted backend tracking mode', () => {
   it('leaves ordinary clicks and wheel events to selection and scrolling', () => {
     const intents: SessionIntent[] = []
