@@ -307,7 +307,13 @@ var (
 // all and could not report to its coordinator (nocx-xn63t.6.49). A shell still
 // sourcing 61 ignores the new `tool_surface` classification and leaves every
 // spawned worker where it was.
-const version = "62"
+// 63: Ctrl+C during the launch RESOLUTION is the cancel too (nocx-xn63t.6.30).
+// 62 held the trap for the enrolment, but a local pane resolves what to launch
+// first, and an interrupt in that earlier window still aborted the wrapper with
+// no sentence and no cancelled ticket. The trap moved into one helper both waits
+// are run under. A shell still sourcing 62 has the enrolment covered and that
+// window uncovered.
+const version = "63"
 
 // ScriptVersion is the integration script version other packages may read.
 // Command discovery puts it in its cache key (internal/commandnames): the

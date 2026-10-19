@@ -250,6 +250,12 @@ func TestScriptVersionTracksScriptContent(t *testing.T) {
 		// a tool surface" are two classifications and the shell now reads both
 		// (nocx-xn63t.6.49).
 		"62": "a0d235bcd57a72a690f3fa3d94055dba1a439cea6a3d2dce86197bd4c221fb12",
+		// v63: Ctrl+C during the launch RESOLUTION is the cancel, not an aborted
+		// wrapper with no sentence (nocx-xn63t.6.30). 62 armed the trap for the
+		// enrolment only, and a local pane resolves what to launch before it
+		// enrols. Both waits now run under one helper, so the next window that
+		// needs the trap is armed by the same code rather than by a second copy.
+		"63": "c7031b2d45d27a10b913bdb962ce620ea69d4d6bc05a878f9a41f893a7f1850d",
 	}
 
 	h := sha256.New()

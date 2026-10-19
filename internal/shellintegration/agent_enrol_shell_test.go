@@ -421,6 +421,77 @@ func agentWrapperCancelsTheLaunchOnCtrlC(t *testing.T, start nestedParentStarter
 	}
 }
 
+func TestBashAgentWrapperCancelsTheLaunchOnCtrlCDuringResolution(t *testing.T) {
+	agentWrapperCancelsTheLaunchOnCtrlCDuringResolution(t, startNestedBashParent)
+}
+
+func TestZshAgentWrapperCancelsTheLaunchOnCtrlCDuringResolution(t *testing.T) {
+	agentWrapperCancelsTheLaunchOnCtrlCDuringResolution(t, startNestedZshParent)
+}
+
+// Ctrl+C CANCELS THE LAUNCH FROM THE MOMENT THE WRAPPER STARTS ASKING what to
+// launch, not only from the moment it enrols (nocx-xn63t.6.30).
+//
+// `__nocx_agent_launch_resolve` runs EARLIER than the enrolment in a local pane
+// and waits the same way, and the person who typed an agent's name and changed
+// their mind cannot tell which round trip they interrupted. With no trap in that
+// window the interrupt aborts the wrapper instead: no cancel sentence, and
+// whatever status the shell leaves. So the sentence AND the status 130 are
+// asserted here, at the same seam and with the same words as the enrolment's
+// cancel tests, one round trip earlier.
+//
+// The answer is HELD by the kernel rather than raced for: the interrupt is
+// written while the shell is provably inside that wait, because the wait cannot
+// end until this test releases the answer. That is what makes the failure
+// deterministic on a loaded runner as well as on this one.
+func agentWrapperCancelsTheLaunchOnCtrlCDuringResolution(t *testing.T, start nestedParentStarter) {
+	t.Helper()
+	k := newNestedKernel(t)
+	k.holdLaunchAnswer = true
+	// A literal answer, which is what a worker's pane is resolved with: it
+	// carries no ticket, so the ticket's own cancel belongs to the enrolment's
+	// window (TestBashAgentWrapperCancelsTheLaunchOnCtrlCBeforeTheQuestionArrives
+	// and its zsh twin). What this window can be held to is the sentence and the
+	// status, and that no agent starts.
+	k.launchLiteral = true
+	s := start(t, k, "claude", fakeAgentBody)
+	if _, err := s.ptmx.Write([]byte("claude\n")); err != nil {
+		t.Fatalf("type claude: %v", err)
+	}
+	waitForEvent(t, k, "agent_launch_resolve")
+	if _, err := s.ptmx.Write([]byte{0x03}); err != nil {
+		t.Fatalf("press Ctrl+C: %v", err)
+	}
+	// The terminal echoes ^C as it raises the signal, so once it is on screen
+	// the interrupt has reached the shell. The answer then goes out: a wrapper
+	// that survived the interrupt reads it, one that was aborted never does, and
+	// neither has to sit out the resolution's own bound.
+	waitForOutput(t, s, "^C")
+	k.sendHeldLaunchAnswer()
+	// Arithmetic in the line, so the pane's echo of what was typed cannot
+	// satisfy the wait for what the shell printed.
+	if _, err := s.ptmx.Write([]byte("echo \"RC=$(($?+0))-END\"\n")); err != nil {
+		t.Fatalf("type echo: %v", err)
+	}
+	waitForOutput(t, s, "-END\r\n")
+	out := s.output()
+	if !strings.Contains(out, "RC=130-END") {
+		t.Fatalf("the cancelled launch did not report the interrupt; output=%q", out)
+	}
+	// The status alone cannot tell the cancel from a shell that aborted the
+	// wrapper on an untrapped interrupt: bash reports 130 for both, and zsh
+	// does not. The sentence is what only the cancel path prints.
+	if !strings.Contains(out, "nocx: cancelled — claude was not started") {
+		t.Errorf("the pane did not say the launch was cancelled; output=%q", out)
+	}
+	if strings.Contains(out, "AGENT-RAN") {
+		t.Fatalf("a cancelled launch started the agent; output=%q", out)
+	}
+	if enrolments := eventsOf(k, "agent_enrol"); len(enrolments) != 0 {
+		t.Errorf("a launch cancelled while it was being resolved enrolled %d time(s): %v", len(enrolments), enrolments)
+	}
+}
+
 func TestBashAgentWrapperCancelsTheLaunchOnCtrlCBeforeTheQuestionArrives(t *testing.T) {
 	agentWrapperCancelsTheLaunchOnCtrlCBeforeTheQuestionArrives(t, startNestedBashParent)
 }

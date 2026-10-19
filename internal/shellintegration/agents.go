@@ -165,7 +165,25 @@ const (
 	agentLaunchCancelMarker       = "# @NOCX_AGENT_LAUNCH_CANCEL@"
 )
 
-const agentLaunchSetupLocal = `if ! __nocx_agent_launch_resolve "$__agent"; then
+// agentLaunchSetupLocal is what a LOCAL pane runs before it enrols: resolve what
+// this launch is, and stop in the pane's own words when it cannot be resolved.
+//
+// CTRL+C HERE IS THE CANCEL, in the words and the status the enrolment's cancel
+// uses (nocx-xn63t.6.30). The resolution is a round trip to the backend and it
+// happens BEFORE the enrolment, so it is the first window a person can interrupt
+// after typing an agent's name; without this branch the wrapper's interrupt
+// aborted silently, with no sentence and whatever status the shell left. The
+// ticket is cancelled too when one arrived: a launch nobody will perform must
+// not leave it live.
+const agentLaunchSetupLocal = `__nocx_agent_launch_resolve "$__agent"
+    __rc=$?
+    if (( __rc == 130 )); then
+        builtin printf '\nnocx: cancelled — %s was not started\n' "$__agent" >&2
+        __nocx_agent_launch_cancel
+        __nocx_agent_launch_clear
+        return 130
+    fi
+    if (( __rc != 0 )); then
         builtin printf 'nocx: not started — %s\n' "${__nocx_agent_launch_reason:-local agent launch could not be resolved}" >&2
         __nocx_agent_launch_cancel
         __nocx_agent_launch_clear
