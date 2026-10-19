@@ -582,22 +582,88 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 // it was short of a reason to keep looking.
 func waitForRecordedArgv(t *testing.T, argvFile string, s *channelShell) []string {
 	t.Helper()
-	var argv []string
-	waittest.WaitForTimeoutDetail(t, "the worker agent to record its whole argv", 10*time.Second,
+	return waitForWholeFile(t, "the worker agent to record its whole argv", argvFile,
+		func(raw []byte) ([]string, bool) { return completeArgvRecord(string(raw)) },
 		func() string {
 			raw, err := os.ReadFile(argvFile) //nolint:gosec // argvFile is inside this test's temp directory
 			return fmt.Sprintf("argv.txt held %q (read error %v); output=%q", raw, err, s.output())
-		},
-		func() bool {
-			raw, err := os.ReadFile(argvFile) //nolint:gosec // argvFile is inside this test's temp directory
-			if err != nil {
+		})
+}
+
+// waitForWholeFile waits until path holds the WHOLE of what its fixture writes,
+// and returns what `whole` made of it.
+//
+// A reader can catch three shapes mid-write: no file yet, a file that exists and
+// is EMPTY (`>` and `cp` both create the destination before the bytes arrive),
+// and a PREFIX of the finished content. They are one class of wait and they are
+// why this helper exists once rather than beside each fixture — nocx-xn63t.6.57
+// took the missing file and nocx-xn63t.6.58 the empty one, in this same file,
+// failing with two different messages for one reason: the wait was never short
+// of time, it was short of a reason to keep looking.
+//
+// `whole` decides that reason, from the file's OWN framing and never from the
+// values the test is about: a complete but WRONG file must reach the assertions,
+// which then say what is wrong in their own words, rather than time out on a
+// question this wait never asked.
+func waitForWholeFile[T any](t *testing.T, what, path string, whole func([]byte) (T, bool), detail func() string) T {
+	t.Helper()
+	var got T
+	waittest.WaitForTimeoutDetail(t, what, 10*time.Second, detail, func() bool {
+		raw, err := os.ReadFile(path) //nolint:gosec // path is inside this test's temp directory
+		if err != nil {
+			return false
+		}
+		v, ok := whole(raw)
+		got = v
+		return ok
+	})
+	return got
+}
+
+// completeJSONDocument reports whether raw is a WHOLE JSON document, decided from
+// the document's framing alone: the outermost object or array is closed, and only
+// whitespace follows it. Values are deliberately not read — a document that is
+// whole and wrong belongs to the assertions after the wait.
+//
+// Why framing and not "does it decode": a decode would make the wait answer the
+// question the test is asking, so a product that wrote a malformed document would
+// look like a slow fixture and time out instead of failing where the defect is.
+func completeJSONDocument(raw []byte) bool {
+	depth := 0
+	inString := false
+	escaped := false
+	closed := false
+	for _, b := range raw {
+		switch {
+		case closed:
+			if b != ' ' && b != '\t' && b != '\r' && b != '\n' {
 				return false
 			}
-			recorded, complete := completeArgvRecord(string(raw))
-			argv = recorded
-			return complete
-		})
-	return argv
+		case inString:
+			switch {
+			case escaped:
+				escaped = false
+			case b == '\\':
+				escaped = true
+			case b == '"':
+				inString = false
+			}
+		default:
+			switch b {
+			case '"':
+				inString = true
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+				if depth < 0 {
+					return false
+				}
+				closed = depth == 0
+			}
+		}
+	}
+	return closed
 }
 
 // completeArgvRecord reports whether raw is the WHOLE record the fixture writes —
@@ -870,9 +936,30 @@ func agentWrapperStagesTheWorkerToolSurfaceFromThePanesOwnPaths(t *testing.T, st
 	socket := filepath.Join(t.TempDir(), "tool.sock")
 	helper := filepath.Join(t.TempDir(), "nocx-helper")
 	configFile := filepath.Join(t.TempDir(), "mcp.json")
+	// THE FIXTURE HOLDS THE COPY WHERE `cp` ITSELF WOULD (nocx-xn63t.6.58): the
+	// staged file is created first and filled second, so the file existing is a
+	// state the test can catch and the COPY BEING WHOLE is a later one. `cp`
+	// does both without a pause and usually finishes before a reader arrives,
+	// which is why this window has only ever fired on a loaded runner; the gate
+	// below opens it deterministically instead — the release is written by the
+	// test, never slept for.
+	release := filepath.Join(t.TempDir(), "release-the-copy")
+	releaseTheCopy := func() {
+		if err := os.WriteFile(release, nil, 0o600); err != nil {
+			t.Fatalf("release the fixture's copy: %v", err)
+		}
+	}
+	// However this test ends, the fixture stops waiting rather than holding the
+	// shell in its loop.
+	t.Cleanup(func() { _ = os.WriteFile(release, nil, 0o600) })
 	body := "#!/bin/sh\n" +
 		"while [ \"$#\" -gt 0 ]; do\n" +
-		"  if [ \"$1\" = --mcp-config ]; then shift; cp \"$1\" " + ShellQuote(configFile) + "; fi\n" +
+		"  if [ \"$1\" = --mcp-config ]; then\n" +
+		"    shift\n" +
+		"    : > " + ShellQuote(configFile) + "\n" +
+		"    while [ ! -e " + ShellQuote(release) + " ]; do sleep 0.05; done\n" +
+		"    cp \"$1\" " + ShellQuote(configFile) + "\n" +
+		"  fi\n" +
 		"  shift\n" +
 		"done\n" +
 		"echo WORKER-AGENT-RAN\n"
@@ -884,14 +971,28 @@ func agentWrapperStagesTheWorkerToolSurfaceFromThePanesOwnPaths(t *testing.T, st
 		t.Fatalf("type worker command: %v", err)
 	}
 	waitForEvent(t, k, "agent_enrol")
-	waitUntil(t, "the worker agent to read its config", func() bool {
-		_, statErr := os.Stat(configFile)
-		return statErr == nil
-	})
-	raw, err := os.ReadFile(configFile) //nolint:gosec // configFile is inside this test's temp directory
-	if err != nil {
-		t.Fatalf("read the staged config the worker was pointed at: %v", err)
-	}
+	// THE EMPTY FILE IS A STATE THIS WAIT MAY PASS THROUGH, NOT ONE IT STOPS AT
+	// (nocx-xn63t.6.58). This waits for the fixture to be inside the window —
+	// the file created and not yet filled — and only then opens the gate, so the
+	// read below is guaranteed to cross the empty state instead of reaching it
+	// by luck. It is not the wait that answers the test's question.
+	waittest.WaitForTimeoutDetail(t, "the worker agent to create its config file", 10*time.Second,
+		func() string {
+			_, statErr := os.Stat(configFile)
+			return fmt.Sprintf("the staged config was not created (stat error %v); output=%q", statErr, s.output())
+		},
+		func() bool {
+			_, statErr := os.Stat(configFile)
+			return statErr == nil
+		})
+	releaseTheCopy()
+	raw := waitForWholeFile(t, "the fixture to finish copying the staged config", configFile,
+		func(raw []byte) ([]byte, bool) { return raw, completeJSONDocument(raw) },
+		func() string {
+			raw, err := os.ReadFile(configFile) //nolint:gosec // configFile is inside this test's temp directory
+			return fmt.Sprintf("the staged config held %q (read error %v), which is not a whole JSON document; output=%q",
+				raw, err, s.output())
+		})
 	var config stagedMCPConfig
 	if err := json.Unmarshal(raw, &config); err != nil {
 		t.Fatalf("decode the staged config: %v; raw=%q", err, raw)
