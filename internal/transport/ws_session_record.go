@@ -140,6 +140,10 @@ func (s *WSServer) recordHole(
 			"session_id", string(sid), "at", resumeAt, "error", err)
 		return holeUnrecordable
 	}
+	// A recorded hole is a revision of the same answer the cap's evictions
+	// revise (nocx-zg3k3.14.24): the attached client is told its own card's
+	// number moved, not left holding the reclaim's.
+	s.publishRecoveryRevision(ctx, sid)
 	return holeRecorded
 }
 
@@ -295,6 +299,12 @@ func (s *WSServer) recordSessionOutput(ctx context.Context, sid session.ID, ring
 		if res.Dropped > 0 {
 			s.log.Info("session recording dropped its oldest bytes to stay inside the output cap",
 				"session_id", string(sid), "bytes", res.Dropped)
+			// The recording's answer to "what is missing" just changed, and
+			// this loop is the only party that knows it did
+			// (nocx-zg3k3.14.24). A reclaim read that answer once, before it
+			// attached, so without this the card a person reads keeps stating
+			// the number the reclaim caught.
+			s.publishRecoveryRevision(ctx, sid)
 		}
 		pos += uint64(len(data))
 		if err := ring.recordTo(pos); err != nil {

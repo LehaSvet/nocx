@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nocx.local/contracts/session.recoveryChanged.schema.json",
+  "title": "SessionRecoveryChanged",
+  "description": "Params for the session.recoveryChanged notification: the recording's own answer to session.recoveryStatus, pushed when that answer changes. It is metadata only \u2014 the recorded stream's end offset and the ranges the recording does not hold \u2014 and carries no recorded bytes. A reclaim reads session.recoveryStatus once, before it attaches, while the recording is still catching up on the replay; this notification is how the number a person is shown keeps being the ledger's number rather than the one the reclaim happened to catch.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sessionId", "produced", "gaps"],
+  "properties": {
+    "sessionId": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{32}$",
+      "description": "The server-minted session id whose recording changed."
+    },
+    "produced": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "End offset recorded for this session, as session.recoveryStatus reports it at the same instant."
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "$ref": "ledger.get.schema.json#/$defs/gap"
+      },
+      "description": "The ranges this session's recording does not hold, in stream order and disjoint, exactly as session.recoveryStatus answers them. Always an array; contains metadata only."
+    }
+  }
+}

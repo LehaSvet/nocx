@@ -255,6 +255,11 @@
     },
     {
       "kind": "types",
+      "file": "src/generated/session.recoveryChanged.ts",
+      "symbol": "Gap"
+    },
+    {
+      "kind": "types",
       "file": "src/generated/shell.complete.ts",
       "symbol": "ShellEntry"
     },

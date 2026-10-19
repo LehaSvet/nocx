@@ -74,29 +74,38 @@ func (h sessionRecoveryStatusHandlers) handle(ctx context.Context, req jsonrpcRe
 	if status.Gaps == nil {
 		status.Gaps = []content.Gap{}
 	}
-	if msg := unsafeSessionOffset("produced", status.Produced); msg != "" {
+	if msg := unsafeRecoveryStatus(status); msg != "" {
 		log.From(ctx).Error("session recovery status exceeds the JSON-safe byte-offset boundary", "session_id", string(sid), "error", msg)
 		_ = h.r.TryError(req.ID, RPCError{Code: -32603, Message: msg})
 		return
 	}
-	for i, gap := range status.Gaps {
-		if gap.Start < 0 || gap.End < 0 {
-			msg := fmt.Sprintf("gaps[%d] has a negative byte offset", i)
-			_ = h.r.TryError(req.ID, RPCError{Code: -32603, Message: msg})
-			return
-		}
-		if msg := unsafeSessionOffset(fmt.Sprintf("gaps[%d].start", i), uint64(gap.Start)); msg != "" {
-			_ = h.r.TryError(req.ID, RPCError{Code: -32603, Message: msg})
-			return
-		}
-		if msg := unsafeSessionOffset(fmt.Sprintf("gaps[%d].end", i), uint64(gap.End)); msg != "" {
-			_ = h.r.TryError(req.ID, RPCError{Code: -32603, Message: msg})
-			return
-		}
-	}
 	_ = h.r.TryResult(req.ID, mustMarshal(sessionRecoveryStatusResult{
 		SessionID: string(sid), Produced: status.Produced, Gaps: status.Gaps,
 	}))
+}
+
+// unsafeRecoveryStatus names the first offset of a recording's answer that a
+// JSON number cannot carry, or "" when the whole answer is safe. ONE OWNER
+// for the check, because the answer leaves this process by two doors — the
+// session.recoveryStatus result and the session.recoveryChanged notification
+// (nocx-zg3k3.14.24) — and a bound applied at one of them only is the kind of
+// hole a push, added later, is exactly how you get.
+func unsafeRecoveryStatus(status content.SessionOutputRecoveryStatus) string {
+	if msg := unsafeSessionOffset("produced", status.Produced); msg != "" {
+		return msg
+	}
+	for i, gap := range status.Gaps {
+		if gap.Start < 0 || gap.End < 0 {
+			return fmt.Sprintf("gaps[%d] has a negative byte offset", i)
+		}
+		if msg := unsafeSessionOffset(fmt.Sprintf("gaps[%d].start", i), uint64(gap.Start)); msg != "" {
+			return msg
+		}
+		if msg := unsafeSessionOffset(fmt.Sprintf("gaps[%d].end", i), uint64(gap.End)); msg != "" {
+			return msg
+		}
+	}
+	return ""
 }
 
 func validateSessionRecoveryStatusRaw(raw json.RawMessage) string {

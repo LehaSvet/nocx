@@ -16874,6 +16874,100 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
     }
   })
 
+  // THE CARD IS NOT A PHOTOGRAPH (nocx-zg3k3.14.24). The reclaim reads
+  // session.recoveryStatus once, before it attaches; the recording goes on
+  // appending and its retention bound goes on dropping, so that answer is a
+  // fact about an instant that has passed. On PR #380's CI the card said
+  // 3.1 MB while a fresh session.recoveryStatus said 3.6 MB about the same
+  // session, and nothing recomputed it. A person who stays on the pane must
+  // see the number reach the ledger's without reopening the tab.
+  it('states the recording’s own revised total without reopening the pane (nocx-zg3k3.14.24)', async () => {
+    const { session, hooks } = reclaiming({
+      produced: 3_400_000,
+      gaps: [{ start: 131_072, end: 3_446_848, reason: 'cap' }],
+    })
+    const { tab, teardown } = await mountTerminal(makeClipboard(), { hooks })
+    try {
+      await vi.waitFor(() =>
+        expect(cardTitle(tab)).toBe("3.3 MB of this session's output is missing"),
+      )
+      expect(cardDesc(tab)).toContain("3.3 MB the recording's size limit dropped")
+
+      // …and the recording drops more while the person is reading it.
+      session.fireRecoveryChanged({
+        produced: 4_262_996,
+        gaps: [{ start: 131_072, end: 4_046_848, reason: 'cap' }],
+      })
+
+      await vi.waitFor(() =>
+        expect(cardTitle(tab)).toBe("3.9 MB of this session's output is missing"),
+      )
+      expect(cardDesc(tab)).toContain("3.9 MB the recording's size limit dropped")
+    } finally {
+      teardown()
+    }
+  })
+
+  it('does not rebuild the card for a revision that states the same total (nocx-zg3k3.14.24)', async () => {
+    const { session, hooks } = reclaiming({
+      produced: 3_400_000,
+      gaps: [{ start: 131_072, end: 3_446_848, reason: 'cap' }],
+    })
+    const { tab, teardown } = await mountTerminal(makeClipboard(), { hooks })
+    try {
+      await vi.waitFor(() =>
+        expect(cardTitle(tab)).toBe("3.3 MB of this session's output is missing"),
+      )
+      const mounted = tab.pane.querySelector('.nocx-recovery-notice')
+      expect(mounted).not.toBeNull()
+
+      // The recording's FRONTIER moved — it appended bytes — while the
+      // account it states did not. A saturated recording revises on every
+      // chunk it appends, and a card rebuilt for each of those would replace a
+      // DOM node and re-measure the pane for a number nobody can see change.
+      session.fireRecoveryChanged({
+        produced: 3_410_000,
+        gaps: [{ start: 131_072, end: 3_446_848, reason: 'cap' }],
+      })
+      await Promise.resolve()
+
+      expect(tab.pane.querySelector('.nocx-recovery-notice')).toBe(mounted)
+      expect(cardTitle(tab)).toBe("3.3 MB of this session's output is missing")
+    } finally {
+      teardown()
+    }
+  })
+
+  it('keeps a revised total from counting the live notice’s bytes twice (nocx-zg3k3.14.24)', async () => {
+    const { session, hooks } = reclaiming({
+      produced: 3_400_000,
+      gaps: [{ start: 3_043, end: 98_304, reason: 'hostWindow' }],
+    })
+    const { tab, teardown } = await mountTerminal(makeClipboard(), { hooks })
+    try {
+      session.fireOutputGap({
+        sessionId: session.sessionId,
+        start: 3_043,
+        end: 98_304,
+        reason: 'hostWindow',
+      })
+      session.fireRecoveryChanged({
+        produced: 4_262_996,
+        gaps: [
+          { start: 3_043, end: 98_304, reason: 'hostWindow' },
+          { start: 131_072, end: 4_046_848, reason: 'cap' },
+        ],
+      })
+
+      await vi.waitFor(() =>
+        expect(cardTitle(tab)).toBe("3.9 MB of this session's output is missing"),
+      )
+      expect(cardDesc(tab)).not.toContain('hostWindow')
+    } finally {
+      teardown()
+    }
+  })
+
   it('keeps both overlapping live losses distinct, and dismissing one leaves the other and history intact', async () => {
     const { session, hooks } = reclaiming({
       produced: 0,

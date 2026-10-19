@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 import { Dispatcher } from './dispatcher'
 import { fixedEndpoint } from './endpoint'
-import { SessionHandle, WSClient, type SessionIntentKind } from './ipc'
+import { SessionHandle, WSClient, type SessionIntentKind, type SessionRecovery } from './ipc'
 import {
   FRAME_HEADER_SIZE,
   FRAME_VERSION,
@@ -2298,6 +2298,72 @@ describe('reclaiming a live session', () => {
     })
     await settle()
   }
+
+  // The recording's own revision of what it still holds (nocx-zg3k3.14.24):
+  // the reclaim's answer is read before the attach, while the recording is
+  // still catching up, so the same session later reports a larger hole. The
+  // handle is where that fact lives, because the handle is what made the
+  // read; a surface that re-reads `recovered` then states the ledger's number.
+  it('replaces what a reclaim recovered when the recording reports its own revision', async () => {
+    const { client, ws } = await freshClient()
+    const reclaiming = client.reclaimSession(liveEntry({ replayFrom: 5_000 }))
+    await answerRecoveryStatus(ws, {
+      produced: 4_000,
+      gaps: [{ start: 0, end: 1_000, reason: 'cap' }],
+    })
+    answerLast(ws, 'attach', { resumed: true, reset: false, from: 5_000 })
+    const session = await reclaiming
+    expect(session.recovered?.gaps).toEqual([
+      { start: 0, end: 1_000, reason: 'cap' },
+      { start: 4_000, end: 5_000, reason: 'unrecorded' },
+    ])
+
+    const revisions: (SessionRecovery | null)[] = []
+    session.onRecoveryChanged(() => revisions.push(session.recovered))
+
+    ws.deliverText({
+      jsonrpc: '2.0',
+      method: 'session.recoveryChanged',
+      params: {
+        sessionId: SID,
+        produced: 9_000,
+        gaps: [{ start: 0, end: 8_000, reason: 'cap' }],
+      },
+    })
+
+    // The ledger's ranges REPLACE the reclaim's — and the stretch nothing
+    // kept, which only this handle could derive, survives: the reclaim's own
+    // answer is not the whole account.
+    expect(revisions).toEqual([
+      {
+        produced: 9_000,
+        gaps: [
+          { start: 0, end: 8_000, reason: 'cap' },
+          { start: 4_000, end: 5_000, reason: 'unrecorded' },
+        ],
+        statusUnavailable: false,
+      },
+    ])
+    expect(session.recovered?.produced).toBe(9_000)
+
+    // AND A PANE THAT SUBSCRIBES LATER IS TOLD THE LATEST ONE. The revision
+    // that matters most is the one that lands between the reclaim and the
+    // mount — the recorder's catch-up is exactly when revisions happen — so
+    // registration delivers what is already in hand rather than waiting for
+    // the next one.
+    ws.deliverText({
+      jsonrpc: '2.0',
+      method: 'session.recoveryChanged',
+      params: {
+        sessionId: SID,
+        produced: 12_000,
+        gaps: [{ start: 0, end: 11_000, reason: 'cap' }],
+      },
+    })
+    const late: (SessionRecovery | null)[] = []
+    session.onRecoveryChanged(() => late.push(session.recovered))
+    expect(late.map((recovered) => recovered?.produced)).toEqual([12_000])
+  })
 
   it('asks the backend what is live instead of its own memory', async () => {
     const { client, ws } = await freshClient()
