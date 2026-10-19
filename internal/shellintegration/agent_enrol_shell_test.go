@@ -2,11 +2,15 @@ package shellintegration
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/shady2k/nocx/internal/waittest"
 )
 
 // fakeAgentBody is a stand-in for a coding agent: it prints a sentinel and
@@ -566,6 +570,59 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
+// waitForRecordedArgv waits until the worker fixture has written its WHOLE argv
+// record, and returns that record's lines.
+//
+// The marker the fixture prints is not the state its caller reads
+// (nocx-xn63t.6.57): `printf 'WORKER-AGENT-RAN\n'` comes before
+// `printf '%s\n' "$#" "$@" > argv.txt`, so a wait on the marker alone is
+// satisfied while the record does not exist yet, and the caller's next statement
+// reads a file the agent has not written. That is exactly what CI run 39176833066
+// reported, and no bound would have cured it: the wait was never short of time,
+// it was short of a reason to keep looking.
+func waitForRecordedArgv(t *testing.T, argvFile string, s *channelShell) []string {
+	t.Helper()
+	var argv []string
+	waittest.WaitForTimeoutDetail(t, "the worker agent to record its whole argv", 10*time.Second,
+		func() string {
+			raw, err := os.ReadFile(argvFile) //nolint:gosec // argvFile is inside this test's temp directory
+			return fmt.Sprintf("argv.txt held %q (read error %v); output=%q", raw, err, s.output())
+		},
+		func() bool {
+			raw, err := os.ReadFile(argvFile) //nolint:gosec // argvFile is inside this test's temp directory
+			if err != nil {
+				return false
+			}
+			recorded, complete := completeArgvRecord(string(raw))
+			argv = recorded
+			return complete
+		})
+	return argv
+}
+
+// completeArgvRecord reports whether raw is the WHOLE record the fixture writes —
+// `printf '%s\n' "$#" "$@"` — and returns its lines.
+//
+// A reader can catch three shapes mid-write: no file (the `>` redirect has not
+// run), an empty file (the redirect truncated it and printf has not written yet),
+// and a PREFIX of the whole record. The record's own first line is the number of
+// lines that follow, which is what makes a prefix recognisable: the record is
+// complete exactly when that count is satisfied, and only then. Nothing here
+// inspects the product's arguments — a wrapper that passed the wrong ones still
+// records a consistent file, and the assertions after this wait then say so in
+// their own words instead of the wait timing out on a question it never asked.
+func completeArgvRecord(raw string) ([]string, bool) {
+	if !strings.HasSuffix(raw, "\n") {
+		return nil, false
+	}
+	lines := strings.Split(strings.TrimSuffix(raw, "\n"), "\n")
+	count, err := strconv.Atoi(lines[0])
+	if err != nil || count != len(lines)-1 {
+		return nil, false
+	}
+	return lines, true
+}
+
 func TestBashAgentWrapperRunsTheResolvedRecordArgsAndEnvironment(t *testing.T) {
 	agentWrapperRunsTheResolvedRecordArgsAndEnvironment(t, startNestedBashParent)
 }
@@ -745,16 +802,19 @@ func agentWrapperPointsAWorkerLaunchAtTheToolSurface(t *testing.T, start nestedP
 	if _, hasTicket := enrol.Body["ticket"]; hasTicket {
 		t.Fatalf("a worker launch used a local agent record: %v", enrol.Body)
 	}
+	// THE MARKER IS NOT THE STATE (nocx-xn63t.6.57). The fixture prints
+	// WORKER-AGENT-RAN, then the record's environment line, and only then writes
+	// argv.txt; a wait on the marker alone was satisfied while the file this
+	// test reads did not exist yet, which is the failure CI run 39176833066
+	// reported — `the worker agent recorded no argv: open .../003/argv.txt: no
+	// such file or directory`, with WORKER-AGENT-RAN in the same message. The
+	// marker is still waited for, because the typed program having run is a fact
+	// worth asserting; the record is a second fact and is waited for on its own.
 	waitUntil(t, "the worker agent to run", func() bool {
 		return strings.Contains(s.output(), "WORKER-AGENT-RAN")
 	})
-
-	raw, err := os.ReadFile(argvFile) //nolint:gosec // argvFile is inside this test's temp directory
-	if err != nil {
-		t.Fatalf("the worker agent recorded no argv: %v; output=%q", err, s.output())
-	}
-	argv := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
-	if len(argv) < 5 {
+	argv := waitForRecordedArgv(t, argvFile, s)
+	if len(argv) < 6 {
 		t.Fatalf("worker argv = %q, want the typed arguments plus --mcp-config and its file", argv)
 	}
 	wantFirst := []string{"5", "--model", "test", "two words", "--mcp-config"}
