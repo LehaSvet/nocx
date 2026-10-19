@@ -7008,7 +7008,13 @@ describe('two attempts and the live region stay separate while running (nocx-m87
         value: 400,
         configurable: true,
       })
-      scrollback.blockManager.runningBlock!.el.getBoundingClientRect = () => ({
+      // THE RUNNING CAP TAKES THE HEADER OFF THE SCROLLER, not the block: the
+      // block holds the live region itself since ADR-0091, so its own height is
+      // the box this cap bounds. jsdom lays nothing out, so the header is
+      // stubbed the way a browser would answer for it.
+      const runningHeader =
+        scrollback.blockManager.runningBlock!.el.querySelector<HTMLElement>(':scope > .cmd-header')!
+      runningHeader.getBoundingClientRect = () => ({
         height: 20,
         width: 800,
         top: 0,
@@ -7176,7 +7182,11 @@ describe('two attempts and the live region stay separate while running (nocx-m87
       // has to answer that early too. A class check rather than the
       // instance: the block does not exist yet.
       Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
-        if (this.classList.contains('cmd-block')) {
+        // The running block's HEADER is what the live cap takes off the
+        // scroller (ADR-0091; the block itself now holds the live region), and
+        // the off-flow probe is a `.cmd-block-running` wrapper whose height a
+        // browser gives as its header's. Both answer the same 24.
+        if (this.classList.contains('cmd-block') || this.classList.contains('cmd-header')) {
           return {
             height: 24,
             width: 800,
@@ -7347,7 +7357,10 @@ describe('two attempts and the live region stay separate while running (nocx-m87
       })
       const block = withScrollback.scrollback.blockManager.runningBlock
       expect(block).not.toBeNull()
-      block!.el.getBoundingClientRect = () => ({
+      // The cap takes the HEADER off the scroller — the block holds the live
+      // region itself since ADR-0091 (see the test above).
+      const headerEl = block!.el.querySelector<HTMLElement>(':scope > .cmd-header')!
+      headerEl.getBoundingClientRect = () => ({
         height: 24,
         width: 800,
         top: 0,
@@ -16208,13 +16221,18 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
 
       const command = inner.querySelector<HTMLElement>('.cmd-block[data-block-kind="command"]')
       expect(command).not.toBeNull()
+      // THE ANSWER GOES BELOW THE COMMAND, AND THE COMMAND'S OWN OUTPUT IS IN
+      // THE COMMAND (ADR-0091): the live region is that block's body while it
+      // runs, so it is not a child of the stack to be ordered against — the
+      // block and everything it holds is one entry.
       const seatedOrder = (): number[] => {
         const kids = Array.from(inner.children)
-        return [kids.indexOf(command!), kids.indexOf(live), kids.indexOf(answer)]
+        return [kids.indexOf(command!), kids.indexOf(answer)]
       }
-      const [cmdAt, liveAt, answerAt] = seatedOrder()
-      expect(cmdAt).toBeLessThan(liveAt)
-      expect(liveAt).toBeLessThan(answerAt)
+      const [cmdAt, answerAt] = seatedOrder()
+      expect(cmdAt).toBeGreaterThanOrEqual(0)
+      expect(cmdAt).toBeLessThan(answerAt)
+      expect(live.parentElement).toBe(command)
 
       // The order a person watched during the run is the order they keep.
       handler({
@@ -16258,7 +16276,9 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
       expect(next).not.toBe(frozen)
       const kids = Array.from(inner.children)
       expect(kids.indexOf(answer)).toBeLessThan(kids.indexOf(next))
-      expect(kids.indexOf(next)).toBeLessThan(kids.indexOf(live))
+      // And the live region is THAT command's body, not a stack child to be
+      // ordered against: one block, header to its last live row (ADR-0091).
+      expect(live.parentElement).toBe(next)
     } finally {
       teardown()
     }
@@ -18494,7 +18514,7 @@ describe('the prompt prediction measures at the real block width, once per frame
       if (this === inner.editor.root) return rect(composerShown() ? COMPOSER : 0)
       if (this === inner.processBar) return rect(barShown() ? BAR : 0)
       if (this.classList.contains('ui-process-bar')) return rect(BAR)
-      if (this.classList.contains('cmd-block')) {
+      if (this.classList.contains('cmd-block') || this.classList.contains('cmd-header')) {
         const el = this as HTMLElement
         // A clone the prediction pinned a width on measures at it. An
         // in-flow block is a stretched child of scrollback-inner and takes
@@ -18508,7 +18528,10 @@ describe('the prompt prediction measures at the real block width, once per frame
         // beside the title, and neither wraps it.
         const title = el.querySelector('.cmd-header-text')?.textContent ?? ''
         const height = LINE * linesFor(title, width)
-        measured.push({ probe, width, height })
+        // A `.cmd-header` is the REAL header, and since ADR-0091 it is what the
+        // live cap measures — the block around it also holds the live region, so
+        // its own height is the box, not the chrome above the rows.
+        measured.push({ probe: probe && !el.classList.contains('cmd-header'), width, height })
         return rect(height)
       }
       return rect(0)

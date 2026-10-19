@@ -318,6 +318,7 @@ export class ScrollbackController {
     // The echo shift is a running-mode property: clear it with the region.
     this._applyEchoShift()
     this._updateSeparator()
+    this._seatLive()
     this._onModeChanged?.(this._mode)
   }
 
@@ -341,6 +342,7 @@ export class ScrollbackController {
     // shift applies from the first frame (nocx-w1n4).
     this._applyEchoShift()
     this._updateSeparator()
+    this._seatLive()
     this._onModeChanged?.(this._mode)
     this._watchPaintedTop()
     // Size both layers from the rows that exist now. A short command therefore
@@ -371,6 +373,7 @@ export class ScrollbackController {
     // stylesheet's filled-pane exclusion reads to hand the rows above the
     // live rectangle back (nocx-zg3k3.10.4).
     this.scrollbackInner.classList.add('inner-unstructured')
+    this._seatLive()
     this._fillPane()
     this._onModeChanged?.(this._mode)
   }
@@ -399,7 +402,14 @@ export class ScrollbackController {
     // — entering the mode, and the PANE changing size — and by nothing the
     // running program does. A resize the user asked for is still a resize.
     if (this._runningCap !== undefined) return this._runningCap
-    const header = this._blockManager.runningBlock?.el.getBoundingClientRect().height ?? 0
+    // THE RUNNING BLOCK'S HEADER, not the block: since ADR-0091 the block also
+    // holds the live region itself, so its own height grows with the very box
+    // this cap exists to bound — a number fed from its own output, which shrank
+    // the region by eight rows before it was read here. The chrome above the
+    // rows is the header; that is what the cap takes off.
+    const headerEl =
+      this._blockManager.runningBlock?.el.querySelector<HTMLElement>(':scope > .cmd-header') ?? null
+    const header = headerEl?.getBoundingClientRect().height ?? 0
     const max = this.scrollbackArea.clientHeight - header
     // Measured before layout (a zero-height scroller) the answer is not the
     // cap, it is "not yet" — left uncached so the next chunk asks again.
@@ -521,17 +531,32 @@ export class ScrollbackController {
     return (Number.isFinite(top) ? top : 0) + (Number.isFinite(bottom) ? bottom : 0)
   }
 
-  /** The inline inset the live region wears as a ROW of the ledger
-   *  (nocx-9bpeq.8): the pane gutter moved from `.pane` into every row so a
-   *  row can paint to the edge. The grid is drawn inside that inset, so the fit
-   *  must not count it — read off the element, like `_bodyPaddingPx`, so the
-   *  stylesheet stays the one place the number lives. Zero wherever there is no
-   *  layout to read (jsdom without inline styles). */
+  /** The inline inset the live row wears (nocx-9bpeq.8): the pane gutter
+   *  moved from `.pane` into every row so a row can paint to the edge. The grid
+   *  is drawn inside that inset, so the fit must not count it — read off the
+   *  DOM, like `_bodyPaddingPx`, so the stylesheet stays the one place the
+   *  number lives. Zero wherever there is no layout to read (jsdom without
+   *  inline styles).
+   *
+   *  THE WHOLE CHAIN, not this element's own padding: while the region is a
+   *  running block's body (ADR-0091) the gutter is the BLOCK's, and this
+   *  element's own padding is nothing — a sum of its own would fit the grid to
+   *  the scroller's full width and put the last columns under the clip, which
+   *  is nocx-vydj returning. Walking up to the scroller answers the same number
+   *  in both arrangements, and in a turn's indent too. */
   get liveInlineInsetPx(): number {
-    const cs = getComputedStyle(this.terminalLiveContainer)
-    const left = parseFloat(cs.paddingLeft)
-    const right = parseFloat(cs.paddingRight)
-    return (Number.isFinite(left) ? left : 0) + (Number.isFinite(right) ? right : 0)
+    let inset = 0
+    for (
+      let el: HTMLElement | null = this.terminalLiveContainer;
+      el !== null && !el.classList.contains('scrollback-area');
+      el = el.parentElement
+    ) {
+      const cs = getComputedStyle(el)
+      const left = parseFloat(cs.paddingLeft)
+      const right = parseFloat(cs.paddingRight)
+      inset += (Number.isFinite(left) ? left : 0) + (Number.isFinite(right) ? right : 0)
+    }
+    return inset
   }
 
   /** The vertical offset that hides the shell echo at the backend-anchored
@@ -551,6 +576,23 @@ export class ScrollbackController {
     const command = rec.command.trim()
     if (command !== '' && !(rec.outputAnchorText ?? '').endsWith(command)) return 0
     return rec.outputAnchorOffset * cell
+  }
+
+  /** WHERE THE LIVE REGION SITS, as the mode decides it (ADR-0091).
+   *
+   *  A running command's output is ONE block: while a command runs on the
+   *  normal screen the region is that block's body, inside the block's own box,
+   *  so its ground and its trailing space cover every row the command has
+   *  written. Everywhere there are no blocks — the prompt, a session with no
+   *  shell integration, an alternate-screen program — it is the stack's own
+   *  child, which is where the fullscreen rule and the idle height address it.
+   *
+   *  One input, the mode, and one answer, the manager's seat: the controller
+   *  builds and sizes this element but does not own the block elements it is
+   *  seated beside or inside (AD-8). */
+  private _seatLive(): void {
+    if (this._mode === 'running') this._blockManager.holdLiveInRunningBlock()
+    else this._blockManager.releaseLiveRegion()
   }
 
   /** Apply the echo shift to the grid, or clear it. The write is guarded:
@@ -649,6 +691,11 @@ export class ScrollbackController {
     // reachable by scrolling, so the surface loses the hand-back class and
     // the filled-pane exclusion hides it (nocx-zg3k3.10.4).
     this.scrollbackInner.classList.remove('inner-unstructured')
+    // OUT OF THE BLOCK BEFORE THE PANE IS THE PROGRAM'S (ADR-0091): the
+    // fullscreen rule hides every block-layer child, so a region inside one
+    // would take the terminal down with it. The seat goes first and the class
+    // second, in one task, so no frame sees both.
+    this._seatLive()
     this._fillPane()
     this._onModeChanged?.(this._mode)
   }
@@ -690,6 +737,7 @@ export class ScrollbackController {
     this.scrollbackInner.classList.remove('inner-unstructured')
     this.scrollbackInner.classList.remove('inner-fullscreen-mode')
     this._updateSeparator()
+    this._seatLive()
     this._onModeChanged?.(this._mode)
   }
 

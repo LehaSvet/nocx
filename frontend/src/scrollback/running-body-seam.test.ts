@@ -72,7 +72,7 @@ function declared(selector: string, property: string): string | null {
   return found
 }
 
-describe('a running block whose body outgrew its screen (nocx-zg3k3.14.26)', () => {
+describe('a running block whose body outgrew its screen (nocx-zg3k3.14.26, ADR-0091)', () => {
   it('ends the block at its last own row instead of paying the body bottom there', () => {
     // The body continues into the live region, so this output is not its end.
     expect(declared('.cmd-block.cmd-block-running > .cmd-output', 'padding-bottom')).toBe('0')
@@ -82,8 +82,9 @@ describe('a running block whose body outgrew its screen (nocx-zg3k3.14.26)', () 
     const rule = RULES.find((r) =>
       r.selectors.some(
         (s) =>
-          s.includes(':has(> .cmd-block.cmd-block-running > .cmd-output)') &&
-          s.includes('.terminal-live-container.live-running'),
+          s.includes(':has(> .cmd-output)') &&
+          s.includes('.cmd-block.cmd-block-running') &&
+          s.includes('> .terminal-live-container.live-running'),
       ),
     )
     expect(rule, 'no rule continues the body into the live region').toBeDefined()
@@ -99,6 +100,23 @@ describe('a running block whose body outgrew its screen (nocx-zg3k3.14.26)', () 
     // ... and a frozen block's body still wears both of its own pads.
     expect(declared('.cmd-output', 'padding')).toBe(
       'var(--cmd-output-pad-top) 0 var(--cmd-output-pad-bottom)',
+    )
+  })
+
+  it('never gives the nested live region an inline inset of its own', () => {
+    // The gutter is the block's while the region is its body (ADR-0091): the
+    // one rule that hands it to a stack child is a `>` rule on
+    // `.scrollback-inner`, and a second inset inside the block would shift every
+    // column of the grid off the frozen column's.
+    for (const rule of RULES) {
+      for (const selector of rule.selectors) {
+        if (!selector.includes('.terminal-live-container')) continue
+        if (!/\.cmd-block[^ ,>]*\s*>\s*\.terminal-live-container/.test(selector)) continue
+        expect(/padding(-inline)?(-left|-right)?\s*:/.test(rule.body), selector).toBe(false)
+      }
+    }
+    expect(declared('.scrollback-inner > :not(.cell-metric-probe)', 'padding-inline')).toBe(
+      'var(--pane-inline-padding)',
     )
   })
 })

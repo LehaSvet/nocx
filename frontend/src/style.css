@@ -556,41 +556,40 @@
   position: relative;
 }
 
-/* ONE BODY PAYS ITS PADDING ONCE (nocx-zg3k3.14.26).
+/* ONE BODY, ONE BOX, AND ITS PADDING PAID ONCE (nocx-zg3k3.14.26, ADR-0091).
 
-   A running command's rows are painted in two boxes, and both are its body.
-   The block paints the rows the durable record has already taken — the ones
-   that left the screen — into its own `.cmd-output`; the live region below
-   paints the screen the command is still writing. That is by design (ADR-0078:
-   the rows above the live screen come from the durable tier, and the live
-   output stays the controller-owned SIBLING, never a descendant of the block).
-   What was not designed is the joint: each box wore the whole body padding
-   (`.cmd-output` its bottom, the live region its top), so the two paddings
-   were paid between two CONSECUTIVE rows of one body — 6px + 2px = 8px, one
-   extra half-row (measured on the owner's stand: a row pitch of 25px across
-   the joint where every other pair is 17px, and 6px of bare block body below
-   the block's last row).
+   A running command's rows come from two owners and always will: the block
+   paints the rows the durable record has already taken — the ones that left the
+   screen — into its own `.cmd-output`, and the controller's live region paints
+   the screen the command is still writing (ADR-0078's two tiers). Since
+   ADR-0091 the live region is that block's BODY rather than a sibling under it,
+   so the block's box — and therefore its ground, its hover and its trailing
+   space — covers every row the command has written.
 
-   So both edges of the joint stop paying: the body does not end at the
-   block's last painted row, and it does not start at the live region's first.
-   The body's two OUTER edges keep exactly what they had — the 2px top, now
-   paid by whichever box holds the body's first row, and the bottom's
-   `--cmd-output-pad-bottom` + `--terminal-block-trailing-space`, paid by the
-   live region — so the running region still freezes into a body of the same
-   height (the rule these paddings came from, `.cmd-output` above). */
+   What follows for the padding is that the body is ONE body across the joint:
+   `.cmd-output` is not where it ends, and the live region is not where it
+   starts. Each used to pay the whole body padding at that joint, so two
+   CONSECUTIVE rows of one body were separated by both — 6px + 2px = 8px, one
+   extra half-row, measured on the owner's stand as a 25px step where every
+   other row pair steps 17px, with 6px of bare block body under the block's last
+   row. Both edges stop paying. The body's two OUTER edges keep exactly what
+   they had — the 2px top, paid by whichever box holds the body's first row, and
+   the bottom's `--cmd-output-pad-bottom` + `--terminal-block-trailing-space`,
+   paid by the live region that ends it — so the running region still freezes
+   into a body of the same height (the rule these paddings came from,
+   `.cmd-output` above). */
 .cmd-block.cmd-block-running > .cmd-output {
   /* This output is not the end of the body while the command runs. */
   padding-bottom: 0;
 }
 
-/* ... and the live region below such a block continues the body, so it is not
-   the body's start either. Asked of the DOM rather than of a second flag: the
-   block's own `.cmd-output` IS the fact, and a class set beside it could only
-   drift from it (paintStoredRows replaces that element on every growth).
-   A command that has printed nothing yet has no `.cmd-output`, and there the
-   live region is the whole body and keeps its top padding. */
-.scrollback-inner:has(> .cmd-block.cmd-block-running > .cmd-output)
-  > .terminal-live-container.live-running {
+/* ... and the live region that continues it is not the body's start either.
+   Asked of the DOM rather than of a second flag: the block's own `.cmd-output`
+   IS the fact, and a class set beside it could only drift from it
+   (`paintStoredRows` replaces that element on every growth). A command that has
+   printed nothing past its screen has no `.cmd-output`, and there the live
+   region holds the body's first row and keeps its top padding. */
+.cmd-block.cmd-block-running:has(> .cmd-output) > .terminal-live-container.live-running {
   padding-top: 0;
 }
 
@@ -814,8 +813,9 @@
      `.cmd-output` is `white-space: pre` with its own `overflow-x: auto`
      (nocx-juau), so a wide grid reaches its far end by the scroll it already
      had and nothing re-wraps. And the live grid is not in here at all — it
-     is a sibling of the blocks in `.scrollback-inner` — so the terminal's own
-     `cols` is untouched by any of this. */
+     belongs to a running block, which is a child of the STACK and never of a
+     turn (ADR-0091) — so the terminal's own `cols` is untouched by any of
+     this. */
   margin: var(--space-1) 0;
   padding-left: var(--space-3);
   border-left: 1px solid var(--color-border);

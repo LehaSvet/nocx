@@ -844,7 +844,9 @@ describe('BlockManager', () => {
       const duration = rec.el.querySelector<HTMLElement>(durationSelector)
       expect(duration?.textContent).toBe('1m 5s')
       expect(rec.el).toBe(inner.children[0])
-      expect(inner.children).toHaveLength(2)
+      // ONE child: the running block, with the live region as its body
+      // (ADR-0091). Repainting the duration does not re-seat either of them.
+      expect(inner.children).toHaveLength(1)
     } finally {
       vi.useRealTimers()
     }
@@ -928,15 +930,49 @@ describe('BlockManager', () => {
     expect(rec.command).toBe('ls -la')
     expect(rec.status).toBe('running')
     expect(rec.id).toBe(1)
-    expect(inner.children.length).toBe(2) // running block + live container
+    // ONE child: the running block, which holds the live region as its body
+    // (ADR-0091). The stack itself holds no live surface while a command runs.
+    expect(inner.children.length).toBe(1)
     expect(inner.children[0].classList.contains('cmd-block-running')).toBe(true)
     expect(manager.runningBlock).toBe(rec)
   })
 
-  it('inserts the running block before the live container', () => {
+  it("makes the live region the running block's own body (ADR-0091)", () => {
+    // A running command's output is ONE block: the region that paints its live
+    // rows is inside the block, so the block's box and its ground cover every
+    // row the command has written. Before ADR-0091 it was a sibling, and the
+    // block's surface ended one screenful in (nocx-zg3k3.14.26).
     manager.startBlock('cmd', '~', 5)
     expect(inner.children[0]).toBe(manager.blocks[0]?.el)
-    expect(inner.children[1]).toBe(liveContainer)
+    expect(liveContainer.parentElement).toBe(manager.runningBlock?.el)
+    expect(inner.children.length).toBe(1)
+  })
+
+  it('gives the live region back to the stack when the block freezes', () => {
+    // The frozen element REPLACES the running one, so a child of it would
+    // leave the document with it and take the terminal down at the freeze.
+    const rec = manager.startBlock('cmd', '~', 5)
+    expect(liveContainer.parentElement).toBe(rec.el)
+    const frozen = closeRunningBlock(manager)
+    expect(frozen).not.toBeNull()
+    expect(liveContainer.parentElement).toBe(inner)
+    // ... seated right after the block whose closing rows it still shows.
+    expect(liveContainer.previousElementSibling).toBe(frozen?.el)
+  })
+
+  it('gives the live region back to the stack when the scrollback is cleared', () => {
+    manager.startBlock('cmd', '~', 5)
+    manager.clearAll()
+    expect(liveContainer.parentElement).toBe(inner)
+  })
+
+  it('does not hand the live region to a later block while one holds it (ADR-0091)', () => {
+    // The region belongs to the block whose output it is. An answer seated
+    // during the run used to take it (the sibling rule), which would now mean
+    // taking it out of that block's box.
+    const rec = manager.startBlock('cmd', '~', 0)
+    manager.addAnswerBlock('what is on my screen?', '~')
+    expect(liveContainer.parentElement).toBe(rec.el)
   })
 
   it('finalizes orphaned running block on next start', () => {
@@ -946,13 +982,13 @@ describe('BlockManager', () => {
     expect(manager.runningBlock).toBe(second)
   })
 
-  it('opening a block keeps the keyboard in the live grid it seats after (nocx-askcb)', () => {
+  it('opening a block keeps the keyboard in the live grid it seats as its body (nocx-askcb)', () => {
     // The authenticated start opens the card while the person may already be
     // typing into the running program: the grid took the keyboard at submit.
-    // Seating the live region after the new block is a DOM move, and a move
-    // drops the focus of anything inside it to <body> — every key typed
-    // between the start and the next focus call was lost (CI run
-    // 36105113564: `read x` got an empty line for a typed `hello`).
+    // Seating the live region in the new block is a DOM move, and a move drops
+    // the focus of anything inside it to <body> — every key typed between the
+    // start and the next focus call was lost (CI run 36105113564: `read x` got
+    // an empty line for a typed `hello`).
     const gridInput = document.createElement('textarea')
     liveContainer.appendChild(gridInput)
     gridInput.focus()
@@ -960,7 +996,7 @@ describe('BlockManager', () => {
 
     manager.startBlock('read x', '~', 0)
 
-    expect(liveContainer.previousElementSibling).toBe(manager.runningBlock?.el)
+    expect(liveContainer.parentElement).toBe(manager.runningBlock?.el)
     expect(document.activeElement).toBe(gridInput)
   })
 
@@ -1121,9 +1157,10 @@ describe('BlockManager', () => {
 
   it('clearAll removes all blocks and resets state', () => {
     manager.startBlock('test', '~', 0)
-    expect(inner.children.length).toBe(2)
+    expect(inner.children.length).toBe(1) // the running block, holding the live region
     manager.clearAll()
-    expect(inner.children.length).toBe(1) // only live container remains
+    expect(inner.children.length).toBe(1) // only the live container remains
+    expect(inner.children[0]).toBe(liveContainer)
     expect(manager.blocks.length).toBe(0)
     expect(manager.runningBlock).toBeNull()
   })
@@ -4550,7 +4587,7 @@ describe('backend-owned block rows', () => {
       paintStoredRows: (block, rows) =>
         paintStoredRows(block, rows, { metric: null, palette: DEFAULT_SNAPSHOT }),
     })
-    return { inner, manager }
+    return { inner, manager, liveContainer }
   }
 
   it('paints streamed rows while running and replaces them as history grows', () => {
@@ -4585,6 +4622,47 @@ describe('backend-owned block rows', () => {
 
     const frozen = closeRunningBlock(manager, 1)!
     expect(blockOutputText(frozen.el)).toBe('first \nsecond')
+  })
+
+  it("keeps the body's order: its rows above the live region, on every growth (ADR-0091)", () => {
+    // `paintStoredRows` replaces `.cmd-output` on each block.grew, so the rows
+    // it appends land after the live region unless the seat is restored with
+    // them — and then the command's older rows would be painted below its
+    // newest, inside a block that is supposed to read top to bottom.
+    const { manager, inner, liveContainer } = newManager()
+    manager.startBlock('printf rows', '~', 0)
+    manager.bindAttempt('entry-stream')
+    manager.applyStoredRows('entry-stream', {
+      lines: [
+        { from: 0, row: row('first ') },
+        { from: 1, row: row('second') },
+      ],
+      droppedRows: 0,
+      lostRows: 0,
+      truncated: null,
+    })
+    const el = manager.runningBlock!.el
+    expect(liveContainer.parentElement).toBe(el)
+    expect(inner.children).toHaveLength(1)
+    expect(el.lastElementChild).toBe(liveContainer)
+    expect(el.querySelector(':scope > .cmd-output')?.nextElementSibling).toBe(liveContainer)
+    // A second growth replaces the output element; the order is restored with it.
+    manager.applyStoredRows('entry-stream', {
+      lines: [
+        { from: 0, row: row('first ') },
+        { from: 1, row: row('second') },
+        { from: 2, row: row('third ') },
+      ],
+      droppedRows: 0,
+      lostRows: 0,
+      truncated: null,
+    })
+    expect(el.lastElementChild).toBe(liveContainer)
+    expect(el.querySelectorAll(':scope > .cmd-output .term-grid-row')).toHaveLength(3)
+    // And the freeze gives the region back to the stack, right after the block.
+    const frozen = closeRunningBlock(manager)!
+    expect(liveContainer.parentElement).toBe(inner)
+    expect(liveContainer.previousElementSibling).toBe(frozen.el)
   })
 
   it('never lets a block.grew fetch that resolves late shrink an already-painted block', () => {

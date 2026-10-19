@@ -43,16 +43,16 @@
   padding-bottom: var(--terminal-block-trailing-space);
 }
 
-/* Running/frozen trailing-space seam (spec 2026-09-15 §1.5): a running
-   block has only a header — its output is the live region, a SIBLING the
-   controller inserts after this element (scrollback/blocks.ts
-   `_liveFollows`), never a child of it — so the trailing space above must
-   not sit here while running, or it lands BEFORE the live region instead of
-   after it, which is the gap the mockup pass measured. D's live-running
-   container (style.css `.terminal-live-container.live-running`) must carry
-   the SAME amount at its own trailing edge instead; see this task's report
-   for the exact requirement. This rule only stops the space being paid
-   twice — once here, once there — while the block is still running. */
+/* Running/frozen trailing-space seam (spec 2026-09-15 §1.5): the trailing
+   space must be paid ONCE, after the block's output, or it lands between two
+   rows that belong together — the gap the mockup pass measured. While a
+   command runs its body is the live region, and since ADR-0091 that region is
+   a CHILD of this block (`BlockManager.holdLiveInRunningBlock`), so it is the
+   region's own trailing edge that carries the amount (style.css
+   `.terminal-live-container.live-running`, `--cmd-output-pad-bottom` +
+   `--terminal-block-trailing-space`). This rule stops the space being paid at
+   both ends: the block's own bottom stays nothing while the command runs, and
+   comes back at the freeze, when the block's output really is its end. */
 .cmd-block.cmd-block-running {
   padding-bottom: 0;
 }
