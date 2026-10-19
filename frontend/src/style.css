@@ -980,9 +980,22 @@
    and positions the cursor overlay, which is placed by THE mapping
    (frontend/src/painter/mapping.ts) in pixels of the committed geometry —
    never a glyph in the text flow. */
+/* WHO OWNS THIS CLICK, DRAWN BY THE POINTER (nocx-1ebrs.24).
+   A program that reports the mouse owns every press over the grid, so the
+   arrow is the honest pointer: an I-beam there promises a text selection that
+   will be posted to the program instead. `auto` was the whole of the old rule,
+   and `auto` over the rows' own text IS an I-beam — which is why nocx showed
+   one in both states, and why the state has to be stated rather than inherited.
+   The state itself is the painter's: `data-pointer` is written from the same
+   accepted frame the selection gesture reads, so the two cannot disagree. */
 .term-grid {
   position: relative;
   font-family: var(--font-family-mono);
+  cursor: text;
+}
+
+.term-grid[data-pointer='program'] {
+  cursor: default;
 }
 
 .term-grid-row {
