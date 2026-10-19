@@ -320,6 +320,24 @@ nothing. Four of that stage's five CI rounds were this one defect. The code half
 half no assertion can carry is the test: **put the directory behind a symlink, and the
 Linux run fails too.**
 
+## Heavy runs go to the SkyPilot cluster
+
+**Tests run through `nocx-sky-test`, not on this machine.** `nocx-sky-test <worktree>
+'<command>'` stages the worktree (tracked + untracked files, never `.git`), runs the command on
+that worktree's own SkyPilot cluster, and exits with the command's own status. The first call
+starts the cluster (about two minutes); later calls reuse it (about thirty seconds). `--down`
+when you are done. This machine is 12 GB of SHARED memory: a vitest or `go test -race` run
+here fails for want of memory rather than for a defect, and three load-shaped failures were
+filed from exactly that (`nocx-wsgrt`, `nocx-u8saf`, `nocx-n05m6`).
+
+A guard refuses the heavy local spellings inside a nocx checkout - `go test`, `npm test`,
+`npx vitest`, `npx tsc`, `vitest`, `tsc` - and passes everything else, every other project,
+and anything started by `make` (a build-path target never needs an override).
+`NOCX_ALLOW_LOCAL_TESTS=1` runs locally anyway and says so; the merged-tree gate uses it.
+
+The tools, the recipes, what each job would look like on SkyPilot and what that route does NOT
+prove: [`docs/agents/heavy-runs.md`](docs/agents/heavy-runs.md).
+
 ## How we work
 
 1. Run `take-task` for the next admitted task — see [What to work on next](#what-to-work-on-next).
