@@ -395,9 +395,27 @@ export class IntentInput {
     // own kind, and bracketed-paste wrapping is the program's mode and the
     // runtime's decision (ADR-0065).
     e.preventDefault()
-    const text = e.clipboardData?.getData('text') ?? ''
-    if (text === '') return
-    this.emit({ kind: 'paste', payload: text })
+    const data = e.clipboardData
+    const text = data?.getData('text') ?? ''
+    if (text !== '') {
+      this.emit({ kind: 'paste', payload: text })
+      return
+    }
+    // AN IMAGE-ONLY CLIPBOARD IS STILL A PASTE, AND THE PROGRAM IS OWED IT
+    // (nocx-1ebrs.14). There is no text to forward — the terminal cannot turn a
+    // screenshot into cells — but a full-screen program reads the clipboard
+    // over its own path and only knows to look because a paste arrived. This
+    // dropped the gesture on the floor, so the program showed nothing while the
+    // same gesture in another terminal showed the image it had fetched.
+    //
+    // What is emitted is an EMPTY paste, not an invented body: the runtime
+    // wraps it in the program's own bracketed-paste mode, so a program that
+    // asked for 2004 receives the bracket pair with nothing between it, and a
+    // program that did not receives nothing at all (there is no way to say
+    // "empty" outside that mode). A clipboard holding NO data is the other
+    // empty case and stays silent: nothing was copied, so there is no paste.
+    const carriesOtherData = (data?.types ?? []).some((type) => !type.startsWith('text/'))
+    if (carriesOtherData) this.emit({ kind: 'paste', payload: '' })
   }
 
   private onPointer(e: PointerEvent, action: 'press' | 'release' | 'motion'): void {

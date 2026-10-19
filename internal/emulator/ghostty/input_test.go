@@ -53,9 +53,25 @@ func TestPasteIsFramedByTheProgramsOwnMode(t *testing.T) {
 		t.Errorf("paste after the mode was reset = %q, want the text itself %q", got, text)
 	}
 
+	// An empty paste outside bracketed paste is silence: there is no encoding
+	// for "nothing" there, and an empty clipboard is not an error.
 	if got, err = term.Paste(nil); err != nil || got != nil {
 		t.Errorf("an empty paste gave (%q, %v), want no bytes and no error", got, err)
 	}
+
+	// INSIDE bracketed paste it is the opposite (nocx-1ebrs.14): the mode's
+	// whole purpose is that the program is TOLD a paste happened, so an empty
+	// body is a statement rather than an absence — it is how a client reports
+	// a clipboard holding an image and no text, which the program then fetches
+	// over its own path. Asserted as exact bytes, because the interesting
+	// failure is the pair with something inside it.
+	ingest(t, term, "\x1b[?2004h")
+	if got, err = term.Paste(nil); err != nil {
+		t.Fatalf("an empty paste inside bracketed paste mode: %v", err)
+	} else if want := "\x1b[200~\x1b[201~"; string(got) != want {
+		t.Errorf("an empty bracketed paste = %q, want the bare pair %q", got, want)
+	}
+	ingest(t, term, "\x1b[?2004l")
 
 	// The library's encoder rewrites the buffer it is given — that is how it
 	// removes the bytes that cannot travel through a paste — so the buffer it

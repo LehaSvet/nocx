@@ -54,7 +54,19 @@ function inputEvent(data: string, inputType: string, isComposing = false): Event
 
 function pasteEvent(text: string): Event {
   const event = new Event('paste', { bubbles: true, cancelable: true })
-  Object.defineProperty(event, 'clipboardData', { value: { getData: () => text } })
+  Object.defineProperty(event, 'clipboardData', {
+    value: { getData: () => text, types: text === '' ? [] : ['text/plain'] },
+  })
+  return event
+}
+
+/** A clipboard carrying an image and no text at all — the shape the browser
+ *  hands a `paste` event when the person copied a screenshot (nocx-1ebrs.14). */
+function imagePasteEvent(): Event {
+  const event = new Event('paste', { bubbles: true, cancelable: true })
+  Object.defineProperty(event, 'clipboardData', {
+    value: { getData: () => '', types: ['image/png'] },
+  })
   return event
 }
 
@@ -424,6 +436,33 @@ describe('native-mode restore remains structured input', () => {
 })
 
 describe('paste, focus and the element itself', () => {
+  // AN IMAGE-ONLY CLIPBOARD IS STILL A PASTE THE PROGRAM IS OWED
+  // (nocx-1ebrs.14). The terminal can forward no text, and the program has its
+  // own way of reading the clipboard — what it cannot do is learn that the
+  // person pasted at all. Every terminal that makes this work tells the program
+  // SOMETHING: the paste arrives with an empty body, and a program in bracketed
+  // paste mode receives the bracket pair with nothing between them. The client
+  // still decodes nothing and encodes nothing (ADR-0065): it reports that a
+  // paste happened.
+  it('sends an empty paste when the clipboard carries an image and no text', () => {
+    const { input, intents } = makeInput()
+
+    input.element.dispatchEvent(imagePasteEvent())
+
+    expect(intents).toEqual([{ kind: 'paste', payload: '' }])
+  })
+
+  it('sends nothing at all for an empty text clipboard', () => {
+    // The other empty case, and it is a different fact: nothing was copied, so
+    // there is no paste to announce and an empty bracket pair on every stray
+    // Ctrl+V would be input the person did not ask for.
+    const { input, intents } = makeInput()
+
+    input.element.dispatchEvent(pasteEvent(''))
+
+    expect(intents).toEqual([])
+  })
+
   // A paste is its own kind and not text: the runtime wraps it for bracketed
   // paste when the program asked for that (mode 2004), and the body arrives
   // verbatim (ADR-0065). The client decides neither.
