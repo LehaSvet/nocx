@@ -112,6 +112,32 @@ version_lt() {
   [ "$older" = "$a" ]
 }
 
+# 3a. EVERY page carries the markers at all. This is not a version check and it
+#     runs whether or not a tag exists, because its defect has nothing to do
+#     with which release is newest: a page rewritten without them makes the
+#     deploy's stamp step fail outright, and the failure is quiet in the one
+#     direction that matters.
+#
+#     Measured 2026-10-19: `site/index.html` was rewritten for 0.6 (#327,
+#     e3a5b2c4d) and lost `<b data-version>`, `<span data-released>` and the
+#     `<span data-version>` calls to action. `pages.yml` rewrites those from the
+#     newest tag and then runs `grep -o 'data-version>...'` under
+#     `set -euo pipefail`, so the step exited 1, the deploy never ran, and
+#     nocx.dev served v0.4.0 for the whole of v0.6.0's release. Check 3 below
+#     passed silently through all of it: `[ -n "$shown" ] || continue` reads a
+#     page with no marker as a page with no problem, which is the exact
+#     conflation this check exists to refuse.
+for f in $pages; do
+  if ! grep -qE '<b data-version>[^<]+</b>' "$f"; then
+    echo "FAIL: ${f#$root/} has no <b data-version> marker"
+    echo "       pages.yml stamps the released version into that marker and then"
+    echo "       greps for it; a page without one fails the deploy's stamp step and"
+    echo "       the site keeps serving the previous release. Put the marker back on"
+    echo "       the header link, the install version line and the notes link."
+    fail=1
+  fi
+done
+
 tag="$(git -C "$root" describe --tags --abbrev=0 2>/dev/null || true)"
 if [ -n "$tag" ]; then
   for f in $pages; do
