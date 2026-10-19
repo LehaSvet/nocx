@@ -29,6 +29,27 @@
 // session.message pastes on, so the two callers cannot disagree about what an
 // empty box is.
 //
+// # A line nocx could not submit is its own, and it does not block the next wake
+//
+// The box gate has one state it cannot treat as somebody else's draft, and that
+// is the one nocx's own partial submission leaves (nocx-xn63t.6.53). The text
+// segment is accepted and the submit key is then refused — the screen moved
+// between their two frames — so the typist answers OutcomeTyped and its own line
+// stays standing in the box. Read against the empty-box gate, every later wake
+// is refused for as long as it stands, and unlike a Claude suggestion
+// (nocx-xn63t.6.52) nothing ends it: there is no timeout, and the only actor who
+// could clear that box is the one being refused.
+//
+// So the bytes are REMEMBERED and they stay nocx's: after a paste it could not
+// submit, the pane's box holds exactly what this package wrote, and the next
+// grant is admitted when — and only when — the rule reads back exactly those
+// bytes. What is pressed then is the one key that was refused, the submit key,
+// rather than a second line pasted on top of the first. That keeps the person's
+// protection exactly as it was: a box holding anything else, their sentence or
+// their sentence with nocx's line in front of it, is not ours and is refused as
+// before. The record is dropped the moment the line leaves the box, so the same
+// characters appearing later are a person's and not a licence.
+//
 // # The gate is the permit's constructor, not a row of ifs
 //
 // A caller of this package never reaches the pane's input queue. What reaches
@@ -157,6 +178,19 @@ const (
 // person is told what stopped the write and not which routine noticed it.
 const emptyBoxRefusal = "nocx types into a pane whose input box it can read and is empty, and this one is neither"
 
+// ownLineClause is what a refusal about nocx's own standing line adds: the bytes
+// in that box are this package's, so a person reading the record knows the box is
+// not holding their draft and that the next attempt will finish the submission
+// rather than wait for them (nocx-xn63t.6.53).
+const ownLineClause = " (the line standing in that box is the one nocx typed and could not submit)"
+
+// ownLineMovedRefusal is the sentence a submission refuses with when the box it
+// was admitted on no longer holds only nocx's own line — a keystroke landed
+// between the grant and the key. It is a constant for the same reason
+// emptyBoxRefusal is: the same situation must read the same way at every read,
+// so a person reading the log sees one fact and not two.
+const ownLineMovedRefusal = "the box no longer holds only the line nocx typed there, so no submit key was pressed"
+
 // Screens is the seam onto a pane's live grid (AD-8). One method, because
 // typing may READ a screen and may not enrol, withdraw, resize or classify one.
 type Screens interface {
@@ -268,22 +302,34 @@ type Typist struct {
 	enrolled Enrolment
 	input    Input
 
-	// refusalMu guards refusalReason, and it is here rather than beside the
-	// seams because the two are the only mutable state this type has:
-	// everything else is handed to it once and never written again.
-	refusalMu sync.Mutex
+	// factsMu guards the two per-pane memories below, and it is here rather
+	// than beside the seams because they are the only mutable state this type
+	// has: everything else is handed to it once and never written again. One
+	// lock for both, because they are read and written by the same calls and
+	// neither is ever held across a frame read or a queue write.
+	factsMu sync.Mutex
 	// refusalReason is the reason each pane's last refusal was REPORTED for
 	// (nocx-xn63t.6.52). See warn for why a repeat is not a line.
 	refusalReason map[string]string
+	// ownBytes is, per pane, the line this package pasted into that pane's box
+	// and could NOT submit (nocx-xn63t.6.53). It is what makes the next grant
+	// able to tell nocx's own bytes from a person's draft when the box is not
+	// empty, and it is dropped the moment the line leaves the box.
+	ownBytes map[string]string
 }
 
-// maxReportedRefusals bounds refusalReason, at the same number that bounds the
-// panes nocx may watch — the only panes a refusal can be about. Entries for
-// panes that have since gone are the only way past it, so a map at the bound is
-// DROPPED WHOLE rather than grown: losing the memory re-reports one refusal per
-// pane, which is the harmless direction, while a map keyed by session ids and
+// maxPaneFacts bounds BOTH per-pane memories — the reason each pane's last
+// refusal was reported for, and the line each pane's box was left holding — at
+// the same number that bounds the panes nocx may watch, which is the only thing
+// that can appear in either of them. One bound for both because it is one
+// question: a pane, and at most how many there are. Entries for panes that have
+// since gone are the only way past it, so a map at the bound is DROPPED WHOLE
+// rather than grown: losing the memory re-reports one refusal per pane, and
+// forgets which boxes nocx's own lines stand in — both the harmless direction,
+// since the first is a line a person has already read and the second refuses,
+// which is what the gate does without it — while a map keyed by session ids and
 // never pruned would outlive every pane it ever described.
-const maxReportedRefusals = paneview.MaxWatched
+const maxPaneFacts = paneview.MaxWatched
 
 // New wires the typing seam at the composition root.
 func New(lg log.Logger, screens Screens, rules Rules, calib Authority, enrolled Enrolment, input Input) *Typist {
@@ -312,11 +358,18 @@ func (t *Typist) put(ctx context.Context, paneID, text string, submit bool) Resu
 		// question about the screen. There is no agent to name yet either.
 		return *t.refuse(paneID, "", agentdriver.StateUnknown, err.Error())
 	}
-	p, refusal := t.grant(ctx, paneID)
+	p, refusal := t.grant(ctx, paneID, submit)
 	if refusal != nil {
 		return *refusal
 	}
-	if r := p.write(ctx, []byte(pasteStart+body+pasteEnd), true); r != nil {
+	if p.ownLine {
+		// THE LINE IN THE BOX IS ALREADY NOCX'S (nocx-xn63t.6.53). What it owes
+		// is the submit key it was refused, and pressing that is the whole of
+		// this attempt: a second paste would put a second line behind the first
+		// and submit both.
+		return t.finishOwnLine(ctx, p)
+	}
+	if r := p.write(ctx, []byte(pasteStart+body+pasteEnd), boxEmpty); r != nil {
 		return *r
 	}
 	// The pane took the text, so whatever refused before this has stopped
@@ -333,16 +386,24 @@ func (t *Typist) put(ctx context.Context, paneID, text string, submit bool) Resu
 	// The submit key is gated on its own frame but NOT on the box: the text
 	// this call just pasted is in it, and a box check here would refuse the key
 	// of every submission.
-	if r := p.write(ctx, []byte(submitKey), false); r != nil {
+	if r := p.write(ctx, []byte(submitKey), boxIgnored); r != nil {
 		// The one partial state this has, and it is named rather than folded
 		// into either neighbour: the text is in the input region and nothing
 		// answered anything. Better than the alternative by exactly the margin
 		// this package exists for — the alternative is a submit key landing on
 		// a screen that is no longer free text.
-		typed.Reason = r.Reason
+		//
+		// AND THE BYTES ARE NOW NOCX'S TO FINISH (nocx-xn63t.6.53): they are
+		// recorded against the pane, so the next grant can tell this line from a
+		// person's draft and press the key that was refused instead of refusing
+		// for as long as they stand. The reason says whose they are, because a
+		// person reading the record cannot see the box.
+		typed.Reason = r.Reason + ownLineClause
 		typed.State = r.State
+		t.rememberOwnLine(p.pane, body)
 		return typed
 	}
+	t.forgetOwnLine(p.pane)
 	t.log.Info("nocx submitted into a pane", "pane_id", p.pane, "agent", p.agent, "bytes", len(body))
 	return Result{
 		PaneID: p.pane, Agent: p.agent,
@@ -361,6 +422,13 @@ type permit struct {
 	by    *Typist
 	pane  string
 	agent string
+	// ownLine is that the box this permit is minted on already holds the line
+	// this package put there and could not submit (nocx-xn63t.6.53), so the
+	// write this permit authorises is the submit key and not a paste. It is
+	// set here and nowhere else, and it can only be true for a call that
+	// SUBMITS: Type never sent a key to be owed, and its text would be
+	// appended to the standing line.
+	ownLine bool
 }
 
 // grant asks every gate and mints the permit, or answers why not.
@@ -370,7 +438,7 @@ type permit struct {
 // act on — so an unverified rule refuses at StateUnknown, which is the honest
 // answer (without a verified rule nocx does not know what the pane is) and is
 // what every other consumer already treats as busy.
-func (t *Typist) grant(ctx context.Context, paneID string) (permit, *Result) {
+func (t *Typist) grant(ctx context.Context, paneID string, submit bool) (permit, *Result) {
 	agent, refusal := t.authority(ctx, paneID)
 	if refusal != nil {
 		return permit{}, refusal
@@ -397,12 +465,124 @@ func (t *Typist) grant(ctx context.Context, paneID string) (permit, *Result) {
 	//
 	// The window that leaves after the last read is the same residual the state
 	// gate names: a person's own keystrokes racing ours to one pty.
-	if !o.BoxEmpty() {
+	//
+	// A BOX NOCX FILLED ITSELF IS NOT THAT DRAFT (nocx-xn63t.6.53). A paste
+	// this package made and could not submit leaves its own line standing, and
+	// the empty-box rule read against it refuses every later wake for as long as
+	// it stands — a wake blocked by nocx's own bytes, which nothing clears.
+	// So a SUBMITTING call is admitted when the rule reads back exactly the
+	// bytes this package last left in that box, and what it then presses is the
+	// submit key. Equality is the whole of the licence: a person's sentence,
+	// their sentence with our line in front of it, and our line edited by a
+	// keystroke all read differently and are refused as before.
+	ownLine := submit && holdsOwnLine(o, t.ownLine(paneID))
+	if !o.BoxEmpty() && !ownLine {
 		return permit{}, t.refuse(paneID, agent, o.State, emptyBoxRefusal)
 	}
 	// Every answer is in. This is the only statement in this package that
 	// builds a permit with a Typist in it.
-	return permit{by: t, pane: paneID, agent: agent}, nil
+	return permit{by: t, pane: paneID, agent: agent, ownLine: ownLine}, nil
+}
+
+// finishOwnLine presses the submit key on the line THIS package left in the
+// pane's box, and answers the submission the earlier attempt owed
+// (nocx-xn63t.6.53).
+//
+// It writes one byte and nothing else. The key is gated by write exactly as it
+// was the first time — on a frame read microseconds before it, from a pane the
+// grant has just found free_text and vouched for — so a screen that has moved
+// again refuses again, and the record of our line stands for the next attempt
+// rather than being spent on a refusal.
+//
+// WHAT IS SUBMITTED IS THE LINE ALREADY IN THE BOX, not the text this call was
+// given, and the difference is a count that may have moved: a wake names how
+// much mail is waiting, and mail that arrived between the two attempts is not in
+// a line that is already typed. It is the small difference and it is the right
+// one — the line is a pointer at workers.inbox rather than a copy of the mail,
+// the coordinator reads the truth when it calls, and the alternative is nocx's
+// own bytes blocking the wake for as long as they stand, which is the whole
+// defect. Nothing here can rewrite the text without clearing the box first, and
+// clearing it means sending keys that no measured fact says this agent binds.
+func (t *Typist) finishOwnLine(ctx context.Context, p permit) Result {
+	left := t.ownLine(p.pane)
+	if r := p.write(ctx, []byte(submitKey), boxIsOwnLine); r != nil {
+		r.Reason += ownLineClause
+		return *r
+	}
+	// The line has left the box with the turn it starts, so the record of it is
+	// spent: the same characters turning up later are a person's.
+	t.forgetOwnLine(p.pane)
+	t.wrote(p.pane)
+	t.log.Info("nocx pressed the submit key on its own line that the pane's box still held",
+		"pane_id", p.pane, "agent", p.agent, "bytes", len(left))
+	return Result{
+		PaneID: p.pane, Agent: p.agent,
+		Outcome: OutcomeSubmitted, State: agentdriver.StateFreeText,
+	}
+}
+
+// holdsOwnLine answers whether this frame's box holds EXACTLY the line nocx
+// itself left in it: the rule read the box, and what it read is our bytes.
+//
+// It is asked only of a box that is NOT empty, and only for a call that
+// submits. false covers every way the question can be answered "not ours" — an
+// empty standing record, a rule that cannot read this box (a menu has displaced
+// it), and a box holding anything but our line — which is the direction that
+// refuses.
+func holdsOwnLine(o agentdriver.Observation, own string) bool {
+	if own == "" {
+		return false
+	}
+	text, ok := o.InputText()
+	if !ok {
+		return false
+	}
+	return sameBoxText(text, own)
+}
+
+// sameBoxText compares what the rule read in the box with the bytes this
+// package pasted.
+//
+// The comparison is on WHITESPACE-COLLAPSED text and not on the raw strings,
+// because a box's reading is a DRAWING of the text and not the text: the rule
+// joins the content rows it read with the separator its agent needs (claude's
+// is a space, measured off a wrapped box), and a line that wrapped at a space
+// therefore reads back with the same words and different runs of whitespace.
+// Collapsing runs is the smallest tolerance that covers it, and it cannot widen
+// who matches: a person's draft differs from our line in its words, not in the
+// width of a space, and one that differed in nothing else would be our line.
+func sameBoxText(box, own string) bool {
+	collapse := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	return collapse(box) == collapse(own)
+}
+
+// ownLine is the line this pane's box was left holding and could not submit, or
+// the empty string when there is none.
+func (t *Typist) ownLine(paneID string) string {
+	t.factsMu.Lock()
+	defer t.factsMu.Unlock()
+	return t.ownBytes[paneID]
+}
+
+// rememberOwnLine records the bytes this package pasted and could not submit.
+func (t *Typist) rememberOwnLine(paneID, text string) {
+	t.factsMu.Lock()
+	defer t.factsMu.Unlock()
+	if t.ownBytes == nil {
+		t.ownBytes = make(map[string]string, 1)
+	} else if len(t.ownBytes) >= maxPaneFacts {
+		clear(t.ownBytes)
+	}
+	t.ownBytes[paneID] = text
+}
+
+// forgetOwnLine drops that record once the line has left the box — submitted,
+// or replaced by a paste that went through — so a person's text that happens to
+// read the same is never treated as nocx's licence.
+func (t *Typist) forgetOwnLine(paneID string) {
+	t.factsMu.Lock()
+	defer t.factsMu.Unlock()
+	delete(t.ownBytes, paneID)
 }
 
 // authority is the half of a grant that is not about the screen: the pane is
@@ -503,14 +683,37 @@ func saidCompleteness(c sessionruntime.Completeness) string {
 	}
 }
 
+// boxRule is what the frame that AUTHORISES a write must show in the pane's
+// input box. Three values, because the three writes this package makes need
+// three different answers and a boolean could only tell two of them apart.
+type boxRule int
+
+const (
+	// boxIgnored is the submit key of an ordinary submission, which is gated on
+	// the pane's state and not on the box: the paste that precedes it is in the
+	// box by then, and a box check there would refuse the key of every
+	// submission this package makes.
+	boxIgnored boxRule = iota
+	// boxEmpty is the text, which may only go into an EMPTY box: anything else
+	// in it is somebody's draft, and appending to that is the defect.
+	boxEmpty
+	// boxIsOwnLine is the submit key pressed on the line this package pasted and
+	// could not submit (nocx-xn63t.6.53): the box must still hold EXACTLY those
+	// bytes, so a person's keystroke landing between the grant and this read
+	// stops the key rather than submitting their words with ours.
+	boxIsOwnLine
+)
+
 // write re-takes the decision from a frame read HERE and writes b only if that
-// frame still says free_text — and, on the segment that carries TEXT
-// (intoEmptyBox), still says the box is empty. Nothing stands between the read
-// and the queue call: b was built before the permit was asked for.
+// frame still says free_text — and still says of the BOX what this write's own
+// rule requires of it. Nothing stands between the read and the queue call: b was
+// built before the permit was asked for.
 //
-// intoEmptyBox is false for exactly one segment: the submit key, whose own
-// paste is already in the box by the time that key is gated.
-func (p permit) write(_ context.Context, b []byte, intoEmptyBox bool) *Result {
+// The rule is boxIgnored for exactly one write: the submit key of an ordinary
+// submission, whose own paste is already in the box by the time that key is
+// gated. The submit key pressed on nocx's OWN line is not that write — there the
+// box is the whole of what makes the key safe — and it is checked.
+func (p permit) write(_ context.Context, b []byte, rule boxRule) *Result {
 	if p.by == nil {
 		// The zero permit. Unreachable while grant is the only constructor,
 		// and stated anyway: an invariant held only by a caller's good
@@ -524,11 +727,22 @@ func (p permit) write(_ context.Context, b []byte, intoEmptyBox bool) *Result {
 	if refusal != nil {
 		return refusal
 	}
-	if intoEmptyBox && !o.BoxEmpty() {
-		// The person's keystroke landed between the permit and this read. The
-		// paste is not sent: appending to a draft IS the defect, and it is the
-		// same defect at any window width.
-		return p.by.refuse(p.pane, p.agent, o.State, emptyBoxRefusal)
+	switch rule {
+	case boxEmpty:
+		if !o.BoxEmpty() {
+			// The person's keystroke landed between the permit and this read.
+			// The paste is not sent: appending to a draft IS the defect, and it
+			// is the same defect at any window width.
+			return p.by.refuse(p.pane, p.agent, o.State, emptyBoxRefusal)
+		}
+	case boxIsOwnLine:
+		if !holdsOwnLine(o, p.by.ownLine(p.pane)) {
+			// The box is no longer only ours: a keystroke, or the agent's own
+			// drawing, put something else there. The key is not pressed, and
+			// the record of our line stays — it is the next grant's business
+			// whether the box still reads as nocx's.
+			return p.by.refuse(p.pane, p.agent, o.State, ownLineMovedRefusal)
+		}
 	}
 	if !p.by.input.Accept(p.pane, b) {
 		return p.by.refuse(p.pane, p.agent, agentdriver.StateFreeText,
@@ -566,21 +780,21 @@ func (t *Typist) refuse(paneID, agent string, state agentdriver.State, reason st
 // The result a caller gets is unchanged: the refusal is returned on every
 // attempt, because the caller acts on it and the log only records it.
 func (t *Typist) warn(paneID, agent string, state agentdriver.State, reason string) {
-	t.refusalMu.Lock()
+	t.factsMu.Lock()
 	if t.refusalReason == nil {
 		t.refusalReason = make(map[string]string, 1)
-	} else if len(t.refusalReason) >= maxReportedRefusals {
+	} else if len(t.refusalReason) >= maxPaneFacts {
 		clear(t.refusalReason)
 	}
 	// Exact equality, and not a prefix and not the state: the reason is the
 	// whole of what changed, and two refusals that READ the same are one
 	// situation a person cannot act on twice.
 	if last, reported := t.refusalReason[paneID]; reported && last == reason {
-		t.refusalMu.Unlock()
+		t.factsMu.Unlock()
 		return
 	}
 	t.refusalReason[paneID] = reason
-	t.refusalMu.Unlock()
+	t.factsMu.Unlock()
 	t.log.Warn("nocx refused to type into a pane",
 		"pane_id", paneID, "agent", agent, "state", string(state), "reason", reason)
 }
@@ -592,9 +806,9 @@ func (t *Typist) warn(paneID, agent string, state agentdriver.State, reason stri
 // the same words is a new stall and must be reported as one. Without this a
 // coordinator that stalled twice in a process's life would say so once.
 func (t *Typist) wrote(paneID string) {
-	t.refusalMu.Lock()
+	t.factsMu.Lock()
 	delete(t.refusalReason, paneID)
-	t.refusalMu.Unlock()
+	t.factsMu.Unlock()
 }
 
 // said names a state in the words a person reads. The closed set is the
