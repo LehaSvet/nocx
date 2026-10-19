@@ -49,8 +49,16 @@ const [topOverlayElement, setTopOverlayElement] = createSignal<HTMLElement | nul
  */
 export { topOverlayElement }
 
+/**
+ * The stack's shape, as a number. Every read that has to answer "what is open
+ * above me" depends on this rather than on `topOverlayElement`, because the
+ * topmost element is the one thing an overlay's own entry makes useless to it.
+ */
+const [shape, setShape] = createSignal(0)
+
 function syncTopElement(): void {
   setTopOverlayElement(stack.length > 0 ? stack[stack.length - 1].element : null)
+  setShape((n) => n + 1)
 }
 
 let escapeHandler: ((e: KeyboardEvent) => void) | null = null
@@ -133,6 +141,34 @@ export function popOverlay(entry: OverlayEntry): boolean {
   return true
 }
 
+/**
+ * The element an overlay should render ABOVE: the topmost element BELOW the
+ * given entry, or null when there is nothing under it.
+ *
+ * `topOverlayElement` cannot answer this for an overlay itself — once it is
+ * open it IS the top, so the signal names its own element. And being above an
+ * overlay is parentage, not a number, so the host has to be the entry below.
+ *
+ * Reactive on the stack's shape, which is what makes a host that goes away
+ * survivable: when the entry below is popped, this answers with the next one
+ * down (or null), and the overlay renders somewhere that still exists. The
+ * alternative — the host an overlay captured when it opened — is how a prompt
+ * rendered inside a modal `<dialog>` went off the screen with it: a closed
+ * `<dialog>` is `display: none`, so everything inside it is hidden while the
+ * prompt is still open and still on this stack (nocx-1ebrs.7).
+ */
+export function overlayHostBelow(entry: OverlayEntry | null): HTMLElement | null {
+  shape() // tracked: the answer changes whenever an overlay opens or closes
+  const at = entry === null ? stack.length : stack.indexOf(entry)
+  // An entry that is not on the stack (popped already) is treated as the top:
+  // the answer is then the topmost element, which is the pre-open reading.
+  for (let i = (at === -1 ? stack.length : at) - 1; i >= 0; i--) {
+    const element = stack[i].element
+    if (element) return element
+  }
+  return null
+}
+
 /** Returns the topmost overlay entry, or undefined if the stack is empty. */
 export function topOverlay(): OverlayEntry | undefined {
   return stack[stack.length - 1]
@@ -203,4 +239,5 @@ export function restoreFocus(entry: OverlayEntry): void {
 export function clearStack(): void {
   stack.length = 0
   uninstallEscapeHandler()
+  syncTopElement()
 }

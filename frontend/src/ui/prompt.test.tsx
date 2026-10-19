@@ -332,6 +332,83 @@ describe('Prompt', () => {
     expect(document.querySelector('.ui-prompt-overlay')).toBeNull()
   })
 
+  // ── Surviving the overlay it is hosted in, not with it ────────────────
+  // The connection overlay is a modal <dialog> that closes ITSELF the moment
+  // the socket comes up (ui/connection-overlay.tsx), and a prompt raised while
+  // it was up is a DOM child of it. A closed <dialog> is `display: none` in
+  // every browser, so the prompt went off the screen with the connection
+  // screen, still `open` and still on the overlay stack — a person who was
+  // asked for their vault passphrase on the first connection after an upgrade
+  // watched the question vanish before they could answer it (nocx-1ebrs.7).
+  //
+  // Being above an overlay is parentage, so the prompt has to be able to
+  // change parents. It belongs to the next host below it, and to its own place
+  // when there is none.
+  it('stays on screen when the overlay it is hosted in closes', () => {
+    // The order is the real one: the overlay is up first (the connection
+    // screen, for the startup minimum), and the prompt is raised over it.
+    const [dialogOpen, setDialogOpen] = createSignal(true)
+    const [promptOpen, setPromptOpen] = createSignal(false)
+    const { container } = render(() => (
+      <>
+        <Dialog open={dialogOpen()} onClose={() => setDialogOpen(false)} title="Connection">
+          Body
+        </Dialog>
+        <Prompt
+          open={promptOpen()}
+          ariaLabel="Unlock the vault"
+          onClose={() => setPromptOpen(false)}
+          actions={null}
+        >
+          <input />
+        </Prompt>
+      </>
+    ))
+    setPromptOpen(true)
+
+    expect(container.querySelector('.ui-prompt-overlay')!.closest('dialog')).not.toBeNull()
+
+    setDialogOpen(false)
+
+    const prompt = document.querySelector('.ui-prompt-overlay')
+    expect(prompt).toBeTruthy()
+    // Not left inside a dialog that is closed: `dialog:not([open])` is
+    // display:none, so anything inside it is off the screen.
+    expect(prompt!.closest('dialog:not([open])')).toBeNull()
+    expect(document.querySelector('.ui-prompt input')).toBeTruthy()
+  })
+
+  it('keeps what was typed when its host goes away', () => {
+    const [dialogOpen, setDialogOpen] = createSignal(true)
+    const [promptOpen, setPromptOpen] = createSignal(false)
+    render(() => (
+      <>
+        <Dialog open={dialogOpen()} onClose={() => setDialogOpen(false)} title="Connection">
+          Body
+        </Dialog>
+        <Prompt
+          open={promptOpen()}
+          ariaLabel="Unlock the vault"
+          onClose={() => setPromptOpen(false)}
+          actions={null}
+        >
+          <input />
+        </Prompt>
+      </>
+    ))
+    setPromptOpen(true)
+    expect(document.querySelector('.ui-prompt-overlay')!.closest('dialog')).not.toBeNull()
+
+    const field = document.querySelector('.ui-prompt input') as HTMLInputElement
+    field.value = 'a passphrase'
+    setDialogOpen(false)
+
+    expect(document.querySelector('.ui-prompt input')).toBe(field)
+    expect((document.querySelector('.ui-prompt input') as HTMLInputElement).value).toBe(
+      'a passphrase',
+    )
+  })
+
   // Closing the prompt must hand the keyboard back to the dialog it
   // interrupted. It landed on <body> instead: the overlay stack skipped its
   // focus return whenever the previous focus was inside an open dialog, on the

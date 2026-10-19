@@ -1,11 +1,11 @@
 import { Show, createEffect, createMemo, onCleanup, untrack, type JSX } from 'solid-js'
 import { Portal } from 'solid-js/web'
 import {
+  overlayHostBelow,
   popOverlay,
   pushOverlay,
   restoreFocus,
   topOverlay,
-  topOverlayElement,
   type OverlayEntry,
 } from './overlay/stack'
 
@@ -95,10 +95,10 @@ export function Prompt(props: PromptProps) {
   let removeFocusGuard: (() => void) | null = null
   /**
    * The overlay this prompt renders INSIDE while open, or null to render in
-   * place. A modal `<dialog>` lives in the browser's top layer, which is above
-   * every z-index in the normal layer by definition — being on top of a
-   * top-layer element is not a number, it is a parent. So a prompt opened over
-   * something must be a DOM child of it, which is also how the connection
+   * its own place. A modal `<dialog>` lives in the browser's top layer, which
+   * is above every z-index in the normal layer by definition — being on top of
+   * a top-layer element is not a number, it is a parent. So a prompt opened
+   * over something must be a DOM child of it, which is also how the connection
    * editor's own password prompt has always appeared above its dialog.
    *
    * A `Portal`, not `host.appendChild(element)`. Moving the node by hand put
@@ -111,12 +111,18 @@ export function Prompt(props: PromptProps) {
    * along. Measured in a browser; the entry was gone from the stack while the
    * element was still in the DOM.
    *
-   * `untrack` is what makes this the overlay we opened OVER: read reactively,
-   * pushing ourselves would immediately re-point it at this prompt. It is
-   * recomputed only when `open` flips, and computed during render — before the
-   * effect below pushes.
+   * IT IS THE ENTRY BELOW US, NOT THE TOP ONE, and it is re-read whenever the
+   * stack changes. A host is not permanent: the connection overlay is a modal
+   * `<dialog>` that closes ITSELF when the socket comes up, and a prompt raised
+   * while it was up is a DOM child of it — so `dialog:not([open])`'s
+   * `display: none` took the prompt off the screen with the connection screen,
+   * still open and still on the overlay stack. That is the vault unlock
+   * question vanishing in front of the person it was asked of, on the first
+   * connection after an upgrade (nocx-1ebrs.7). Reading the stack reactively
+   * is what lets the prompt follow its host down: to the next overlay below,
+   * and to its own place when there is none.
    */
-  const host = createMemo(() => (props.open ? untrack(topOverlayElement) : null))
+  const host = createMemo(() => (props.open ? overlayHostBelow(entry) : null))
 
   createEffect(() => {
     if (props.open && !entry) {
@@ -280,12 +286,45 @@ export function Prompt(props: PromptProps) {
 
   return (
     <Show when={props.open}>
-      {/* `keyed` because Portal reads `mount` once — the same reason ToastHost
-          keys its own host. `host` only changes when the prompt opens, so this
-          never re-creates a panel the user is typing into. */}
-      <Show when={host()} keyed fallback={panel()}>
-        {(el) => <Portal mount={el}>{panel()}</Portal>}
-      </Show>
+      <PromptSurface host={host} panel={panel} />
     </Show>
+  )
+}
+
+/**
+ * Where the panel is mounted, and the component that exists for exactly as long
+ * as this prompt is open.
+ *
+ * THE PANEL IS BUILT HERE, in the render pass, and NOT as the Portal's
+ * children. `Portal` defers its children to its own effect, and effects run in
+ * the order they were registered — the one in [Prompt] that pushes this prompt
+ * onto the overlay stack is registered first, so a panel built inside the
+ * Portal would not exist yet. Pushed without its element, the entry has nothing
+ * for the toast host to render into and nothing for the caret policy to focus,
+ * and the panel is a stranger to the stack it is on.
+ *
+ * A component rather than inline JSX so the panel is built once per OPENING:
+ * closing disposes it, and the next opening builds a fresh one.
+ */
+function PromptSurface(props: { host: () => HTMLElement | null; panel: () => JSX.Element }) {
+  /** The place this prompt was declared: the mount that outlives every overlay
+   *  above it, and what it renders into when there is none. */
+  let home: HTMLDivElement | undefined
+  // `untrack`: the panel is built ONCE per opening, and `panel` is a closure
+  // over this prompt's refs rather than a value that can change under it. Read
+  // tracked, the rule that wants every prop read inside a reactive scope is
+  // right to complain — and the answer is to say which read this is, not to
+  // move the build somewhere it would run again.
+  const content = untrack(() => props.panel())
+  return (
+    <>
+      {/* `display: contents` keeps this anchor out of layout (prompt.css). */}
+      <div class="ui-prompt-home" ref={home} />
+      {/* `Portal` re-parents the SAME panel when its mount changes — it removes
+          its own container from the old host and inserts the same children into
+          a container in the new one — so following a host down keeps the node,
+          and with it whatever the person has typed. */}
+      <Portal mount={props.host() ?? home}>{content}</Portal>
+    </>
   )
 }

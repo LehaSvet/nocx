@@ -19,6 +19,15 @@
   padding: 0 var(--space-6) var(--space-4);
 }
 
+/* Where a Prompt was declared, and the mount it falls back to when no overlay
+   is above it (prompt.tsx). It holds nothing of its own — the panel is a
+   Portal's child, `position: fixed` either way — so `display: contents` keeps
+   it out of every layout the surface that declared it already has. Without
+   that it would be one more zero-height flex item in the middle of a column. */
+.ui-prompt-home {
+  display: contents;
+}
+
 .ui-prompt {
   width: 560px;
   max-width: calc(100vw - var(--space-6) * 2);
