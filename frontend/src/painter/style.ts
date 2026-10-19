@@ -17,7 +17,7 @@
 import type { ModelColor as Color, ModelStyle as Style } from '../cell-model'
 import type { FitFace } from '../scrollback/cell-fit'
 import { paletteToRGB, type CellAttrs, type TerminalSnapshot } from '../scrollback/serializer'
-import { legibleForeground } from './contrast'
+import { inkOf } from './contrast'
 
 // emulator.Attributes: bit 0 bold, 1 italic, 2 faint, 3 blink, 4 inverse,
 // 5 invisible, 6 strikethrough, 7 overline. The set is closed — a terminal
@@ -100,7 +100,8 @@ export function resolveInk(style: Style, palette: TerminalSnapshot): ResolvedInk
   // pair onto it.
   const asked =
     style.foreground.kind !== 0 || style.background.kind !== 0 || (attrs & INVERSE) !== 0
-  const ink = (attrs & INVISIBLE) !== 0 ? 'transparent' : asked ? legibleForeground(fg, bg) : fg
+  const ink =
+    (attrs & INVISIBLE) !== 0 ? 'transparent' : asked ? inkOf(fg, bg, (attrs & FAINT) !== 0) : fg
   if (ink !== palette.defaultFg) parts.push(`color:${ink}`)
   if (bg !== palette.defaultBg) parts.push(`background:${bg}`)
   if ((attrs & BOLD) !== 0) parts.push('font-weight:bold')
