@@ -31,6 +31,9 @@ import (
 
 	"github.com/shady2k/nocx/internal/agentdriver"
 	"github.com/shady2k/nocx/internal/assistant"
+	"github.com/shady2k/nocx/internal/helper/proto"
+	"github.com/shady2k/nocx/internal/log"
+	"github.com/shady2k/nocx/internal/log/logtest"
 	"github.com/shady2k/nocx/internal/sessionruntime"
 	"github.com/shady2k/nocx/internal/workers"
 )
@@ -54,9 +57,22 @@ type briefingStand struct {
 
 func newBriefingStand(t *testing.T, suffix string, keys *fakeMsgKeys) *briefingStand {
 	t.Helper()
+	return newBriefingStandWith(t, suffix, func(*fakeMsgReader) *fakeMsgKeys { return keys })
+}
+
+// newBriefingStandWith is newBriefingStand for a test whose keys have to be
+// built OVER the stand's own reader — a keys fake that repaints that pane, or
+// one whose answer changes after its first call. newBriefingStand passes a
+// keysFor that ignores the reader and hands back the caller's own fake.
+func newBriefingStandWith(t *testing.T, suffix string, keysFor func(*fakeMsgReader) *fakeMsgKeys) *briefingStand {
+	t.Helper()
 	hub, access, _, sessionID := newTestPaneAccess(t, "briefing-"+suffix, &fixedResultHelper{})
 	coordinatorSession := access.Controller()
 	reader := newFakeMsgReader("")
+	var keys *fakeMsgKeys
+	if keysFor != nil {
+		keys = keysFor(reader)
+	}
 	if keys == nil {
 		keys = happyKeys(reader, "")
 	}
@@ -181,34 +197,164 @@ func TestABriefingReachesTheWorkerAsOneSubmissionWithTheRulesFirst(t *testing.T)
 	}
 }
 
-// Criterion (acceptance 2, the queue's half): a briefing that cannot be
-// delivered types nothing. The paste is refused here — the helper's own answer
-// for a write it will not make — the delivery ends there, and nothing is
-// submitted into the worker.
+// Criterion (acceptance 2, the queue's half): a briefing the pane refuses to
+// take types nothing into the worker — no Enter, no half a message — and it
+// stays QUEUED rather than ending refused, because a refusal that wrote
+// nothing is a verdict about the attempt and not about the message
+// (nocx-xn63t.6.59). What bounds it is the delivery's own retry budget: this
+// helper never stops refusing, so the delivery stops trying after
+// zeroWriteRefusalBudget attempts and the record waits for a cancel or for the
+// participant's own incarnation to end — the two things that already end a
+// queued message.
 //
 // The other half of that criterion — that the SPAWN says so — is the
 // registration's own: internal/workers/registrar_briefing_test.go's
 // TestARegistrationWhoseBriefingCouldNotBeQueuedSaysSoAndQueuesNoTask asserts
 // the delivery it hands back carries BriefingQueued false.
-func TestABriefingThatCannotBeDeliveredTypesNothing(t *testing.T) {
-	keys := &fakeMsgKeys{pasteResult: assistant.KeysResult{State: "refused"}}
+func TestABriefingThePaneKeepsRefusingStaysQueuedAndIsNeverSubmitted(t *testing.T) {
+	keys := &fakeMsgKeys{pasteResult: assistant.KeysResult{
+		State: "refused", Refusal: &proto.IntentRefusal{Cause: "no_read_barrier"},
+	}}
 	s := newBriefingStand(t, "refused", keys)
+	clock := newRecheckClock(t, s.pm)
+	testLog := logtest.Slog(t)
+	ctx := log.WithLogger(context.Background(), log.NewSlogAdapter(testLog))
 
-	if err := s.pm.EnqueueBriefing(context.Background(), s.coordinatorSession, s.participant, s.briefing); err != nil {
+	if err := s.pm.EnqueueBriefing(ctx, s.coordinatorSession, s.participant, s.briefing); err != nil {
 		t.Fatalf("EnqueueBriefing: %v", err)
 	}
 	s.exactlyOneBriefing(t)
-	waitForCondition(t, "the briefing to end refused", func() bool {
-		phase, ok := s.phase()
-		return ok && phase == assistant.PhaseRefused
-	})
 
+	// One attempt, then one settled reading between each of the rest: the
+	// delivery paces its retries by the free-message safety interval, never
+	// by a hot loop, and the test fires each interval itself.
+	waitForCondition(t, "the first paste attempt", func() bool { return s.keys.callCount() >= 1 })
+	for attempt := 2; attempt <= zeroWriteRefusalBudget; attempt++ {
+		want := attempt
+		clock.tick(t)
+		waitForCondition(t, "the paced retry", func() bool { return s.keys.callCount() >= want })
+	}
+	// And then nothing more: one further settled reading buys no attempt.
+	clock.tick(t)
+
+	if calls := s.keys.callCount(); calls != zeroWriteRefusalBudget {
+		t.Fatalf("keys calls = %d after %d settled readings, want the budget's %d and no attempt behind it: a refusal that will never succeed must not be retried without bound",
+			calls, zeroWriteRefusalBudget+1, zeroWriteRefusalBudget)
+	}
 	if enters := s.keys.enterCalls(); enters != 0 {
 		t.Fatalf("Enter calls = %d, want none: a briefing that was not pasted must not be submitted", enters)
 	}
-	if calls := s.keys.callCount(); calls != 1 {
-		t.Fatalf("keys calls = %d, want the one refused paste attempt and nothing behind it", calls)
+	phase, ok := s.phase()
+	if !ok || phase != assistant.PhaseQueued {
+		t.Fatalf("phase = %q, want queued: a paste that wrote nothing does not end the message (nocx-xn63t.6.59)", phase)
 	}
+	// THE PANE'S TARGET BUDGET (nocx-xn63t.4.1): each attempt spends one
+	// one-shot target, and the helper releases a slot only after a minute of
+	// token life plus five of result retention, so the number of slots a
+	// refusal can ever cost is the budget — never "as many as the clock
+	// gives it".
+	if live, refusals := s.reader.bookState(); live != zeroWriteRefusalBudget || refusals != 0 {
+		t.Fatalf("refusals held %d target slots (and %d capacity refusals), want exactly the budget's %d", live, refusals, zeroWriteRefusalBudget)
+	}
+	if !logtest.WaitFor(ctx, watchdogBound, func(r logtest.Record) bool {
+		return r.Message == deliveryRetriesExhaustedMessage
+	}) {
+		t.Fatalf("no %q line: a delivery that stops trying has to say so, or the message waits in silence (log was:\n%s)",
+			deliveryRetriesExhaustedMessage, logtest.TextSlog(testLog))
+	}
+}
+
+// nocx-xn63t.6.59'S OWN SCENARIO, at the seam this package can reach: a spawned
+// worker's pane answers the queued briefing's paste step `refused` with nothing
+// written — what a target that went stale under the dialog's redraw answers
+// (the owner's log: op=resize, then op=target and op=intent, then "the paste
+// step refused, so nothing was written") — and the briefing must NOT end there.
+// It stays queued and arrives by itself on the next settled reading, with no
+// second session.message from the coordinator.
+func TestABriefingRefusedWithNothingWrittenStaysQueuedAndArrivesByItself(t *testing.T) {
+	s := newBriefingStandWith(t, "refused-stale", refusedOnceThenHappyKeys)
+	clock := newRecheckClock(t, s.pm)
+	testLog := logtest.Slog(t)
+	ctx := log.WithLogger(context.Background(), log.NewSlogAdapter(testLog))
+
+	if err := s.pm.EnqueueBriefing(ctx, s.coordinatorSession, s.participant, s.briefing); err != nil {
+		t.Fatalf("EnqueueBriefing: %v", err)
+	}
+	s.exactlyOneBriefing(t)
+
+	// The refusal itself: one paste step answered `refused` with zero bytes.
+	waitForCondition(t, "the first paste attempt to be refused", func() bool {
+		return s.keys.callCount() >= 1
+	})
+	// THE DEFECT, stated where it can fail on its own: the record is still
+	// queued. Ending it refused here is what left the owner's worker at an
+	// empty prompt with no task and no rules.
+	waitForCondition(t, "the briefing to stay queued after a refusal that wrote nothing", func() bool {
+		phase, ok := s.phase()
+		return ok && phase == assistant.PhaseQueued
+	})
+	if enters := s.keys.enterCalls(); enters != 0 {
+		t.Fatalf("Enter calls = %d, want none: nothing was written, so nothing may be submitted", enters)
+	}
+	// AND THE LINE SAYS WHICH STATE AND WHY: the owner's log could not tell a
+	// stale target from a cancelled message, so the next occurrence has to be
+	// one line rather than a re-send by hand.
+	if !logtest.WaitFor(ctx, watchdogBound, func(r logtest.Record) bool {
+		return r.Message == deliveryRefusedMessage &&
+			recordAttr(r, "paste_state") == "refused" &&
+			recordAttr(r, "refusal_cause") == "stale_target"
+	}) {
+		t.Fatalf("no %q line naming paste_state=refused and refusal_cause=stale_target (log was:\n%s)",
+			deliveryRefusedMessage, logtest.TextSlog(testLog))
+	}
+
+	// THE PANE SETTLES — the redraw that made the target stale is over — and
+	// the next settled reading delivers the message that was never lost.
+	clock.fire(t)
+	waitForCondition(t, "the briefing to arrive on the next settled reading", func() bool {
+		phase, ok := s.phase()
+		return ok && phase == assistant.PhaseSubmitted
+	})
+	if enters := s.keys.enterCalls(); enters != 1 {
+		t.Fatalf("Enter calls = %d, want exactly one for one briefing", enters)
+	}
+	// TWO paste CALLS, one of which was refused and wrote nothing: the text
+	// reached the pane exactly once.
+	if pasted := s.pastedTexts(); len(pasted) != 2 || pasted[0] != s.briefing.Text() || pasted[1] != s.briefing.Text() {
+		t.Fatalf("pastes = %q, want the refused attempt and then the briefing's one message", pasted)
+	}
+}
+
+// refusedOnceThenHappyKeys answers the FIRST paste with the helper's own
+// refusal of a target that went stale, and every later one with the ordinary
+// happy path — the pane that answered a dialog and settled, at the keys seam
+// where that sequence is a script rather than a race.
+func refusedOnceThenHappyKeys(reader *fakeMsgReader) *fakeMsgKeys {
+	k := &fakeMsgKeys{
+		pasteResult: assistant.KeysResult{State: "refused", Refusal: &proto.IntentRefusal{Cause: "stale_target"}},
+		enterResult: assistant.KeysResult{State: "executed"},
+	}
+	pastes := 0
+	k.onSend = func(req assistant.KeysRequest) {
+		switch {
+		case req.Text != nil:
+			pastes++
+			// Every call AFTER the first is answered as an ordinary paste. The
+			// first call's own answer was already read before this hook ran, so
+			// it stays the refusal it was constructed with — and nothing
+			// echoes for it, because a refused write reached no box.
+			k.mu.Lock()
+			k.pasteResult = assistant.KeysResult{State: "executed", BytesWritten: len(*req.Text)}
+			k.mu.Unlock()
+			if pastes == 1 {
+				return
+			}
+			reader.setBox(pastedEcho(*req.Text))
+		case req.Key != nil:
+			reader.setBox("")
+		}
+	}
+	return k
 }
 
 // Criterion (acceptance 3): with a menu up, NOTHING is typed and the briefing

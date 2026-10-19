@@ -57,6 +57,26 @@ const freeMessageSafetyInterval = time.Second
 // a test's own waits.
 const defaultEchoWait = 3 * time.Second
 
+// zeroWriteRefusalBudget is how many paste steps ONE delivery may have
+// refused with nothing written before it stops trying and leaves the message
+// queued (nocx-xn63t.6.59).
+const zeroWriteRefusalBudget = 3
+
+// deliveryRefusedMessage is the line a delivery writes when its paste step
+// answered `refused` with nothing written and the message goes back to the
+// queue (nocx-xn63t.6.59). It carries the step's own state and the helper's
+// own cause, because the line it replaces said only "the paste step refused,
+// so nothing was written" — which cannot tell a stale target from a cancelled
+// message from a step that answered in progress, and cost the owner a manual
+// re-send.
+const deliveryRefusedMessage = "session.message: the paste step wrote nothing, so the message stays queued"
+
+// deliveryRetriesExhaustedMessage is the line a delivery writes when its own
+// retry budget is spent: every attempt has been refused with nothing written,
+// so it stops spending the pane's targets on the same answer and the message
+// waits, queued, for a cancel or for its authority to end.
+const deliveryRetriesExhaustedMessage = "session.message: the paste step keeps writing nothing, so the delivery stops retrying"
+
 // deliveryEndedMessage is the line every delivery writes when it reaches a
 // terminal phase (nocx-xn63t.6.50), whatever that phase is. A delivery is the
 // one part of session.message nobody is waiting on, so a phase it commits
@@ -697,7 +717,26 @@ func (m *paneMessages) runQueue(ctx context.Context, sessionID string, q *paneQu
 // is not terminal — the message stays queued and runQueue tries again after
 // messagePollInterval, up to the message being cancelled or its authority
 // no longer holding.
+//
+// A PASTE STEP THAT WROTE NOTHING IS A PRECONDITION FAILURE TOO
+// (nocx-xn63t.6.59). The readiness gate said ready and then the paste step
+// answered `refused` with zero bytes: the target went stale between the two
+// reads, which is exactly what a pane does while it redraws after its first
+// dialog has just been answered (the owner's stand: op=resize at .538, then
+// op=target at .625 and op=intent at .632, then "the paste step refused, so
+// nothing was written"). That is a verdict about the ATTEMPT, not about the
+// message, so for when=="free" the record goes back to queued and the next
+// settled reading tries again — paced by awaitRefusalRetry and bounded by
+// zeroWriteRefusalBudget. For when=="now" it stays terminal refused: when=now
+// means "answer me now", and the refusal IS the caller's answer.
 func (m *paneMessages) deliverOne(ctx context.Context, sessionID string, pm *pendingMessage) {
+	// refusals counts the paste steps this delivery has had refused with
+	// nothing written (nocx-xn63t.6.59). It is what zeroWriteRefusalBudget
+	// counts against: the pane's own targets are a bounded, slow-released
+	// resource (spec §6.2, nocx-xn63t.4.1), so a refusal that will never
+	// succeed must stop spending them rather than retry for as long as the
+	// clock gives it.
+	refusals := 0
 	for {
 		if pm.isCancelled() {
 			return
@@ -705,6 +744,19 @@ func (m *paneMessages) deliverOne(ctx context.Context, sessionID string, pm *pen
 		if !m.hub.registrar.StillHolds(ctx, pm.chain) {
 			m.terminate(ctx, sessionID, pm, assistant.PhaseRefused, "authority no longer holds")
 			return
+		}
+		if refusals >= zeroWriteRefusalBudget {
+			// THE DELIVERY HAS STOPPED TRYING, AND THE MESSAGE IS STILL THE
+			// QUEUE'S. It never ends refused with nothing written (that is
+			// the state the owner's worker was left in), so what it does now
+			// is wait — re-checking authority at the top of this loop on
+			// every settled reading — until a cancel or the participant's own
+			// incarnation ends it. Both of those end a queued message
+			// already; nothing new is invented for this one.
+			if !m.awaitRefusalRetry(ctx, sessionID, pm) {
+				return
+			}
+			continue
 		}
 		// Subscribe BEFORE reading readiness. The observation callback can
 		// classify the pane as free while Read is in flight; allocating the
@@ -747,99 +799,131 @@ func (m *paneMessages) deliverOne(ctx context.Context, sessionID string, pm *pen
 			}
 			continue
 		}
-		break
-	}
 
-	gen, ok := pm.claim(assistant.PhasePasting)
-	if !ok {
-		return // already cancelled or terminal — nothing left to deliver
-	}
-	pasteResult, pasteErr := m.pasteStep(ctx, pm.access, sessionID, pm.text)
-	if pasteErr != nil {
-		m.finish(ctx, sessionID, pm, gen, assistant.PhaseIndeterminate, 0, "",
-			"the paste step's own outcome could not be learned")
-		return
-	}
-	switch pasteResult.State {
-	case "executed":
-		pm.commit(gen, assistant.PhaseAwaitingEcho, pasteResult.BytesWritten, "")
-	case "failed_partial":
-		m.finish(ctx, sessionID, pm, gen, assistant.PhaseFailedPartial, pasteResult.BytesWritten, "",
-			"the paste was only partly written")
-		return
-	case "delivery_unknown":
-		m.finish(ctx, sessionID, pm, gen, assistant.PhaseDeliveryUnknown, pasteResult.BytesWritten, "",
-			"whether the paste was written could not be learned")
-		return
-	default:
-		// refused, cancelled, indeterminate, in_progress: nothing written,
-		// and there is no further step to take on this attempt.
-		m.finish(ctx, sessionID, pm, gen, assistant.PhaseRefused, 0, "",
-			"the paste step refused, so nothing was written")
-		return
-	}
+		gen, ok := pm.claim(assistant.PhasePasting)
+		if !ok {
+			return // already cancelled or terminal — nothing left to deliver
+		}
+		pasteResult, pasteErr := m.pasteStep(ctx, pm.access, sessionID, pm.text)
+		if pasteErr != nil {
+			m.finish(ctx, sessionID, pm, gen, assistant.PhaseIndeterminate, 0, "",
+				"the paste step's own outcome could not be learned")
+			return
+		}
+		switch pasteResult.State {
+		case "executed":
+			pm.commit(gen, assistant.PhaseAwaitingEcho, pasteResult.BytesWritten, "")
+		case "failed_partial":
+			m.finish(ctx, sessionID, pm, gen, assistant.PhaseFailedPartial, pasteResult.BytesWritten, "",
+				"the paste was only partly written")
+			return
+		case "delivery_unknown":
+			m.finish(ctx, sessionID, pm, gen, assistant.PhaseDeliveryUnknown, pasteResult.BytesWritten, "",
+				"whether the paste was written could not be learned")
+			return
+		default:
+			// refused, cancelled, indeterminate, in_progress. Each keeps the
+			// verdict it had, and the sentence now names WHICH state answered and
+			// the helper's own reason (nocx-xn63t.6.59): one flat "the paste step
+			// refused, so nothing was written" could not tell a target that went
+			// stale from a cancelled message from a step that answered in
+			// progress, so the record could not be acted on.
+			if pm.when != "free" || pasteResult.State != "refused" || pasteResult.BytesWritten > 0 {
+				m.finish(ctx, sessionID, pm, gen, assistant.PhaseRefused, pasteResult.BytesWritten, "",
+					pasteStopReason(pasteResult))
+				return
+			}
+			// A REFUSAL THAT WROTE NOTHING IS NOT A VERDICT ON THIS MESSAGE
+			// (nocx-xn63t.6.59). Nothing reached the pane, so the record goes back
+			// to the queue — the phase a reader already knows how to read, and the
+			// phase a cancel still answers `cancelled` from — and the next settled
+			// reading tries the same message again.
+			if !pm.commit(gen, assistant.PhaseQueued, 0, "") {
+				// A cancel (or a step of the next attempt) moved the record under
+				// this commit: there is nothing left here to requeue.
+				return
+			}
+			refusals++
+			log.From(ctx).Info(deliveryRefusedMessage,
+				"session_id", sessionID, "message_id", pm.key.ID, "namespace", pm.key.Namespace,
+				"when", pm.when, "phase", string(assistant.PhaseQueued),
+				"paste_state", pasteResult.State, "refusal_cause", refusalCause(pasteResult),
+				"attempt", refusals, "budget", zeroWriteRefusalBudget)
+			if refusals >= zeroWriteRefusalBudget {
+				log.From(ctx).Info(deliveryRetriesExhaustedMessage,
+					"session_id", sessionID, "message_id", pm.key.ID, "namespace", pm.key.Namespace,
+					"when", pm.when, "phase", string(assistant.PhaseQueued),
+					"paste_state", pasteResult.State, "refusal_cause", refusalCause(pasteResult),
+					"attempts", refusals)
+			}
+			if !m.awaitRefusalRetry(ctx, sessionID, pm) {
+				return
+			}
+			continue
+		}
 
-	echoed, boxNow := m.waitForEcho(ctx, pm.access, sessionID, pm.text)
-	if pm.isCancelled() {
-		// The phase is already "cancelled" (cancel() set it, and answered the
-		// caller with it): reported, not silent.
-		return
-	}
-	if !echoed {
-		// THE PATH THAT USED TO DISAPPEAR (nocx-xn63t.6.50). The paste is in
-		// the box and Enter is never sent, so this is the phase a person has
-		// to be able to find: the record carries it for session.read, and the
-		// line below says which phase, how much was written and what the box
-		// actually showed — the last of those being the only thing that tells
-		// "a real Claude collapsed the paste into its own placeholder" apart
-		// from "nothing landed".
-		m.finish(ctx, sessionID, pm, gen, assistant.PhasePartial, pasteResult.BytesWritten, boxNow,
-			"the pasted text never appeared in the input box, so Enter was not sent")
-		return
-	}
+		echoed, boxNow := m.waitForEcho(ctx, pm.access, sessionID, pm.text)
+		if pm.isCancelled() {
+			// The phase is already "cancelled" (cancel() set it, and answered the
+			// caller with it): reported, not silent.
+			return
+		}
+		if !echoed {
+			// THE PATH THAT USED TO DISAPPEAR (nocx-xn63t.6.50). The paste is in
+			// the box and Enter is never sent, so this is the phase a person has
+			// to be able to find: the record carries it for session.read, and the
+			// line below says which phase, how much was written and what the box
+			// actually showed — the last of those being the only thing that tells
+			// "a real Claude collapsed the paste into its own placeholder" apart
+			// from "nothing landed".
+			m.finish(ctx, sessionID, pm, gen, assistant.PhasePartial, pasteResult.BytesWritten, boxNow,
+				"the pasted text never appeared in the input box, so Enter was not sent")
+			return
+		}
 
-	if !m.hub.registrar.StillHolds(ctx, pm.chain) {
-		m.finish(ctx, sessionID, pm, gen, assistant.PhasePartial, pasteResult.BytesWritten, boxNow,
-			"authority no longer holds, so Enter was not sent")
-		return
-	}
-	entering, ok := pm.claim(assistant.PhaseEntering)
-	if !ok {
-		return
-	}
-	enterResult, enterErr := m.enterStep(ctx, pm.access, sessionID)
-	if enterErr != nil {
-		m.finish(ctx, sessionID, pm, entering, assistant.PhaseIndeterminate, 0, boxNow,
-			"the Enter step's own outcome could not be learned")
-		return
-	}
-	switch enterResult.State {
-	case "executed":
-		// "written" is NOT committed here. It is a TERMINAL phase (design
-		// §8.3: Enter written, submission not confirmed), and the record must
-		// not claim a delivery has ended while this same goroutine is still
-		// waiting to see whether it did — a reader during that window would
-		// be told the delivery stopped, which is the class of lie
-		// nocx-xn63t.6.50 is about. The record stays "entering" (in flight)
-		// until confirmSubmission's own answer picks between submitted and
-		// written below.
-	default:
-		m.finish(ctx, sessionID, pm, entering, assistant.PhasePartial, pasteResult.BytesWritten, boxNow,
-			"the Enter step refused, so the box still holds the message")
-		return
-	}
+		if !m.hub.registrar.StillHolds(ctx, pm.chain) {
+			m.finish(ctx, sessionID, pm, gen, assistant.PhasePartial, pasteResult.BytesWritten, boxNow,
+				"authority no longer holds, so Enter was not sent")
+			return
+		}
+		entering, ok := pm.claim(assistant.PhaseEntering)
+		if !ok {
+			return
+		}
+		enterResult, enterErr := m.enterStep(ctx, pm.access, sessionID)
+		if enterErr != nil {
+			m.finish(ctx, sessionID, pm, entering, assistant.PhaseIndeterminate, 0, boxNow,
+				"the Enter step's own outcome could not be learned")
+			return
+		}
+		switch enterResult.State {
+		case "executed":
+			// "written" is NOT committed here. It is a TERMINAL phase (design
+			// §8.3: Enter written, submission not confirmed), and the record must
+			// not claim a delivery has ended while this same goroutine is still
+			// waiting to see whether it did — a reader during that window would
+			// be told the delivery stopped, which is the class of lie
+			// nocx-xn63t.6.50 is about. The record stays "entering" (in flight)
+			// until confirmSubmission's own answer picks between submitted and
+			// written below.
+		default:
+			m.finish(ctx, sessionID, pm, entering, assistant.PhasePartial, pasteResult.BytesWritten, boxNow,
+				"the Enter step refused, so the box still holds the message")
+			return
+		}
 
-	if m.confirmSubmission(ctx, pm.access, sessionID) {
-		m.finish(ctx, sessionID, pm, entering, assistant.PhaseSubmitted, pasteResult.BytesWritten, "",
-			"the box cleared, or the agent started working")
-		return
+		if m.confirmSubmission(ctx, pm.access, sessionID) {
+			m.finish(ctx, sessionID, pm, entering, assistant.PhaseSubmitted, pasteResult.BytesWritten, "",
+				"the box cleared, or the agent started working")
+			return
+		}
+		// A submission this check could not confirm within its own bounded wait
+		// stays "written" rather than being escalated to indeterminate: the
+		// Enter step's own outcome IS known (executed), only the agent's own
+		// reaction to it was not observed in time.
+		m.finish(ctx, sessionID, pm, entering, assistant.PhaseWritten, pasteResult.BytesWritten, "",
+			"Enter was written, and the agent's own reaction was not observed within the wait")
 	}
-	// A submission this check could not confirm within its own bounded wait
-	// stays "written" rather than being escalated to indeterminate: the
-	// Enter step's own outcome IS known (executed), only the agent's own
-	// reaction to it was not observed in time.
-	m.finish(ctx, sessionID, pm, entering, assistant.PhaseWritten, pasteResult.BytesWritten, "",
-		"Enter was written, and the agent's own reaction was not observed within the wait")
 }
 
 // terminate is deliverOne's shared "claim straight to a terminal phase"
@@ -849,6 +933,70 @@ func (m *paneMessages) terminate(ctx context.Context, sessionID string, pm *pend
 	if gen, ok := pm.claim(phase); ok {
 		m.finish(ctx, sessionID, pm, gen, phase, 0, "", reason)
 	}
+}
+
+// awaitRefusalRetry is the wait between a paste step that wrote nothing and
+// the attempt after it (nocx-xn63t.6.59): exactly ONE free-message safety
+// interval, and deliberately not the pane-change wake.
+//
+// WHY THE PACE AND NOT A WAKE. A pane that has just answered its first dialog
+// repaints for a moment, and every repaint publishes a change — waking on one
+// would aim the next target into the very screen that is still moving, which
+// is how the first target went stale, and would spend a token-book slot
+// finding out. One interval later that redraw has finished: that is the "next
+// settled reading" the message is waiting for, and the interval is the same
+// bound that already wakes a delivery whose pane went quiet
+// (freeMessageSafetyInterval). The count is what bounds the total
+// (zeroWriteRefusalBudget), because one target slot is released only after a
+// minute of token life plus five of result retention (spec §6.2) — a delivery
+// that spent one per second could fill all 256 and leave the caller who has
+// to answer the pane refused, which is nocx-xn63t.4.1 exactly.
+//
+// ok is false when the delivery must stop: the backend is going away, or the
+// message was cancelled. Both report the same way they already do — the
+// record's phase is left as it is, and the queued line says which.
+func (m *paneMessages) awaitRefusalRetry(ctx context.Context, sessionID string, pm *pendingMessage) bool {
+	select {
+	case <-ctx.Done():
+		log.From(ctx).Info(deliveryEndedMessage,
+			"session_id", sessionID, "message_id", pm.key.ID, "namespace", pm.key.Namespace,
+			"when", pm.when, "phase", string(assistant.PhaseQueued),
+			"reason", "the backend stopped while the message was still waiting for the pane")
+		return false
+	case <-pm.cancelWake:
+		// cancel() set the phase and answered its caller with it.
+		return false
+	case <-m.after(freeMessageSafetyInterval):
+		log.From(ctx).Debug("session.message: safety recheck woke queued delivery",
+			"session_id", sessionID, "message_id", pm.key.ID, "namespace", pm.key.Namespace,
+			"when", pm.when, "phase", string(assistant.PhaseQueued))
+		return true
+	}
+}
+
+// refusalCause answers the helper's own reason for a refusal, for the lines a
+// delivery writes. It is what tells a stale target from a refused commit
+// deadline from a session whose access was revoked — three different things a
+// person acts on differently — and it says plainly when the answer carried
+// none, which is the case for a paste step this package refused itself.
+func refusalCause(r pasteResultT) string {
+	if r.Refusal != nil && r.Refusal.Cause != "" {
+		return r.Refusal.Cause
+	}
+	return "no cause given"
+}
+
+// pasteStopReason is the sentence a terminal paste step writes, naming the
+// state that answered and the helper's own reason (nocx-xn63t.6.59). The
+// sentence it replaces — "the paste step refused, so nothing was written" —
+// named neither, so one line could not tell a stale target from a cancelled
+// message from a step that answered in progress.
+func pasteStopReason(r pasteResultT) string {
+	if r.BytesWritten > 0 {
+		return fmt.Sprintf("the paste step answered %q after writing %d bytes (%s)",
+			r.State, r.BytesWritten, refusalCause(r))
+	}
+	return fmt.Sprintf("the paste step answered %q and wrote nothing (%s)", r.State, refusalCause(r))
 }
 
 // finish commits a delivery's TERMINAL phase and reports it — the one exit
