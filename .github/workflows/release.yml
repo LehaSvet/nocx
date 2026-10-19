@@ -828,7 +828,32 @@ jobs:
           staging="$(mktemp -d)"
           cp -R "$APP" "$staging/"
           ln -s /Applications "$staging/Applications"
-          hdiutil create -volname "nocx" -srcfolder "$staging" -ov -format UDZO "dist/${base}.dmg"
+          # `hdiutil create` fails with "Resource busy" on GitHub's macOS
+          # runners while a background indexer or XProtect briefly holds the
+          # image we have just written (actions/runner-images). The fault is the
+          # RUNNER's and it is transient - run 39283960973 lost the 0.6 dry run
+          # to it after `ci` and every other release job had passed - so it is
+          # retried here. The retry is narrow on purpose: ONLY that message, a
+          # BOUNDED number of attempts, every attempt logged, and any other
+          # failure exits on its first occurrence. Retrying a failure that is
+          # deterministic would only make it slower to read.
+          attempt=1
+          max_attempts=4
+          log="$RUNNER_TEMP/hdiutil.log"
+          until hdiutil create -volname "nocx" -srcfolder "$staging" -ov -format UDZO "dist/${base}.dmg" > "$log" 2>&1; do
+            rc=$?
+            if [ "$rc" -eq 0 ]; then break; fi
+            if ! grep -q 'Resource busy' "$log" || [ "$attempt" -ge "$max_attempts" ]; then
+              cat "$log"
+              echo "::error::hdiutil create failed on attempt $attempt/$max_attempts and this is not the runner's transient 'Resource busy'"
+              exit "$rc"
+            fi
+            echo "attempt $attempt/$max_attempts: hdiutil reports 'Resource busy' - retrying"
+            cat "$log"
+            sleep $((attempt * 10))
+            attempt=$((attempt + 1))
+          done
+          cat "$log"
           shasum -a 256 dist/*
           # The updater verifies the EXTRACTED bundle, not the one we
           # assembled (internal/update/platform_darwin.go:81), and the
