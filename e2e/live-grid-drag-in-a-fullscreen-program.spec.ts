@@ -1,11 +1,15 @@
 /**
  * A drag over the live grid selects, inside a full-screen program that reports
- * the mouse (nocx-zg3k3.15.5).
+ * the mouse (nocx-zg3k3.15.5) — and the selection lives exactly as long as the
+ * text it names (nocx-1ebrs.19).
  *
  * THE PERSON'S GESTURE, MEASURED. In a full-screen alternate-screen program
  * that enables mouse reporting — Claude Code, k9s, mc — dragging across the
  * output used to leave a selection on screen that stayed. A person dragging
- * there now watches a highlight appear and vanish at the release.
+ * there now watches a highlight appear, stay after the release, and go on the
+ * next key the program is sent, or as soon as the program repaints the cells it
+ * covers. (It stayed for good when this file was written; the assertion at the
+ * end of the first test names what superseded that.)
  *
  * The gesture the pane offers for the live grid is the painter's
  * (`.term-grid-selection`, from the cell snapshot), and the pane stood that
@@ -214,7 +218,7 @@ async function dragAcrossTheMarker(page: Page) {
 }
 
 test.describe('a full-screen program that reports the mouse', () => {
-  test('a drag across its output leaves a selection on screen, and the program keeps its input', async ({
+  test('a drag across its output selects the text, and the next key sent to the program ends the highlight', async ({
     page,
   }) => {
     await page.goto('/')
@@ -259,8 +263,26 @@ test.describe('a full-screen program that reports the mouse', () => {
     // it would have left these characters in the browser.
     await page.keyboard.type('zq7')
     await expect(grid).toContainText('zq7', { timeout: 10_000 })
-    // The selection the person made is still on screen after that too.
-    expect(await paintedSelection(page), 'the selection outlives the next keys').toHaveLength(1)
+    // AND THE HIGHLIGHT IS OVER THE MOMENT THE PROGRAM IS SENT THE KEY — this
+    // is `nocx-1ebrs.19`, the owner's 2026-10-20 clean-Mac pass of the shipped
+    // 0.6.0, and it SUPERSEDES the line this spec carried from
+    // `nocx-zg3k3.15.5` on 2026-10-18 ("the selection outlives the next keys";
+    // that bead's comment 2806 records the supersession). Both readings are
+    // about the same thing: a selection is the COPY SOURCE. The 15.5 line was
+    // written when nothing ever ended one, so a highlight that survived was the
+    // fix; the owner's pass is that it survives too long, and a highlight over
+    // text the program has replaced copies what replaced it.
+    //
+    // What is still required of it, and unchanged here: it survives the
+    // release, and it is COPIED before any key can reach the program — the copy
+    // is copy-on-select, written at the release, which is earlier than the
+    // chord. The sibling test below reads that value back from the clipboard;
+    // a chord is not involved in a painted selection, and asserting one would
+    // be asserting a shortcut the product does not have.
+    expect(
+      await paintedSelection(page),
+      'the highlight ends at the first key sent to the program',
+    ).toHaveLength(0)
 
     // AND A CLICK IS STILL HOW THE KEYBOARD MOVES INTO THE PANE — in a
     // reporting program exactly as in any other, which is what a person does
