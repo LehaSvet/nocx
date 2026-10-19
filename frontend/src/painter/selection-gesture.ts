@@ -44,9 +44,12 @@ export interface LiveSelectionGesture {
    *  captured on, cell by cell, because that is the snapshot its text came
    *  from. */
   screenChanged(snapshot: ScreenSnapshot): void
-  /** Input went to the program: the selection is over. The same rule as the
-   *  one above, stated for the other direction of the conversation — a key
-   *  sent to a full-screen program redraws the screen it was selected from. */
+  /** Input went to the program: a SETTLED selection is over. The same rule as
+   *  the one above, stated for the other direction of the conversation — a key
+   *  sent to a full-screen program redraws the screen it was selected from.
+   *
+   *  A drag still under the pointer is not settled and is left alone: its text
+   *  is copied at the release, so ending it early copies nothing. */
   dismiss(): void
 }
 
@@ -337,8 +340,14 @@ export function installLiveSelectionGesture(
     // question (`screenChanged`, `dismiss`). This used to be nulled here, and
     // nothing kept it: the painter went on painting a selection the gesture no
     // longer knew about, which is why nothing could ever clear it.
-    pinned = opts.model.current()
-    pinnedMapping = opts.painter.mapping()
+    //
+    // AND `pinned` STAYS THE CAPTURE. It is the snapshot the settled
+    // selection's text came from, so it is also what `touched` must ask.
+    // Refreshing it here — to whatever frame happened to land last, during the
+    // drag or after it — let a cell that changed WHILE the drag was being made
+    // pass as unchanged, and reported the captured text coming BACK as a
+    // change. The next press reads both again (`down`), which is the only
+    // later reader.
   }
 
   // A double click on the live grid selects the token under the pointer by
@@ -411,12 +420,29 @@ export function installLiveSelectionGesture(
   root.addEventListener('pointerdown', down)
   root.addEventListener('mousedown', tripleClick)
   root.addEventListener('dblclick', doubleClick)
+  /** A drag still under the pointer is not a selection yet: the range is not
+   *  final, the person has not let go, and `move` redraws it from the capture
+   *  on the next pointer event. So nothing outside the pointer may end it
+   *  (nocx-1ebrs.19).
+   *
+   *  `clear()` is the wrong answer here for a second, worse reason: it drops
+   *  the ANCHOR as well as the highlight, so the release that follows finds no
+   *  gesture and copies NOTHING. The person's selection is lost, not merely
+   *  unhighlighted — which is the opposite failure to the one this rule was
+   *  written for, and it is the one e2e/live-to-card-joined.spec.ts measured:
+   *  it types into a running program mid-drag to force a frame, the pane
+   *  forwards those keys as intents, and the clipboard finished the gesture
+   *  holding the text written before it. */
+  const dragging = (): boolean => anchor !== null
+
   return {
     screenChanged(snapshot) {
+      if (dragging()) return
       if (touched(snapshot)) clear()
     },
 
     dismiss() {
+      if (dragging()) return
       if (selection !== null) clear()
     },
 

@@ -8207,15 +8207,24 @@ export class TerminalContent extends BasePaneContent {
    *  whatever the person does next arrives on its own and is delivered on its
    *  own. That was the point of the tail, and it is preserved by construction. */
   private onSessionIntent(intent: SessionIntent): boolean {
+    if (isAwaitingIntegration(this._integration, this._awaitsIntegration)) return false
     // INPUT ENDS A LIVE SELECTION (nocx-1ebrs.19). A key, committed text or a
     // paste is what makes a full-screen program redraw the screen the person
-    // had selected from, so the highlight is over the moment it is sent —
+    // had selected from, so the highlight is over the moment it is SENT —
     // waiting for the redraw to prove it leaves a highlight naming text that is
     // already gone, and the selection is the copy source.
+    //
+    // SENT is the word, hence the guard above: an intent this pane refuses
+    // reaches no program and redraws nothing.
+    //
+    // And what a drag in progress does with a key is the GESTURE's answer, not
+    // this one (`dismiss`): a range the person is still choosing is copied at
+    // the release, so ending it here would copy nothing — measured by
+    // e2e/live-to-card-joined.spec.ts, which types into a running program
+    // between the press and the release.
     if (intent.kind === 'key' || intent.kind === 'text' || intent.kind === 'paste') {
       this._selectionGesture?.dismiss()
     }
-    if (isAwaitingIntegration(this._integration, this._awaitsIntegration)) return false
     const held = this._heldRaw
     if (held !== null && !held.cancelled) {
       if (intent.kind === 'key' && intent.payload === INTERRUPT_KEY) {
