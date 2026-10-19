@@ -370,10 +370,54 @@
      to cancel. */
 }
 
+/* THE BOX THE GRID IS FITTED TO CANNOT DEPEND ON WHAT IS IN IT (nocx-vydj).
+
+   `usableViewport` fits the grid to this element's clientWidth, so that width
+   has to be a fact about the pane and not about whether the transcript
+   currently overflows. `scrollbar-gutter: stable` was meant to buy exactly
+   that, and it does where it is implemented — but asking for it is not enough:
+   an engine may parse the property and still take the bar's width only once
+   there is something to scroll. WebKit does precisely that, so there the grid
+   was fitted to a box 10px wider than the one it ended up drawn in.
+
+   The grid cannot follow the narrower box either. The transcript first
+   overflows while a command holds the pane, and nothing but the pane may
+   resize a running program (nocx-2v80t.3.50), so that refit is owed and paid at
+   the next prompt — right, and it left the last column 5px past
+   `.terminal-live-inner`'s clip, cut mid-glyph, for the whole command. Measured
+   in the e2e container on the unfixed tree, WebKit, 984px pane, twelve history
+   rows and one command whose output overflows the scroller:
+
+     before the command   clientWidth 984, no bar, 133 cols, inside the clip
+     while it runs        clientWidth 974, bar 10, 133 cols, last column 5px
+                          past the clip's right edge
+
+   `overflow-y: scroll` is the reservation the gutter stands for, spelled in a
+   way every engine honours: the bar is always present, so its width is always
+   part of the box, and the box is one number for the life of the pane. It
+   costs nothing a person sees — on macOS (the shipped app) the bar is an
+   overlay and takes no width either way, in Chromium the 10px was already
+   reserved and the trailing strip measures pixel-identical before and after —
+   and in WebKit it takes the 10px Chromium was already subtracting, so both
+   engines now fit the same number of columns instead of disagreeing by one,
+   which is what the owner saw as "the app clips and the browser does not".
+
+   IT ALSO REPLACES THE `.is-settling` RULE THAT USED TO SIT HERE, and that is
+   the half that would otherwise undo this. `_glide` toggles `is-settling` while
+   the stack is displaced, to keep the bar from flashing on every command
+   (nocx-i4h04.4) — and an `overflow-y: hidden` there moves this box back to its
+   unreserved width for the ~140ms of the glide, which a settling command would
+   spend as a pending width refit: the resize-per-command nocx-2v80t.3.46
+   removed. There is nothing left for the class to hide once the bar never
+   leaves, so it stays a signal — the e2e specs wait for it to clear — and stops
+   being a second owner of this box. */
+
 .scrollback-area {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
+  /* `scroll`, not `auto`: the bar's width has to be part of this box from the
+     first layout, for the reason above. */
+  overflow-y: scroll;
   overflow-x: hidden;
   scrollbar-gutter: stable;
   /* This class positions the scroller itself. Browser scroll anchoring is a
@@ -384,21 +428,6 @@
   overflow-anchor: none;
   display: flex;
   flex-direction: column;
-}
-
-/* While the pane is settling into a new shape, the stack is displaced by the
-   amount the glide is hiding (scrollback/controller.ts `_glide`) — downward
-   while the transcript overflows the scroller and the settle plays back a
-   scrollTop change the person was following (decision §1 item 1: a short
-   transcript that still fits the pane has nothing to compensate, since its
-   top-aligned position does not move when a block opens or freezes). Either
-   way the displaced pixels can land past this box's bottom edge for the
-   ~140ms the glide runs, and the scroller reports itself scrollable for
-   them. The bar flashed on every command. `hidden` keeps the scroll offset
-   and keeps this a scroll container, and the stable gutter above means no
-   width moves. */
-.scrollback-area.is-settling {
-  overflow-y: hidden;
 }
 
 /* THE GRID IS THE SESSION'S, NOT THIS WINDOW'S (nocx-eidfb.3).
