@@ -934,26 +934,25 @@ export class ScrollbackController {
     // gliding it would be a second animation over their own gesture.
     if (!Number.isFinite(dy) || Math.abs(dy) < 1) return
     if (Math.abs(dy) > this.scrollbackArea.clientHeight) return
-    // NO SCROLLBAR FOR THE SETTLE'S OWN OVERFLOW. The stack hangs from the
-    // scroller's bottom edge, so displacing it downward — which is what the
-    // inverse of a growth IS — puts its last pixels past that edge and makes
-    // the scroller scrollable by exactly the amount the glide is hiding. The
-    // owner saw the bar flash on every command. `hidden` rather than `clip`:
-    // it keeps the scroll offset and the element a scroll container, and
-    // `scrollbar-gutter: stable` means no width changes hands either way. The
-    // cost is named: a wheel during the settle is ignored, for the ~140ms it
-    // lasts, and only when the person was already following the output.
+    // THE SETTLE IS A STATE, NOT A STYLE (nocx-vydj). This class used to hide
+    // the scroller's bar so it would not flash on every command (nocx-i4h04.4).
+    // The scroller now always shows its bar — `overflow-y: scroll` in
+    // style.css, because the box the grid is fitted to must not depend on
+    // whether the transcript overflows — so there is no flash left to hide, and
+    // toggling the overflow here would move that box by the bar's width for the
+    // ~140ms of the glide, which a settling command would spend as a pending
+    // width refit. The class stays as the state: the e2e specs wait for it to
+    // clear, which is how they tell "the stack is gliding" from "it has
+    // landed".
     //
-    // AND ONLY WHILE THERE IS NO BAR TO FLASH (nocx-2v80t.3.35). A transcript
-    // that already overflows the scroller shows its bar before, during and
-    // after the settle, so hiding it buys nothing — and toggling `overflow`
-    // on the scroller is not a cheap class: both engines treat it as a
-    // change to the whole scrolling subtree and restyle and re-lay out every
-    // block in it. Measured in WebKit at 181 blocks: 218 ms per toggle, and a
-    // command settles about seven times, so the transcript made every new
-    // command cost more than the last. A transcript that fits is short, which
-    // is exactly when the toggle is cheap. Layout is clean here — the rect
-    // read above settled it — so this read costs nothing.
+    // AND IS ONLY WRITTEN WHEN THE TRANSCRIPT FITS (nocx-2v80t.3.35). A class
+    // write on the scroller is not free — both engines treat it as a change to
+    // the whole scrolling subtree and re-lay out every block in it; measured in
+    // WebKit at 181 blocks, 218 ms per write, and a command settles about seven
+    // times. A transcript that already overflows says nothing this class does
+    // not, and a transcript that fits is short, which is exactly when the write
+    // is cheap. Layout is clean here — the rect read above settled it — so this
+    // read costs nothing.
     const hidesBar = this.scrollbackArea.scrollHeight <= this.scrollbackArea.clientHeight
     if (hidesBar) this.scrollbackArea.classList.add('is-settling')
     for (const el of [this.scrollbackInner]) {
@@ -980,9 +979,9 @@ export class ScrollbackController {
     this._releaseSettlingBar()
   }
 
-  /** Give the scroller its bar back — and write nothing when it was never
-   *  taken: every glide begins by cancelling the last one, and a class write
-   *  on the scroller is not free (see `_glide`). */
+  /** End the settle's state — and write nothing when it was never entered:
+   *  every glide begins by cancelling the last one, and a class write on the
+   *  scroller is not free (see `_glide`). */
   private _releaseSettlingBar(): void {
     if (this.scrollbackArea.classList.contains('is-settling')) {
       this.scrollbackArea.classList.remove('is-settling')

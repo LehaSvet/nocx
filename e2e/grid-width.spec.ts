@@ -30,7 +30,7 @@
  * each contributing its published cell width (ADR-0009 rule 3).
  */
 
-import { test, expect } from './harness'
+import { test, expect, clickIntoEditor, promptReady } from './harness'
 
 test('the grid is not wider than the scroller it is drawn in', async ({ page }) => {
   await page.goto('/')
@@ -85,4 +85,132 @@ test('the grid is not wider than the scroller it is drawn in', async ({ page }) 
   // which half of the invariant broke rather than reporting "not settled".
   expect(measured.overhang).toBeLessThanOrEqual(0)
   expect(measured.fill).toBeGreaterThan(0.98)
+})
+
+/**
+ * THE INVARIANT ALSO HAS TO HOLD WHILE A PROGRAM RUNS, AND THERE THE BOX CAN
+ * MOVE UNDER THE GRID (nocx-vydj).
+ *
+ * The scroller's content width is not a constant: it is the box minus the
+ * vertical scrollbar. `scrollbar-gutter: stable` reserves that space for the
+ * whole life of the box in Chromium, so the width the grid is fitted to never
+ * changes there. WebKit ignores the property, so the bar appears the moment the
+ * transcript first overflows — and the grid was fitted a moment earlier, to the
+ * wider box.
+ *
+ * The frontend does not refit on that move while a program holds the pane
+ * (nocx-2v80t.3.50: nothing but the pane may resize a running program, so a
+ * width change seen then is owed and paid at the next prompt). That is right,
+ * and it is why the fix cannot be a refit: the box has to stop moving. Measured
+ * in the e2e container before the fix, at a 984px pane with twelve history rows
+ * and one command whose output overflows the scroller: `.scrollback-area`
+ * clientWidth 984 -> 974 under the running grid, the grid stayed 133 columns
+ * wide, and the last column was painted 5px past the clip's right edge — cut
+ * mid-glyph for the whole command, and one column wider than the same pane in
+ * Chromium, which is the engine difference the owner sees as "the app clips and
+ * the browser does not".
+ *
+ * So this test starts with a transcript that FITS (no bar in WebKit, the gutter
+ * already reserved in Chromium) and then runs a command whose own output is what
+ * makes the scroller scroll. Nothing here waits on a duration: the closing
+ * event is a painted running grid in a scroller that overflows.
+ */
+test('the grid stays inside its box when the running command makes the scroller scroll', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.goto('/')
+  await promptReady(page)
+
+  // A transcript that fits, so the bar's arrival is the command's doing.
+  await clickIntoEditor(page)
+  await page.keyboard.type('for i in $(seq 1 12); do echo "history-$i"; done')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.pane.active', { hasText: 'history-12' })).toHaveCount(1, {
+    timeout: 20_000,
+  })
+  await promptReady(page)
+
+  // Sixty rows in a pane of about thirty-six: the transcript overflows while
+  // the command still holds the pane.
+  await clickIntoEditor(page)
+  await page.keyboard.type('for i in $(seq 1 60); do echo "run-$i"; done; sleep 300')
+  await page.keyboard.press('Enter')
+
+  const geometry = () =>
+    page.evaluate(() => {
+      const pane = document.querySelector('.pane.active')
+      const area = pane?.querySelector('.scrollback-area') as HTMLElement | null
+      const live = pane?.querySelector('.terminal-live-container') as HTMLElement | null
+      const grid = pane?.querySelector('.term-grid') as HTMLElement | null
+      const inner = grid?.parentElement as HTMLElement | null
+      const rows = [...(grid?.querySelectorAll('.term-grid-row') ?? [])] as HTMLElement[]
+      // The LAST painted row: every row of a committed grid is a full
+      // rectangle, and the first one is the echo of the command, which the
+      // painter may still be filling in on the frame it lands.
+      const row = rows[rows.length - 1] ?? null
+      if (!area || !live || !grid || !inner || !row) return { settled: false, overhang: 1 }
+      const cs = getComputedStyle(live)
+      const inset = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight)
+      const box = live.clientWidth - inset
+      const cellWidth =
+        parseFloat(
+          getComputedStyle(document.querySelector('.scrollback-inner')!).getPropertyValue(
+            '--term-cell-width',
+          ),
+        ) || 1
+      const cols = Number(grid.getAttribute('aria-colcount'))
+      // The painted width, measured on the inline content rather than on the
+      // block: a row spans its container whatever the painter drew in it.
+      const range = document.createRange()
+      range.selectNodeContents(row)
+      const right = range.getBoundingClientRect().right
+      const clipRight = inner.getBoundingClientRect().right
+      const overhang = Math.round((right - clipRight) * 100) / 100
+      const expectedCols = Math.floor(box / cellWidth)
+      const running = live.classList.contains('live-running')
+      const scrolling = area.scrollHeight > area.clientHeight
+      // NOT WHILE THE SETTLE HOLDS THE BAR DOWN. `_glide` adds `is-settling`
+      // while the stack is displaced, which hides the bar (on the one engine
+      // that grows one) and so restores the wider box for those ~140ms. That
+      // window is not the state a person reads a full screen in, and taking
+      // the measurement there is how this test would pass over the defect.
+      const settling = area.classList.contains('is-settling')
+      return {
+        overhang,
+        cols,
+        expectedCols,
+        running,
+        scrolling,
+        settling,
+        settled: running && scrolling && !settling && overhang <= 0 && cols === expectedCols,
+      }
+    })
+
+  // The polled object carries the numbers, and the last one is printed on the
+  // way out: a timeout in a CI log has to say which half is unsatisfied and by
+  // how much, because a bare `settled: false` cannot be diagnosed from the log
+  // and re-running it to reproduce what it already said is the failure mode
+  // this repository names (nocx-sx4sg, nocx-n14oo.11).
+  let last: Awaited<ReturnType<typeof geometry>> | null = null
+  try {
+    await expect
+      .poll(
+        async () => {
+          last = await geometry()
+          return last.settled
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(true)
+  } catch (error) {
+    console.error('grid-width last measured geometry:', JSON.stringify(last))
+    throw error
+  }
+  const measured = await geometry()
+
+  // One matcher each, so a regression names which half broke: a column drawn
+  // past the clip, or a grid that gave up a column the box still had.
+  expect(measured.overhang).toBeLessThanOrEqual(0)
+  expect(measured.cols).toBe(measured.expectedCols)
 })
