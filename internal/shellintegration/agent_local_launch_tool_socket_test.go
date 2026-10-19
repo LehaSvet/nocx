@@ -72,15 +72,10 @@ func startLocalBashPane(t *testing.T, k *nestedKernel, agentToolSocketPath, binN
 	go s.readPump()
 	t.Cleanup(func() { _ = ptmx.Close(); _ = cmd.Process.Kill() })
 
-	// The bootstrap, if the tier writes one; bash's in-memory tier writes
-	// none (the script is sourced through --rcfile /dev/fd/3), but the same
-	// sequence spawn_local.go itself runs is followed here rather than
-	// special-cased per shell.
-	if len(launch.Bootstrap) > 0 {
-		if _, werr := ptmx.Write(launch.Bootstrap); werr != nil {
-			t.Fatalf("write the launch bootstrap: %v", werr)
-		}
-	}
+	// The daemon's own sequence after the fork: release the parent's copies.
+	// No tier types a bootstrap line any more (nocx-1ebrs.8) — bash's script
+	// is sourced through --rcfile /dev/fd/3 during startup, and zsh's through
+	// a transient ZDOTDIR — so there is nothing to write here.
 	launch.Cleanup()
 
 	s.waitForHandshake()

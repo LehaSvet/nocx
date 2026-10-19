@@ -342,15 +342,25 @@ const MESSAGES: Record<IntegrationReason, MessageTemplate> = {
     'nocx started the shell and opened its channel. The shell never answered on it.',
     standAsideFix,
   ),
-  // The stage, not the culprit. nocx knows its rcfile started and never got
-  // control back; exec, exit, a hung attach and a crashed shell all produce
-  // this identically, so the sentence names what did not happen and stops
-  // there. It is the reason the owner's own wording was written for, and the
-  // only one that can carry it honestly (nocx-yww2).
+  // The stage, not the culprit — and in particular NOT the startup files.
+  //
+  // It used to read "your shell startup files did not return control to
+  // nocx", which the owner read on a shipped tab whose prompt had plainly
+  // come back: the sentence named a cause nocx had not observed and sent a
+  // person to edit rc files that were never at fault, while the actual
+  // failure was nocx's own delivery losing the descriptor its integration
+  // arrived on (nocx-1ebrs.8). The reason is still a stage — the shell was
+  // started and the integration never answered — and it covers an exec into
+  // another program, an exit, a startup file that closed what nocx needed,
+  // and nocx's own delivery breaking. Naming any one of them is a guess, so
+  // the sentence names the one thing all of them share.
+  //
+  // No remedy is offered here any more, and that is the same honesty: the
+  // stand-aside advice tells a person their startup took the shell over,
+  // which is exactly the claim this reason can no longer make.
   'startup-did-not-return': notIntegrated(
-    'Your shell startup files did not return control to nocx, so this tab is a plain terminal.',
-    'nocx started the shell and its startup files began. They never handed control back.',
-    standAsideFix,
+    'nocx’s shell integration never answered from inside your shell, so this tab is a plain terminal.',
+    'nocx started the shell and handed it the integration. Nothing ever answered on it.',
   ),
   'channel-lost': {
     title: 'Integration lost',

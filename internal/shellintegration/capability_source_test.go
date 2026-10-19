@@ -167,3 +167,25 @@ func rcPathContents(t *testing.T, p string) string {
 	}
 	return string(b)
 }
+
+// TestLaunchCarrier_AnnouncesActivationBeforeTheExec pins the ORDER, which is
+// the whole value: the activation marker reaches a far shell as an `export`
+// in the installed carrier, and a startup file that guards on it — a terminal
+// wrapper's pre block that re-execs the login shell is the case that found
+// this (nocx-1ebrs.8) — only sees it if the export happens BEFORE the exec
+// that becomes that shell. An export after the exec is in nobody's
+// environment at all, and one inside an rcfile is a phase too late.
+func TestLaunchCarrier_AnnouncesActivationBeforeTheExec(t *testing.T) {
+	text := launchCarrier()
+	export := strings.Index(text, "export "+activationEnvVar+"=1")
+	if export < 0 {
+		t.Fatalf("the launch carrier never exports %s", activationEnvVar)
+	}
+	exec := strings.Index(text, "exec /usr/bin/env -u BASH_ENV")
+	if exec < 0 {
+		t.Fatal("the launch carrier execs no tier at all")
+	}
+	if export > exec {
+		t.Errorf("%s is exported AFTER the shell is exec'd, so the shell starts without it", activationEnvVar)
+	}
+}

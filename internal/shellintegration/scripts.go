@@ -340,6 +340,34 @@ const versionFile = "VERSION"
 // activationEnvVar is the env var the shell rc gate checks.
 const activationEnvVar = "NOCX_SHELL_INTEGRATION"
 
+// SpawnActivationEnv is what an INTEGRATED shell must have in its process
+// environment before any of its own startup files run (nocx-1ebrs.8).
+//
+// THE WINDOW IS THE WHOLE POINT, and it is not the export the rcfiles carry.
+// Every rcfile template exports this variable, but a template runs at the
+// .zshrc phase — AFTER ~/.zshenv and ~/.zprofile. A terminal WRAPPER of the
+// Fig family installs a pre block in ~/.zprofile and a post block in ~/.zshrc,
+// and its pre block RE-EXECS THE LOGIN SHELL inside a pty of its own, keeping
+// descriptors 0-2 and nothing else. Users of those wrappers guard the block
+// with `[[ -z $NOCX_SHELL_INTEGRATION ]]`, which is the convention a previous
+// generation of this integration established — so with the variable absent
+// from the spawned shell's ENVIRONMENT the guard is false, the wrapper
+// re-execs the shell, and everything nocx handed that shell (a script on a
+// descriptor, for the tiers that use one) is gone in the inner one.
+//
+// So the value is put in the spawn's environment, by whoever decided that this
+// shell is integrated, and nowhere else: `pty`'s launcher-session scrub keeps
+// it out of a plain shell, so "integrated" is a fact the launch states rather
+// than one a shell inherits.
+//
+// TERM_PROGRAM is the same fact in the conventional spelling other tools read.
+// It is set here for the same reason: a tool deciding whether to hijack the
+// shell asks the terminal what it is, and until this line a nocx pane answered
+// with whatever the daemon inherited.
+func SpawnActivationEnv() []string {
+	return []string{activationEnvVar + "=1", "TERM_PROGRAM=nocx"}
+}
+
 // gateLineZsh is appended to ~/.zshrc to load the integration.
 const gateLineZsh = `# nocx terminal shell integration
 [[ -n "$NOCX_SHELL_INTEGRATION" ]] && source "$HOME/.nocx/shell-integration.zsh"`
