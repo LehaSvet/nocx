@@ -458,3 +458,148 @@ describe('live selection gesture', () => {
     root.remove()
   })
 })
+
+/** A pane, a painter and a gesture over one two-row frame — the shape every
+ *  case below needs, so each test is about the rule rather than the wiring. */
+function liveGesture(): {
+  gesture: ReturnType<typeof installLiveSelectionGesture>
+  painter: ReturnType<typeof createCellPainter>
+  surface: HTMLElement
+  model: ReturnType<typeof createCellModel>
+  root: HTMLElement
+  next: (rows: CellSpec[][]) => ReturnType<typeof snapshotOf>
+} {
+  const model = createCellModel()
+  const root = document.createElement('div')
+  const surface = document.createElement('div')
+  root.append(surface)
+  document.body.append(root)
+  const first = frameOf(
+    1,
+    [
+      [
+        ['a', 1, true],
+        ['b', 1, true],
+        ['c', 1, true],
+        ['d', 1, true],
+      ],
+      [
+        ['e', 1, true],
+        ['f', 1, true],
+        ['g', 1, true],
+        ['h', 1, true],
+      ],
+    ],
+    { x: 0, y: 0, visible: false },
+    { cols: 4, rows: 2, cellWidthPx: 8, cellHeightPx: 20 },
+  )
+  model.apply(first)
+  const painter = createCellPainter({ surface, palette: () => DEFAULT_SNAPSHOT })
+  painter.apply(snapshotOf(first))
+  vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
+    left: 0,
+    top: 0,
+    right: 32,
+    bottom: 40,
+    width: 32,
+    height: 40,
+    x: 0,
+    y: 0,
+    toJSON: () => ({}),
+  })
+  const gesture = installLiveSelectionGesture({
+    model,
+    painter,
+    surface,
+    gestureRoot: root,
+    surfaceId: 'live',
+    copy: vi.fn(),
+  })
+  const next = (rows: CellSpec[][]): ReturnType<typeof snapshotOf> =>
+    snapshotOf(
+      frameOf(
+        2,
+        rows,
+        { x: 0, y: 0, visible: false },
+        {
+          cols: 4,
+          rows: rows.length,
+          cellWidthPx: 8,
+          cellHeightPx: 20,
+        },
+      ),
+    )
+  return { gesture, painter, surface, model, root, next }
+}
+
+const DRAG: CellSpec[] = [
+  ['e', 1, true],
+  ['f', 1, true],
+  ['g', 1, true],
+  ['h', 1, true],
+]
+
+describe('a live selection has the lifetime of the text under it (nocx-1ebrs.19)', () => {
+  it('ends when the frame rewrites the cells it covers', () => {
+    // The program repainted the row the selection names: the highlight must go,
+    // because it is the copy source and the text it named is no longer there.
+    const { gesture, painter, surface, root, next } = liveGesture()
+    const press = (type: string, x: number, y: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y })
+    root.dispatchEvent(press('pointerdown', 8, 5))
+    window.dispatchEvent(press('pointermove', 16, 5))
+    window.dispatchEvent(press('pointerup', 16, 5))
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+
+    gesture.screenChanged(next([DRAG, DRAG]))
+    expect(surface.querySelector('.term-grid-selection')).toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+
+  it('keeps a selection a frame outside the range left alone', () => {
+    // Output BELOW the selected rows is the ordinary case in a terminal, and
+    // dropping the highlight for it would make a selection impossible to read
+    // while a program is printing.
+    const { gesture, painter, surface, root, next } = liveGesture()
+    const press = (type: string, x: number, y: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y })
+    root.dispatchEvent(press('pointerdown', 8, 5))
+    window.dispatchEvent(press('pointermove', 16, 5))
+    window.dispatchEvent(press('pointerup', 16, 5))
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+
+    gesture.screenChanged(
+      next([
+        [
+          ['a', 1, true],
+          ['b', 1, true],
+          ['c', 1, true],
+          ['d', 1, true],
+        ],
+        DRAG,
+      ]),
+    )
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+
+  it('ends when a key is sent to the program', () => {
+    const { gesture, painter, surface, root } = liveGesture()
+    const press = (type: string, x: number, y: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y })
+    root.dispatchEvent(press('pointerdown', 8, 5))
+    window.dispatchEvent(press('pointermove', 16, 5))
+    window.dispatchEvent(press('pointerup', 16, 5))
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+
+    gesture.dismiss()
+    expect(surface.querySelector('.term-grid-selection')).toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+})

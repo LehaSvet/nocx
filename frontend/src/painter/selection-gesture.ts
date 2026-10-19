@@ -34,6 +34,20 @@ export interface LiveSelectionGestureOptions {
 
 export interface LiveSelectionGesture {
   dispose(): void
+  /** The program's screen changed: drop a selection that no longer describes
+   *  what is on it (nocx-1ebrs.19).
+   *
+   *  A selection is the COPY SOURCE, so one that outlives its text is worse
+   *  than a stale colour: a person copies what the program has since written
+   *  there. Every other terminal clears when output lands on the selected
+   *  cells, and so does this — compared against the snapshot the selection was
+   *  captured on, cell by cell, because that is the snapshot its text came
+   *  from. */
+  screenChanged(snapshot: ScreenSnapshot): void
+  /** Input went to the program: the selection is over. The same rule as the
+   *  one above, stated for the other direction of the conversation — a key
+   *  sent to a full-screen program redraws the screen it was selected from. */
+  dismiss(): void
 }
 
 type Position = { readonly row: number; readonly offset: number }
@@ -303,7 +317,7 @@ export function installLiveSelectionGesture(
       // A press and release on one cell is a click — how a person gives the
       // terminal focus — not a one-cell selection. Copying it would replace
       // the clipboard with whatever character sat under the pointer.
-      opts.painter.setSelection(null)
+      clear()
     } else if (focus && (anchor.kind === 'live' || focus.kind === 'live')) {
       drawLive(focus)
       const text = copyAcross(anchor, focus)
@@ -314,10 +328,15 @@ export function installLiveSelectionGesture(
       // (and different) value.
       if (anchor.kind === 'card') window.getSelection()?.removeAllRanges()
     } else if (!focus) {
-      opts.painter.setSelection(null)
+      clear()
     }
     anchor = null
-    selection = null
+    // THE SELECTION OUTLIVES THE GESTURE THAT MADE IT (nocx-1ebrs.19). What
+    // ends is the DRAG; the highlight stays, because it is what the person
+    // reads and copies from — and because its lifetime is now somebody else's
+    // question (`screenChanged`, `dismiss`). This used to be nulled here, and
+    // nothing kept it: the painter went on painting a selection the gesture no
+    // longer knew about, which is why nothing could ever clear it.
     pinned = opts.model.current()
     pinnedMapping = opts.painter.mapping()
   }
@@ -353,10 +372,54 @@ export function installLiveSelectionGesture(
     if (copied !== '') opts.copy(copied)
   }
 
+  /** Drop the live selection in the painter and in this gesture's own state. */
+  const clear = (): void => {
+    anchor = null
+    selection = null
+    opts.painter.setSelection(null)
+  }
+
+  /** Do the two snapshots disagree anywhere inside the selected range? */
+  const touched = (next: ScreenSnapshot): boolean => {
+    if (selection === null || pinned === null) return false
+    const start = selection.anchor
+    const end = selection.focus
+    if (start.surfaceId !== opts.surfaceId) return false
+    const fromRow = Math.min(start.row, end.row)
+    const toRow = Math.max(start.row, end.row)
+    for (let row = fromRow; row <= toRow; row++) {
+      const before = pinned.rows[row]?.cells ?? []
+      const after = next.rows[row]?.cells ?? []
+      const from = row === start.row ? start.offset : 0
+      const to = row === end.row ? end.offset : Math.max(before.length, after.length)
+      // A ROW THAT IS NO LONGER THERE IS A CHANGE: the screen shrank, so the
+      // text the selection named is gone.
+      if (next.rows[row] === undefined && before.length > 0) return true
+      for (let column = Math.max(0, from); column < to; column++) {
+        const a = before[column]
+        const b = after[column]
+        if (a === undefined || b === undefined) {
+          if (a !== b) return true
+          continue
+        }
+        if (a.grapheme !== b.grapheme || a.hasText !== b.hasText) return true
+      }
+    }
+    return false
+  }
+
   root.addEventListener('pointerdown', down)
   root.addEventListener('mousedown', tripleClick)
   root.addEventListener('dblclick', doubleClick)
   return {
+    screenChanged(snapshot) {
+      if (touched(snapshot)) clear()
+    },
+
+    dismiss() {
+      if (selection !== null) clear()
+    },
+
     dispose() {
       root.removeEventListener('pointerdown', down)
       root.removeEventListener('mousedown', tripleClick)

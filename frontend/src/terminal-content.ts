@@ -5189,6 +5189,11 @@ export class TerminalContent extends BasePaneContent {
       this._paintedCols = snapshot.geometry.cols
       this._liveHistory?.reflowed()
     }
+    // OUTPUT THAT LANDS ON THE SELECTED CELLS ENDS THE SELECTION
+    // (nocx-1ebrs.19): the highlight must describe the text under it, and the
+    // gesture compares the new frame with the snapshot the selection was
+    // captured on.
+    this._selectionGesture?.screenChanged(snapshot)
     this._pendingPaint = snapshot
     if (this._paintFrameHandle !== 0) return
     this._paintFrameHandle = requestAnimationFrame(() => {
@@ -8202,6 +8207,14 @@ export class TerminalContent extends BasePaneContent {
    *  whatever the person does next arrives on its own and is delivered on its
    *  own. That was the point of the tail, and it is preserved by construction. */
   private onSessionIntent(intent: SessionIntent): boolean {
+    // INPUT ENDS A LIVE SELECTION (nocx-1ebrs.19). A key, committed text or a
+    // paste is what makes a full-screen program redraw the screen the person
+    // had selected from, so the highlight is over the moment it is sent —
+    // waiting for the redraw to prove it leaves a highlight naming text that is
+    // already gone, and the selection is the copy source.
+    if (intent.kind === 'key' || intent.kind === 'text' || intent.kind === 'paste') {
+      this._selectionGesture?.dismiss()
+    }
     if (isAwaitingIntegration(this._integration, this._awaitsIntegration)) return false
     const held = this._heldRaw
     if (held !== null && !held.cancelled) {
