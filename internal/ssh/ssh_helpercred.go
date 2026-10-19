@@ -32,7 +32,6 @@ package ssh
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
@@ -152,10 +151,18 @@ func ParseCredentialRef(s string) (CredentialRef, error) {
 // store's own Use callback, a file is read, parsed and used within this call,
 // and an agent key is never held at all: what leaves is a signature, which is
 // what a signature is for.
+//
+// `algorithm` is the signature algorithm the CALLER's peer negotiated
+// (`rsa-sha2-512`, `rsa-sha2-256`, `ssh-ed25519`, …) and it is threaded to
+// every arm, because it is a property of the handshake rather than of the
+// reference grammar: all three kinds hold the same key, and all three have to
+// sign it the way the server asked. `signed` is what the signer actually used,
+// so a caller can refuse a substitution instead of believing it did not
+// happen (nocx-1ebrs.17).
 func (rc *RealClient) SignWithCredentialRef(
 	ctx context.Context, secrets credential.Resolver,
-	ref CredentialRef, passphrase CredentialRef, challenge []byte,
-) (signature []byte, algorithm string, err error) {
+	ref CredentialRef, passphrase CredentialRef, challenge []byte, algorithm string,
+) (signature []byte, signed string, err error) {
 	switch ref.Kind() {
 	case CredentialVault:
 		cfg := &ConnectConfig{
@@ -165,7 +172,7 @@ func (rc *RealClient) SignWithCredentialRef(
 		if passphrase.Kind() == CredentialVault {
 			cfg.PassphraseSecretID = credential.SecretID(passphrase.ID())
 		}
-		return rc.SignWithStoredKey(ctx, cfg, challenge)
+		return rc.SignWithStoredKey(ctx, cfg, challenge, algorithm)
 
 	case CredentialFile:
 		cfg := &ConnectConfig{
@@ -179,11 +186,11 @@ func (rc *RealClient) SignWithCredentialRef(
 		if err != nil {
 			return nil, "", err
 		}
-		sig, err := signer.Sign(rand.Reader, challenge)
+		sig, signed, err := signWithAlgorithm(signer, challenge, algorithm)
 		if err != nil {
 			return nil, "", fmt.Errorf("sign with the key file %s: %w", ref.ID(), err)
 		}
-		return gossh.Marshal(sig), signer.PublicKey().Type(), nil
+		return gossh.Marshal(sig), signed, nil
 
 	case CredentialAgent:
 		if passphrase.Kind() != "" {
@@ -192,7 +199,7 @@ func (rc *RealClient) SignWithCredentialRef(
 			// for it, on their own desktop, when the key was added.
 			return nil, "", fmt.Errorf("an ssh-agent key takes no passphrase")
 		}
-		return rc.signWithAgentKey(ctx, ref.ID(), challenge)
+		return rc.signWithAgentKey(ctx, ref.ID(), challenge, algorithm)
 
 	default:
 		return nil, "", fmt.Errorf("ssh: %q is not a credential reference this build signs with", ref.String())
@@ -252,7 +259,7 @@ const agentDialTimeout = 5 * time.Second
 // to a long-lived socket would be a socket this process holds open for the life
 // of a connection it is not using, and ssh-agent's own protocol is cheap enough
 // that the second dial costs nothing a person can measure.
-func (rc *RealClient) signWithAgentKey(ctx context.Context, fingerprint string, challenge []byte) ([]byte, string, error) {
+func (rc *RealClient) signWithAgentKey(ctx context.Context, fingerprint string, challenge []byte, algorithm string) ([]byte, string, error) {
 	sock := os.Getenv("SSH_AUTH_SOCK")
 	if sock == "" {
 		return nil, "", errors.New("no ssh-agent to sign with: SSH_AUTH_SOCK is unset")
@@ -271,11 +278,16 @@ func (rc *RealClient) signWithAgentKey(ctx context.Context, fingerprint string, 
 		if gossh.FingerprintSHA256(s.PublicKey()) != fingerprint {
 			continue
 		}
-		sig, err := s.Sign(rand.Reader, challenge)
+		// THE NEGOTIATED ALGORITHM, for the same reason the stored-key arm
+		// takes it (helper_seams.go's signWithAlgorithm): an RSA key in an
+		// agent is offered as `rsa-sha2-256`/`-512` by every server that has
+		// excluded `ssh-rsa`, and the agent answers those two through its own
+		// signature-flags protocol. Asked for nothing, it would sign SHA-1.
+		sig, signed, err := signWithAlgorithm(s, challenge, algorithm)
 		if err != nil {
-			return nil, "", fmt.Errorf("the agent refused to sign: %w", err)
+			return nil, "", fmt.Errorf("the agent refused to sign as %s: %w", algorithm, err)
 		}
-		return gossh.Marshal(sig), s.PublicKey().Type(), nil
+		return gossh.Marshal(sig), signed, nil
 	}
 	// The agent no longer holds the key the connection was resolved with:
 	// `ssh-add -D` between the resolution and the signature, or a different

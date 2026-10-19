@@ -334,12 +334,21 @@ func translateProbeRefusal(host string, err error) error {
 				Fingerprint: ev.Fingerprint, Expected: ev.Expected, Key: ev.Key,
 			}
 		}
-	case string(proto.ProbeRejected), string(proto.ProbeUnreachable):
-		// A credential the server refused, or a host that did not answer.
-		// Neither is a typed error here — the coordinator's own dial path
-		// reports these as *ErrAuthFailed and as the network error underneath
-		// — and the caller that acts on the distinction is a person reading
-		// the sentence, which is preserved verbatim.
+	case string(proto.ProbeRejected):
+		// A credential the server refused, and it is TYPED because a caller has
+		// to act on it rather than read it (nocx-1ebrs.18): a definitive
+		// rejection is not retried, and a publish or a keep-alive lease that
+		// meets one must stop the open instead of letting the spawn
+		// authenticate a second time with something the server has already
+		// said no to. The sentence stays the helper's own.
+		return fmt.Errorf("ssh: probe lease for %s: %w", host, &ssh.ErrAuthRejected{
+			Host: host, Reason: refusal.Message,
+		})
+	case string(proto.ProbeUnreachable):
+		// A host that did not answer: genuinely transient, so this stays a
+		// plain failure with its sentence preserved — the coordinator's own
+		// dial path reports it as the network error underneath, and a caller
+		// may try again within the bound its own open sets.
 		return fmt.Errorf("ssh: probe lease for %s: %s", host, refusal.Message)
 	}
 	return fmt.Errorf("ssh: probe lease for %s: %s", host, refusal.Message)

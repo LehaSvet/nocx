@@ -64,8 +64,10 @@
 package main
 
 import (
+	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
@@ -97,6 +99,9 @@ func main() {
 func run() error {
 	banner := flag.String("banner", "", "sshd banner sent before authentication")
 	password := flag.String("password", "", "require password auth; accepts exactly this password and refuses every key")
+	rsaKey := flag.Bool("rsa-key", false, "mint an RSA user key, accept it beside the ed25519 one, and print RSAKEY=<path>: the credential shape whose key TYPE is not the algorithm a modern sshd negotiates (nocx-1ebrs.17)")
+	algorithms := flag.String("pubkey-algorithms", modernPubkeyAlgorithms,
+		"the signature algorithms this host accepts for a public key, comma separated: its PubkeyAcceptedAlgorithms. The default is a modern sshd's, which EXCLUDES ssh-rsa (SHA-1)")
 	repo := flag.String("repo", "", "seed a git repository at this path for the git acceptance spec: an initial commit, an untracked file whose name has a space, a quote, a leading dash and a newline, and a pre-commit hook that writes a marker outside the repository and prints more than one packet of output; the fixture chdirs into it, so a shell this process serves directly starts inside the repository — a helper-hosted shell does not: the far nocx-helper spawns it and starts it in the login user's home, like any real sshd's login shell")
 	flag.Parse()
 
@@ -124,6 +129,27 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// THE RSA USER KEY, when asked for, and it is a SECOND accepted key rather
+	// than a replacement: a spec that stores both shapes in the vault and opens
+	// one pane with each is proving the transport with the key that always
+	// worked beside the one whose signature algorithm is the defect
+	// (nocx-1ebrs.17).
+	var rsaUserSigner gossh.Signer
+	rsaKeyPath := ""
+	if *rsaKey {
+		rsaPriv, genErr := rsa.GenerateKey(rand.Reader, 2048)
+		if genErr != nil {
+			return fmt.Errorf("generate RSA user key: %w", genErr)
+		}
+		rsaUserSigner, genErr = gossh.NewSignerFromKey(rsaPriv)
+		if genErr != nil {
+			return fmt.Errorf("RSA user signer: %w", genErr)
+		}
+		rsaKeyPath, genErr = writePrivateKey(rsaPriv)
+		if genErr != nil {
+			return genErr
+		}
+	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -140,6 +166,9 @@ func run() error {
 
 	printLine("ADDR=" + ln.Addr().String())
 	printLine("USERKEY=" + userKeyPath)
+	if rsaKeyPath != "" {
+		printLine("RSAKEY=" + rsaKeyPath)
+	}
 	printLine("KNOWNHOSTS=" + knownhosts.Line([]string{ln.Addr().String()}, hostSigner.PublicKey()))
 
 	if *repo != "" {
@@ -166,7 +195,7 @@ func run() error {
 		// before typing the password; without it the run is timed, not
 		// deterministic.
 		var once sync.Once
-		config := buildConfig(userSigner, hostSigner, *banner, *password, func() {
+		config := buildConfig(userSigner, rsaUserSigner, hostSigner, *banner, *password, *algorithms, func() {
 			once.Do(func() { printLine("CONN=" + conn.RemoteAddr().String()) })
 		})
 		go serveConn(conn, config)
@@ -176,8 +205,22 @@ func run() error {
 // buildConfig assembles the ServerConfig for one connection. onAuthAttempt
 // fires on the client's first userauth attempt by any method, after key
 // exchange and before the password prompt.
-func buildConfig(userSigner, hostSigner gossh.Signer, banner, password string, onAuthAttempt func()) *gossh.ServerConfig {
+// modernPubkeyAlgorithms is what an OpenSSH 8.8 and later sshd accepts for a
+// public key, and the ABSENCE of `ssh-rsa` is the whole point: since 8.8 it is
+// excluded from `PubkeyAcceptedAlgorithms` by default because it is SHA-1.
+// A fixture that accepted it would answer "does this key authenticate" with a
+// yes that no current server gives (nocx-1ebrs.17's journal line:
+// `signature algorithm ssh-rsa not in PubkeyAcceptedAlgorithms`).
+const modernPubkeyAlgorithms = "ssh-ed25519,rsa-sha2-256,rsa-sha2-512,ecdsa-sha2-nistp256"
+
+func buildConfig(userSigner, rsaUserSigner, hostSigner gossh.Signer, banner, password, algorithms string, onAuthAttempt func()) *gossh.ServerConfig {
 	config := &gossh.ServerConfig{}
+	if algorithms != "" {
+		// ADVERTISED (the `server-sig-algs` extension) and ENFORCED (on the
+		// signature that arrives), which is both halves of a real host's
+		// `PubkeyAcceptedAlgorithms`.
+		config.PublicKeyAuthAlgorithms = strings.Split(algorithms, ",")
+	}
 	if password != "" {
 		// Password-auth fixture (the journey's hand-typed `ssh` must be
 		// prompted): the fixture's own key is REFUSED so the client has no
@@ -199,6 +242,11 @@ func buildConfig(userSigner, hostSigner gossh.Signer, banner, password string, o
 			// client sends key.Marshal(), which for ed25519 carries the
 			// algorithm string ahead of the 32-byte key.
 			if string(key.Marshal()) == string(userSigner.PublicKey().Marshal()) {
+				return nil, nil
+			}
+			// A SECOND accepted key, when the fixture minted one: two shapes in
+			// one host, which is what a spec storing both in the vault needs.
+			if rsaUserSigner != nil && string(key.Marshal()) == string(rsaUserSigner.PublicKey().Marshal()) {
 				return nil, nil
 			}
 			return nil, fmt.Errorf("e2e-sshd: unknown public key")
@@ -258,11 +306,21 @@ func signer() (gossh.Signer, ed25519.PrivateKey, ed25519.PublicKey, error) {
 }
 
 func writeUserKey(priv ed25519.PrivateKey) (string, error) {
+	return writePrivateKey(priv)
+}
+
+// writePrivateKey writes one minted private key where a reader can path to it:
+// the OpenSSH encoding, because the reader is the OpenSSH CLIENT and (for the
+// RSA key) this run's own vault.
+func writePrivateKey(priv crypto.PrivateKey) (string, error) {
 	dir, err := os.MkdirTemp("", "nocx-e2e-sshd-*")
 	if err != nil {
 		return "", fmt.Errorf("temp dir: %w", err)
 	}
 	path := dir + "/id_e2e"
+	if _, ok := priv.(ed25519.PrivateKey); !ok {
+		path = dir + "/id_e2e_rsa"
+	}
 	// The OpenSSH encoding, because the reader is the OpenSSH CLIENT.
 	//
 	// This used to write PKCS#8, which OpenSSH cannot load for ed25519 at all:

@@ -24,7 +24,9 @@ package ssh
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
+	"slices"
 
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -86,6 +88,15 @@ func (rc *RealClient) CheckHostKey(addr string, keyBlob []byte) error {
 // and closes, and the connection it left behind would be one whose lifetime
 // nothing owns.
 
+// ErrSignatureAlgorithm is the answer when a key cannot produce the signature
+// algorithm the peer negotiated: the key is not the problem, the request is.
+//
+// It is a typed error rather than a message because the party that acts on it
+// is a wire handler one package away, and it answers DIFFERENTLY for this than
+// for "the vault would not open": a bad request is the helper's bug, a locked
+// key is a person's prompt (nocx-1ebrs.17).
+var ErrSignatureAlgorithm = errors.New("ssh: the key cannot produce the negotiated signature algorithm")
+
 // SignWithStoredKey signs challenge with the private key a config's
 // KeySecretID names, answering the signature in the wire encoding of an ssh
 // signature (string format, string blob) — the form x/crypto/ssh's own
@@ -107,15 +118,76 @@ func (rc *RealClient) CheckHostKey(addr string, keyBlob []byte) error {
 // what a signature is for. The ALGORITHM comes back beside it because the
 // caller asked for one and the key is the only party that can settle whether
 // they agree — a signature made with a key other than the one named is a
-// signature for a handshake that never happened.
-func (rc *RealClient) SignWithStoredKey(ctx context.Context, cfg *ConnectConfig, challenge []byte) (signature []byte, algorithm string, err error) {
+// signature for a handshake that never happened, and a signature made with an
+// algorithm the peer did not negotiate is one it refuses (signWithAlgorithm's
+// comment carries the measurement).
+//
+// `algorithm` is the signature algorithm the PEER negotiated — `rsa-sha2-512`,
+// `rsa-sha2-256`, `ssh-ed25519` — and not the key's type: for an RSA key those
+// are three different names for one key, and the type is the one modern
+// servers no longer accept.
+func (rc *RealClient) SignWithStoredKey(ctx context.Context, cfg *ConnectConfig, challenge []byte, algorithm string) (signature []byte, signed string, err error) {
 	signer, err := rc.storedKeySigner(ctx, cfg)
 	if err != nil {
 		return nil, "", err
 	}
-	sig, err := signer.Sign(rand.Reader, challenge)
+	sig, signed, err := signWithAlgorithm(signer, challenge, algorithm)
 	if err != nil {
 		return nil, "", fmt.Errorf("sign with the stored key: %w", err)
 	}
-	return gossh.Marshal(sig), signer.PublicKey().Type(), nil
+	return gossh.Marshal(sig), signed, nil
+}
+
+// signWithAlgorithm makes ONE signature with the algorithm the peer
+// NEGOTIATED, and answers the algorithm the signer actually used.
+//
+// # Why the algorithm cannot be the key's type any more (nocx-1ebrs.17)
+//
+// For an RSA key the type is `ssh-rsa`, which is SHA-1, and OpenSSH has
+// excluded it from `PubkeyAcceptedAlgorithms` since 8.8. What a modern server
+// accepts for an RSA key is `rsa-sha2-256` or `rsa-sha2-512`, and the choice is
+// the HANDSHAKE's: x/crypto picks it from the server's own `server-sig-algs`
+// extension and hands it to the signer. A signer that can only be asked for
+// "a signature" therefore sends SHA-1 by accident, and the server's journal
+// says `signature algorithm ssh-rsa not in PubkeyAcceptedAlgorithms` while the
+// credential itself was always correct. The helper's reverse signer is one
+// process away from the key and is asked by NAME for exactly this reason.
+//
+// The ANSWER is `sig.Format`, the algorithm the signer wrote into the
+// signature, rather than the one that was requested: the caller compares the
+// two, and a signer that quietly substituted another algorithm is a fact the
+// caller must see rather than a fact this function asserts about itself.
+//
+// An empty algorithm asks for the signer's own default, which is `Signer.Sign`
+// and the key's type. That is the shape a caller uses when it has nothing
+// negotiated to pass, and it is the fallback the interface documents.
+func signWithAlgorithm(signer gossh.Signer, challenge []byte, algorithm string) (*gossh.Signature, string, error) {
+	if algorithm == "" {
+		sig, err := signer.Sign(rand.Reader, challenge)
+		if err != nil {
+			return nil, "", err
+		}
+		return sig, sig.Format, nil
+	}
+	as, ok := signer.(gossh.AlgorithmSigner)
+	if !ok {
+		// A signer that cannot name an algorithm cannot make this signature
+		// honestly, and signing with its own default instead would produce a
+		// signature the peer rejects with a message about algorithms rather
+		// than about the party that could not provide one.
+		return nil, "", fmt.Errorf("%w: this key signs as %s and cannot be asked for %s",
+			ErrSignatureAlgorithm, signer.PublicKey().Type(), algorithm)
+	}
+	if multi, ok := signer.(gossh.MultiAlgorithmSigner); ok && !slices.Contains(multi.Algorithms(), algorithm) {
+		// Asked before signing rather than after failing, because this is the
+		// one arm that can say WHY: the key is fine, the request named an
+		// algorithm this key format does not have.
+		return nil, "", fmt.Errorf("%w: a %s key supports %v and was asked for %s",
+			ErrSignatureAlgorithm, signer.PublicKey().Type(), multi.Algorithms(), algorithm)
+	}
+	sig, err := as.SignWithAlgorithm(rand.Reader, challenge, algorithm)
+	if err != nil {
+		return nil, "", err
+	}
+	return sig, sig.Format, nil
 }

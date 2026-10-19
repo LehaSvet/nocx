@@ -485,10 +485,20 @@ type SignParams struct {
 	// nobody makes, so it is refused rather than treated as a discovery
 	// question (see the package comment).
 	Challenge []byte `json:"challenge"`
-	// Algorithm is the signature algorithm the caller expects, as the public
-	// key's own type string (`ssh-ed25519`, `rsa-sha2-256`, …). It is
-	// checked against the key the credential resolves to, so a mismatch is
-	// refused here instead of producing a signature the peer will not accept.
+	// Algorithm is the signature algorithm the PEER NEGOTIATED, which the
+	// helper took from x/crypto/ssh's own choice out of the server's
+	// `server-sig-algs` extension: `rsa-sha2-512` or `rsa-sha2-256` for an RSA
+	// key, `ssh-ed25519` for an ed25519 one, `ecdsa-sha2-nistp256` for ECDSA.
+	//
+	// It is NOT the public key's type, and for RSA the two are the whole
+	// difference between working and not (nocx-1ebrs.17): `ssh-rsa` is SHA-1,
+	// and OpenSSH 8.8 and later exclude it from `PubkeyAcceptedAlgorithms` by
+	// default, so a signature made with it is refused while the credential
+	// itself is correct.
+	//
+	// The coordinator signs with THIS algorithm and answers the one the signer
+	// actually used; a key that cannot produce it is a refusal here rather
+	// than a signature the peer will not accept.
 	Algorithm string `json:"algorithm"`
 }
 

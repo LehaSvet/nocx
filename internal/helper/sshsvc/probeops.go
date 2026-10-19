@@ -143,7 +143,18 @@ func (s *Service) lease(ctx context.Context, p proto.LeaseParams) (proto.LeaseRe
 	}
 	pool, err := s.acquirePooled(ctx, conn, p.Destination, p.AcceptOnTrust, "", 0, 0, nil)
 	if err != nil {
-		return proto.LeaseResult{}, err
+		// THE DIAL'S OWN ANSWER, typed (nocx-1ebrs.18). A lease that failed
+		// because the server refused the credential used to leave here as a
+		// bare error, so it crossed the wire as `internal` — and the
+		// coordinator, which must decide whether a second attempt could
+		// possibly succeed, had no way to tell "the credential is wrong" from
+		// "the helper broke". It is classified with the same function a
+		// channel open uses (channel.go's classifyDialRefusal), because both
+		// ops dial the same connection.
+		if refusal, ok := classifyDialRefusal(err); ok {
+			return proto.LeaseResult{}, refusal
+		}
+		return proto.LeaseResult{}, fmt.Errorf("lease: %w", err)
 	}
 	fingerprint := pool.Fingerprint()
 	if fingerprint == "" {

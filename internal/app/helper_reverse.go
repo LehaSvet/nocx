@@ -266,6 +266,13 @@ func (h *helperReverse) secret(ctx context.Context, raw json.RawMessage) (any, e
 // this process is the party that parses a private key, so an encrypted key is
 // unlocked here and never at the helper (proto/ssh_service.go says why a
 // signature can cross where a key cannot).
+//
+// THE ALGORITHM IS THE HANDSHAKE'S, and the helper names it because only the
+// helper talked to the server (nocx-1ebrs.17): x/crypto picks it from the
+// server's `server-sig-algs` and asks the signer for it by name. This handler's
+// job is to honour that name — the key is the same key either way, and what
+// differs is SHA-1 versus SHA-2, which is the difference between a server
+// accepting the signature and its journal recording a refusal.
 func (h *helperReverse) sign(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p proto.SignParams
 	if err := decodeReverseParams(raw, &p); err != nil {
@@ -292,8 +299,15 @@ func (h *helperReverse) sign(ctx context.Context, raw json.RawMessage) (any, err
 		return nil, err
 	}
 
-	signature, algorithm, err := h.client.SignWithCredentialRef(ctx, h.secrets, ref, passphrase, p.Challenge)
+	signature, signed, err := h.client.SignWithCredentialRef(ctx, h.secrets, ref, passphrase, p.Challenge, p.Algorithm)
 	if err != nil {
+		if errors.Is(err, ssh.ErrSignatureAlgorithm) {
+			// The key is fine and the REQUEST is wrong: an algorithm this key
+			// format does not have. That is the helper's mistake rather than a
+			// person's problem, and reporting it as a material failure would
+			// send somebody to look at a vault that is working.
+			return nil, badReverseParams(fmt.Sprintf("%v", err))
+		}
 		var locked *ssh.ErrEncryptedKey
 		if errors.As(err, &locked) {
 			// The key is fine; it is locked, and the passphrase is nowhere to
@@ -305,9 +319,16 @@ func (h *helperReverse) sign(ctx context.Context, raw json.RawMessage) (any, err
 		}
 		return nil, h.materialRefusal(err)
 	}
-	if algorithm != p.Algorithm {
+	// THE SIGNATURE IS MADE WITH THE ALGORITHM THE REQUEST NAMED, and this
+	// comparison is what makes that a fact rather than an intention: the
+	// helper negotiated it with the server (rsa-sha2-512 for an RSA key, whose
+	// own type `ssh-rsa` is SHA-1 and refused by every modern sshd), and a
+	// signer that answered with something else has produced a signature the
+	// peer will reject with a message about algorithms rather than about this
+	// connection.
+	if signed != p.Algorithm {
 		return nil, badReverseParams(fmt.Sprintf(
-			"the credential's key is %s and the request asked to sign as %s", algorithm, p.Algorithm))
+			"the credential's key signs as %s and the request asked to sign as %s", signed, p.Algorithm))
 	}
 	return proto.SignResult{Signature: signature}, nil
 }

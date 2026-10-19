@@ -38,6 +38,16 @@ export interface SshdFixture {
   port: number
   /** Private key file for the user the fixture accepts. */
   userKey: string
+  /**
+   * The RSA user key the fixture minted and also accepts, when it was started
+   * with `-rsa-key`, in the OpenSSH encoding.
+   *
+   * It exists for the credential shape whose public key TYPE is not the
+   * algorithm a modern server negotiates (`ssh-rsa` is SHA-1, excluded from
+   * `PubkeyAcceptedAlgorithms` since OpenSSH 8.8): a spec stores this path's
+   * bytes in the vault and opens a pane with it (nocx-1ebrs.17).
+   */
+  rsaKey?: string
   /** A known_hosts line for the host key this spawn minted. */
   knownHosts: string
   /**
@@ -96,6 +106,7 @@ export function startSshd(opts: StartSshdOptions): Promise<SshdFixture> {
   const { promise, resolve, reject } = Promise.withResolvers<SshdFixture>()
   let addr = ''
   let userKey = ''
+  let rsaKey = ''
   let knownHosts = ''
   const lines: string[] = []
   // A line can split across pipe chunks; hold the partial tail so READY is
@@ -115,11 +126,22 @@ export function startSshd(opts: StartSshdOptions): Promise<SshdFixture> {
       lines.push(trimmed)
       if (trimmed.startsWith('ADDR=')) addr = trimmed.slice(5)
       if (trimmed.startsWith('USERKEY=')) userKey = trimmed.slice(8)
+      if (trimmed.startsWith('RSAKEY=')) rsaKey = trimmed.slice(7)
       if (trimmed.startsWith('KNOWNHOSTS=')) knownHosts = trimmed.slice(11)
       if (trimmed === 'READY' && addr && userKey && knownHosts) {
         clearTimeout(timer)
         const [host, port] = addr.split(':')
-        resolve({ proc, host, port: Number(port), userKey, knownHosts, lines: () => lines })
+        resolve({
+          proc,
+          host,
+          port: Number(port),
+          userKey,
+          // Only when the fixture minted one: undefined is "this host accepts
+          // no RSA key", which is every caller that predates `-rsa-key`.
+          rsaKey: rsaKey === '' ? undefined : rsaKey,
+          knownHosts,
+          lines: () => lines,
+        })
       }
     }
   })

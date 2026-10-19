@@ -16,6 +16,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -107,6 +108,31 @@ func testKeyMaterial(t *testing.T, passphrase string) (pemBytes []byte, signer g
 		block, err = gossh.MarshalPrivateKey(priv, "nocx-test")
 	} else {
 		block, err = gossh.MarshalPrivateKeyWithPassphrase(priv, "nocx-test", []byte(passphrase))
+	}
+	if err != nil {
+		t.Fatalf("marshal private key: %v", err)
+	}
+	return pem.EncodeToMemory(block), signer
+}
+
+// testRSAKeyMaterial is the same pair for an RSA key, which is the type whose
+// own type string is NOT the algorithm a modern server accepts
+// (nocx-1ebrs.17).
+func testRSAKeyMaterial(t *testing.T, passphrase string) (pemBytes []byte, signer gossh.Signer) {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate RSA key: %v", err)
+	}
+	signer, err = gossh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	var block *pem.Block
+	if passphrase == "" {
+		block, err = gossh.MarshalPrivateKey(priv, "nocx-test-rsa")
+	} else {
+		block, err = gossh.MarshalPrivateKeyWithPassphrase(priv, "nocx-test-rsa", []byte(passphrase))
 	}
 	if err != nil {
 		t.Fatalf("marshal private key: %v", err)
@@ -255,6 +281,71 @@ func TestTheSignHandlerSignsWithTheStoredKey(t *testing.T) {
 	// is what a signature is for.
 	if bytesContainsAny(got.Signature, keyPEM) {
 		t.Fatal("the key's own bytes came back in the signature")
+	}
+}
+
+// TestTheSignHandlerSignsWithTheAlgorithmTheRequestNames is nocx-1ebrs.17's
+// coordinator half: the helper negotiated `rsa-sha2-512` with the server, and
+// the signature that comes back is made with THAT algorithm rather than with
+// the key's own type.
+//
+// The failure this is the refusal-of is the one the server's journal recorded:
+// a signature made with `ssh-rsa` (SHA-1) for an RSA key whose credential was
+// correct, refused by a host that has excluded it since OpenSSH 8.8. The
+// algorithm is asserted on the signature BLOB's own format field, because that
+// is what the server reads — an assertion on the request would only repeat what
+// the test asked for.
+func TestTheSignHandlerSignsWithTheAlgorithmTheRequestNames(t *testing.T) {
+	keyPEM, signer := testRSAKeyMaterial(t, "")
+	f := newReverseFixture(t, map[credential.SecretID][]byte{"key-1": keyPEM})
+
+	challenge := []byte("the handshake's challenge")
+	for _, algorithm := range []string{gossh.KeyAlgoRSASHA512, gossh.KeyAlgoRSASHA256} {
+		result, err := f.handlers.sign(context.Background(), params(t, proto.SignParams{
+			Credential: proto.SSHCredential{Ref: ssh.VaultRef("key-1").String()},
+			Challenge:  challenge,
+			Algorithm:  algorithm,
+		}))
+		if err != nil {
+			t.Fatalf("sign as %s: %v", algorithm, err)
+		}
+		got, ok := result.(proto.SignResult)
+		if !ok {
+			t.Fatalf("result type = %T, want proto.SignResult", got)
+		}
+		var sig gossh.Signature
+		if err := gossh.Unmarshal(got.Signature, &sig); err != nil {
+			t.Fatalf("the signature is not an ssh signature: %v", err)
+		}
+		if sig.Format != algorithm {
+			t.Fatalf("the signature's own format is %q, want %q — %q is SHA-1 and the host refused it "+
+				"with `signature algorithm ssh-rsa not in PubkeyAcceptedAlgorithms`",
+				sig.Format, algorithm, gossh.KeyAlgoRSA)
+		}
+		if err := signer.PublicKey().Verify(challenge, &sig); err != nil {
+			t.Fatalf("the %s signature does not verify against the key: %v", algorithm, err)
+		}
+	}
+}
+
+// TestTheSignHandlerRefusesAnAlgorithmItsKeyCannotProduce is the paired refusal,
+// and it is about the ALGORITHM rather than about the key: an ed25519 key asked
+// to sign as `ssh-rsa` is a request this coordinator cannot honour, and saying
+// so is what stops it signing with something else and letting the server answer
+// "no supported methods remain".
+func TestTheSignHandlerRefusesAnAlgorithmItsKeyCannotProduce(t *testing.T) {
+	keyPEM, signer := testKeyMaterial(t, "")
+	f := newReverseFixture(t, map[credential.SecretID][]byte{"key-1": keyPEM})
+
+	_, err := f.handlers.sign(context.Background(), params(t, proto.SignParams{
+		Credential: proto.SSHCredential{Ref: ssh.VaultRef("key-1").String()},
+		Challenge:  []byte("a challenge"),
+		Algorithm:  gossh.KeyAlgoRSA,
+	}))
+	if code := reverseRefusalCode(t, err); code != proto.ErrCodeBadParams {
+		t.Fatalf("code = %q (err %v), want %q: a %s key cannot sign as %s, and that is a bad request "+
+			"rather than a vault that would not open", code, err, proto.ErrCodeBadParams,
+			signer.PublicKey().Type(), gossh.KeyAlgoRSA)
 	}
 }
 

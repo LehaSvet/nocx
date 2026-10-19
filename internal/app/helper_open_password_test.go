@@ -482,6 +482,17 @@ func (s *pwSSHServer) authAttempts() []string {
 	return append([]string(nil), s.passwords...)
 }
 
+// keyOffers is every public key this host was asked to consider, in order —
+// the far side's own count of the authentication rounds a pane's ONE gesture
+// cost (nocx-1ebrs.18). It counts OFFERS rather than successes: a refused
+// credential never completes a handshake, so connCount cannot see it, and a
+// refused offer is exactly the event that must not repeat.
+func (s *pwSSHServer) keyOffers() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.keyFingerprints...)
+}
+
 // killConns closes every established server-side connection, which is the
 // fixture's way of losing the transport under a lease that is mid-conversation.
 //
