@@ -633,6 +633,10 @@ func identityKey(id proto.SSHIdentity) string {
 // host key nobody has recorded or one that changed are their own two refusals
 // with the evidence attached, and anything else is a lost connection.
 //
+// The dial half is classifyDialRefusal, which the LEASE classifies with as well
+// (probeops.go): one vocabulary for "what a dial failed with", because a lease
+// and a channel are two ways of asking the same connection for something.
+//
 // ONE refused code for the two refusal points — the session and the subsystem
 // request — because a caller cannot act differently on them: either way this
 // host will not serve that channel. The sentence carries which one it was, so
@@ -666,15 +670,40 @@ func classifyChannelError(err error) error {
 		return &proto.Refusal{Code: proto.ErrCodeChannelRefused, Message: err.Error()}
 	}
 
-	// Everything else is classified with the SAME function the probe uses, so
-	// an unreachable host, a rejected credential and a locked key are the same
-	// facts here as there: one classification, two ops.
+	// Everything else is a DIAL outcome, classified by the one function that
+	// owns that vocabulary (`classifyDialRefusal`).
+	if refusal, ok := classifyDialRefusal(err); ok {
+		return refusal
+	}
+	// A failure nobody can classify stays this helper's own (`internal`)
+	// rather than being folded into a class that would send somebody to
+	// look at the host (the probe path's own rule, one op over).
+	return fmt.Errorf("open a channel: %w", err)
+}
+
+// classifyDialRefusal types what a DIAL failed with, in the vocabulary the
+// coordinator already switches on, and reports false when nothing could be
+// said about it.
+//
+// It is the dial half of classifyChannelError, extracted for its second
+// caller: the LEASE (probeops.go's `lease`) dials exactly as a channel open
+// does, and before this it answered with an unclassified error — so a server
+// that refused the credential reached the coordinator as `internal` rather
+// than as `rejected`, which is the difference between "stop, the credential is
+// wrong" and "something went wrong in the helper" (nocx-1ebrs.18). Two ops
+// that dial must speak one vocabulary; that is why this is shared rather than
+// copied.
+//
+// A refusal this coordinator sent back is returned first and unchanged: a
+// sealed vault reaches a person as the state it is (the probe's own rule).
+func classifyDialRefusal(err error) (*proto.Refusal, bool) {
+	var refusal *proto.Refusal
+	if errors.As(err, &refusal) {
+		return refusal, true
+	}
 	outcome, detail, unclassified := ssh.ClassifyProbeError(err)
 	if unclassified != nil {
-		// A failure nobody can classify stays this helper's own (`internal`)
-		// rather than being folded into a class that would send somebody to
-		// look at the host (the probe path's own rule, one op over).
-		return fmt.Errorf("open a channel: %w", unclassified)
+		return nil, false
 	}
 	code := string(outcome)
 	var details json.RawMessage
@@ -686,7 +715,7 @@ func classifyChannelError(err error) error {
 	case errors.As(err, &changed):
 		details = hostKeyEvidence(changed.Addr, changed.KnownHostsAddr, changed.KeyAlgo, changed.Key, changed.Fingerprint, changed.Expected)
 	}
-	return &proto.Refusal{Code: code, Message: detail, Details: details}
+	return &proto.Refusal{Code: code, Message: detail, Details: details}, true
 }
 
 // hostKeyEvidence marshals what the coordinator needs to rebuild its own typed

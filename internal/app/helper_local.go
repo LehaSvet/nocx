@@ -996,6 +996,21 @@ func (o *localHelperOpener) openSSH(ctx context.Context, spawn hostedSpawn, cfg 
 	if remote := cfg.Remote; remote != nil && remote.RemoteInstaller != nil &&
 		profile.DesiredMode(remote.DesiredMode).DeliversScripts() {
 		if hold, herr := o.holdConnection(ctx, target); herr != nil {
+			// A DEFINITIVE REJECTION IS THE ANSWER, NOT A SETBACK
+			// (nocx-1ebrs.18). The hold is an optimisation, so every failure
+			// that might still be recovered below is only a warning — but a
+			// server that has REFUSED the credential will refuse the publish's
+			// lease and the spawn's channel too, and each of those is another
+			// handshake with the same wrong answer. That is how one click
+			// became five failed authentication rounds on the far host's own
+			// journal, which on a host running fail2ban, MaxAuthTries or
+			// pam_faillock is how a person locks themselves out of their own
+			// machine. So it is reported here, once, and nothing below is
+			// tried: `no supported methods remain` is the server saying stop.
+			if definitiveAuthRejection(herr) {
+				return hostedSpawnResult{}, fmt.Errorf(
+					"open an ssh pane on this machine's helper: %w", herr)
+			}
 			if o.log != nil {
 				o.log.Warn("ssh pane: could not hold the connection across the publish; the spawn may re-authenticate",
 					"host", cfg.Host, "error", herr)
@@ -1005,6 +1020,24 @@ func (o *localHelperOpener) openSSH(ctx context.Context, spawn hostedSpawn, cfg 
 		}
 	}
 	if perr := o.publishForPane(ctx, cfg); perr != nil {
+		// AND A FAILED PUBLISH NEVER COSTS A SECOND AUTHENTICATION.
+		//
+		// A publish that failed on a connection which is UP — the far side
+		// named no home, the bundle would not commit, the sftp subsystem is
+		// absent — is the case below: the pane degrades to a conventional
+		// shell, which ADR-0004 and §6.1 step 5 make the one thing no failure
+		// path may suppress, and no credential is offered again because the
+		// pooled connection the spawn inherits is already authenticated.
+		//
+		// A publish that failed because the SERVER REFUSED THE CREDENTIAL is
+		// the other case, and it is not a publish failure at all: there is no
+		// authenticated connection to degrade onto, and the spawn that follows
+		// would authenticate a third time to be told the same no. It is
+		// reported, once, and the open stops here.
+		if definitiveAuthRejection(perr) {
+			return hostedSpawnResult{}, fmt.Errorf(
+				"open an ssh pane on this machine's helper: %w", perr)
+		}
 		// THE LOGGER IS OPTIONAL and the failure is not: a test that wires an
 		// opener without one must still get the fail-open behaviour below
 		// rather than a panic, so the log line is guarded rather than assumed.
@@ -1190,7 +1223,11 @@ func (o *localHelperOpener) holdConnection(ctx context.Context, target ssh.DialT
 		Destination: ssh.WireDestination(target),
 	})
 	if err != nil {
-		return nil, err
+		// TRANSLATED, so the caller can act on WHY rather than only on the
+		// sentence: a refused credential is *ssh.ErrAuthRejected after this,
+		// and openSSH stops at the first one instead of letting the publish and
+		// the spawn authenticate again (nocx-1ebrs.18).
+		return nil, translateProbeRefusal(target.Host, err)
 	}
 	return lease, nil
 }

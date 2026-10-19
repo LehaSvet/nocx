@@ -767,7 +767,23 @@ func (s *Service) authMethods(ctx context.Context, conn *host.Host, ep dialEndpo
 				// answer for with a panic rather than a refusal.
 				return nil, fmt.Errorf("%w: key %d: public key: %w", errBadProbeParams, i, err)
 			}
-			signers = append(signers, &reverseSigner{ctx: ctx, conn: conn, cred: offer.Credential, pub: pub})
+			// EVERY IDENTITY IS NAMED AS IT IS OFFERED, by FINGERPRINT and
+			// never by material (nocx-1ebrs.18). The line exists because "the
+			// server refused a public key" says nothing about WHICH key was
+			// offered: the right key refused and the wrong key offered are two
+			// different defects with one log line otherwise, and telling them
+			// apart cost a night of bisection. A fingerprint is a one-way
+			// function of a public key, which the server sees anyway.
+			//
+			// It is one line per identity per handshake, so a burst of
+			// re-authentications is counted rather than hidden: that is the
+			// visible bound nocx-1ebrs.18 asks for.
+			s.log.Info("ssh: offering an identity",
+				"host", ep.Host, "user", ep.User, "index", i,
+				"fingerprint", gossh.FingerprintSHA256(pub), "keyType", pub.Type())
+			signers = append(signers, &reverseSigner{
+				ctx: ctx, conn: conn, cred: offer.Credential, pub: pub, log: s.log,
+			})
 		}
 		return []gossh.AuthMethod{gossh.PublicKeys(signers...)}, nil
 	}

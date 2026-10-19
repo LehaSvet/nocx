@@ -21,6 +21,31 @@ func (e *ErrAuthFailed) Error() string {
 
 func (e *ErrAuthFailed) Unwrap() error { return e.Err }
 
+// ErrAuthRejected is the far side's DEFINITIVE answer that the credential it was
+// offered is not one it accepts, rebuilt on this side of the helper's wire.
+//
+// It exists beside ErrAuthFailed rather than instead of it, and the difference
+// is what a caller DOES with it: ErrAuthFailed says "none of the methods this
+// process tried succeeded", which a retry can sometimes change (a transient
+// transport failure inside the handshake reaches it too); ErrAuthRejected says
+// "the server answered no", which no second attempt can change. `no supported
+// methods remain` is the server saying stop, and a terminal that turns one
+// gesture into four handshakes can get a person locked out of their own host by
+// fail2ban, MaxAuthTries or pam_faillock (nocx-1ebrs.18).
+//
+// Error() is the sentence the helper sent, verbatim, because the person reading
+// it is reading the far side's own account of what it would not accept.
+type ErrAuthRejected struct {
+	// Host and User name the destination the answer is about. They are the
+	// coordinator's resolved values and not a second parse of the message.
+	Host string
+	User string
+	// Reason is the helper's sentence.
+	Reason string
+}
+
+func (e *ErrAuthRejected) Error() string { return e.Reason }
+
 // ErrNoAuthMethod is returned when the connection had nothing to authenticate
 // with: the auth method it names has no material behind it. It is a
 // configuration answer, not a server one, and it is deliberately separate from

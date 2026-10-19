@@ -42,6 +42,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shady2k/nocx/internal/credential"
 	helperclient "github.com/shady2k/nocx/internal/helper/client"
 	"github.com/shady2k/nocx/internal/helper/host"
 	helpersession "github.com/shady2k/nocx/internal/helper/session"
@@ -72,6 +73,16 @@ type paneJourney struct {
 // service + session service with the real spawner), the coordinator's client
 // and resolver, and the product carrier between them.
 func startPaneJourney(t *testing.T, srv *pwSSHServer) *paneJourney {
+	t.Helper()
+	return startPaneJourneyWithSecrets(t, srv, &askRecorder{value: openPasswordFixturePassword})
+}
+
+// startPaneJourneyWithSecrets is the same composition with a caller-chosen
+// credential resolver behind the reverse `sign`/`secret` handlers — the shape a
+// pane whose credential is a KEY needs, because the coordinator's reverse
+// handlers are the party that signs for material the helper never holds
+// (nocx-1ebrs.17).
+func startPaneJourneyWithSecrets(t *testing.T, srv *pwSSHServer, secrets credential.Resolver) *paneJourney {
 	t.Helper()
 	logger := discardLogger(t)
 	sshLog := log.NewSlogAdapter(logger)
@@ -137,9 +148,8 @@ func startPaneJourney(t *testing.T, srv *pwSSHServer) *paneJourney {
 		Exec:        helperclient.NewSocketConn(coordEnd),
 		ExpectHash:  filesFixtureGenera,
 		SentinelTTL: 5 * time.Second,
-		Reverse: helperReverseHandlers(
-			rc, &askRecorder{value: openPasswordFixturePassword}, prompts, nil, logger),
-		Log: logger,
+		Reverse:     helperReverseHandlers(rc, secrets, prompts, nil, logger),
+		Log:         logger,
 	})
 	if err != nil {
 		t.Fatalf("helperclient.Dial: %v", err)
@@ -227,6 +237,39 @@ func (j *paneJourney) openSSHInteractive(t *testing.T, mode string, requester ss
 			// names, and this process is the party that checks it.
 			AuthorizedEndpoint: j.srv.addr,
 			ConnectionName:     "pane publish journey",
+			DesiredMode:        mode,
+			Shell:              "bash",
+			RemoteInstaller:    j.carrier,
+		},
+	}, "")
+	if err == nil {
+		_ = opened.Session.Close()
+	}
+	if !selected {
+		t.Fatalf("this machine's opener declined an ssh pane (selected=false)")
+	}
+	return err
+}
+
+// openSSHWithKey opens one ssh pane whose credential is a KEY this side holds —
+// a REFERENCE and a resolver, never the bytes (nocx-50w7p.11's rule) — which is
+// the configuration nocx-1ebrs.17 broke and no e2e exercised.
+func (j *paneJourney) openSSHWithKey(t *testing.T, mode string, secrets credential.Resolver, secretID credential.SecretID) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	opened, selected, err := j.opener.OpenHosted(ctx, session.Config{
+		Kind: session.KindRemote,
+		Host: j.srv.addr,
+		Remote: &ssh.ConnectConfig{
+			User:        filesFixtureUser,
+			AuthMode:    "key",
+			Secrets:     secrets,
+			KeySecretID: secretID,
+			// The credential may only be spent on the endpoint its profile
+			// names, and this process is the party that checks it.
+			AuthorizedEndpoint: j.srv.addr,
+			ConnectionName:     "pane key journey",
 			DesiredMode:        mode,
 			Shell:              "bash",
 			RemoteInstaller:    j.carrier,
@@ -369,6 +412,95 @@ func TestASSHPaneWithNothingStoredAsksThePersonOnceFromThePublishUntilTheSpawnHo
 	}
 	t.Logf("MEASURED %d ask(s) and %d authentication(s) for one script-mode pane with nothing stored",
 		asker.count(), srv.connCount())
+}
+
+// TestASSHPaneWhoseCredentialTheServerRefusesAuthenticatesOnce is
+// nocx-1ebrs.18's acceptance, and it is counted on the FAR HOST rather than on
+// this side's log: one pane open, one authentication attempt.
+//
+// # The defect
+//
+// A pane open dials the same destination three times before it fails — the
+// keep-alive lease held across the publish, the publish's own lease, and the
+// spawn — and each of them, meeting a credential the server has already
+// refused, used to authenticate again. One person's one "Connect" click became
+// five `userauth_pubkey` refusals in a real host's journal. Against MaxAuthTries,
+// fail2ban, pam_faillock or a cloud provider's brute-force guard, that is how a
+// terminal locks somebody out of their own machine.
+//
+// # Why a KEY and not a password
+//
+// A refused key is a definitive answer with no person in the loop: the host is
+// asked to consider one public key per handshake, and this fixture counts every
+// offer. The key offered here is not the key the host accepts, so every round is
+// refused in a full handshake — the same shape the owner measured, where the
+// algorithm made every signature unacceptable.
+func TestASSHPaneWhoseCredentialTheServerRefusesAuthenticatesOnce(t *testing.T) {
+	srv, _, _ := newBundleFixture(t)
+	srv.acceptLaunchExec = true
+	// The host takes a key, and NOT this pane's: the refusal is the SERVER's,
+	// in its own handshake, rather than something this test pretended.
+	offeredPEM, _ := testKeyMaterial(t, "")
+	_, accepted := testKeyMaterial(t, "")
+	srv.acceptedKey = accepted.PublicKey()
+
+	const secretID = credential.SecretID("key-the-host-refuses")
+	secrets := &fakeSecrets{material: map[credential.SecretID][]byte{secretID: offeredPEM}}
+	journey := startPaneJourneyWithSecrets(t, srv, secrets)
+
+	err := journey.openSSHWithKey(t, "script", secrets, secretID)
+	if err == nil {
+		t.Fatal("an ssh pane opened with a credential the far host refused")
+	}
+	// The open says WHAT happened, and it is the rejection rather than the
+	// publish's or the spawn's account of it: a person has to be able to act on
+	// this, and a caller has to be able to tell it from a transient failure.
+	if !definitiveAuthRejection(err) {
+		t.Fatalf("the open failed with %v, and nothing in it says the server refused the credential", err)
+	}
+	if got := len(srv.keyOffers()); got != 1 {
+		t.Fatalf("the far host was asked to consider %d public key offer(s) for one pane open, want "+
+			"exactly 1 — each further offer is another failed authentication round, and a host that "+
+			"counts them locks the account (%v)", got, srv.keyOffers())
+	}
+	t.Logf("MEASURED one refused credential: %v; the far host saw %d offer(s), and nothing was "+
+		"published or spawned on it", err, len(srv.keyOffers()))
+}
+
+// TestAFailedPublishCostsNoSecondAuthentication is the other half of
+// nocx-1ebrs.18, and it is the fail-open rule with a count on it: the bundle
+// could not be published (this host will not say where its home is), the
+// connection is still authenticated and usable, the pane opens as a
+// conventional shell, and the far host authenticates exactly ONCE.
+//
+// It is asserted beside TestAPaneStillOpensWhenItsBundleCouldNotBePublished
+// rather than instead of it: that test holds the degrade open, and this one
+// holds the cost of it to one credential.
+func TestAFailedPublishCostsNoSecondAuthentication(t *testing.T) {
+	srv, _, home := newBundleFixture(t)
+	srv.acceptLaunchExec = true
+	// The refusal that keeps a bundle out of a directory nobody named: the
+	// publish fails with a cause of its own that has nothing to do with the
+	// credential.
+	srv.home = ""
+	journey := startPaneJourney(t, srv)
+
+	if err := journey.openSSH(t, "script"); err != nil {
+		t.Fatalf("a failed publish refused the pane: %v — an un-integrated terminal is what §6.1 step 5 "+
+			"promises instead", err)
+	}
+	if got := srv.connCount(); got != 1 {
+		t.Fatalf("the far host authenticated %d connection(s) for one pane whose PUBLISH failed, want "+
+			"exactly 1: the connection was up, so re-authenticating to publish a convenience artefact "+
+			"turns a cosmetic failure into an authentication storm", got)
+	}
+	if fileExistsIn(t, bundleManifest(home)) {
+		t.Fatalf("a bundle appeared although the host named no home")
+	}
+	if got := len(srv.launchCommands()); got != 1 {
+		t.Fatalf("the host was asked to run %d launches, want 1: the pane must still be started", got)
+	}
+	t.Logf("MEASURED a failed publish on an authenticated connection: 1 authentication, pane opened")
 }
 
 // fileExistsIn answers whether a path is a regular file.

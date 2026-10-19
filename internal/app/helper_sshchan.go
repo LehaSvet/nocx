@@ -440,6 +440,46 @@ func hostKeyErrorFromHelperRefusal(err error) error {
 	return err
 }
 
+// definitiveAuthRejection reports whether err is the far side's definitive
+// answer that the credential it was offered is not one it accepts.
+//
+// # Why this predicate exists, and why it is not "any ssh error" (nocx-1ebrs.18)
+//
+// An open has three places that dial the same destination: the keep-alive lease
+// held across the publish, the publish's own lease, and the pane's spawn. Each
+// of them, meeting a credential the server has refused, used to authenticate
+// again — one person's one "Connect" click became five failed authentication
+// rounds in the far host's journal, and a host running fail2ban, MaxAuthTries,
+// pam_faillock or a cloud provider's brute-force guard answers that by locking
+// the account. So the first definitive rejection must be the last attempt.
+//
+// The distinction the caller needs is not "did it fail" but "can another
+// attempt possibly succeed". A refused credential cannot: the server has
+// already said no, in a full handshake, about material that will not change in
+// the next second. A host that did not answer, a dropped transport, a helper
+// that went away mid-dial can — those stay untyped failures here and keep the
+// fail-open path they always had.
+//
+// Three shapes are the same fact, and all three are checked because the error
+// arrives by three routes: the coordinator's own typed error from a lease it
+// translated, the coordinator's own dial error, and a helper refusal that was
+// not translated (a spawn's channel open reports its own code).
+func definitiveAuthRejection(err error) bool {
+	if err == nil {
+		return false
+	}
+	var rejected *ssh.ErrAuthRejected
+	if errors.As(err, &rejected) {
+		return true
+	}
+	var authErr *ssh.ErrAuthFailed
+	if errors.As(err, &authErr) {
+		return true
+	}
+	var refusal *helperclient.RefusalError
+	return errors.As(err, &refusal) && refusal.Code == string(proto.ProbeRejected)
+}
+
 // translate re-types a helper refusal into the error this coordinator's callers
 // already switches on.
 //
