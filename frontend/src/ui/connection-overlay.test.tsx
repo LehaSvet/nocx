@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs'
-import { cleanup, fireEvent } from '@solidjs/testing-library'
+import { cleanup, fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -9,6 +9,7 @@ import {
   mountConnectionOverlay,
   type ConnectionOverlayState,
 } from './connection-overlay'
+import { Prompt } from './prompt'
 
 const EXIT_MS = CONNECTION_OVERLAY_EXIT_MS
 
@@ -410,5 +411,33 @@ describe('ConnectionOverlay', () => {
 
     await Promise.resolve()
     expect(onHidden).not.toHaveBeenCalled()
+  })
+
+  // ── What this overlay must not take with it ───────────────────────────
+  // The vault asks for its passphrase the moment a client attaches
+  // (vault.EnsureUnsealed raises on presence), and this overlay is up for the
+  // startup minimum plus its own fade afterwards — so the two overlap on the
+  // connection every existing user makes after an upgrade. The prompt renders
+  // INSIDE this dialog, because being above an overlay is parentage; when the
+  // connection settles the dialog closes, and `dialog:not([open])` is
+  // display:none, so the question left the screen with it (nocx-1ebrs.7).
+  it('keeps a prompt raised while it was up when the connection settles', () => {
+    vi.useFakeTimers()
+    const { state } = subject({ kind: 'connecting' }, { minimumVisibleMs: 0 })
+    render(() => (
+      <Prompt open ariaLabel="Unlock the vault" onClose={() => undefined} actions={null}>
+        <input />
+      </Prompt>
+    ))
+    expect(
+      document.querySelector('.ui-prompt-overlay')!.closest('dialog.ui-connection-overlay'),
+    ).not.toBeNull()
+
+    state({ kind: 'online' })
+    vi.advanceTimersByTime(EXIT_MS)
+
+    const prompt = document.querySelector('.ui-prompt-overlay')
+    expect(prompt).toBeTruthy()
+    expect(prompt!.closest('dialog:not([open])')).toBeNull()
   })
 })

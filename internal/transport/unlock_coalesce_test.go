@@ -163,3 +163,53 @@ func TestVaultEnsureUnsealed_ThreeCallersOnePromptOverTheSocket(t *testing.T) {
 		t.Fatalf("a second vault.unlockRequest went out: %s", second)
 	}
 }
+
+// TestVaultUnlockResolved_AnAnswerArrivingAfterTheVaultRetiredTheAskIsAccepted
+// pins the other half of the retirement: the CLIENT'S SIDE of it.
+//
+// A prompt raised for a sealed vault is retired the moment another path
+// answers the question it was asking (internal/vault/unlock.go, nocx-1ebrs.7),
+// and the renderer that was shown the dialog knows nothing about that — it has
+// a person in front of it who may finish typing. Sending the resolution for
+// that dialog is the ordinary thing for such a client to do, so it is
+// accepted as the no-op it is: success, no state change, no new prompt.
+//
+// The alternative was measured: the resolution was refused as "Unknown request
+// id", which is what made the renderer swallow the result of its own answer
+// call — a race every surface that shows a prompt would otherwise inherit.
+//
+// The refusal for an id that was NEVER minted is the paired case and stays:
+// TestUnlockResolved_UnknownRequestID.
+func TestVaultUnlockResolved_AnAnswerArrivingAfterTheVaultRetiredTheAskIsAccepted(t *testing.T) {
+	s := newSealedUnlockHarness(t)
+	ctx := t.Context()
+
+	done := make(chan error, 1)
+	go func() { done <- s.h.v.EnsureUnsealed(ctx, "the ssh session needs its key") }()
+
+	frame := readUnlockRequestFrame(t, s.h.conn)
+
+	// Another path answers the question the prompt was asking — the
+	// container's unsealIfSealed, Settings, or a second window — while the
+	// renderer still has the dialog on screen.
+	if err := s.h.v.Unseal(ctx, vault.UnsealRequest{Passphrase: "test"}); err != nil {
+		t.Fatalf("unseal the vault from the other path: %v", err)
+	}
+
+	// The person finishes the dialog they were given.
+	answerUnlock(t, s.h.conn, frame.RequestID, "unsealed")
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the waiting operation = %v, want nil: the vault is open and the question was answered", err)
+		}
+	case <-time.After(wantWithin):
+		t.Fatal("the waiting operation was never released after the vault was unsealed")
+	}
+
+	// The late answer raised nothing: no second prompt went out to anybody.
+	if second := tryReadNotification(t, s.h.conn, "vault.unlockRequest", 300*time.Millisecond); second != nil {
+		t.Fatalf("a prompt went out after the vault was already open: %s", second)
+	}
+}

@@ -154,13 +154,79 @@ func main() {
 			TitleBar: application.MacTitleBarHidden,
 		},
 	})
-	window.Show()
+	// The window is NOT shown from here, and the call that used to be here did
+	// nothing: `WebviewWindow.Show` returns early while the platform
+	// implementation is nil, and it is nil until `shell.Run` below builds it.
+	// The one thing that actually puts the window on screen is Wails' own
+	// order-front on the webview's first finished navigation. So the shell is
+	// handed to the service, and the startup path raises it from a place where
+	// the call works — see afterLaunch (nocx-1ebrs.6).
 	wailsApp.window = window
+	wailsApp.shell = &wailsShell{window: window, logger: logger}
 
 	if err := shell.Run(); err != nil {
 		logger.Error("application error", "error", err)
 		os.Exit(1)
 	}
+}
+
+// shellWindow is the part of the shell the launch path needs: the window
+// itself, and a place to put a sentence a person must not miss.
+//
+// Two calls, one owner. The launcher announces BEFORE anything can be shown —
+// that ordering is deliberate (a stop that then fails must still leave the
+// person told), so the notice waits in [noticeRecorder] until there is a
+// window to put it over. This is that window, abstracted so the ordering rule
+// can be written down and checked in a test at all (nocx-1ebrs.6).
+type shellWindow interface {
+	// Show raises the window.
+	Show()
+	// Present shows one notice as a dialog a person has to dismiss.
+	Present(notice coordinator.Notice)
+}
+
+// wailsShell is the shellWindow this process actually has.
+type wailsShell struct {
+	window *application.WebviewWindow
+	logger *slog.Logger
+}
+
+// Show raises the window.
+//
+// It is a no-op until Wails has built the platform window, which is what makes
+// WHEN it is called the whole of the question: called before `shell.Run`, it
+// creates nothing and says nothing.
+func (s *wailsShell) Show() {
+	if s.window == nil {
+		return
+	}
+	s.window.Show()
+}
+
+// Present raises one dialog, over a window that is already on screen.
+//
+// A DIALOG, not a log line and not a toast: D4 permits A1 to kill an
+// incompatible coordinator and lose its sessions, and requires that the loss be
+// said out loud. A person who has just watched their SSH connections die has to
+// be told that is what happened, and a message that can be missed is not
+// telling them.
+//
+// It stays UNATTACHED to the window on purpose. A Wails sheet needs a visible
+// window to attach to and is dropped silently when there is not one, which is
+// the failure this bead is about; a modal with a window behind it has no such
+// condition. What the notice needed was the window, not a parent.
+func (s *wailsShell) Present(notice coordinator.Notice) {
+	app := application.Get()
+	if app == nil {
+		// Nothing to raise it with. Said rather than swallowed — the caller
+		// has already decided this notice is not droppable.
+		s.logger.Warn("nocx: no application to show a notice on", "kind", string(notice.Kind))
+		return
+	}
+	app.Dialog.Warning().
+		SetTitle("The nocx backend was replaced").
+		SetMessage(notice.Message).
+		Show()
 }
 
 // BackendResolution is the result of one coordinator discovery attempt.
@@ -206,6 +272,12 @@ type WailsApp struct {
 	// only that an incompatible coordinator was replaced and its sessions
 	// died (D4). Shown as a dialog once the shell can raise one.
 	notices noticeRecorder
+
+	// shell is the window surface a notice is raised on, and nil until main has
+	// created the window. A nil shell means "nothing can be shown yet": every
+	// notice stays recorded rather than being dropped, because the one message
+	// this exists for is the one an upgrade depends on (nocx-1ebrs.6).
+	shell shellWindow
 
 	// updater applies signed releases to the installed bundle. It belongs to
 	// the WINDOW rather than to the daemon in A1: it is about the files on
@@ -328,10 +400,20 @@ func (w *WailsApp) ServiceStartup(ctx context.Context, _ application.ServiceOpti
 	// with no backend quits and never presents anything.
 	w.startAttention(ctx)
 
-	// Whatever the launcher said a person must be told, said. After the
-	// startup path rather than inside it, for the same main-thread reason as
-	// the fatal dialog above.
-	go w.showNotices()
+	// The window the rest of this file talks about, raised from a place where
+	// the call does something. It is created here rather than a moment later by
+	// Wails' own pending-window pass, so that everything from this line on runs
+	// in a process that HAS a window — including, on a replacement launch, the
+	// notice waiting in w.notices.
+	//
+	// The notice itself is NOT raised here. It was, from a goroutine, and on
+	// the launch that follows an upgrade that is a modal NSAlert with no window
+	// on screen behind it: the person dismissed the one sentence explaining
+	// what had happened and was left with an app that showed nothing at all
+	// (nocx-1ebrs.6). ResolveBackend raises it instead — the renderer's first
+	// call, which cannot happen until the webview has loaded and the window is
+	// therefore on screen.
+	w.afterLaunch()
 	return nil
 }
 
@@ -468,6 +550,12 @@ func (w *WailsApp) runLaunch(ctx context.Context, execPath string) (coordinator.
 func (w *WailsApp) ResolveBackend() BackendResolution {
 	w.launchMu.Lock()
 	defer w.launchMu.Unlock()
+
+	// This binding is the renderer's first call, so it is the first moment at
+	// which the window is known to be on screen — the webview has loaded and is
+	// running. Everything that must not be said to an empty screen is said
+	// here: the window, and then whatever the launcher did on the way.
+	w.afterLaunch()
 
 	if failure := w.launchFailure; failure != nil {
 		w.launchFailure = nil
@@ -675,25 +763,39 @@ func (r *noticeRecorder) drain() []coordinator.Notice {
 	return drained
 }
 
-// showNotices raises one dialog per notice.
+// afterLaunch raises the window, then says what the launcher did.
 //
-// A DIALOG, not a log line and not a toast. D4 permits A1 to kill an
-// incompatible coordinator and lose its sessions, and requires that the loss
-// be said out loud; a person who has just watched their SSH connections die
-// has to be told that is what happened, and a message that can be missed is
-// not telling them.
+// ONE FUNCTION, because the order is the contract. A notice raised before there
+// is a window is a modal with nothing behind it, and that is not a cosmetic
+// detail: on the launch that follows an upgrade the person dismissed the notice
+// and got no window at all, on the one launch every existing user takes
+// (nocx-1ebrs.6). Called from the two places that know a window is available —
+// the end of the startup path, and ResolveBackend, which the renderer can only
+// reach once the webview is up.
+//
+// It is idempotent by construction: Show is, and the recorder drains once.
+func (w *WailsApp) afterLaunch() {
+	if w.shell != nil {
+		w.shell.Show()
+	}
+	w.showNotices()
+}
+
+// showNotices raises one dialog per recorded notice, and KEEPS the ones it has
+// nowhere to raise.
+//
+// The recorder is drained only once a surface exists. It used to be drained
+// first and the absence of a Wails application checked second, so a notice that
+// arrived before the window existed — which is every notice the launcher raises
+// — was taken out of the recorder and shown to nobody (nocx-1ebrs.6).
 func (w *WailsApp) showNotices() {
+	if w.shell == nil {
+		return
+	}
 	for _, n := range w.notices.drain() {
 		w.logger.Warn("nocx: telling the user what the launcher did",
 			"kind", string(n.Kind), "message", n.Message)
-		app := application.Get()
-		if app == nil {
-			return
-		}
-		app.Dialog.Warning().
-			SetTitle("The nocx backend was replaced").
-			SetMessage(n.Message).
-			Show()
+		w.shell.Present(n)
 	}
 }
 

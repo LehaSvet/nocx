@@ -57,7 +57,10 @@ func (s *WSServer) RequestConnectionPassword(ctx context.Context, req ssh.Passwo
 		}
 		return ssh.PasswordAnswer{Password: payload.Password, Remember: payload.Remember}, nil
 	case <-ctx.Done():
-		s.asks.drop(rid)
+		// RETIRED, NOT DROPPED, for the reason unlock_requester.go's
+		// retire gives: this ask reached a renderer, so the person may answer
+		// the prompt they were shown after the operation that asked gave up.
+		s.asks.retire(rid)
 		return ssh.PasswordAnswer{}, ctx.Err()
 	}
 }
@@ -98,9 +101,8 @@ func (h askResolverHandlers) handlePasswordResolved(req jsonrpcRequest) {
 		return
 	}
 
-	pa, ok := h.asks.consume(params.RequestID)
+	pa, ok := h.claim(req, params.RequestID)
 	if !ok {
-		_ = h.r.TryError(req.ID, RPCError{Code: -32602, Message: "Unknown request id"})
 		return
 	}
 
