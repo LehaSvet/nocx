@@ -181,6 +181,59 @@ func TestAReplacementEndsWithAWindowAndThenTheNotice(t *testing.T) {
 	}
 }
 
+// THE SHELL RAISES A WINDOW, IT DOES NOT BUILD ONE (ADR-0095).
+//
+// v0.6.1's Linux AppImage crashed on every launch, before WebKit's helper
+// processes were spawned, with a Go register dump and `signal arrived during
+// cgo execution` inside gtk_application_window_new. The path was the one this
+// test stands on: afterLaunch asked the shell to raise the window during
+// startup, and `WebviewWindow.Show` — which shows only what exists — CREATES
+// the platform window when there is none, on the GTK3 main thread, before
+// `g_application_run` has registered the application.
+//
+// So the rule is stated where it can be checked: a window the platform has not
+// built is not raised, and one it has, is.
+func TestTheShellRaisesOnlyAWindowThePlatformHasBuilt(t *testing.T) {
+	t.Run("not built yet: nothing is created", func(t *testing.T) {
+		window := &raisableDouble{built: false}
+		shell := &wailsShell{window: window, logger: logtest.Slog(t)}
+
+		shell.Show()
+
+		if window.shows != 0 {
+			t.Fatalf("the shell asked Wails for a window %d time(s) before the platform built one; "+
+				"want 0 — Wails' Show CREATES the window at that moment, and on GTK3 that is "+
+				"gtk_application_window_new before g_application_run, which segfaults", window.shows)
+		}
+	})
+
+	t.Run("built and on screen: raised", func(t *testing.T) {
+		window := &raisableDouble{built: true}
+		shell := &wailsShell{window: window, logger: logtest.Slog(t)}
+
+		shell.Show()
+
+		if window.shows != 1 {
+			t.Fatalf("the shell raised the window %d time(s); want 1 — a launch that has a window "+
+				"on screen must end with it in front", window.shows)
+		}
+	})
+}
+
+// raisableDouble is the window Wails owns, reduced to the two questions
+// [wailsShell.Show] asks it.
+type raisableDouble struct {
+	built bool
+	shows int
+}
+
+func (w *raisableDouble) IsVisible() bool { return w.built }
+
+func (w *raisableDouble) Show() application.Window {
+	w.shows++
+	return nil
+}
+
 // ── the quit chord and the quit item (nocx-1ebrs.13) ─────────────────────
 //
 // THE OWNER'S REGRESSION IS "Cmd+Q with the command editor focused quits". A

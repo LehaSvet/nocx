@@ -185,19 +185,57 @@ type shellWindow interface {
 	Present(notice coordinator.Notice)
 }
 
+// raisableWindow is the one window this shell may raise, stated as the two
+// questions [wailsShell.Show] asks of it.
+//
+// IT IS NOT `*application.WebviewWindow`, WHICH WOULD BE THE OBVIOUS TYPE, for
+// the same reason every other platform rule here is behind a seam: the defect
+// below is a rule about WHEN Show may be called, and a rule with no way to
+// state it is a rule nothing can hold. See [wailsShell.Show].
+type raisableWindow interface {
+	// IsVisible reports whether the platform has BUILT the window and put it
+	// on screen. It is false for as long as the platform implementation does
+	// not exist, which is the whole of the question Show has to ask.
+	IsVisible() bool
+	// Show raises the window.
+	Show() application.Window
+}
+
 // wailsShell is the shellWindow this process actually has.
 type wailsShell struct {
-	window *application.WebviewWindow
+	window raisableWindow
 	logger *slog.Logger
 }
 
-// Show raises the window.
+// Show raises the window, and ONLY one the platform has already built.
 //
-// It is a no-op until Wails has built the platform window, which is what makes
-// WHEN it is called the whole of the question: called before `shell.Run`, it
-// creates nothing and says nothing.
+// THE GUARD IS THE FIX FOR THE v0.6.1 RELEASE BLOCKER, and it is here rather
+// than at a call site because the call it wraps is a create-or-show: any caller
+// that reached Wails' Show a moment too early would recreate this defect, and a
+// guard at the seam is one place instead of one per caller.
+//
+// `WebviewWindow.Show` is not a show: with no platform
+// implementation it calls `WebviewWindow.Run`, which CREATES the platform
+// window (`impl = newWindowImpl(w)`, then the platform's own `run`). Called
+// from the startup path — which is inside `App.Run` BEFORE that function
+// reaches the platform's main loop — that creation is on the main thread with
+// the application not yet registered, and GTK3 answers with a SIGSEGV inside
+// cgo:
+//
+//	SIGSEGV: segmentation violation addr=0x18
+//	signal arrived during cgo execution
+//	_Cfunc_gtk_application_window_new ← windowNew ← (*linuxWebviewWindow).run
+//	  ← WebviewWindow.Run ← WebviewWindow.Show ← wailsShell.Show
+//	  ← afterLaunch ← ServiceStartup ← App.Run
+//
+// Measured on the v0.6.1 AppImage: every mutation of the release gate died this
+// way, before WebKit's own helper processes were spawned, so the gate could not
+// even report the helper-spawn failure it exists for (ADR-0095). Wails builds
+// and shows the window itself a moment later — `linuxWebviewWindow.run` shows
+// it unless the window is Hidden, and the darwin one does so from
+// WebViewDidFinishNavigation — so nothing is lost by raising only what exists.
 func (s *wailsShell) Show() {
-	if s.window == nil {
+	if s.window == nil || !s.window.IsVisible() {
 		return
 	}
 	s.window.Show()
@@ -400,20 +438,18 @@ func (w *WailsApp) ServiceStartup(ctx context.Context, _ application.ServiceOpti
 	// with no backend quits and never presents anything.
 	w.startAttention(ctx)
 
-	// The window the rest of this file talks about, raised from a place where
-	// the call does something. It is created here rather than a moment later by
-	// Wails' own pending-window pass, so that everything from this line on runs
-	// in a process that HAS a window — including, on a replacement launch, the
-	// notice waiting in w.notices.
+	// THE WINDOW IS NOT RAISED HERE, and the call that used to be here is what
+	// blocked v0.6.1's Linux release: Wails builds a window only once the
+	// services have returned (`App.Run` dispatches the pending window after
+	// this hook), so asking for it from here asks Wails to CREATE it, on the
+	// GTK3 path before `g_application_run` has registered the application —
+	// a SIGSEGV inside cgo, reproduced from this line (ADR-0095, and
+	// [wailsShell.Show] for the stack).
 	//
-	// The notice itself is NOT raised here. It was, from a goroutine, and on
-	// the launch that follows an upgrade that is a modal NSAlert with no window
-	// on screen behind it: the person dismissed the one sentence explaining
-	// what had happened and was left with an app that showed nothing at all
-	// (nocx-1ebrs.6). ResolveBackend raises it instead — the renderer's first
-	// call, which cannot happen until the webview has loaded and the window is
-	// therefore on screen.
-	w.afterLaunch()
+	// Nothing waits on it: Wails shows the window itself when it builds it, and
+	// the notice the launcher recorded is presented from ResolveBackend — the
+	// renderer's first call, which cannot happen until the webview has loaded
+	// and the window is therefore on screen (nocx-1ebrs.6).
 	return nil
 }
 
@@ -769,9 +805,14 @@ func (r *noticeRecorder) drain() []coordinator.Notice {
 // is a window is a modal with nothing behind it, and that is not a cosmetic
 // detail: on the launch that follows an upgrade the person dismissed the notice
 // and got no window at all, on the one launch every existing user takes
-// (nocx-1ebrs.6). Called from the two places that know a window is available —
-// the end of the startup path, and ResolveBackend, which the renderer can only
-// reach once the webview is up.
+// (nocx-1ebrs.6).
+//
+// CALLED FROM ResolveBackend AND NOWHERE ELSE, and that is a boundary rather
+// than a shortage of call sites: ResolveBackend is the renderer's first call,
+// so the webview is running and the window is therefore on screen — while the
+// startup path runs before Wails has built a window at all, and asking for it
+// there makes Wails create it on the GTK3 main thread before the application is
+// registered (ADR-0095, [wailsShell.Show]).
 //
 // It is idempotent by construction: Show is, and the recorder drains once.
 func (w *WailsApp) afterLaunch() {
