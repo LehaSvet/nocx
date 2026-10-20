@@ -322,18 +322,34 @@ type RowTrack interface {
 // its own. What a caller may NOT do is assume the two are ordered: an ingest
 // concurrent with a read may or may not be reflected in it, exactly as the
 // program's own output is concurrent with the read of it.
-// Modes is the portion of terminal state the client needs to route local
-// selection and mediated paste. Key encoding and mouse encoding remain owned
-// by Terminal; the client never derives terminal bytes from these flags.
+// Modes is the program-selected terminal state a caller reads from the
+// emulator instead of inferring from the bytes it fed in. The three are one
+// read because they are one kind of fact — what the program set — and they are
+// not all for the same reader. BracketedPaste and MouseTracking route local
+// selection and mediated paste and are the two a frame carries to the client;
+// SynchronizedOutput is the runtime's own, deciding when a frame is published
+// at all (nocx-1ebrs.33). None of them lets a client derive terminal bytes: key
+// encoding and mouse encoding remain owned by Terminal, and a mode a caller
+// needs beyond these is a method of its own rather than a guess.
 type Modes struct {
 	BracketedPaste bool
 	MouseTracking  bool
+	// SynchronizedOutput is DEC private mode 2026 (BSU..ESU): the program is
+	// composing a complete frame and asks not to be shown drawing it. A
+	// terminal answers by keeping the last finished screen until the hold
+	// ends, and the one that owns the screen here is the session runtime —
+	// a publisher that ignores the flag publishes every half-drawn step of a
+	// full-screen redraw as a frame of its own.
+	SynchronizedOutput bool
 }
 
 type Terminal interface {
-	// Modes reports the current program-selected modes needed to distinguish
-	// a local selection gesture from mouse input and to guard multi-line
-	// snippet paste. A caller must not infer these from output bytes.
+	// Modes reports the current program-selected modes: the two needed to
+	// distinguish a local selection gesture from mouse input and to guard
+	// multi-line snippet paste, and the synchronized-output hold that says
+	// whether the program is mid-redraw. A caller must not infer any of them
+	// from the output bytes it fed in — that is a second parser of the stream
+	// (AD-6), and the terminal it is already driving has the answer.
 	Modes() (Modes, error)
 
 	// Geometry is the size the terminal is running at. A closed terminal has

@@ -55,6 +55,15 @@ type Config struct {
 	// a caller can hold several sessions to ONE account, which is the
 	// arrangement per-session fairness is checkable against.
 	Allowance *Allowance
+	// SynchronizedOutputHoldBound is how long a synchronized-output hold may
+	// withhold a frame on THIS runtime; zero means
+	// [DefaultSynchronizedOutputHoldBound]. It is a field and not only a
+	// constant because the bound is the one number here that a test cannot
+	// wait for without waiting on a duration: a schedule proving that a hold
+	// ENDS publishes exactly one frame sets it long enough that the fail-open
+	// cannot interleave, and the schedule proving the fail-open is tested at
+	// the default, where the value is the product's.
+	SynchronizedOutputHoldBound time.Duration
 	// Replies is where Ingest, CommitGeometry and repairLocked hand the bytes
 	// they used to write directly (spec §5.5): a reply to the program's own
 	// question queues as an ordinary input item instead of being written
@@ -225,6 +234,19 @@ type Session struct {
 	// over) leaves it exact, and one that draws or reflows publishes a new
 	// one. Guarded by mu, like everything else here.
 	latest *publishedFrame
+	// syncHold, syncHoldGen and syncHoldTimer are the synchronized-output hold
+	// being honoured (nocx-1ebrs.33): the program opened DEC mode 2026 and is
+	// composing a frame, so the newest screen is withheld rather than published
+	// half drawn. syncHoldTimer is the bound's own clock
+	// ([DefaultSynchronizedOutputHoldBound]) and syncHoldGen is the identity of the
+	// window it belongs to — it advances whenever a window begins or ends, so a
+	// timer that fires after its window closed does nothing. Guarded by mu.
+	syncHold      bool
+	syncHoldGen   uint64
+	syncHoldTimer *time.Timer
+	// holdBound is how long a hold may withhold a frame on this runtime
+	// ([Config.SynchronizedOutputHoldBound]). Never zero: New resolves it.
+	holdBound time.Duration
 	// nextEffect mints the identity an effect's duplicate policy is stated
 	// over. The runtime mints it, never the consumer.
 	nextEffect EffectID
@@ -412,6 +434,13 @@ func New(cfg Config) (*Session, error) {
 	if allowance == nil {
 		allowance = NewAllowance()
 	}
+	if cfg.SynchronizedOutputHoldBound < 0 {
+		return nil, fmt.Errorf("sessionruntime: a synchronized-output hold bound of %s is not a wait", cfg.SynchronizedOutputHoldBound)
+	}
+	holdBound := cfg.SynchronizedOutputHoldBound
+	if holdBound == 0 {
+		holdBound = DefaultSynchronizedOutputHoldBound
+	}
 	return &Session{
 		inc:          cfg.Incarnation,
 		avail:        AvailabilityAvailable,
@@ -424,6 +453,7 @@ func New(cfg Config) (*Session, error) {
 		completeness: cfg.Completeness,
 		allowance:    allowance,
 		replies:      cfg.Replies,
+		holdBound:    holdBound,
 	}, nil
 }
 
@@ -1153,7 +1183,10 @@ func (s *Session) CommitGeometry(g Geometry) (GeometryCommit, error) {
 	s.geom = GeometryCommit{Geometry: g, Revision: s.tick()}
 	// A resize moved the screen, so it publishes at the revision the commit
 	// opened: consumers are painting, and a reflow they never hear about is
-	// a screen held stale until the next byte arrives.
+	// a screen held stale until the next byte arrives. A synchronized-output
+	// hold does not defer this either — the emulator ends a hold when the
+	// terminal is resized, and the pane's new shape is not something a program
+	// is still composing.
 	if err := s.publishFrameLocked(); err != nil {
 		return s.geom, err
 	}
@@ -1193,7 +1226,10 @@ func (s *Session) repairLocked() error {
 // Ingest feeds the program's output into the emulator, answers whatever the
 // program asked for on the same ordered write path, and emits what the stream
 // produced: the non-visual effects the program asked for, and one frame at the
-// revision the screen moved to.
+// revision the screen moved to — unless the program is HOLDING the screen
+// (DEC mode 2026), where the frame waits for the hold to end or for its bound,
+// because the screen at that instant is a step of a drawing rather than the
+// picture (publishFrameLocked, nocx-1ebrs.33).
 //
 // The runtime's own account for this call is linear in the BYTES it was handed
 // — one work unit each — and never in a count inside them: `CSI 1000000000 b`
@@ -2292,8 +2328,11 @@ func (s *Session) Resend() error {
 	}
 	// Nothing has been published yet, and the resync asked for state: the
 	// current screen — blank or not — is the state. No tick here: a resend
-	// is not a transition (contract, Consumers).
-	return s.publishFrameLocked()
+	// is not a transition (contract, Consumers). It is also the one publish a
+	// synchronized-output hold may not defer: a client that asked for state is
+	// waiting for it now, and a hold is a program asking not to be SHOWN
+	// drawing, not a reason to answer nobody.
+	return s.publishNowLocked()
 }
 
 // Lost is a consumer going away. It cancels no admitted input and revokes no
@@ -2340,14 +2379,67 @@ type publishedFrame struct {
 	bytes []byte
 }
 
-// publishFrameLocked encodes the active screen at the current revision,
-// hands it to every attached consumer, and remembers it as the frame an
-// attacher or a resync is owed. The snapshot is taken HERE, at publication,
-// under the lock the caller holds — never re-read from the mutable screen at
-// some older queued revision. A screen that cannot be read publishes
-// nothing ([ErrNoScreen]): skipping a revision is the honest answer, a frame
-// nobody could paint is not.
+// DefaultSynchronizedOutputHoldBound is how long a synchronized-output hold may
+// withhold a frame before the runtime publishes one anyway, unless a runtime was
+// given a bound of its own ([Config.SynchronizedOutputHoldBound]).
+//
+// DEC private mode 2026 carries no clock of its own: a program that opens a
+// hold and then crashes, blocks, or simply never sends the ESU leaves a
+// publisher waiting for a program that is gone, and a person looking at a screen
+// nothing will ever update — the one outcome worse than the jerky scroll this
+// hold exists to fix. So a hold FAILS OPEN after this bound, exactly as the
+// integration hello does: the newest screen goes out and the hold is honoured
+// again from the next ingest.
+//
+// Why 150 ms: it is nine paints of a 60 Hz display, and one paint per animation
+// frame is the cadence the renderer already keeps (frontend/src/terminal-content.ts
+// holds the newest snapshot and paints once per frame). Nine is comfortably
+// longer than the thing the hold is FOR — a full-screen redraw, which on this
+// runtime is the handful of milliseconds its ingests take — and short enough
+// that a person reads the fail-open as a hiccup rather than as a pane that has
+// stopped responding.
+const DefaultSynchronizedOutputHoldBound = 150 * time.Millisecond
+
+// publishFrameLocked is how the ingest path publishes: the screen at the
+// current revision, unless the program is HOLDING it.
+//
+// A program composing a frame withholds publication. While the emulator reports
+// a synchronized-output hold (DEC mode 2026, BSU..ESU), the screen IS half
+// drawn, and a frame published now is a step of the drawing rather than the
+// picture the program is making: a full-screen program's scroll arriving as
+// twelve ingests was twelve such frames, and the eye catches every one
+// (nocx-1ebrs.33). Nothing is lost by waiting — a frame is the WHOLE screen, so
+// the one published when the hold ends carries every revision the withheld ones
+// would have (ADR-0081) — and nothing is guessed either: the mode is the
+// emulator's own tracked state, read here rather than hunted for in the bytes
+// (AD-6, ADR-0066).
+//
+// The mode is read BEFORE the screen is, so a held ingest costs no cell reads
+// and no encoding. A mode that cannot be read is not a hold: failing open there
+// is the same rule as [DefaultSynchronizedOutputHoldBound], and the alternative
+// — freezing a pane on a failed emulator read — is worse than a frame drawn
+// half way.
 func (s *Session) publishFrameLocked() error {
+	held, err := s.screenHeldLocked()
+	if err != nil || !held {
+		s.releaseHoldLocked()
+		return s.publishNowLocked()
+	}
+	s.holdScreenLocked()
+	return nil
+}
+
+// publishNowLocked encodes the active screen at the current revision, hands it
+// to every attached consumer, and remembers it as the frame an attacher or a
+// resync is owed. The snapshot is taken HERE, at publication, under the lock the
+// caller holds — never re-read from the mutable screen at some older queued
+// revision. A screen that cannot be read publishes nothing ([ErrNoScreen]):
+// skipping a revision is the honest answer, a frame nobody could paint is not.
+//
+// It is the publish path the hold does not stop: [Session.Resend] owes a client
+// that asked for state, and the bound's own fail-open owes a person whose
+// program never released.
+func (s *Session) publishNowLocked() error {
 	snap := s.snapshotLocked()
 	encoded, err := EncodeFrame(snap)
 	if errors.Is(err, ErrNoScreen) {
@@ -2358,6 +2450,70 @@ func (s *Session) publishFrameLocked() error {
 	}
 	s.latest = &publishedFrame{rev: snap.Revision, bytes: encoded}
 	return s.deliverLocked(queued{class: DeliveryCoalescable, rev: snap.Revision, bytes: encoded})
+}
+
+// screenHeldLocked asks the emulator whether the program is holding the screen.
+func (s *Session) screenHeldLocked() (bool, error) {
+	modes, err := s.emulator.Modes()
+	if err != nil {
+		return false, err
+	}
+	return modes.SynchronizedOutput, nil
+}
+
+// holdScreenLocked begins a hold, or lets the one already running stand, and
+// arms the bound ONCE per window.
+//
+// It is armed at the window's first withheld frame and never pushed back by a
+// later one: the bound measures how long a frame may be withheld, so a program
+// that keeps drawing inside a hold it never releases cannot postpone the
+// fail-open for as long as it keeps writing — which is exactly the program the
+// bound is for.
+func (s *Session) holdScreenLocked() {
+	if s.syncHold {
+		return
+	}
+	s.syncHold = true
+	s.syncHoldGen++
+	gen := s.syncHoldGen
+	s.syncHoldTimer = time.AfterFunc(s.holdBound, func() { s.failOpen(gen) })
+}
+
+// releaseHoldLocked ends the hold: nothing is withheld any more, and the timer
+// that was going to fail open finds nothing to do.
+func (s *Session) releaseHoldLocked() {
+	if !s.syncHold {
+		return
+	}
+	s.syncHold = false
+	if s.syncHoldTimer != nil {
+		s.syncHoldTimer.Stop()
+		s.syncHoldTimer = nil
+	}
+	// A timer that was already running past its Stop reads this and does
+	// nothing: one window, one generation.
+	s.syncHoldGen++
+}
+
+// failOpen publishes the screen a hold has withheld for the whole bound, from
+// the timer's own goroutine — which is why it takes the lock itself. It is the
+// bound's whole point: a program that opened a hold and went quiet has no byte
+// left to arrive, so no ingest can publish on its behalf.
+//
+// A frame that cannot be encoded here has no caller to report to, so the hold is
+// released before the attempt and the next ingest publishes and REPORTS it —
+// an error swallowed in a timer is an error nobody ever sees.
+func (s *Session) failOpen(gen uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.syncHold || s.syncHoldGen != gen {
+		return
+	}
+	s.releaseHoldLocked()
+	if err := s.live(); err != nil {
+		return
+	}
+	_ = s.publishNowLocked()
 }
 
 // deliverLocked routes one payload to whatever its class says may hold it.

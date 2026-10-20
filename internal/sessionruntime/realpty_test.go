@@ -220,15 +220,15 @@ type programSession struct {
 // the runtime over it and the real emulator, and begins feeding the program's
 // output in. The script is expected to begin with rawPreamble (or do the
 // equivalent), because each of these programs is driven with bytes.
-func startProgram(t *testing.T, script string, g Geometry) *programSession {
-	return startProgramRows(t, script, g, nil)
+func startProgram(t *testing.T, script string, g Geometry, opts ...func(*Config)) *programSession {
+	return startProgramRows(t, script, g, nil, opts...)
 }
 
 // startProgramRows is startProgram with the session's row stream bound
 // between the runtime's construction and the first byte of output — the
 // only window in which no row can have departed unwitnessed. The streaming
 // acceptance (nocx-2v80t.3.6) is judged on a real command's rows this way.
-func startProgramRows(t *testing.T, script string, g Geometry, rs RowStream) *programSession {
+func startProgramRows(t *testing.T, script string, g Geometry, rs RowStream, opts ...func(*Config)) *programSession {
 	t.Helper()
 	cols, rows, xPixels, yPixels, err := ptySize(g)
 	if err != nil {
@@ -254,7 +254,7 @@ func startProgramRows(t *testing.T, script string, g Geometry, rs RowStream) *pr
 	t.Cleanup(screen.Close)
 
 	term := &ptyTerminal{lp: lp}
-	s, err := New(Config{
+	cfg := Config{
 		Incarnation:  Incarnation{Session: "a-real-session", Generation: 1},
 		Geometry:     g,
 		Terminal:     term,
@@ -265,7 +265,11 @@ func startProgramRows(t *testing.T, script string, g Geometry, rs RowStream) *pr
 		// tests read the program's own answer off the real pty the same way
 		// regardless of which path put it there.
 		Replies: directReplySink{term: term},
-	})
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	s, err := New(cfg)
 	if err != nil {
 		t.Fatalf("build the runtime over the real pair: %v", err)
 	}
