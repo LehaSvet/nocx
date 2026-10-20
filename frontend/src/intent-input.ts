@@ -272,6 +272,19 @@ export class IntentInput {
   /** True from compositionstart until compositionend: what the IME draws while
    *  it is composing is provisional and must not reach the program. */
   private composing = false
+  /** The text a composition just committed, while the engine may still be
+   *  delivering it a second time (nocx-1ebrs.38). WebKit-family engines end
+   *  the composition FIRST and then follow it with a plain `input` event —
+   *  inputType `insertText`, isComposing already false, data the commit
+   *  itself — a shape no composition filter names. The commit goes out from
+   *  compositionend; an input carrying the same text before any fresh
+   *  keystroke could have produced it is that echo, not the person's.
+   *  Null whenever no commit is un-accounted-for. */
+  private committedEcho: string | null = null
+  /** Whether a fresh — non-composing — keystroke has happened since that
+   *  commit. The first one re-arms text: whatever it types is the person's,
+   *  even the same letter again. */
+  private freshKeySinceCommit = false
   private destroyed = false
   /** The pointer button held during a motion, so a drag can be reported as a
    *  drag rather than as a bare motion (DEC 1002's own distinction). */
@@ -296,6 +309,9 @@ export class IntentInput {
     this.listen(element, 'paste', (e) => this.onPaste(e as ClipboardEvent))
     this.listen(element, 'compositionstart', () => {
       this.composing = true
+      // A new composition invalidates any commit whose echo has not been seen
+      // yet: only the echo of ITS OWN end may be swallowed (nocx-1ebrs.38).
+      this.committedEcho = null
     })
     this.listen(element, 'compositionend', (e) => this.onCompositionEnd(e as CompositionEvent))
     this.listen(element, 'focus', () => this.emit({ kind: 'focus', payload: 'in' }))
@@ -392,6 +408,10 @@ export class IntentInput {
       // A character, an AltGr key or a composing key: the text (if any) is what
       // carries it, so any chord suppression from the previous key ends here.
       this.suppressText = false
+      // A keystroke the person made outside any composition re-arms text after
+      // a commit: its own input event — even the same letter — is theirs, never
+      // the echo of a composition that already ended (nocx-1ebrs.38).
+      if (!e.isComposing) this.freshKeySinceCommit = true
       return
     }
     this.suppressText = true
@@ -420,6 +440,18 @@ export class IntentInput {
       // same text twice, which is the defect the bead names.
       return
     }
+    if (this.committedEcho !== null && !this.freshKeySinceCommit && data === this.committedEcho) {
+      // THE COMMIT'S OWN ECHO (nocx-1ebrs.38). WebKit-family engines end the
+      // composition first and then deliver the committed text AGAIN, as a
+      // plain `input` — insertText, isComposing already false — a shape the
+      // inputType filter above does not name. It is recognisable by what it
+      // is: the commit text, arriving before any fresh keystroke could have
+      // produced it. The commit went out from compositionend, so this is
+      // silence; the window stays open for an engine that delivers the echo
+      // more than once, and anything else closes it.
+      return
+    }
+    this.committedEcho = null
     if (data === null || data === undefined || data === '') return
     this.emit({ kind: 'text', payload: data })
   }
@@ -429,7 +461,17 @@ export class IntentInput {
     const data = e.data ?? ''
     // The commit, exactly once. An empty commit is a CANCELLED composition
     // (Escape), and the text the IME was showing was never the person's.
-    if (data === '') return
+    if (data === '') {
+      this.committedEcho = null
+      return
+    }
+    // WebKit-family engines follow this end with the same text as a plain
+    // `input` (nocx-1ebrs.38): open the echo window, and close it against
+    // anything the person does fresh — the committing keystroke itself may
+    // already have reported as a plain key before this end arrived, so the
+    // mark it left is cleared here and re-armed by the NEXT keystroke.
+    this.committedEcho = data
+    this.freshKeySinceCommit = false
     this.emit({ kind: 'text', payload: data })
   }
 

@@ -551,6 +551,73 @@ describe('composition commits the text exactly once', () => {
 
     expect(intents).toEqual([])
   })
+
+  // THE SHIPPED WEBVIEW'S COMMIT (nocx-1ebrs.38): WebKit-family engines end
+  // the composition FIRST and then deliver the committed text a SECOND time,
+  // as a plain `input` — inputType `insertText`, isComposing already false,
+  // data the commit itself. No inputType filter names that shape, so before
+  // the fix the pane sent the commit twice and the TUI echoed the double.
+  // One commit is one text intent, whatever order the engine delivers its
+  // events in.
+  it('sends the commit once when its echo follows compositionend as plain insertText', () => {
+    const { input, intents } = makeInput()
+
+    input.element.dispatchEvent(composition('compositionstart', ''))
+    input.element.dispatchEvent(keydown('KeyF', { key: 'ф', isComposing: true }))
+    input.element.dispatchEvent(inputEvent('ф', 'insertCompositionText', true))
+    input.element.dispatchEvent(composition('compositionend', 'ф'))
+    // The echo: no isComposing, no composition inputType — only the text.
+    input.element.dispatchEvent(inputEvent('ф', 'insertText', false))
+
+    expect(intents).toEqual([{ kind: 'text', payload: 'ф' }])
+  })
+
+  // An input method that commits BETWEEN the keydown and the end reports the
+  // committing keydown as a plain character (isComposing false on both
+  // sides of the wire it sees). The keydown is still the composition's, and
+  // the text that follows it is still the commit's echo — the commit goes
+  // out once, from compositionend.
+  it('sends the commit once when the committing keydown reports no isComposing', () => {
+    const { input, intents } = makeInput()
+
+    input.element.dispatchEvent(composition('compositionstart', ''))
+    input.element.dispatchEvent(keydown('KeyF', { key: 'ф' }))
+    input.element.dispatchEvent(composition('compositionend', 'ф'))
+    input.element.dispatchEvent(inputEvent('ф', 'insertText', false))
+
+    expect(intents).toEqual([{ kind: 'text', payload: 'ф' }])
+  })
+
+  // The echo window is not a blanket: the first real keystroke after a
+  // commit produces text of its own, even the same letter again. A person
+  // who commits ф and then types ф on the plain layout gets both.
+  it('still sends a plain keystroke that repeats the committed letter', () => {
+    const { input, intents } = makeInput()
+
+    input.element.dispatchEvent(composition('compositionstart', ''))
+    input.element.dispatchEvent(composition('compositionend', 'ф'))
+    input.element.dispatchEvent(inputEvent('ф', 'insertText', false)) // the echo
+    input.element.dispatchEvent(keydown('KeyF', { key: 'ф' }))
+    input.element.dispatchEvent(inputEvent('ф', 'insertText', false)) // the person's own ф
+
+    expect(intents).toEqual([
+      { kind: 'text', payload: 'ф' },
+      { kind: 'text', payload: 'ф' },
+    ])
+  })
+
+  // A PLAIN CYRILLIC KEYSTROKE (nocx-1ebrs.38's own shape, typed on the
+  // layout rather than through an input method): the keydown resolves to a
+  // character, so the TEXT carries it and no key intent exists to travel
+  // beside it. The pty receives these bytes once, from one intent.
+  it('sends a plain Cyrillic keystroke as text, never as a key and a text', () => {
+    const { input, intents } = makeInput()
+
+    input.element.dispatchEvent(keydown('KeyA', { key: 'ф' }))
+    input.element.dispatchEvent(inputEvent('ф', 'insertText'))
+
+    expect(intents).toEqual([{ kind: 'text', payload: 'ф' }])
+  })
 })
 
 describe('native-mode restore remains structured input', () => {
