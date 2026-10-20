@@ -39,6 +39,7 @@ package transport
 
 import (
 	"context"
+	"time"
 
 	"github.com/shady2k/nocx/internal/lifecycle"
 	"github.com/shady2k/nocx/internal/lifecyclepub"
@@ -64,6 +65,48 @@ const (
 	IntegrationLost = "lost"
 )
 
+// integrationStartupBound is how long a session may sit on this axis saying
+// `starting` before the product answers for it (nocx-1ebrs.20).
+//
+// THE AXIS MUST NEVER BE ABLE TO STAY `starting`. While it reads that, the
+// pane shows "Checking this shell…" INSTEAD of a terminal and DROPS every
+// keystroke (frontend/src/integration/status.ts's isAwaitingIntegration is the
+// one read, and terminal-content.ts's onSessionIntent refuses on it), so a
+// `starting` nothing ever revises is a terminal that never becomes usable and
+// whose only exit is quitting the application. Every other missing capability
+// in this product fails open; this one had no fallback of its own and depended
+// on each transport arming its own detector — which is a chain that broke
+// once already (nocx-zg3k3.14.9: a helper hello timeout during the open was
+// dropped, and the pane waited until the person quit).
+//
+// THE NUMBER IS lifecycle.HelloTimeout (10 s), and it is that number for a
+// reason rather than by inheritance: it is the protocol's own handshake bound
+// (docs/lifecycle-protocol.md §5), the whole budget a shell is given to prove
+// itself on every tier that arms one — the local minted adapter, the remote
+// adapter, the expected listener domain. A session still unexplained one full
+// handshake bound after it entered the axis has been given that entire budget
+// and nothing has come of it, so the honest answer is a working terminal plus
+// the reason, not a longer wait. It is ALSO the safe direction: the bound can
+// only fire when the transport's own detector was silent or broken, because
+// every such detector is armed EARLIER than this one — the adapter's timer
+// starts when its transport is minted, this one when the session enters the
+// axis, which is after the spawn — so on every working path the transport's
+// finer answer still lands first and the first answer wins.
+//
+// The reason it publishes is the same `handshake-timeout` the adapter's own
+// expiry produces, because it is the same event from where the person sits:
+// nocx's integration never answered.
+const integrationStartupBound = lifecycle.HelloTimeout
+
+// startupBound is the bound this server applies: the field when a test set
+// one, the constant otherwise.
+func (s *WSServer) startupBound() time.Duration {
+	if s.integrationStartupBound > 0 {
+		return s.integrationStartupBound
+	}
+	return integrationStartupBound
+}
+
 // integrationStatus is one session's integration axis as the backend
 // currently knows it. It is deliberately small: everything in it is either
 // the launch side's own record or the kernel's conclusion, and nothing is
@@ -86,6 +129,14 @@ type integrationStatus struct {
 	// details surface. Always a guess, never authority, and never derived
 	// from the byte stream; empty when the backend observed nothing.
 	observedProcess string
+	// byBound records that the answer standing here is the STARTUP BOUND's,
+	// not a detector's: the axis ran out of patience rather than learning
+	// anything. It is what lets a detector that describes the same startup
+	// correct the net with its more specific word afterwards
+	// (applyBootstrapOutcome, applyShellReplaced), while an answer a transport
+	// actually reported keeps its ground — the axis's rule that the first
+	// answer wins is about two ANSWERS, and a net is not one.
+	byBound bool
 }
 
 // integrationChangedParams is the params object of the
@@ -132,12 +183,69 @@ func (s *WSServer) RegisterIntegration(sid session.ID, shell string, status stri
 		s.integrations = make(map[session.ID]*integrationStatus)
 	}
 	s.integrations[sid] = &integrationStatus{shell: shell, status: status, reason: reason}
+	s.armStartupBoundLocked(sid, status)
 	s.integrationMu.Unlock()
 	if cause := s.pendingSessionLoss[sid]; cause != "" {
 		delete(s.pendingSessionLoss, sid)
 		_, _, _ = s.applyIntegrationLoss(sid, cause)
 	}
 	s.lifecycleMu.Unlock()
+}
+
+// armStartupBoundLocked starts the session's startup bound if its entry says
+// `starting`, and clears any bound an earlier registration left. Called with
+// integrationMu held, from the one place a session enters the axis.
+//
+// A `starting` that is already answered by a queued loss still gets a bound
+// armed here, and that is deliberate: the stop is the EMIT's job
+// (emitIntegration runs once after every actual change, and the open handler's
+// emit follows the registration that applied the queued loss), so the two
+// orders — loss first, answer first — converge on one state instead of two
+// paths that each have to remember to cancel.
+func (s *WSServer) armStartupBoundLocked(sid session.ID, status string) {
+	s.stopStartupBoundLocked(sid)
+	if status != IntegrationStarting {
+		return
+	}
+	if s.integrationStartupBounds == nil {
+		s.integrationStartupBounds = make(map[session.ID]*time.Timer)
+	}
+	s.integrationStartupBounds[sid] = time.AfterFunc(s.startupBound(), func() {
+		s.expireIntegrationStartup(sid)
+	})
+}
+
+// stopStartupBoundLocked cancels the session's startup bound, if any. Called
+// with integrationMu held, from the emit that observes the axis leaving
+// `starting` and from the teardown that drops the entry altogether.
+func (s *WSServer) stopStartupBoundLocked(sid session.ID) {
+	if t := s.integrationStartupBounds[sid]; t != nil {
+		t.Stop()
+		delete(s.integrationStartupBounds, sid)
+	}
+}
+
+// expireIntegrationStartup ends the honest `starting` interval on the
+// session's behalf when nothing else did: the axis becomes `conventional` with
+// the bound's own reason, and the pane is a working terminal again.
+//
+// IT ANSWERS ONCE. applyIntegrationLoss refuses a session that has already
+// concluded (its first-answer rule), so a bound that fires in the same
+// instant as a transport's own detector publishes nothing — the finer answer
+// stands.
+func (s *WSServer) expireIntegrationStartup(sid session.ID) {
+	status, reason, changed := s.applyIntegrationLoss(sid, LossCauseStartupBound)
+	if !changed {
+		return
+	}
+	// SAID, and said as ITSELF. This detector and the adapter's own expiry
+	// publish the same wire answer, which is right — they are one event to the
+	// person — but the log names the cause, so "the channel said so" and
+	// "nothing said anything at all" never read alike.
+	s.log.Info("session integration degraded: no transport proved this session's shell inside the startup bound",
+		"session", sid, "status", status, "reason", string(reason),
+		"cause", LossCauseStartupBound, "bound_ms", s.startupBound().Milliseconds())
+	s.emitIntegration(sid)
 }
 
 // registerOpenedIntegration enters a session this open has just produced into
@@ -239,6 +347,10 @@ func remoteShellName(cfg *ssh.ConnectConfig) string {
 func (s *WSServer) unregisterIntegration(sid session.ID) {
 	s.integrationMu.Lock()
 	delete(s.integrations, sid)
+	// The bound goes with the entry: a timer for a session nobody can reach
+	// would fire into a map it no longer appears in, and the pane it was
+	// armed for is gone.
+	s.stopStartupBoundLocked(sid)
 	waiters := s.integrationWaiters[sid]
 	delete(s.integrationWaiters, sid)
 	s.integrationMu.Unlock()
@@ -436,6 +548,14 @@ const causeBootstrapRefused = "bootstrap-refused"
 // thing, since the bootstrap precedes the shell — and a session already
 // answered keeps its first answer, which is the rule this file states twice
 // already and this is the third meeting of it.
+//
+// THE ONE EXCEPTION IS THE STARTUP BOUND'S OWN ANSWER (integrationStatus.byBound,
+// nocx-1ebrs.20), and it is not an exception to that rule: the bound is a net
+// thrown when nothing arrived, not an answer about what happened. A bootstrap
+// that finishes after it — a far host that took longer than one handshake
+// bound — knows what the net could not, and the person is better served by the
+// specific reason than by "nocx's integration never answered". The reverse is
+// forbidden: a bootstrap cannot overwrite a transport's own verdict.
 func (s *WSServer) applyBootstrapOutcome(sid session.ID, reason ssh.RefusalReason) (string, ssh.RefusalReason, bool) {
 	s.integrationMu.Lock()
 	defer s.integrationMu.Unlock()
@@ -443,12 +563,14 @@ func (s *WSServer) applyBootstrapOutcome(sid session.ID, reason ssh.RefusalReaso
 	if !ok {
 		return "", "", false
 	}
-	if st.everLive || st.status != IntegrationStarting {
+	if st.everLive || (st.status != IntegrationStarting && !st.byBound) {
 		return "", "", false
 	}
 	next := *st
 	next.status = IntegrationConventional
 	next.reason = reason
+	// The specific word replaces the net, and is itself no longer a net.
+	next.byBound = false
 	*st = next
 	return next.status, next.reason, true
 }
@@ -506,6 +628,12 @@ const causeShellReplaced = "shell-replaced"
 // image legitimately (the adapter's own comment says a re-exec keeps speaking
 // for the same domain), and tearing a working session down for that would be
 // a defect this detector introduced rather than found.
+//
+// IT MAY STILL CORRECT THE STARTUP BOUND'S NET (integrationStatus.byBound):
+// "the bound expired and nobody said why" is not a diagnosis, and an
+// observation that names the takeover is one. That is the same window read
+// from the other side — the axis has not been ANSWERED, it has only run out of
+// patience.
 func (s *WSServer) applyShellReplaced(sid session.ID, observed string) (string, ssh.RefusalReason, bool) {
 	// A guess nobody can name is not worth showing: the contract requires a
 	// name inside detail, and "something replaced your shell and I cannot
@@ -519,10 +647,11 @@ func (s *WSServer) applyShellReplaced(sid session.ID, observed string) (string, 
 	if !ok {
 		return "", "", false
 	}
-	if st.everLive || st.status != IntegrationStarting {
+	if st.everLive || (st.status != IntegrationStarting && !st.byBound) {
 		return "", "", false
 	}
 	next := *st
+	next.byBound = false
 	next.observedProcess = observed
 	next.status = IntegrationConventional
 	// The startup, not the bound. The helper exec's the login shell itself,
@@ -571,9 +700,18 @@ func (s *WSServer) applyIntegrationLoss(sid session.ID, cause string) (string, s
 		// paths noticed does not change the answer the user needs.
 		next.status = IntegrationLost
 		next.reason = ssh.ReasonChannelLost
-	case cause == LossCauseHelloTimeout:
+	case cause == LossCauseHelloTimeout, cause == LossCauseStartupBound:
+		// The same answer for two detectors, because it is one event: the
+		// shell was given its handshake bound and nothing proved it.
 		next.status = IntegrationConventional
 		next.reason = ssh.ReasonHandshakeTimeout
+		// WHICH ONE SAID IT MATTERS TO WHAT MAY CORRECT IT. An answer the
+		// STARTUP BOUND produced is the axis's own net rather than a
+		// diagnosis — nothing was observed, a budget simply ran out — so a
+		// detector that describes the same startup may still land its more
+		// specific word afterwards (applyBootstrapOutcome, applyShellReplaced).
+		// An answer a transport produced is evidence and keeps its ground.
+		next.byBound = cause == LossCauseStartupBound
 	case cause == LossCauseListenerGone || cause == LossCauseMasterSocketGone ||
 		cause == LossCauseMasterExited || cause == LossCauseStoreRefused:
 		// §6.2's second row: after the channel existed and before
@@ -634,6 +772,14 @@ const (
 	// attempt (ADR-0077): this coordinator's channel to the shell is halted,
 	// though the shell's own is fine.
 	LossCauseStoreRefused = "store-refused"
+	// LossCauseStartupBound is the AXIS's own cause, not a transport's: the
+	// session sat at `starting` for one whole handshake bound and no transport
+	// said anything, so the axis answered for it (nocx-1ebrs.20). It maps to
+	// the same wire answer as LossCauseHelloTimeout and is spelled separately
+	// so a reader of the log can tell "the channel said so" from "nothing
+	// said anything", which is the difference between a working detector and a
+	// broken one.
+	LossCauseStartupBound = "startup-bound"
 )
 
 // noteIntegrationLive records that an authenticated domain went live on a
@@ -651,6 +797,9 @@ func (s *WSServer) noteIntegrationLive(sid session.ID) {
 	st.everLive = true
 	st.status = IntegrationIntegrated
 	st.reason = ssh.ReasonNone
+	// A domain went live: whatever the answer standing here was, a transport
+	// proved the shell, so nothing may be read as "the net's".
+	st.byBound = false
 	s.integrationMu.Unlock()
 	if changed {
 		s.emitIntegration(sid)
@@ -675,6 +824,13 @@ func (s *WSServer) emitIntegration(sid session.ID) {
 	var snap integrationStatus
 	if ok {
 		snap = *st
+		// THE BOUND ENDS WITH THE QUESTION IT BOUNDS. This function runs once
+		// after every actual change to the axis (see below), so an axis that
+		// is no longer `starting` has its answer and needs no timer; one that
+		// is still `starting` keeps the timer it was armed with.
+		if st.status != IntegrationStarting {
+			s.stopStartupBoundLocked(sid)
+		}
 	}
 	// AwaitIntegration's wake, from inside the same lock that just read the
 	// snapshot above: this function runs once after every actual change to

@@ -1204,6 +1204,20 @@ type WSServer struct {
 	// from integrationMu so the axis's mutations and AwaitIntegration's
 	// waiters never wait on a socket enqueue.
 	integrationEmitMu sync.Mutex
+	// integrationStartupBounds holds, per session, the timer that ends the
+	// honest `starting` interval if nothing else does (ws_integration.go's
+	// integrationStartupBound). Guarded by integrationMu, the same lock as
+	// the axis it bounds: the timer is armed by the registration that puts a
+	// session on the axis and stopped by the emit that takes it off, and both
+	// of those already hold that lock.
+	integrationStartupBounds map[session.ID]*time.Timer
+	// integrationStartupBound is how long a session may sit at `starting`
+	// before the product answers for it. It is a field rather than the
+	// constant alone so a test can watch the bound fire without waiting out
+	// the real one; production leaves it zero and the constant applies
+	// (bound() below), the same shape internal/lifecyclechannel's
+	// WithHelloTimeout has for the adapter's own handshake timer.
+	integrationStartupBound time.Duration
 	// toolSurfaces is the retained launch result for the worker tool path.
 	// It is separate from integration because it answers a different question:
 	// whether the external coordinator can actually reach its tools.

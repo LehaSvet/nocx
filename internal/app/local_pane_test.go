@@ -45,6 +45,7 @@ import (
 	"github.com/shady2k/nocx/internal/loginshell"
 	"github.com/shady2k/nocx/internal/session"
 	"github.com/shady2k/nocx/internal/shellintegration"
+	"github.com/shady2k/nocx/internal/ssh"
 	"github.com/shady2k/nocx/internal/storage/storagetest"
 	"github.com/shady2k/nocx/internal/transport"
 	"github.com/shady2k/nocx/internal/waittest"
@@ -179,6 +180,89 @@ func TestAUserOpenedHelperPaneReachesPromptReady(t *testing.T) {
 	if err != nil || state.Lifecycle != lifecycle.LifecyclePromptReady {
 		t.Fatalf("helper lifecycle state = %+v, err = %v; want prompt_ready", state, err)
 	}
+}
+
+// A PANE whose shell never proves itself is a WORKING TERMINAL WITH A REASON
+// inside the bound — never a pane that waits at "Checking this shell…"
+// (nocx-1ebrs.20).
+//
+// THE HELLO IS HELD BACK ARTIFICIALLY, and the hold is the product's own
+// startup order rather than a fixture: launcher_bash.go's rcfile sources the
+// person's ~/.bashrc BEFORE it installs nocx's integration, and its own
+// comment states the case — "if the user's ~/.bashrc execs or exits, control
+// never reaches the install below: user startup wins... The handshake bound is
+// the detector again". So a ~/.bashrc that waits for a file nocx never writes
+// is a shell that authenticates never, in a real local shell, on this machine,
+// with no plugin and no Mac.
+//
+// WHAT IS ASSERTED IS THE PERSON'S OUTCOME, in three parts: the axis says
+// `conventional` with `handshake-timeout` (the reason the card shows), the
+// pane is USABLE afterwards (a command typed into it runs, and its output
+// reaches the screen the pane is painted from), and none of it waited for the
+// person to quit.
+func TestAHelperHostedPaneWhoseHelloNeverArrivesIsAWorkingTerminal(t *testing.T) {
+	a := newLocalPaneApp(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("this stand's home: %v", err)
+	}
+	// EVERY STARTUP FILE the three tiers source, because which shell this
+	// machine's account runs is not this test's to choose: the helper resolves
+	// the login shell itself (internal/loginshell), and a hold in the wrong
+	// file would leave the hello arriving and the test proving nothing.
+	const hold = "while [ ! -e \"$HOME/.hello-release\" ]; do sleep 0.05; done\n"
+	for _, name := range []string{".bashrc", ".bash_profile", ".zshenv", ".zprofile", ".zshrc", ".zlogin"} {
+		if werr := os.WriteFile(filepath.Join(home, name), []byte(hold), 0o600); werr != nil {
+			t.Fatalf("writing %s: %v", name, werr)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*lifecycle.HelloTimeout)
+	defer cancel()
+	opened, err := a.Transport.OpenSession(ctx, transport.OpenSpec{Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatalf("opening a local pane through the shipped opener: %v", err)
+	}
+	sid := opened.Session.ID()
+	t.Cleanup(func() {
+		if closeErr := opened.Session.Close(); closeErr != nil {
+			t.Errorf("closing the pane: %v", closeErr)
+		}
+	})
+	// The launch DID ask for integration, so the pane is in the interval at
+	// all; a test that held the hello back on a session that never wanted one
+	// would assert nothing.
+	if opened.Hosted == nil || opened.Hosted.IntegrationStatus != transport.IntegrationStarting {
+		t.Fatalf("the pane entered the axis as %q (lane %q), want %q: the hold must be on a session nocx asked to integrate",
+			opened.Hosted.IntegrationStatus, opened.Hosted.LifecycleLane, transport.IntegrationStarting)
+	}
+
+	out, err := a.Transport.AwaitIntegration(ctx, sid)
+	if err != nil {
+		t.Fatalf("waiting for the pane to stop checking its shell: %v — a pane whose hello never arrives must answer inside the bound, not hold the person's keyboard", err)
+	}
+	if out.Status != transport.IntegrationConventional || out.Reason != ssh.ReasonHandshakeTimeout {
+		t.Fatalf("the axis concluded %+v, want conventional/handshake-timeout: a working terminal and the bound's own reason", out)
+	}
+
+	// AND THE PANE IS USABLE. The hold is released, so the shell finishes the
+	// startup it was in the middle of; what the person types then has to run
+	// and its output has to reach the screen the pane is painted from —
+	// otherwise "degraded" would only mean the card went away.
+	if werr := os.WriteFile(filepath.Join(home, ".hello-release"), nil, 0o600); werr != nil {
+		t.Fatalf("releasing this shell's startup: %v", werr)
+	}
+	// THE SCREEN IS WATCHED THE WAY A VISIBLE PANE IS WATCHED, and that is not
+	// a test convenience: paneview refuses to answer for a pane nobody watches,
+	// so a pane's painted content is only readable once something has enrolled
+	// it — exactly as the renderer does for the tab in front of the person.
+	if werr := a.paneViews.Enrol(string(sid)); werr != nil {
+		t.Fatalf("watching the degraded pane: %v", werr)
+	}
+	if _, werr := opened.Session.Write([]byte("printf 'HELLO-BOUND-USABLE\\n'\r")); werr != nil {
+		t.Fatalf("typing into the pane the bound degraded: %v", werr)
+	}
+	waitForMarkerAnywhere(t, a, sid, "HELLO-BOUND-USABLE")
 }
 
 // TestASecondPaneOpenRelaunchesTheHelperAfterItsLastShellExits is the race

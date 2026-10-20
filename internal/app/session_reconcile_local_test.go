@@ -97,11 +97,26 @@ type fakeLocalEndpoint struct {
 
 func startFakeLocalEndpoint(t *testing.T, dir, generation string) *fakeLocalEndpoint {
 	t.Helper()
+	spawner := &scriptedSpawner{}
+	return startLocalEndpointWith(t, dir, generation, spawner, spawner)
+}
+
+// startLocalEndpointWith is the same daemon over a spawner a caller names, so
+// a test can hold a shell's lifecycle hello back by owning the descriptor the
+// helper hands it. Everything else — the socket, the host protocol, the
+// session service — is the one above, and the ssh half stays scripted because
+// no caller that brings a spawner opens an ssh pane.
+//
+// scripted is also the counter `spawned()` reads, so a caller with a spawner
+// of its own passes the one it delegates to; it is never nil on this path.
+func startLocalEndpointWith(t *testing.T, dir, generation string,
+	spawner helpersession.Spawner, scripted *scriptedSpawner,
+) *fakeLocalEndpoint {
+	t.Helper()
 	ln, err := endpoint.Listen(dir, proto.GenerationID(generation))
 	if err != nil {
 		t.Fatalf("serving this machine's endpoint at %s: %v", dir, err)
 	}
-	spawner := &scriptedSpawner{}
 	svc := helpersession.New(helpersession.Options{
 		Generation: proto.GenerationID(generation),
 		Spawner:    spawner,
@@ -109,10 +124,10 @@ func startFakeLocalEndpoint(t *testing.T, dir, generation string) *fakeLocalEndp
 		// `spawn-ssh` on this endpoint is refused as unavailable, so no test
 		// built here can open an ssh pane for this machine's daemon to hold —
 		// which is the shape the pane-screen owner must answer for.
-		SSHSpawner: spawner,
+		SSHSpawner: scripted,
 		Log:        discardLogger(t),
 	})
-	ep := &fakeLocalEndpoint{generation: generation, dir: dir, ln: ln, svc: svc, spawner: spawner}
+	ep := &fakeLocalEndpoint{generation: generation, dir: dir, ln: ln, svc: svc, spawner: scripted}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()
