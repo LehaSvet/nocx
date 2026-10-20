@@ -231,10 +231,42 @@ func MarkerOSC(tok string) string { return MarkerOSCOpen + tok + MarkerOSCClose 
 // is one of ours, and the line unchanged when it is not.
 //
 // Both spellings are accepted, and that is a version-skew decision rather than
-// leniency: a generation already installed on a far host emits bare lines, and
-// a reader that refused them would turn that host's every session into a
-// bootstrap timeout. What the OLD form costs is the defect — its markers are
-// still printed — and the next publish replaces it.
+// leniency: an installed launch carrier can be OLDER than this build, and it
+// names its terminal outcome as a bare line. A reader that refused that line
+// would end a bootstrap that actually SUCCEEDED as bootstrap-timeout three
+// seconds later, on every session to that host.
+//
+// The exact sequence, because it is not obvious and the version bump does not
+// close it. The bump DOES re-publish: every connect publishes (the saved path
+// through EnsureInstalledRemote, the typed one through EnsureInstalledOverPipe
+// — the same Publisher.Publish), and that publish reconciles the launch carrier
+// BEFORE its already-installed check ("the launch carrier is reconciled BEFORE the version
+// check", and the order was bought by nocx-carrier) — so any publish that
+// reaches that point replaces the carrier even when it writes no generation.
+// What is not guaranteed is REACHING it:
+//
+//   - a publish that loses the remote lock returns "the committed generation is
+//     used instead" (contendedFallback) and touches no carrier at all;
+//   - ensureLaunch refuses, and writes nothing, when ~/.nocx/launch is a
+//     symlink or not a regular file — a refusal that repeats on every connect,
+//     so that host's carrier stays as old as it is, forever.
+//
+// Stage-1 then execs whatever carrier is installed (`[ -x "$HOME/.nocx/launch" ]
+// || Q @NOGENERATION@` … `exec "$HOME/.nocx/launch"`), the OLD file names the
+// outcome in the OLD spelling, and this line is the only thing that can read
+// it.
+//
+// No long-lived shell is needed for this and none is claimed: the emitter is a
+// FILE on the far host, not a process, so it survives any restart of ours. A
+// helper is not a second route to the same question — it renders its own
+// stage-1 and its own loader command and runs the bootstrap itself
+// (internal/helper/session/spawn_ssh.go), so an old helper is old on both sides
+// of the conversation, and a helper whose proto.Version differs is refused at
+// hello before it can serve anything.
+//
+// What the OLD form costs is the defect itself — its markers are printed — and
+// that stops being paid as soon as a publish gets far enough to replace the
+// carrier.
 func markerText(line string) string {
 	if strings.HasPrefix(line, MarkerOSCOpen) && strings.HasSuffix(line, MarkerOSCClose) {
 		return line[len(MarkerOSCOpen) : len(line)-len(MarkerOSCClose)]
