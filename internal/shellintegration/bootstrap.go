@@ -374,18 +374,22 @@ func (w *bootstrapWriter) awaitToken(ctx context.Context, want string, timeout t
 				"waiting_for", want, "error", err)
 			return w.seal(OutcomeBootstrapInterrupted), false
 		}
-		if out, ok := outcomeInLine(line); ok {
+		// The marker's TEXT, with the private OSC it travels in stripped:
+		// the wrapper is transport and the token is the protocol, so every
+		// comparison below is made on the text (nocx-1ebrs.22).
+		text := markerText(line)
+		if out, ok := outcomeInLine(text); ok {
 			return w.seal(out), false
 		}
-		if pos, isToken := tokenPosition(line); isToken {
+		if pos, isToken := tokenPosition(text); isToken {
 			// Rule 1. The token is ours, so it is either the one we
 			// are waiting for at the position we are waiting for it,
 			// or it is a named failure. It is never dropped: a
 			// dropped token costs a forger nothing and tells the
 			// product nothing.
-			if pos != w.accepted || line != want {
+			if pos != w.accepted || text != want {
 				w.lg.Warn("shellintegration: bootstrap token out of order",
-					"token", line, "waiting_for", want, "accepted", w.accepted)
+					"token", text, "waiting_for", want, "accepted", w.accepted)
 				return w.seal(OutcomeBootstrapOutOfOrder), false
 			}
 			w.accepted = pos + 1
@@ -420,11 +424,12 @@ func (w *bootstrapWriter) awaitOutcome(ctx context.Context, timeout time.Duratio
 			w.lg.Warn("shellintegration: bootstrap stream ended before a terminal outcome", "error", err)
 			return w.seal(OutcomeBootstrapInterrupted)
 		}
-		if out, ok := outcomeInLine(line); ok {
+		text := markerText(line)
+		if out, ok := outcomeInLine(text); ok {
 			return w.seal(out)
 		}
-		if _, isToken := tokenPosition(line); isToken {
-			w.lg.Warn("shellintegration: bootstrap token repeated after the pair was delivered", "token", line)
+		if _, isToken := tokenPosition(text); isToken {
+			w.lg.Warn("shellintegration: bootstrap token repeated after the pair was delivered", "token", text)
 			return w.seal(OutcomeBootstrapOutOfOrder)
 		}
 		if strings.TrimSpace(line) != "" {
@@ -433,11 +438,12 @@ func (w *bootstrapWriter) awaitOutcome(ctx context.Context, timeout time.Duratio
 	}
 }
 
-// tokenPosition reports where a line sits in the closed token set, and
-// whether it is in it at all.
-func tokenPosition(line string) (int, bool) {
+// tokenPosition reports where a marker's text sits in the closed token set,
+// and whether it is in it at all. The wrapper is already stripped: this asks
+// about the protocol, and MarkerOSC is the transport.
+func tokenPosition(text string) (int, bool) {
 	for i, tok := range tokenOrder {
-		if line == tok {
+		if text == tok {
 			return i, true
 		}
 	}
@@ -475,12 +481,12 @@ func frameTwo(ctx context.Context, plan BootstrapPlan) (frame []byte, refused Ou
 	return payload, "", nil
 }
 
-// outcomeInLine reads a terminal outcome off one line of far-side output. A
-// token that is not one of ours is NOT an outcome — never a refusal the
-// reader invented — so it is reported as no match and the line is dropped.
-func outcomeInLine(line string) (Outcome, bool) {
-	if !strings.HasPrefix(line, OutcomePrefix) {
+// outcomeInLine reads a terminal outcome off the text of one marker. A token
+// that is not one of ours is NOT an outcome — never a refusal the reader
+// invented — so it is reported as no match and the line is dropped.
+func outcomeInLine(text string) (Outcome, bool) {
+	if !strings.HasPrefix(text, OutcomePrefix) {
 		return "", false
 	}
-	return OutcomeForToken(strings.TrimSpace(strings.TrimPrefix(line, OutcomePrefix)))
+	return OutcomeForToken(strings.TrimSpace(strings.TrimPrefix(text, OutcomePrefix)))
 }

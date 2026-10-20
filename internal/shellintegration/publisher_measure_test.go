@@ -235,9 +235,16 @@ import (
 // net of each enrol's own copy of the trap dance, which is where the other
 // few hundred bytes went. Paying for one owner of the trap is the point: two
 // copies is how the second window would stop being armed.
+//
+// AND GREW by 163 bytes when extdebug moved out of bash's startup and into the
+// first prompt (nocx-1ebrs.23): 88066, calls unchanged at 63. The growth is
+// __nocx_arm_extdebug and its call in __nocx_prompt_command — one guard, one
+// shopt, and the bytes of a body both wrappers carry — less the comment prose
+// the shipped bytes never contain. It is paid once per publish in exchange for
+// a shell that no longer asks bash to start a debugger it was not asked for.
 const (
 	measuredMaxPublishCalls = 63
-	measuredMaxPublishBytes = 87903
+	measuredMaxPublishBytes = 88066
 
 	// measuredMaxBoundedResidue is the same figure for the worst attempt
 	// that is still inside the residue bounds the design asks P3 to enforce

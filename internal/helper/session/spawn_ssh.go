@@ -752,9 +752,9 @@ func (f *channelFeed) ReadLine(ctx context.Context, timeout time.Duration) (stri
 func (f *channelFeed) takeLine() (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if i := bytes.IndexByte(f.buf, '\n'); i >= 0 {
-		line := string(bytes.TrimRight(f.buf[:i], "\r"))
-		f.buf = f.buf[i+1:]
+	if content, next, ok := bootstrapstream.LineEnd(f.buf); ok {
+		line := string(bytes.TrimRight(f.buf[:content], "\r"))
+		f.buf = f.buf[next:]
 		f.cond.Broadcast()
 		return line, true, nil
 	}

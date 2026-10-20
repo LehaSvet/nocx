@@ -136,9 +136,9 @@ func (t *outputTap) close() {
 func (t *outputTap) takeLine() (string, bool, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if i := bytes.IndexByte(t.buf, '\n'); i >= 0 {
-		line := string(bytes.TrimRight(t.buf[:i], "\r"))
-		t.buf = t.buf[i+1:]
+	if content, next, ok := bootstrapstream.LineEnd(t.buf); ok {
+		line := string(bytes.TrimRight(t.buf[:content], "\r"))
+		t.buf = t.buf[next:]
 		return line, true, nil
 	}
 	if len(t.buf) > maxWindowLine {

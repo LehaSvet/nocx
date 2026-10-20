@@ -256,6 +256,11 @@ func TestScriptVersionTracksScriptContent(t *testing.T) {
 		// enrols. Both waits now run under one helper, so the next window that
 		// needs the trap is armed by the same code rather than by a second copy.
 		"63": "c7031b2d45d27a10b913bdb962ce620ea69d4d6bc05a878f9a41f893a7f1850d",
+		// v64: extdebug is armed at the first prompt rather than while bash
+		// reads its startup files, so the login bash sshd starts with `-c`
+		// stops asking bash to load bashdb — and stops losing the option when
+		// bash refuses (nocx-1ebrs.23).
+		"64": "c961e859883a55c867689f8da8cd41efc3b14aff057e81976a83efbcb9e3aee1",
 	}
 
 	h := sha256.New()

@@ -164,6 +164,10 @@ const (
 	// termios saved, traps installed, raw with echo off — and never before.
 	// It is the writer's signal that a frame may now be sent.
 	LoaderReadyToken = FrameMagic + " LOADER_READY"
+	// StageReadyToken, OutcomePrefix and LoaderReadyToken above are the TOKENS
+	// — the text a marker carries. They travel inside MarkerOSC, and they are
+	// declared as bare text because that is what the reader compares and what
+	// the scripts substitute; the wrapper is written at each emission site.
 	// StageReadyToken belongs to stage-1 and is declared here so the loader
 	// can be asserted never to emit it: the backend must always know which
 	// of the two it received.
@@ -171,6 +175,72 @@ const (
 	// OutcomePrefix prefixes every terminal outcome the loader names.
 	OutcomePrefix = FrameMagic + " OUTCOME "
 )
+
+// MarkerOSC is the terminal control string every marker of this protocol
+// travels in, and it is the whole of the answer to nocx-1ebrs.22.
+//
+// # Why a marker may not be a line
+//
+// A marker used to be a plain line on the session's stdout — `NOCX1
+// LOADER_READY` and a newline — and on the saved path that was invisible
+// because the bootstrap's reader is also the only consumer: it takes the line
+// and the terminal never sees it. The TYPED path cannot work that way. There
+// the far side's stdout is the pty the person is watching, and the bootstrap
+// window is a COPY of it (internal/session/bootstrap_window.go: every byte
+// still reaches the renderer, in order, unchanged, because it is the person's
+// own shell's screen and not ours to divert). So the markers are printed, in a
+// staircase — a bare LF with no CR — in the middle of a transcript that also
+// carries their own shell's output.
+//
+// The fix cannot be "strip the markers from the renderer": that makes the
+// person's screen depend on the reader winning a race, and a stalled reader or
+// a deadline would leave protocol vocabulary in it. So the markers stop being
+// text at all. OSC 1337 is nocx's private control-string namespace already
+// (the render fence, the recovery fence, the in-band READY), a terminal
+// consumes an OSC whole and paints none of it, and the pty still carries the
+// bytes to the tap that matches them. Nothing about the reader's timing can
+// change what the screen shows.
+//
+// The spelling is written twice and both halves are pinned by
+// TestMarkerOSCSpellingsAgree: MarkerOSCOpen/MarkerOSCClose are the bytes a Go
+// reader matches, markerOSCPrintfOpen/Close are the same three bytes as
+// printf(1) escapes, and the scripts carry the second because printf is what
+// emits them.
+const (
+	// MarkerOSCOpen begins the wrapper: ESC ']' then the OSC number nocx owns
+	// and a semicolon. 1337 is chosen by ADR-0024 §7 and is already shared by
+	// the fence, the recovery marker and the in-band READY.
+	MarkerOSCOpen = "\x1b]1337;"
+	// MarkerOSCClose ends it. BEL is the terminator every OSC reader --
+	// ghostty's, and the line readers' in internal/bootstrapstream -- stops at;
+	// ST would be the other legal one and only one may be chosen.
+	MarkerOSCClose = "\x07"
+
+	// The same wrapper as a printf FORMAT carries it. printf(1) interprets
+	// octal escapes, so these three bytes reach the terminal as ESC, ']' and
+	// BEL.
+	markerOSCPrintfOpen  = `\033]1337;`
+	markerOSCPrintfClose = `\a`
+)
+
+// MarkerOSC wraps one token in the private OSC, for a Go writer that has to
+// emit one (the tests, and anything that drives a loader by hand).
+func MarkerOSC(tok string) string { return MarkerOSCOpen + tok + MarkerOSCClose }
+
+// markerText is the token a line carries: the wrapper stripped when the line
+// is one of ours, and the line unchanged when it is not.
+//
+// Both spellings are accepted, and that is a version-skew decision rather than
+// leniency: a generation already installed on a far host emits bare lines, and
+// a reader that refused them would turn that host's every session into a
+// bootstrap timeout. What the OLD form costs is the defect — its markers are
+// still printed — and the next publish replaces it.
+func markerText(line string) string {
+	if strings.HasPrefix(line, MarkerOSCOpen) && strings.HasSuffix(line, MarkerOSCClose) {
+		return line[len(MarkerOSCOpen) : len(line)-len(MarkerOSCClose)]
+	}
+	return line
+}
 
 // The writer's deadlines (design §7). They are the Go side's because the far
 // side has no portable timer; a test drives them from an injected clock, and
@@ -497,16 +567,24 @@ var stageDigestRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 //     then fails on a missing operand, and the `||` arm refuses — the safe
 //     answer either way.
 //
+// WHY THE TWO MARKERS ARE WRAPPED IN AN OSC, and not printed as lines. Every
+// marker this loader and stage-1 emit travels in MarkerOSC, because on the
+// typed path the far side's stdout is the pty the person is reading and our
+// window onto it is a copy: a plain line is a line in their transcript, whether
+// or not a reader was expecting it (nocx-1ebrs.22). printf(1) is what turns
+// the wrapper's escapes into ESC and BEL, so the format carries the SPELLING
+// and MarkerOSCOpen/Close carry the bytes.
+//
 // The addressing arguments are the shell's positional parameters and are
 // deliberately left untouched, so the sourced stage-1 inherits them exactly
 // as the command stated them. @DIGARG@ is the digest's position.
-const carrierLoaderTemplate = `R(){ stty "$T";exec 2>&1 @FD@<&-;rm -f "$F";printf "@OUTPFX@%s\n" "$1";exec "${SHELL:-/bin/sh}" -l;}
+const carrierLoaderTemplate = `R(){ stty "$T";exec 2>&1 @FD@<&-;rm -f "$F";printf "\033]1337;@OUTPFX@%s\a" "$1";exec "${SHELL:-/bin/sh}" -l;}
 exec 2>/dev/null
 T=$(stty -g)
 trap "R @INTERRUPTED@" HUP INT QUIT TERM
 [ -n "$T" ]&&stty raw -echo||R @TERMIOS@
 F=$(mktemp "${TMPDIR:-/tmp}/nocx.XXXXXX")||R @NOTEMP@
-printf "@READY@\n"
+printf "\033]1337;@READY@\a"
 X=$(dd bs=1 count=@HDRLEN@)
 [ -n "$X" ]||R @INTERRUPTED@
 [ "${X#@MAGIC@ @SEQ@ }" != "$X" ]||R @PROTOCOL@

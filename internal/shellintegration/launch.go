@@ -46,9 +46,14 @@ __nocx_boot="${@BOOTENV@:-}"
 # a launch that did NOT come from a bootstrap — anything that runs this
 # carrier directly — cannot put protocol tokens on a user's terminal. The
 # unset also keeps the marker out of the shell the user ends up with.
+#
+# The token travels in the private OSC (MarkerOSC, carrier.go says why): a
+# terminal consumes it whole and paints none of it, so even a session whose
+# reader never arrives — the typed path's, on the pty the person is watching —
+# shows no protocol vocabulary at all (nocx-1ebrs.22).
 __nocx_outcome() {
     if [ -n "${@BOOTENV@:-}" ]; then
-        printf '@OUTPFX@%s\n' "$1"
+        printf '\033]1337;@OUTPFX@%s\a' "$1"
     fi
     unset @BOOTENV@
 }

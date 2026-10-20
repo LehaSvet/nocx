@@ -161,15 +161,20 @@ func (f *sessionFeed) Read(p []byte) (int, error) {
 // consume the user's bytes" means in code.
 func (f *sessionFeed) ReadLine(ctx context.Context, timeout time.Duration) (string, error) {
 	deadline := f.after(timeout)
+	// line holds what has arrived but does not yet complete a line, and the
+	// terminator is searched for in line+pending rather than in pending
+	// alone: a marker is one OSC string, and the pty hands over whatever it
+	// had buffered — so its opening can be in one chunk and its BEL in the
+	// next. bootstrapstream.LineEnd is the one owner of where a line ends
+	// (nocx-1ebrs.22).
 	var line []byte
 	for {
-		if i := bytes.IndexByte(f.pending, '\n'); i >= 0 {
-			line = append(line, f.pending[:i]...)
-			f.pending = f.pending[i+1:]
-			return string(bytes.TrimRight(line, "\r")), nil
+		buf := append(line, f.pending...)
+		if content, next, ok := bootstrapstream.LineEnd(buf); ok {
+			f.pending = buf[next:]
+			return string(bytes.TrimRight(buf[:content], "\r")), nil
 		}
-		line = append(line, f.pending...)
-		f.pending = nil
+		line, f.pending = buf, nil
 		if len(line) > maxBootstrapLine {
 			// Not our protocol. Give the bytes back rather than
 			// dropping them: this session is about to become an

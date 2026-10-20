@@ -1741,6 +1741,7 @@ __nocx_prompt_command() {
     # the flag instead. `local` cannot come first: it would reset $?.
     __nocx_prompt_exit=$?
     __nocx_in_prompt_command=1
+    __nocx_arm_extdebug
     local __nocx_exit=$__nocx_prompt_exit
     if [[ -n "${__nocx_nested_rc:-}" ]]; then
         __nocx_exit=$__nocx_nested_rc
@@ -1934,9 +1935,28 @@ __nocx_old_debug="$(trap -p DEBUG 2>/dev/null | sed "s/^trap -- '//;s/' DEBUG$//
 # commands. It never returns 2 (which extdebug turns into a synthetic
 # `return` from the enclosing function). extdebug also makes the DEBUG trap
 # fire inside functions and command substitutions; the __nocx_* /
-# in_prompt_command / preexec_done guards below are exactly what keeps that
-# from recursing.
-shopt -s extdebug
+# in_prompt_command / preexec_done guards in __nocx_prompt_command are
+# exactly what keeps that from recursing.
+#
+# IT IS NOT SWITCHED ON HERE, and the timing is the whole of nocx-1ebrs.23.
+# bash keeps one flag behind `shopt -s extdebug`, and when a `bash -c`
+# invocation finishes its startup files with that flag set, bash calls
+# start_debugger(): it looks for bashdb, and on a host that has none it prints
+# two lines into the person's transcript — "bashdb-main.inc: No such file or
+# directory" and "warning: cannot start debugger; debugging mode disabled" —
+# and then CLEARS the flag, so the skip below silently stopped working as well.
+# The shell that met it was the LOGIN bash sshd starts with `-c` to run nocx's
+# loader: an installer-era gate line in the user's profile sources this file,
+# so the flag was set during startup and bash reached for the debugger before
+# the loader ran. The first prompt is the nearest boundary that is after every
+# startup file and before anything the person types, and a shell that never
+# shows a prompt (that `-c` one) has no preexec hook to arm.
+__nocx_arm_extdebug() {
+    if [[ "${__nocx_extdebug_armed:-0}" != "1" ]]; then
+        __nocx_extdebug_armed=1
+        shopt -s extdebug
+    fi
+}
 
 __nocx_preexec_wrapper() {
     local __nocx_current_command=${BASH_COMMAND}

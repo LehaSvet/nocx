@@ -96,6 +96,18 @@ var launcherSessionVars = []string{
 	"CLAUDE_EFFORT=",
 	"NO_COLOR=",
 	"TERM=",
+	// BASHOPTS= is the same class of leak and the sharpest case of it: bash
+	// exports its shopt options in this variable, and a bash that STARTS with
+	// `extdebug` in it calls start_debugger() before any of our code runs —
+	// which prints "bashdb-main.inc: No such file or directory" and "warning:
+	// cannot start debugger; debugging mode disabled" into the pane, and then
+	// clears the flag (nocx-1ebrs.23). nocx sets extdebug from inside its own
+	// script, once the shell is up; the launcher's copy of it is a claim about
+	// somebody else's shell and must not reach a pane. Dropped whole rather
+	// than filtered: bash exports this only when it inherited one, so a value
+	// here is already the launcher's session leaking in, and the option list a
+	// pane starts with should be bash's own.
+	"BASHOPTS=",
 	// The activation marker is the same class and the sharpest consequence of
 	// getting it wrong (nocx-1ebrs.8). It says "the shell under this terminal is
 	// integrated", and the only party that can say it is the LAUNCH that
