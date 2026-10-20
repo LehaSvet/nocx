@@ -13502,6 +13502,286 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       teardown()
     }
   })
+  // ── the copy chord over a live-grid selection (nocx-1ebrs.19.1) ──────────
+  //
+  // THE OWNER'S DECISION, 2026-10-20: Cmd+C with a VISIBLE LIVE-GRID SELECTION
+  // copies it; with no selection the chord keeps whatever it meant before.
+  // Both halves are asserted below, at the seam a person's keystroke reaches:
+  // the pane's own input element, which is where the keyboard sits after a
+  // press on the grid, and where `_globalKeydown`'s interrupt and the intent
+  // the program receives are both decided.
+
+  /** A painted live row with `text` on it, and the selectable geometry the
+   *  gesture resolves cells from — the painter's mapping, one cell 8 x 16. */
+  async function paintLiveRow(
+    content: TerminalContent,
+    client: ClientFake,
+    text: string,
+  ): Promise<HTMLElement> {
+    const session: SessionFake = client._sessions[0]
+    const frame = screenFrame(91, [text])
+    frame.state.mouseTracking = true
+    session.fireScreenFrame(frame)
+    const live = gridOf(content)
+    await vi.waitFor(() => expect(live.querySelector('.term-grid')).not.toBeNull())
+    const surface = live.querySelector<HTMLElement>('.term-grid')!
+    await vi.waitFor(() => expect(surface.textContent).toContain(text))
+    surface.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 320, bottom: 64, width: 320, height: 64 }) as DOMRect
+    return surface
+  }
+
+  /** A pointer event of the kind the gesture reads, in the surface's own
+   *  coordinates: one cell is 8 x 16 here, so `col` and a row-0 press. */
+  function atCell(type: string, col: number, buttons: number): Event {
+    const event = new Event(type, { bubbles: true, cancelable: true })
+    Object.defineProperties(event, {
+      button: { value: 0 },
+      buttons: { value: buttons },
+      clientX: { value: col * 8 + 2 },
+      clientY: { value: 4 },
+    })
+    return event
+  }
+
+  /** The person's drag across cells `from..to` of row 0, made the way the
+   *  pointer makes one: press on the surface, motion on the window, release. */
+  function dragAcross(surface: HTMLElement, from: number, to: number): void {
+    surface.dispatchEvent(atCell('pointerdown', from, 1))
+    window.dispatchEvent(atCell('pointermove', to, 1))
+    surface.dispatchEvent(atCell('pointerup', to, 0))
+  }
+
+  /** The KEY intents this pane sent its program, and only those: a focus
+   *  report and the pointer sequence the drag itself is both travel the same
+   *  channel asynchronously, and they are not what these tests are about. */
+  const keyIntents = (content: TerminalContent): string[] =>
+    sessionOf(content)
+      .intent.mock.calls.filter((call: unknown[]) => call[0] === 'key')
+      .map((call: unknown[]) => String(call[1]))
+
+  it('the copy chord copies a visible live-grid selection and sends nothing', async () => {
+    const clipboard = makeClipboard()
+    const client = makeClient()
+    const { content, teardown } = await mountTerminal(clipboard, { attachToDocument: true }, client)
+    const restore = stubScrolling()
+    try {
+      content.setVisible(true)
+      startCommand(client)
+      const surface = await paintLiveRow(content, client, 'alpha bravo charlie')
+
+      // The selection a person makes: "bravo" is cells 6..10 of row 0.
+      dragAcross(surface, 6, 10)
+      expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+      expect(clipboard.writeText).toHaveBeenCalledWith('bravo')
+
+      // From here on, only the chord may be heard. Every intent already sent
+      // belongs to the pointer sequence the drag itself is (nocx-zg3k3.15.5).
+      sessionOf(content).signal.mockClear()
+
+      // WHERE A PERSON'S KEYSTROKE LANDS: the pane's input element, which a
+      // press on the grid focuses (takeKeyboardToGrid) and which turns a
+      // keydown into the intent the program receives. Focusing it is itself an
+      // intent (a focus report the program may have asked for), so the records
+      // are cleared AFTER it and after the queue has run.
+      const input = gridOf(content).querySelector<HTMLElement>('.ui-terminal-input')!
+      expect(input).not.toBeNull()
+      input.focus()
+      expect(document.activeElement).toBe(input)
+      await waitForSessionQueue(content)
+      clipboard.writeText.mockClear()
+      sessionOf(content).intent.mockClear()
+      const chord = new KeyboardEvent('keydown', {
+        key: 'c',
+        code: 'KeyC',
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      })
+      input.dispatchEvent(chord)
+      await waitForSessionQueue(content)
+
+      // COPIED: the same text copy-on-select already wrote at the release —
+      // a second way to ask, not a second copy path.
+      expect(clipboard.writeText).toHaveBeenCalledWith('bravo')
+      // CLEARED: the highlight is gone with the chord that used it.
+      expect(surface.querySelector('.term-grid-selection')).toBeNull()
+      // AND NOT SENT: the program received no key at all, so the chord became
+      // neither a keypress nor an interrupt, and no signal was addressed to
+      // the command.
+      await waitForSessionQueue(content)
+      expect(keyIntents(content)).toEqual([])
+      expect(signalsSent(content)).toEqual([])
+      // The key is the pane's: the browser does not also act on it.
+      expect(chord.defaultPrevented).toBe(true)
+
+      // AND CTRL+C IS NOT THIS CHORD. A selection does not turn the interrupt
+      // into a copy: the person reaching for a SIGINT gets one, and the
+      // selection goes with the key that was sent to the program.
+      dragAcross(surface, 6, 10)
+      expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+      await waitForSessionQueue(content)
+      clipboard.writeText.mockClear()
+      sessionOf(content).intent.mockClear()
+      const interrupt = new KeyboardEvent('keydown', {
+        key: 'c',
+        code: 'KeyC',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      })
+      input.dispatchEvent(interrupt)
+      await vi.waitFor(() => expect(keyIntents(content)).toEqual(['Ctrl+c']))
+      expect(clipboard.writeText).not.toHaveBeenCalled()
+      expect(surface.querySelector('.term-grid-selection')).toBeNull()
+    } finally {
+      restore()
+      teardown()
+    }
+  })
+
+  it("the copy chord over a selection leaves another surface's own copy alone", async () => {
+    // TWO SURFACES MAY NEVER OWN ONE INPUT (AGENTS.md). A grid selection can
+    // be on screen while the person is typing somewhere else — a settings
+    // field, a dialog, the composer — and the copy chord there is that
+    // surface's own. The gesture answers "is a selection painted", which is
+    // true in all of those states, so the PANE is where the ownership question
+    // is answered.
+    const clipboard = makeClipboard()
+    const client = makeClient()
+    const { content, teardown } = await mountTerminal(clipboard, { attachToDocument: true }, client)
+    const restore = stubScrolling()
+    const field = document.createElement('input')
+    document.body.append(field)
+    try {
+      content.setVisible(true)
+      startCommand(client)
+      const surface = await paintLiveRow(content, client, 'alpha bravo charlie')
+      dragAcross(surface, 6, 10)
+      expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+
+      // Now the keyboard is somewhere else, and the field's own copy is what
+      // Cmd+C means there.
+      field.focus()
+      expect(document.activeElement).toBe(field)
+      await waitForSessionQueue(content)
+      clipboard.writeText.mockClear()
+      sessionOf(content).intent.mockClear()
+      const chord = new KeyboardEvent('keydown', {
+        key: 'c',
+        code: 'KeyC',
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      })
+      field.dispatchEvent(chord)
+      await waitForSessionQueue(content)
+
+      expect(clipboard.writeText).not.toHaveBeenCalled()
+      expect(chord.defaultPrevented).toBe(false)
+      expect(keyIntents(content)).toEqual([])
+      // And the selection is still the person's: nothing used it up.
+      expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+    } finally {
+      field.remove()
+      restore()
+      teardown()
+    }
+  })
+
+  it('a pane that is not the active one does not answer the copy chord', async () => {
+    // The gesture is per pane and its selection survives until the pane is
+    // looked at again, so "there is a selection somewhere" is not the same fact
+    // as "this pane has the keyboard". Only the active pane answers.
+    const clipboard = makeClipboard()
+    const client = makeClient()
+    const { content, teardown } = await mountTerminal(clipboard, { attachToDocument: true }, client)
+    const restore = stubScrolling()
+    try {
+      content.setVisible(true)
+      startCommand(client)
+      const surface = await paintLiveRow(content, client, 'alpha bravo charlie')
+      dragAcross(surface, 6, 10)
+      expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+
+      content.setVisible(false)
+      clipboard.writeText.mockClear()
+      const chord = new KeyboardEvent('keydown', {
+        key: 'c',
+        code: 'KeyC',
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      })
+      document.dispatchEvent(chord)
+      await waitForSessionQueue(content)
+
+      expect(clipboard.writeText).not.toHaveBeenCalled()
+      expect(chord.defaultPrevented).toBe(false)
+      expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+    } finally {
+      restore()
+      teardown()
+    }
+  })
+
+  it('with nothing selected the copy chord means what it always did', async () => {
+    const clipboard = makeClipboard()
+    const client = makeClient()
+    const { content, teardown } = await mountTerminal(clipboard, { attachToDocument: true }, client)
+    const restore = stubScrolling()
+    try {
+      content.setVisible(true)
+      startCommand(client)
+      const surface = await paintLiveRow(content, client, 'alpha bravo charlie')
+      const input = gridOf(content).querySelector<HTMLElement>('.ui-terminal-input')!
+      input.focus()
+      // A drag taught nothing is left behind: press and release on ONE cell is
+      // a click, so the state below is "the person clicked, nothing is
+      // selected" — the state the chord must not change.
+      dragAcross(surface, 6, 6)
+      expect(surface.querySelector('.term-grid-selection')).toBeNull()
+      await waitForSessionQueue(content)
+      clipboard.writeText.mockClear()
+      sessionOf(content).intent.mockClear()
+      sessionOf(content).signal.mockClear()
+
+      // Ctrl+C is the interrupt's own spelling, on the grid it already
+      // belonged to: the intent the program receives, and no second signal
+      // (nocx-23rph — one owner per keystroke).
+      const ctrlC = new KeyboardEvent('keydown', {
+        key: 'c',
+        code: 'KeyC',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      })
+      input.dispatchEvent(ctrlC)
+      await vi.waitFor(() => expect(keyIntents(content)).toEqual(['Ctrl+c']))
+      expect(signalsSent(content)).toEqual([])
+      expect(clipboard.writeText).not.toHaveBeenCalled()
+      expect(ctrlC.defaultPrevented).toBe(true)
+
+      // And Cmd+C is what it was before this bead: the same key intent with
+      // Super held, which is what reaches the program when nothing is
+      // selected. It is NOT claimed, so the browser's own copy still runs.
+      sessionOf(content).intent.mockClear()
+      const metaC = new KeyboardEvent('keydown', {
+        key: 'c',
+        code: 'KeyC',
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      })
+      input.dispatchEvent(metaC)
+      await vi.waitFor(() => expect(keyIntents(content)).toEqual(['Super+c']))
+      expect(clipboard.writeText).not.toHaveBeenCalled()
+      expect(metaC.defaultPrevented).toBe(true)
+    } finally {
+      restore()
+      teardown()
+    }
+  })
 
   it('with nothing running, Ctrl+C signals nothing', async () => {
     const client = makeClient()
@@ -13527,6 +13807,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       elsewhere.dispatchEvent(
         new KeyboardEvent('keydown', {
           key: 'c',
+          code: 'KeyC',
           ctrlKey: true,
           bubbles: true,
           cancelable: true,
@@ -13563,6 +13844,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       viewOf(ed).contentDOM.dispatchEvent(
         new KeyboardEvent('keydown', {
           key: 'c',
+          code: 'KeyC',
           ctrlKey: true,
           bubbles: true,
           cancelable: true,
@@ -13642,6 +13924,7 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       viewOf(ed).contentDOM.dispatchEvent(
         new KeyboardEvent('keydown', {
           key: 'c',
+          code: 'KeyC',
           ctrlKey: true,
           bubbles: true,
           cancelable: true,
@@ -16710,6 +16993,7 @@ describe('summoned answers return one composer and take ordered seats (nocx-7l4e
       target.dispatchEvent(
         new KeyboardEvent('keydown', {
           key: 'c',
+          code: 'KeyC',
           ctrlKey: true,
           bubbles: true,
           cancelable: true,

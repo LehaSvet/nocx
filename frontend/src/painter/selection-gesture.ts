@@ -51,6 +51,21 @@ export interface LiveSelectionGesture {
    *  A drag still under the pointer is not settled and is left alone: its text
    *  is copied at the release, so ending it early copies nothing. */
   dismiss(): void
+  /** THE COPY CHORD (nocx-1ebrs.19.1). With a settled selection on screen,
+   *  copy exactly what it paints — through the same sink copy-on-select writes
+   *  at the release — and clear it; report false and change nothing when
+   *  nothing is selected, so the chord keeps whatever else it means in this
+   *  pane.
+   *
+   *  This is not a SECOND copy path: the text is already on the clipboard from
+   *  the release (copy-on-select, docs/vision.md:113), and the chord rewrites
+   *  the same value. What it adds is the answer a person expects — the chord
+   *  copies the selection in front of them instead of reaching the program.
+   *
+   *  A drag still under the pointer is refused for the reason `dismiss` gives,
+   *  and one more: `clear()` drops the ANCHOR as well, so a chord taken
+   *  mid-drag would leave the release that follows with nothing to copy. */
+  copyChord(): boolean
 }
 
 type Position = { readonly row: number; readonly offset: number }
@@ -425,24 +440,14 @@ export function installLiveSelectionGesture(
     return false
   }
 
-  // THE COPY CHORD IS DECIDED (nocx-1ebrs.19.1, owner 2026-10-20): with a
-  // visible live-grid selection, Cmd/Ctrl+C COPIES it; with none, the chord
-  // keeps today's interrupt. Claimed in the CAPTURE phase so it answers
-  // before the interrupt handler and before the program's input, and only
-  // while a settled selection exists - a drag still under the pointer is not
-  // one. The selection itself SURVIVES the chord (the lifetime rule above:
-  // the chord copies, it does not clear), so a person can copy twice.
-  const copyChordKeydown = (event: KeyboardEvent): void => {
-    if (selection === null || anchor !== null) return
-    if (event.altKey || event.shiftKey) return
-    if (!((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c')) return
-    const text = selection.copy()
-    opts.copy(text)
-    event.preventDefault()
-    event.stopPropagation()
-  }
-  window.addEventListener('keydown', copyChordKeydown, true)
-
+  // THE COPY CHORD IS NOT CLAIMED HERE (nocx-1ebrs.19). Whether a keystroke is
+  // this pane's to answer is a question about the PANE — which surface holds
+  // the keyboard, whether an overlay is up, whether the composer is on screen —
+  // and a listener on `window` inside this gesture answers it with "any pane
+  // holding a selection", which is neither of the owners a chord has. It also
+  // could not CLEAR what it copied, which is what the decision asks for. The
+  // pane claims it in the capture phase and calls `copyChord` below; the
+  // gesture keeps the state and the copy, and nothing else.
   root.addEventListener('pointerdown', down)
   root.addEventListener('mousedown', tripleClick)
   root.addEventListener('dblclick', doubleClick)
@@ -472,13 +477,20 @@ export function installLiveSelectionGesture(
       if (selection !== null) clear()
     },
 
+    copyChord() {
+      if (dragging() || selection === null) return false
+      const text = selection.copy()
+      if (text !== '') opts.copy(text)
+      clear()
+      return true
+    },
+
     dispose() {
       root.removeEventListener('pointerdown', down)
       root.removeEventListener('mousedown', tripleClick)
       root.removeEventListener('dblclick', doubleClick)
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
-      window.removeEventListener('keydown', copyChordKeydown, true)
       anchor = null
       selection = null
     },
