@@ -56,6 +56,12 @@ func stripPrivateOSC(s string) string {
 	}
 }
 
+// marker is the wrapper around one token, spelled from the two constants the
+// production reader also uses. It is test-only on purpose: an exported helper
+// for it existed and the darwin dead-code ratchet was right to refuse it —
+// nothing outside this file would ever call it (nocx-1ebrs.22's ratchet).
+func marker(tok string) string { return MarkerOSCOpen + tok + MarkerOSCClose }
+
 // markersAndOutcomes is every token this protocol puts on the wire, in the
 // spelling the scripts carry.
 func markersAndOutcomes() []string {
@@ -116,8 +122,8 @@ func TestEveryMarkerIsEmittedInsideThePrivateOSC(t *testing.T) {
 // them is a bootstrap that times out on every session.
 func TestMarkerOSCSpellingsAgree(t *testing.T) {
 	unescaped := strings.NewReplacer(`\033`, "\x1b", `\a`, "\x07").Replace(markerOSCPrintfOpen + "TOKEN" + markerOSCPrintfClose)
-	if unescaped != MarkerOSC("TOKEN") {
-		t.Fatalf("the printf spelling unescapes to %q, the Go wrapper is %q", unescaped, MarkerOSC("TOKEN"))
+	if unescaped != marker("TOKEN") {
+		t.Fatalf("the printf spelling unescapes to %q, the Go wrapper is %q", unescaped, marker("TOKEN"))
 	}
 }
 
@@ -130,7 +136,7 @@ func TestBootstrapReadsAMarkerInEitherSpelling(t *testing.T) {
 		name string
 		mark func(string) string
 	}{
-		{"wrapped in the private OSC", MarkerOSC},
+		{"wrapped in the private OSC", marker},
 		{"a bare line, as an older generation emits", func(s string) string { return s }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -179,7 +185,7 @@ func TestLoaderMarkersNeverReachTheTranscriptWithNoReader(t *testing.T) {
 	// a header. Nothing consumes that announcement — this is the stalled
 	// reader — and the terminal is the only thing watching.
 	tr.waitFor("the loader's READY marker on the pty",
-		func(out string) bool { return strings.Contains(out, MarkerOSC(LoaderReadyToken)) })
+		func(out string) bool { return strings.Contains(out, marker(LoaderReadyToken)) })
 
 	// Unblock it, with the bytes a deadline sends, so it names its outcome and
 	// reaches its prompt: the outcome is the third marker the owner saw
@@ -196,7 +202,7 @@ func TestLoaderMarkersNeverReachTheTranscriptWithNoReader(t *testing.T) {
 			t.Errorf("the transcript carries %q as printable text:\n%s", tok, visible)
 		}
 	}
-	if !strings.Contains(got, MarkerOSC(OutcomePrefix+OutcomeToken(OutcomeBootstrapProtocol))) {
+	if !strings.Contains(got, marker(OutcomePrefix+OutcomeToken(OutcomeBootstrapProtocol))) {
 		t.Errorf("the loader never named its protocol outcome, so this test proves nothing; transcript: %q", got)
 	}
 }

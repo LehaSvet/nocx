@@ -1954,8 +1954,14 @@ __nocx_old_debug="$(trap -p DEBUG 2>/dev/null | sed "s/^trap -- '//;s/' DEBUG$//
 __nocx_arm_extdebug() {
     if [[ "${__nocx_extdebug_armed:-0}" != "1" ]]; then
         __nocx_extdebug_armed=1
-        shopt -s extdebug
+        # `|| :` and the explicit success are load-bearing, not tidiness: this
+        # runs at the TOP of __nocx_prompt_command, and a person's `set -e`
+        # would take the whole shell down for a non-zero status here — including
+        # one raised by a shell that has no `shopt` at all, which must simply
+        # never arm rather than end the session.
+        shopt -s extdebug 2>/dev/null || :
     fi
+    return 0
 }
 
 __nocx_preexec_wrapper() {
@@ -1970,22 +1976,38 @@ __nocx_preexec_wrapper() {
         && [[ "${__nocx_in_nested_launch:-0}" != "1" ]] \
         && [[ "${__nocx_preexec_done:-0}" != "1" ]]; then
         __nocx_preexec_done=1
-        __nocx_preexec "$__nocx_current_command"
+        __nocx_preexec "$__nocx_current_command" || :
         # Nested environment: the parent requests a child domain and runs
         # the child here, inside the trap. Returning 1 skips the original
         # command (extdebug), so the child runs exactly once; the parent
         # shell survives and re-activates at its next prompt (§9).
+        # `&& VAR=0` rather than `VAR=$?`: a command inside a DEBUG trap that
+        # returns non-zero is the SHELL's failure under `set -e`, and an
+        # AND-list's left side is exempt from that. Measured: a trap that fails
+        # ends the whole shell, silently and with no output at all. The trace is
+        # a diagnostic and must never be able to close somebody's terminal
+        # (nocx-1ebrs.23).
+        local __nested_rc=1
         __nocx_in_nested_launch=1
-        __nocx_nested_launch "$__nocx_current_command"
-        local __nested_rc=$?
+        __nocx_nested_launch "$__nocx_current_command" && __nested_rc=0
         __nocx_in_nested_launch=0
         if (( __nested_rc == 0 )); then
-            return 1 # the launch ran; skip the original command
+            # Skipping is extdebug's: with it OFF bash reads this return as the
+            # command's own status, and a person's `set -e` then ends the shell
+            # for it — measured, a DEBUG trap returning 1 under errexit exits 1
+            # with NO output at all, which is a silent death rather than a skip.
+            # Before the first prompt has armed extdebug (nocx-1ebrs.23) that
+            # state exists, so the skip is claimed only when it can be honoured.
+            if shopt -q extdebug 2>/dev/null; then
+                return 1 # the launch ran; skip the original command
+            fi
         fi
     fi
-    # Chain to the previous DEBUG trap, if any.
+    # Chain to the previous DEBUG trap, if any. `|| :` because it is the
+    # person's own trap: its status must not become this wrapper's, which under
+    # `set -e` is the same silent death the skip above avoids.
     if [[ -n "${__nocx_old_debug:-}" ]]; then
-        eval "$__nocx_old_debug"
+        eval "$__nocx_old_debug" || :
     fi
     # Explicit 0 on every non-nested path (see the extdebug note above).
     return 0

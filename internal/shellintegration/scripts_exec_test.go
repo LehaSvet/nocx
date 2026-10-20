@@ -161,6 +161,33 @@ type -t claude
 	}
 }
 
+// TestBashIntegration_ArmingExtdebugUnderErrexitCannotKillTheShell is the
+// regression for the half of nocx-1ebrs.23 that CI found the hard way.
+//
+// `__nocx_arm_extdebug` runs at the TOP of __nocx_prompt_command, in somebody's
+// shell — which may be under `set -e`, and may have no working `shopt` at all
+// (a restricted shell). A non-zero status there does not merely lose the
+// option: measured, one failing command inside a function under errexit ends
+// the shell at once, silently, so the person's terminal closes instead. The
+// shim below is that shell — `shopt` refuses the one call that arms, and the
+// assertion is that the shell is still alive afterwards.
+func TestBashIntegration_ArmingExtdebugUnderErrexitCannotKillTheShell(t *testing.T) {
+	bash := requireShell(t, "bash")
+	script := writeScriptFile(t, "nocx.bash", bashScript)
+	prog := `
+set -e
+export NOCX_SHELL_INTEGRATION=1
+source "$1"
+shopt() { if [[ "$1 $2" == "-s extdebug" ]]; then return 1; fi; builtin shopt "$@"; }
+__nocx_arm_extdebug
+echo ARM_UNDER_ERREXIT_OK
+`
+	out := runShellProg(t, bash, prog, script)
+	if !strings.Contains(out, "ARM_UNDER_ERREXIT_OK") {
+		t.Fatalf("arming extdebug in a shell where shopt refuses ended the shell under set -e; got %q", out)
+	}
+}
+
 // TestZshIntegration_SourcesUnderErrExit is the zsh twin: err_exit must not
 // turn the conventional no-channel path into a half-sourced shell.
 func TestZshIntegration_SourcesUnderErrExit(t *testing.T) {

@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/shady2k/nocx/internal/bootstrapstream"
 	"github.com/shady2k/nocx/internal/lifecycle"
 	"github.com/shady2k/nocx/internal/lifecyclechannel"
 	"github.com/shady2k/nocx/internal/lifecyclecodec"
@@ -110,9 +111,14 @@ func (w *harnessWindow) ReadLine(ctx context.Context, timeout time.Duration) (st
 	deadline := time.After(timeout)
 	for {
 		w.mu.Lock()
-		if i := bytes.IndexByte(w.buf, '\n'); i >= 0 {
-			line := string(bytes.TrimRight(w.buf[:i], "\r"))
-			w.buf = w.buf[i+1:]
+		// The protocol's own line shape, from the ONE owner the production
+		// readers use: a bootstrap marker travels in a private OSC and ends at
+		// BEL, not at a newline, so a reader that waits for a newline here never
+		// sees the loader announce itself (nocx-1ebrs.22). Splitting on a
+		// newline made this fixture time out on a session that had come up.
+		if content, next, ok := bootstrapstream.LineEnd(w.buf); ok {
+			line := string(bytes.TrimRight(w.buf[:content], "\r"))
+			w.buf = w.buf[next:]
 			w.mu.Unlock()
 			return line, nil
 		}
@@ -128,6 +134,31 @@ func (w *harnessWindow) ReadLine(ctx context.Context, timeout time.Duration) (st
 		case <-ctx.Done():
 			return "", ctx.Err()
 		}
+	}
+}
+
+// TestHarnessWindowReadsAMarkerInThePrivateOSC keeps this fixture honest about
+// the protocol's line shape without needing an sshd: the loader announces
+// itself in a private OSC, which carries no newline, so a window that splits on
+// a newline waits forever while the session has already come up (nocx-1ebrs.22).
+// The bound is short and the assertion is about the ERROR: a deadline here is
+// the fixture failing to read a marker that was complete.
+func TestHarnessWindowReadsAMarkerInThePrivateOSC(t *testing.T) {
+	w := newHarnessWindow()
+	marker := "\x1b]1337;NOCX1 LOADER_READY\x07"
+	w.feed([]byte(marker))
+	line, err := w.ReadLine(context.Background(), 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("the window refused a marker that is complete: %v", err)
+	}
+	if line != marker {
+		t.Fatalf("line = %q, want the marker whole: %q", line, marker)
+	}
+
+	// And the ordinary line shape still works beside it, in arrival order.
+	w.feed([]byte("some output\n"))
+	if line, err := w.ReadLine(context.Background(), time.Second); err != nil || line != "some output" {
+		t.Fatalf("ordinary line = %q (err %v), want %q", line, err, "some output")
 	}
 }
 

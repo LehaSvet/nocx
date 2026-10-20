@@ -165,7 +165,8 @@ const (
 	// It is the writer's signal that a frame may now be sent.
 	LoaderReadyToken = FrameMagic + " LOADER_READY"
 	// StageReadyToken, OutcomePrefix and LoaderReadyToken above are the TOKENS
-	// — the text a marker carries. They travel inside MarkerOSC, and they are
+	// — the text a marker carries. They travel inside the private OSC
+	// (MarkerOSCOpen/MarkerOSCClose), and they are
 	// declared as bare text because that is what the reader compares and what
 	// the scripts substitute; the wrapper is written at each emission site.
 	// StageReadyToken belongs to stage-1 and is declared here so the loader
@@ -176,8 +177,9 @@ const (
 	OutcomePrefix = FrameMagic + " OUTCOME "
 )
 
-// MarkerOSC is the terminal control string every marker of this protocol
-// travels in, and it is the whole of the answer to nocx-1ebrs.22.
+// MarkerOSCOpen and MarkerOSCClose delimit the terminal control string every
+// marker of this protocol travels in, and they are the whole of the answer to
+// nocx-1ebrs.22.
 //
 // # Why a marker may not be a line
 //
@@ -222,10 +224,6 @@ const (
 	markerOSCPrintfOpen  = `\033]1337;`
 	markerOSCPrintfClose = `\a`
 )
-
-// MarkerOSC wraps one token in the private OSC, for a Go writer that has to
-// emit one (the tests, and anything that drives a loader by hand).
-func MarkerOSC(tok string) string { return MarkerOSCOpen + tok + MarkerOSCClose }
 
 // markerText is the token a line carries: the wrapper stripped when the line
 // is one of ours, and the line unchanged when it is not.

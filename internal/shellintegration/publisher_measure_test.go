@@ -236,15 +236,18 @@ import (
 // few hundred bytes went. Paying for one owner of the trap is the point: two
 // copies is how the second window would stop being armed.
 //
-// AND GREW by 163 bytes when extdebug moved out of bash's startup and into the
-// first prompt (nocx-1ebrs.23): 88066, calls unchanged at 63. The growth is
-// __nocx_arm_extdebug and its call in __nocx_prompt_command — one guard, one
-// shopt, and the bytes of a body both wrappers carry — less the comment prose
-// the shipped bytes never contain. It is paid once per publish in exchange for
-// a shell that no longer asks bash to start a debugger it was not asked for.
+// AND GREW by 289 bytes when extdebug moved out of bash's startup and into the
+// first prompt (nocx-1ebrs.23): 88192, calls unchanged at 63. The growth is
+// __nocx_arm_extdebug and its call in __nocx_prompt_command, and the two guards
+// that keep the move inert under a person's `set -e` — the arm's own `2>/dev/null`
+// and explicit success, the DEBUG trap claiming its skip only while extdebug is
+// actually on, and the person's own chained trap no longer able to hand its
+// status to ours. Paid once per publish in exchange for a shell that no longer
+// asks bash to start a debugger it was not asked for, and that a `set -e` in
+// somebody's rc cannot kill.
 const (
 	measuredMaxPublishCalls = 63
-	measuredMaxPublishBytes = 88066
+	measuredMaxPublishBytes = 88192
 
 	// measuredMaxBoundedResidue is the same figure for the worst attempt
 	// that is still inside the residue bounds the design asks P3 to enforce

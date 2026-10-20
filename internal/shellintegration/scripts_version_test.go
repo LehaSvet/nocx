@@ -260,7 +260,7 @@ func TestScriptVersionTracksScriptContent(t *testing.T) {
 		// reads its startup files, so the login bash sshd starts with `-c`
 		// stops asking bash to load bashdb — and stops losing the option when
 		// bash refuses (nocx-1ebrs.23).
-		"64": "c961e859883a55c867689f8da8cd41efc3b14aff057e81976a83efbcb9e3aee1",
+		"64": "a4872ed28abea8a1a214002c9fb48f5df4a37f8dbc1e4a8b44f2d8660519f0fa",
 	}
 
 	h := sha256.New()
