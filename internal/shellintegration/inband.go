@@ -60,7 +60,11 @@ const (
 	// (backslash-escaped), because the wrapper is typed text: a raw ESC byte
 	// inside the typed line would confuse readline's display. The shell's
 	// printf interprets \033 and \a (POSIX).
-	inBandReadyOSC = `\033]1337;NOCX_IB_READY\a`
+	//
+	// The wrapper itself is MarkerOSC's, spelled once (carrier.go): this tier
+	// has been putting a marker in a terminal control string since nocx-ynsx,
+	// and the bootstrap's markers only caught up with it in nocx-1ebrs.22.
+	inBandReadyOSC = markerOSCPrintfOpen + "NOCX_IB_READY" + markerOSCPrintfClose
 
 	// inBandCompleteMarker is the payload's final line. The wrapper sources
 	// the staged file only when grep finds this exact line, so a truncated

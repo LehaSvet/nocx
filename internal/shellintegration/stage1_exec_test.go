@@ -948,9 +948,12 @@ func (l *loaderStream) ReadLine(ctx context.Context, timeout time.Duration) (str
 	for {
 		out := l.s.output()
 		if l.off <= len(out) {
-			if i := strings.IndexByte(out[l.off:], '\n'); i >= 0 {
-				line := out[l.off : l.off+i]
-				l.off += i + 1
+			// The harness speaks the protocol's own line shape, from the
+			// same owner the production readers use: a marker is one private
+			// OSC and ends at BEL, not at a newline (nocx-1ebrs.22).
+			if content, next, ok := bootstrapstream.LineEnd([]byte(out[l.off:])); ok {
+				line := out[l.off : l.off+content]
+				l.off += next
 				return strings.TrimRight(line, "\r"), nil
 			}
 		}

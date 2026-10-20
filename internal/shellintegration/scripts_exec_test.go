@@ -161,6 +161,60 @@ type -t claude
 	}
 }
 
+// TestBashIntegration_SnapshotAnnounceUnderErrexitCannotKillTheShell is the
+// other half of the same hazard, and the one that actually failed in CI.
+//
+// The snapshot announce block runs while the script is being SOURCED, and it
+// talks to the operating system: `mktemp`, `ps`, `disown`. `disown` returns
+// non-zero once the background `compgen` has already finished and been reaped
+// — a race with how fast that is on the machine — and a person's `set -e`
+// turns it into the end of their shell, silently, with no output at all.
+// Measured before the fix: sourcing with a failing `disown` exits 1 and prints
+// nothing, which is byte for byte what CI reported. The shim is that race,
+// made deterministic.
+func TestBashIntegration_SnapshotAnnounceUnderErrexitCannotKillTheShell(t *testing.T) {
+	bash := requireShell(t, "bash")
+	script := writeScriptFile(t, "nocx.bash", bashScript)
+	prog := `
+set -e
+disown() { return 1; }
+export NOCX_SHELL_INTEGRATION=1
+source "$1"
+echo SNAPSHOT_ANNOUNCE_UNDER_ERREXIT_OK
+`
+	out := runShellProg(t, bash, prog, script)
+	if !strings.Contains(out, "SNAPSHOT_ANNOUNCE_UNDER_ERREXIT_OK") {
+		t.Fatalf("a failing disown in the snapshot announce block ended the shell under set -e; got %q", out)
+	}
+}
+
+// TestBashIntegration_ArmingExtdebugUnderErrexitCannotKillTheShell is the
+// regression for the half of nocx-1ebrs.23 that CI found the hard way.
+//
+// `__nocx_arm_extdebug` runs at the TOP of __nocx_prompt_command, in somebody's
+// shell — which may be under `set -e`, and may have no working `shopt` at all
+// (a restricted shell). A non-zero status there does not merely lose the
+// option: measured, one failing command inside a function under errexit ends
+// the shell at once, silently, so the person's terminal closes instead. The
+// shim below is that shell — `shopt` refuses the one call that arms, and the
+// assertion is that the shell is still alive afterwards.
+func TestBashIntegration_ArmingExtdebugUnderErrexitCannotKillTheShell(t *testing.T) {
+	bash := requireShell(t, "bash")
+	script := writeScriptFile(t, "nocx.bash", bashScript)
+	prog := `
+set -e
+export NOCX_SHELL_INTEGRATION=1
+source "$1"
+shopt() { if [[ "$1 $2" == "-s extdebug" ]]; then return 1; fi; builtin shopt "$@"; }
+__nocx_arm_extdebug
+echo ARM_UNDER_ERREXIT_OK
+`
+	out := runShellProg(t, bash, prog, script)
+	if !strings.Contains(out, "ARM_UNDER_ERREXIT_OK") {
+		t.Fatalf("arming extdebug in a shell where shopt refuses ended the shell under set -e; got %q", out)
+	}
+}
+
 // TestZshIntegration_SourcesUnderErrExit is the zsh twin: err_exit must not
 // turn the conventional no-channel path into a half-sourced shell.
 func TestZshIntegration_SourcesUnderErrExit(t *testing.T) {

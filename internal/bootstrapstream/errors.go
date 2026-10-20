@@ -23,13 +23,22 @@
 // stayed green throughout, because each one's fake returned its own package's
 // sentinel.
 //
+// That vocabulary is broader than the two errors: WHAT A LINE IS crosses the
+// same seam, and it is LineEnd's — for the same reason, since a producer that
+// decides a marker is a line and a consumer that waits for one have to agree on
+// where a line ends. They disagreed once (nocx-1ebrs.22), and the symptom was
+// a protocol token in the person's transcript.
+//
 // So the errors live in a leaf package that all three import, and there is one
 // value per fact. The INTERFACE stays with its consumer, where Go puts it; only
 // the vocabulary that crosses the seam is shared (AD-8: one owner per
 // behaviour, and the owner is whoever the behaviour is about).
 package bootstrapstream
 
-import "errors"
+import (
+	"bytes"
+	"errors"
+)
 
 // ErrDeadline is what a bootstrap ReadLine returns when its deadline passed
 // before a line completed. It is a deadline and nothing else: the stream is
@@ -47,3 +56,43 @@ var ErrDeadline = errors.New("bootstrap: the deadline passed before a line arriv
 // bytes themselves ever being written anywhere (AD-6: the backend does not
 // read the stream, and a "bounded prefix" in a log file is reading it).
 var ErrLineTooLong = errors.New("bootstrap: a line exceeded the bound")
+
+// LineEnd reports whether b holds a complete line: content is the index one
+// past the line's own bytes (its line ending and any '\r' excluded), next is
+// the index the caller consumes up to, and ok says the line is complete.
+//
+// A line ends at '\n', with ONE exception: a line that begins with ESC ']' is
+// an OSC string, and it ends at its BEL terminator instead.
+//
+// The exception is nocx-1ebrs.22. The bootstrap's markers used to be ordinary
+// lines, and on the typed-`ssh` path the far side's stdout is the pty the
+// person is looking at — the window's tap is a copy, so nothing can "consume"
+// a marker out of their transcript, and a slow reader or a timeout left
+// NOCX1 LOADER_READY and its siblings printed in the middle of it. Every
+// terminal consumes an OSC whole and paints none of it, so the markers travel
+// in one now (shellintegration.MarkerOSC) and the screen cannot receive them at
+// all, whatever the reader does. Such a string carries no '\n', and waiting
+// for one would turn every marker into a bootstrap timeout, so BEL ends it
+// here.
+//
+// The BEL is part of the line's CONTENT, not its ending: the wrapper is the
+// caller's to strip, and the terminator belongs to it. That is the one reason
+// content and next are two numbers — a '\n' is the line's ending and is not,
+// a BEL is nocx's own byte and is.
+//
+// The concession costs nothing the newline rule had not already paid for. A far
+// side that opens an OSC and never closes it is refused by the reader's line
+// bound exactly as a stream with no newline in it is, and the bytes are left
+// where the next reader will find them.
+func LineEnd(b []byte) (content, next int, ok bool) {
+	if len(b) > 1 && b[0] == 0x1b && b[1] == ']' {
+		if i := bytes.IndexByte(b, 0x07); i >= 0 {
+			return i + 1, i + 1, true
+		}
+		return 0, 0, false
+	}
+	if i := bytes.IndexByte(b, '\n'); i >= 0 {
+		return i, i + 1, true
+	}
+	return 0, 0, false
+}

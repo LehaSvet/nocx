@@ -313,7 +313,16 @@ var (
 // no sentence and no cancelled ticket. The trap moved into one helper both waits
 // are run under. A shell still sourcing 62 has the enrolment covered and that
 // window uncovered.
-const version = "63"
+// 64: extdebug is armed at the FIRST PROMPT rather than while bash reads its
+// startup files (nocx-1ebrs.23). bash holds one flag behind that option, and an
+// invocation with `-c` that finishes its startup files with the flag set calls
+// start_debugger(): it loads bashdb, prints two complaint lines into the
+// person's transcript when bashdb is not installed, and then CLEARS the flag —
+// so the skip-the-original-command mechanism was off as well. The shell that
+// met it was the login bash sshd starts with `-c` to run nocx's loader, whose
+// profile sourced this file. Every installed copy must be rewritten: a shell
+// still sourcing 63 arms extdebug during exactly that startup.
+const version = "64"
 
 // ScriptVersion is the integration script version other packages may read.
 // Command discovery puts it in its cache key (internal/commandnames): the

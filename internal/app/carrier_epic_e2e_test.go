@@ -863,13 +863,22 @@ func TestEpicE2E_MaxSessions1LeavesAWorkingUnintegratedPrompt(t *testing.T) {
 // forbids.
 func assertNamedRefusal(t *testing.T, terminal string) {
 	t.Helper()
-	i := strings.Index(terminal, shellintegration.OutcomePrefix)
+	// The prefix inside the private OSC the loader emits it in, and the BEL
+	// that ends it: a marker is one control string with no newline in it, so a
+	// parse that stopped at the first newline read the terminator into the
+	// token ("generation-unavailable\a") and then reported a vocabulary
+	// mismatch for a refusal the product had named correctly
+	// (nocx-1ebrs.22). Both halves come from the constants that own them.
+	prefix := shellintegration.MarkerOSCOpen + shellintegration.OutcomePrefix
+	i := strings.Index(terminal, prefix)
 	if i < 0 {
 		t.Fatalf("the far side named no terminal outcome at all; §0 requires a NAMED reason.\nterminal:\n%s", terminal)
 	}
-	rest := terminal[i+len(shellintegration.OutcomePrefix):]
-	token := strings.TrimSpace(strings.SplitN(rest, "\n", 2)[0])
-	token = strings.TrimSpace(strings.TrimSuffix(token, "\r"))
+	rest := terminal[i+len(prefix):]
+	if end := strings.IndexAny(rest, shellintegration.MarkerOSCClose+"\n"); end >= 0 {
+		rest = rest[:end]
+	}
+	token := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(rest), "\r"))
 	outcome, known := shellintegration.OutcomeForToken(token)
 	if !known {
 		t.Fatalf("the far side named %q, which is not in the outcome vocabulary", token)
@@ -878,6 +887,27 @@ func assertNamedRefusal(t *testing.T, terminal string) {
 		t.Fatalf("the far side named %s: the session integrated where §0 says it must not", outcome)
 	}
 	t.Logf("MEASURED the named reason: %s", outcome)
+}
+
+// TestAssertNamedRefusalReadsThePrivateOSC pins the parse against the exact
+// bytes the far side emits, without an sshd: the loader names its outcome
+// inside one OSC, so there is no newline to cut at and the terminator must be
+// cut instead. Before this, the token came back as "generation-unavailable\a"
+// and a refusal the product had named perfectly was reported as vocabulary it
+// does not have (nocx-1ebrs.22).
+func TestAssertNamedRefusalReadsThePrivateOSC(t *testing.T) {
+	terminal := shellintegration.MarkerOSCOpen + shellintegration.LoaderReadyToken + shellintegration.MarkerOSCClose +
+		shellintegration.MarkerOSCOpen + shellintegration.StageReadyToken + shellintegration.MarkerOSCClose +
+		shellintegration.MarkerOSCOpen + shellintegration.OutcomePrefix +
+		shellintegration.OutcomeToken(shellintegration.OutcomeGenerationUnavailable) + shellintegration.MarkerOSCClose
+	assertNamedRefusal(t, terminal)
+
+	// And the refusal that must never be read as a success still is one.
+	accepted := shellintegration.MarkerOSCOpen + shellintegration.OutcomePrefix +
+		shellintegration.OutcomeToken(shellintegration.OutcomeBootstrapAccepted) + shellintegration.MarkerOSCClose
+	if !strings.Contains(accepted, shellintegration.OutcomeToken(shellintegration.OutcomeBootstrapAccepted)) {
+		t.Fatal("fixture is wrong")
+	}
 }
 
 // reasonRecorder captures what the launcher adapter reports to the session

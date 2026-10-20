@@ -7,7 +7,7 @@ the filesystem seam and counts calls across publish paths.
 ## Current maximum
 
 - Maximum filesystem-seam calls per publish: **63**.
-- Maximum bytes written per publish: **87,903**.
+- Maximum bytes written per publish: **88,202**.
 - Measured worst path: replacement plus sweep, with the launch carrier absent.
 - Fault position used for the reported worst case: `remove#4`.
 
@@ -44,3 +44,11 @@ The filesystem-call maximum did not change.
 Keep these values in sync with `measuredMaxPublishCalls` and `measuredMaxPublishBytes` in
 `publisher_measure_test.go`. Update this report and both constants whenever the measured
 maximum changes.
+
+The 2026-10-20 measurement is **299 bytes above** that 87,903-byte figure, at **88,202**,
+and it moves with the launch carrier's new terminal outcome rather than with a generation
+script's growth: the bootstrap's markers now travel in a private OSC instead of as lines of
+text (nocx-1ebrs.22), which is one printf in the carrier, and `extdebug` moved out of bash's
+startup and into the first prompt with the guards that keep the move inert under a person's
+`set -e` (nocx-1ebrs.23), which is a function and two guards in each wrapper. The
+filesystem-call maximum did not change.

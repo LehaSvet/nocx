@@ -203,6 +203,9 @@ func TestScrubLauncherSession(t *testing.T) {
 		// Coding agents export these for their own tools; leaking them into a
 		// PTY makes TUIs render black-and-white.
 		"TERM=dumb",
+		// A bash that starts with extdebug here tries to load bashdb before
+		// anything of ours runs (nocx-1ebrs.23).
+		"BASHOPTS=checkwinsize:extdebug",
 		"NO_COLOR=1",
 		// The daemon's own agent tool endpoint. A pane belongs to the
 		// coordinator that opened it, and that coordinator names the endpoint
@@ -228,7 +231,7 @@ func TestScrubLauncherSession(t *testing.T) {
 	// tool's spelling, and this one is ours. Naming it here is what stops the
 	// two drifting — a rename in shellintegration that missed the list would
 	// leave the scrub silently matching nothing, and this test red.
-	for _, unwanted := range []string{"CLAUDECODE=", "CLAUDE_CODE_CHILD_SESSION=", "CLAUDE_CODE_SESSION_ID=", "CLAUDE_PID=", "TERM=", "NO_COLOR=", "NOCX_SHELL_INTEGRATION=", "NOCX_PROMPT_MODE=", shellintegration.ToolSocketEnvVar + "="} {
+	for _, unwanted := range []string{"CLAUDECODE=", "CLAUDE_CODE_CHILD_SESSION=", "CLAUDE_CODE_SESSION_ID=", "CLAUDE_PID=", "TERM=", "NO_COLOR=", "BASHOPTS=", "NOCX_SHELL_INTEGRATION=", "NOCX_PROMPT_MODE=", shellintegration.ToolSocketEnvVar + "="} {
 		for _, kv := range got {
 			if strings.HasPrefix(kv, unwanted) {
 				t.Errorf("launcher session marker survived: %q", kv)

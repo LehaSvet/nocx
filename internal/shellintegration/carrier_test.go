@@ -75,6 +75,10 @@ var carrierScriptTokens = map[string]bool{
 	// the protocol vocabulary
 	"NOCX1": true, "OUTCOME": true, "LOADER_READY": true,
 	"nocx.XXXXXX": true,
+	// the private OSC a marker travels in (nocx-1ebrs.22): its number, and
+	// the octal escape printf turns into ESC. Both are the wrapper, and the
+	// wrapper is what keeps the marker off the person's screen.
+	"1337": true, "033": true,
 	// the closed set of terminal outcomes, as their wire tokens
 	"termios": true, "interrupted": true, "protocol": true,
 	"too-large": true, "no-temp": true, "no-digest": true,
@@ -409,7 +413,15 @@ func TestStageDigest_IsLowercaseHexOfTheFrameBytes(t *testing.T) {
 // actually mints, with the epoch and the port at their type maxima — so this
 // is the real headroom, not a convenient one.
 func TestCarrier_MarginAgainstTheStatedBound(t *testing.T) {
-	const wantMargin = 64
+	// 64 until nocx-1ebrs.22 and 56 after it, deliberately and in the open: a
+	// marker is no longer a line of text but a private OSC, and its wrapper
+	// costs 12 bytes at each of the loader's two emission sites, less the 4
+	// bytes of the two newlines the BEL replaces — 20 bytes of the gap, spent
+	// on keeping the protocol off the person's screen. The CAP did not move
+	// and may not: 1 KiB is the size a consumer of the exec request has to be
+	// able to carry whole. What moves is the floor, once, and the next change
+	// that needs room has to shorten the loader rather than spend this.
+	const wantMargin = 56
 	for _, kind := range carrierKinds {
 		cmd, _, ok := NewRemoteLauncher().StartCommand(kind, carrierOpts())
 		if !ok {

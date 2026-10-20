@@ -1741,6 +1741,7 @@ __nocx_prompt_command() {
     # the flag instead. `local` cannot come first: it would reset $?.
     __nocx_prompt_exit=$?
     __nocx_in_prompt_command=1
+    __nocx_arm_extdebug
     local __nocx_exit=$__nocx_prompt_exit
     if [[ -n "${__nocx_nested_rc:-}" ]]; then
         __nocx_exit=$__nocx_nested_rc
@@ -1934,9 +1935,34 @@ __nocx_old_debug="$(trap -p DEBUG 2>/dev/null | sed "s/^trap -- '//;s/' DEBUG$//
 # commands. It never returns 2 (which extdebug turns into a synthetic
 # `return` from the enclosing function). extdebug also makes the DEBUG trap
 # fire inside functions and command substitutions; the __nocx_* /
-# in_prompt_command / preexec_done guards below are exactly what keeps that
-# from recursing.
-shopt -s extdebug
+# in_prompt_command / preexec_done guards in __nocx_prompt_command are
+# exactly what keeps that from recursing.
+#
+# IT IS NOT SWITCHED ON HERE, and the timing is the whole of nocx-1ebrs.23.
+# bash keeps one flag behind `shopt -s extdebug`, and when a `bash -c`
+# invocation finishes its startup files with that flag set, bash calls
+# start_debugger(): it looks for bashdb, and on a host that has none it prints
+# two lines into the person's transcript — "bashdb-main.inc: No such file or
+# directory" and "warning: cannot start debugger; debugging mode disabled" —
+# and then CLEARS the flag, so the skip below silently stopped working as well.
+# The shell that met it was the LOGIN bash sshd starts with `-c` to run nocx's
+# loader: an installer-era gate line in the user's profile sources this file,
+# so the flag was set during startup and bash reached for the debugger before
+# the loader ran. The first prompt is the nearest boundary that is after every
+# startup file and before anything the person types, and a shell that never
+# shows a prompt (that `-c` one) has no preexec hook to arm.
+__nocx_arm_extdebug() {
+    if [[ "${__nocx_extdebug_armed:-0}" != "1" ]]; then
+        __nocx_extdebug_armed=1
+        # `|| :` and the explicit success are load-bearing, not tidiness: this
+        # runs at the TOP of __nocx_prompt_command, and a person's `set -e`
+        # would take the whole shell down for a non-zero status here — including
+        # one raised by a shell that has no `shopt` at all, which must simply
+        # never arm rather than end the session.
+        shopt -s extdebug 2>/dev/null || :
+    fi
+    return 0
+}
 
 __nocx_preexec_wrapper() {
     local __nocx_current_command=${BASH_COMMAND}
@@ -1950,22 +1976,38 @@ __nocx_preexec_wrapper() {
         && [[ "${__nocx_in_nested_launch:-0}" != "1" ]] \
         && [[ "${__nocx_preexec_done:-0}" != "1" ]]; then
         __nocx_preexec_done=1
-        __nocx_preexec "$__nocx_current_command"
+        __nocx_preexec "$__nocx_current_command" || :
         # Nested environment: the parent requests a child domain and runs
         # the child here, inside the trap. Returning 1 skips the original
         # command (extdebug), so the child runs exactly once; the parent
         # shell survives and re-activates at its next prompt (§9).
+        # `&& VAR=0` rather than `VAR=$?`: a command inside a DEBUG trap that
+        # returns non-zero is the SHELL's failure under `set -e`, and an
+        # AND-list's left side is exempt from that. Measured: a trap that fails
+        # ends the whole shell, silently and with no output at all. The trace is
+        # a diagnostic and must never be able to close somebody's terminal
+        # (nocx-1ebrs.23).
+        local __nested_rc=1
         __nocx_in_nested_launch=1
-        __nocx_nested_launch "$__nocx_current_command"
-        local __nested_rc=$?
+        __nocx_nested_launch "$__nocx_current_command" && __nested_rc=0
         __nocx_in_nested_launch=0
         if (( __nested_rc == 0 )); then
-            return 1 # the launch ran; skip the original command
+            # Skipping is extdebug's: with it OFF bash reads this return as the
+            # command's own status, and a person's `set -e` then ends the shell
+            # for it — measured, a DEBUG trap returning 1 under errexit exits 1
+            # with NO output at all, which is a silent death rather than a skip.
+            # Before the first prompt has armed extdebug (nocx-1ebrs.23) that
+            # state exists, so the skip is claimed only when it can be honoured.
+            if shopt -q extdebug 2>/dev/null; then
+                return 1 # the launch ran; skip the original command
+            fi
         fi
     fi
-    # Chain to the previous DEBUG trap, if any.
+    # Chain to the previous DEBUG trap, if any. `|| :` because it is the
+    # person's own trap: its status must not become this wrapper's, which under
+    # `set -e` is the same silent death the skip above avoids.
     if [[ -n "${__nocx_old_debug:-}" ]]; then
-        eval "$__nocx_old_debug"
+        eval "$__nocx_old_debug" || :
     fi
     # Explicit 0 on every non-nested path (see the extdebug note above).
     return 0
@@ -2324,8 +2366,12 @@ if (( __nocx_snapshot_announce )); then
     # disown: without disown, bash prints "[N]+ Done ( compgen ... )" — the
     # job's implementation, verbatim — into the user's output when it finishes.
     # Only OUR job is disowned, so no other job loses its notification.
-    __nocx_snap_lstart="$(ps -o lstart= -p "$__nocx_snap_job" 2>/dev/null | tr -s ' ')"
-    disown "$__nocx_snap_job" 2>/dev/null
+    __nocx_snap_lstart="$(ps -o lstart= -p "$__nocx_snap_job" 2>/dev/null | tr -s ' ')" || :
+    # `|| :` for the same reason as the block above: `disown` returns non-zero
+    # once the job has already finished and been reaped, which is a race with
+    # how fast compgen is on the machine — and under `set -e` it ends the shell
+    # instead of being ignored.
+    disown "$__nocx_snap_job" 2>/dev/null || :
 
     # Announce the session nonce before the first prompt.
     builtin printf '\e]636;H;%s\a' "$__nocx_snapshot_nonce"

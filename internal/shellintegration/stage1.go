@@ -196,7 +196,7 @@ trap - EXIT
 R "$1"
 }
 trap "Q @INTERRUPTED@" HUP INT QUIT TERM EXIT
-printf "@STAGEREADY@\n"
+printf "\033]1337;@STAGEREADY@\a"
 X=$(dd bs=1 count=@HDRLEN@ 2>/dev/null)
 [ -n "$X" ] || Q @INTERRUPTED@
 [ "${X#@MAGIC@ @SEQ@ }" != "$X" ] || Q @PROTOCOL@
