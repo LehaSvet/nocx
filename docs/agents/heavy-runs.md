@@ -74,6 +74,27 @@ SkyPilot API is exit 4 with what the CLI said; nothing falls back to this
 machine, deliberately, because a fallback would put the run back on the shared
 12 GB at exactly the moment the cluster is broken.
 
+### Two files the stage does not carry, and what to do about each
+
+The stage is a filtered copy of the worktree, so two gitignored inputs behave
+differently, and a run that ignores this looks like a build defect in the pod:
+
+- **`frontend/dist` is staged** (about 3 MB) when the worktree has it, because
+  the ROOT package embeds it (`all:frontend/dist`). Without it `go test .` fails
+  at build time on the pod while passing locally - which is a setup failure, not
+  a test result. Build the frontend once (`make frontend-build`, or any target
+  that produces `dist`) before running the root package there.
+- **`build/libghostty-vt` is NOT staged** (about 280 MB). Any package that links
+  `internal/emulator/ghostty` needs the archives present in the pod's own tree,
+  so prefix the command with `make vt-archives &&`:
+
+  ```bash
+  nocx-sky-test "$PWD" 'make vt-archives && go test -count=1 ./internal/emulator/...'
+  ```
+
+A run that fails on either of these has tested nothing. Read the first error
+line before concluding anything about the code.
+
 ## The guard, and what it does not do
 
 `nocx-local-guard` is a symlink farm in `~/.local/bin` over the tool names:
