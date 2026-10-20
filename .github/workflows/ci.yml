@@ -270,6 +270,23 @@ jobs:
       - name: The tagged set has not drifted
         run: make ci-local-ssh-split
 
+      # THE PLUGIN STACK AN ORDINARY ZSH HAS, ON THE OS IT WAS MEASURED ON
+      # (nocx-1ebrs.27). `fast-syntax-highlighting`, `zsh-syntax-highlighting`
+      # and `zsh-autosuggestions` wrap zle widgets, and the defect that filed
+      # that bead was bisected on a Mac down to one of them — so the composition
+      # is proved HERE, against macOS's own zsh, and not only on the Linux job
+      # that carries the rest of internal/shellintegration. The two tests below
+      # are the whole package cost this job pays, and the checkout is pinned by
+      # commit, so nothing here follows a Homebrew upgrade.
+      #
+      # Deliberately NOT a `brew install` of the same three: a bottle moves, and
+      # then a green run no longer says which wrapping it measured.
+      - name: Install the pinned widget-wrapping zsh plugins
+        run: scripts/install-zsh-zle-plugins.sh "$RUNNER_TEMP/zsh-plugins"
+
+      - name: Test (the widget-wrapping zsh plugin stack, both orders)
+        run: go test -race -tags gtk3,nocx_framecheck -count=1 -v -run 'TestLocalZshPane_ThePluginStackIntegratesInEitherOrder' ./internal/shellintegration/
+
       - name: Test (the OS-specific packages)
         env:
           PKGS: ${{ steps.pkgs.outputs.list }}

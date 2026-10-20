@@ -310,11 +310,12 @@ All four frontend gates FAIL with an actionable message if `node_modules` is abs
 
 Run locally without committing: `make ci` (close mirror of CI — runs the same static analysis and tests, but validates against your existing `node_modules` rather than reinstalling).
 
-**Shell integration tests need dash and zsh.** `internal/shellintegration`
-drives the real bash/zsh/posix launchers on real ptys. The dash and zsh
-launcher tests **fail, not skip**, when the shell they must prove is absent
-(a skipped test reporting success is the failure AGENTS.md's testing rules
-exist to prevent) — install the shells, then run the suite the way CI does:
+**Shell integration tests need dash, zsh and three zsh plugins.**
+`internal/shellintegration` drives the real bash/zsh/posix launchers on real
+ptys. The dash and zsh launcher tests **fail, not skip**, when the shell they
+must prove is absent (a skipped test reporting success is the failure
+AGENTS.md's testing rules exist to prevent) — install the shells, then run the
+suite the way CI does:
 
 ```bash
 sudo apt-get install -y dash zsh        # Debian/Ubuntu
@@ -322,11 +323,28 @@ brew install dash                       # macOS (zsh ships with the OS)
 go test -race -count=1 ./internal/shellintegration/...
 ```
 
+The widget-wrapping zsh plugins — `fast-syntax-highlighting`,
+`zsh-syntax-highlighting`, `zsh-autosuggestions` — are needed by the one test
+about composing with a plugin stack (`nocx-1ebrs.27`), and that test **fails,
+not skips**, when they are missing. Provision the PINNED checkouts, because a
+package manager's bottles move and then a green run stops saying which widget
+wrapping it measured:
+
+```bash
+scripts/install-zsh-zle-plugins.sh ~/.cache/nocx-zsh-plugins
+NOCX_ZSH_PLUGINS=~/.cache/nocx-zsh-plugins \
+  go test -race -count=1 -run TestLocalZshPane_ThePluginStackIntegratesInEitherOrder \
+  ./internal/shellintegration/
+```
+
 The gates that run this suite provision the shells so they prove them:
 `scripts/ci-linux.sh` uses an image carrying dash, zsh and a real bash 3.2
-(`.githooks/images/ci-linux/Dockerfile`), and CI's macOS job runs
-`brew install dash` (ubuntu-latest ships both shells already). The pre-commit
-hook does not: it runs no tests at all.
+(`.githooks/images/ci-linux/Dockerfile`), and CI's `ci-backend` job runs
+`scripts/install-zsh-ci.sh`, which now installs the pinned plugins as well
+(ubuntu-latest ships both shells already). CI's macOS job installs the pinned
+plugins too and runs the plugin-composition test alone, because that defect was
+measured on a Mac and macOS ships zsh 5.8. The pre-commit hook provisions
+nothing: it runs no tests at all.
 
 ## Quality gates
 

@@ -31,3 +31,20 @@ zsh -c 'autoload -Uz compaudit; compaudit 2>/dev/null || true' \
 
 echo "=== compaudit after fix (empty is correct) ==="
 zsh -c 'autoload -Uz compaudit; compaudit 2>/dev/null || true'
+
+
+# THE WIDGET-WRAPPING ZSH PLUGINS (nocx-1ebrs.27), for the composition test.
+#
+# `fast-syntax-highlighting`, `zsh-syntax-highlighting` and
+# `zsh-autosuggestions` replace zle widgets, and internal/shellintegration has
+# to compose with that convention in either order. The test that pins it fails,
+# not skips, when they are absent — so this is provisioning, not a convenience,
+# and it belongs beside zsh itself: one owner for "how CI gets the shells and
+# the plugins the shell tests prove".
+#
+# PINNED CHECKOUTS, not the distribution packages: see the installer for why a
+# package that drifts cannot say what wrapping it measured. It writes
+# NOCX_ZSH_PLUGINS to $GITHUB_ENV when that is set, so every later step in the
+# job inherits it without repeating the path.
+"$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/install-zsh-zle-plugins.sh" \
+    "${HOME:-/root}/.nocx-ci/zsh-plugins"
