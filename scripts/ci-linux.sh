@@ -200,6 +200,15 @@ run_variant() {
             # database knows — same fixture requirement as the hook image.
             groupadd --gid "$RUN_GID" nocx-sshtest 2>/dev/null || true
             useradd -M -u "$RUN_UID" -g "$RUN_GID" -s /bin/bash -d "$HOME" nocx-sshtest 2>/dev/null || true
+            # THE WIDGET-WRAPPING ZSH PLUGINS (nocx-1ebrs.27). The shell-integration
+            # composition test fails, not skips, when they are absent, and this
+            # container runs the same package set the ci-backend job runs. Fetched
+            # here from the mounted tree rather than baked into the image, so the
+            # pins live in ONE file (scripts/install-zsh-zle-plugins.sh) instead of
+            # also in a Dockerfile whose build context would have to widen to the
+            # repo root. Costs a few seconds of shallow clone per variant.
+            sh /src/scripts/install-zsh-zle-plugins.sh /tmp/nocx-zsh-plugins >/dev/null
+            export NOCX_ZSH_PLUGINS=/tmp/nocx-zsh-plugins
             exec setpriv --reuid="$RUN_UID" --regid="$RUN_GID" --clear-groups \
                 sh -euc "$INNER"
         '

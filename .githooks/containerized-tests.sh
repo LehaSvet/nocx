@@ -184,6 +184,13 @@ go_test_containerized() {
             # entry with a login shell. Idempotent and scoped to this run.
             groupadd --gid "$RUN_GID" nocx-sshtest 2>/dev/null || true
             useradd -M -u "$RUN_UID" -g "$RUN_GID" -s /bin/bash -d /tmp/nocx-sshd-home nocx-sshtest 2>/dev/null || true
+            # THE WIDGET-WRAPPING ZSH PLUGINS (nocx-1ebrs.27). This runner carries
+            # zsh in the image for the shell-integration tests, and the composition
+            # test fails, not skips, without the plugins — so they are provisioned
+            # here from the mounted tree, where the pins have one owner. A few
+            # seconds of shallow clone per run, and only this runner pays it.
+            sh /src/scripts/install-zsh-zle-plugins.sh /tmp/nocx-zsh-plugins >/dev/null
+            export NOCX_ZSH_PLUGINS=/tmp/nocx-zsh-plugins
             # TWO PASSES: the untagged build, and then the packages that exist
             # only under the tag. One tagged run over ./... would not be the
             # union of the two — the tag also EXCLUDES the `!nocx_local_ssh`
