@@ -2366,8 +2366,12 @@ if (( __nocx_snapshot_announce )); then
     # disown: without disown, bash prints "[N]+ Done ( compgen ... )" — the
     # job's implementation, verbatim — into the user's output when it finishes.
     # Only OUR job is disowned, so no other job loses its notification.
-    __nocx_snap_lstart="$(ps -o lstart= -p "$__nocx_snap_job" 2>/dev/null | tr -s ' ')"
-    disown "$__nocx_snap_job" 2>/dev/null
+    __nocx_snap_lstart="$(ps -o lstart= -p "$__nocx_snap_job" 2>/dev/null | tr -s ' ')" || :
+    # `|| :` for the same reason as the block above: `disown` returns non-zero
+    # once the job has already finished and been reaped, which is a race with
+    # how fast compgen is on the machine — and under `set -e` it ends the shell
+    # instead of being ignored.
+    disown "$__nocx_snap_job" 2>/dev/null || :
 
     # Announce the session nonce before the first prompt.
     builtin printf '\e]636;H;%s\a' "$__nocx_snapshot_nonce"

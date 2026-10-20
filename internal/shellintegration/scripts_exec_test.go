@@ -161,6 +161,33 @@ type -t claude
 	}
 }
 
+// TestBashIntegration_SnapshotAnnounceUnderErrexitCannotKillTheShell is the
+// other half of the same hazard, and the one that actually failed in CI.
+//
+// The snapshot announce block runs while the script is being SOURCED, and it
+// talks to the operating system: `mktemp`, `ps`, `disown`. `disown` returns
+// non-zero once the background `compgen` has already finished and been reaped
+// — a race with how fast that is on the machine — and a person's `set -e`
+// turns it into the end of their shell, silently, with no output at all.
+// Measured before the fix: sourcing with a failing `disown` exits 1 and prints
+// nothing, which is byte for byte what CI reported. The shim is that race,
+// made deterministic.
+func TestBashIntegration_SnapshotAnnounceUnderErrexitCannotKillTheShell(t *testing.T) {
+	bash := requireShell(t, "bash")
+	script := writeScriptFile(t, "nocx.bash", bashScript)
+	prog := `
+set -e
+disown() { return 1; }
+export NOCX_SHELL_INTEGRATION=1
+source "$1"
+echo SNAPSHOT_ANNOUNCE_UNDER_ERREXIT_OK
+`
+	out := runShellProg(t, bash, prog, script)
+	if !strings.Contains(out, "SNAPSHOT_ANNOUNCE_UNDER_ERREXIT_OK") {
+		t.Fatalf("a failing disown in the snapshot announce block ended the shell under set -e; got %q", out)
+	}
+}
+
 // TestBashIntegration_ArmingExtdebugUnderErrexitCannotKillTheShell is the
 // regression for the half of nocx-1ebrs.23 that CI found the hard way.
 //
