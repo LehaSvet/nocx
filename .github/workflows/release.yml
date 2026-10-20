@@ -533,9 +533,18 @@ jobs:
         run: |
           set -euo pipefail
           BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # THE SHELL'S OWN VERSION IS STAMPED, NOT READ (nocx-1ebrs.11).
+          # app.about is answered by nocx-server, which is built below without
+          # cgo and without a window: its module list has no wails entry, so the
+          # About page said "Wails: unknown" in every shipped 0.6.x build. The
+          # number is the pin in go.mod — the same source the module list would
+          # have answered from.
+          WAILS_VERSION="$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)"
+          [ -n "$WAILS_VERSION" ] || { echo "::error::cannot read the pinned wails version from go.mod"; exit 1; }
           LDFLAGS="-X github.com/shady2k/nocx/internal/version.Version=${VERSION}"
           LDFLAGS="${LDFLAGS} -X github.com/shady2k/nocx/internal/version.Commit=${GITHUB_SHA}"
           LDFLAGS="${LDFLAGS} -X github.com/shady2k/nocx/internal/version.Date=${BUILD_DATE}"
+          LDFLAGS="${LDFLAGS} -X github.com/shady2k/nocx/internal/version.Wails=${WAILS_VERSION}"
           # v3 has no -platform flag: build each slice and join with lipo (§4).
           #
           # CGO_ENABLED=1 AND THE -arch FLAGS ARE BOTH REQUIRED, and leaving
@@ -1002,9 +1011,14 @@ jobs:
         run: |
           set -euo pipefail
           BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # The shell's version, stamped for the same reason as the macOS job's
+          # (nocx-1ebrs.11): the coordinator answers app.about and links no window.
+          WAILS_VERSION="$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)"
+          [ -n "$WAILS_VERSION" ] || { echo "::error::cannot read the pinned wails version from go.mod"; exit 1; }
           LDFLAGS="-X github.com/shady2k/nocx/internal/version.Version=${VERSION}"
           LDFLAGS="${LDFLAGS} -X github.com/shady2k/nocx/internal/version.Commit=${GITHUB_SHA}"
           LDFLAGS="${LDFLAGS} -X github.com/shady2k/nocx/internal/version.Date=${BUILD_DATE}"
+          LDFLAGS="${LDFLAGS} -X github.com/shady2k/nocx/internal/version.Wails=${WAILS_VERSION}"
           # `gtk3` is not optional here, it is what makes the step above
           # mean anything: Wails v3 defaults to GTK4/WebKitGTK-6.0, so a job
           # that installs libwebkit2gtk-4.1-dev and says nothing else links a

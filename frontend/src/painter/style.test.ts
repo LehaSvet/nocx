@@ -162,6 +162,41 @@ describe('resolveInk — the wire vocabulary to CSS', () => {
     expect(css).toMatch(/color:rgb\(/)
   })
 
+  // FAINT IS INTENSITY, AND INTENSITY IS THE PROGRAM'S TO CHOOSE
+  // (nocx-1ebrs.16). The floor above is right for text a person must read. A
+  // cell the program marked SGR 2 is the program saying the opposite, and the
+  // order the two were applied in made it worse than either: the colour was
+  // lifted to the floor FIRST and cut to half opacity afterwards, so a
+  // deliberately faint grey separator painted brighter than the plain grey
+  // beside it. Every other terminal honours the program here.
+  it('leaves a faint cell at the intensity the program asked for', () => {
+    // Below the floor on the default background, so the plain cell is lifted
+    // and the faint one must not be.
+    const grey = rgb(90, 90, 90)
+    const plain = resolveInk(styleOf({ foreground: grey }), DEFAULT_SNAPSHOT)
+    expect(plain.css).not.toContain('color:rgb(90, 90, 90)')
+    const ink = resolveInk(styleOf({ foreground: grey, attributes: 4 }), DEFAULT_SNAPSHOT)
+    expect(ink.css).toContain('color:rgb(90, 90, 90)')
+    expect(ink.css).toContain('opacity:0.5')
+  })
+
+  it('paints a faint cell dimmer than the same cell without the bit', () => {
+    // The owner's assertion, stated as the pair it is about rather than as a
+    // string: however the ink is resolved, the SGR 2 cell cannot come out at
+    // more intensity than the identical cell without it.
+    const grey = rgb(128, 128, 128)
+    const plain = rgbOf(resolveInk(styleOf({ foreground: grey }), DEFAULT_SNAPSHOT).css)
+    const faint = rgbOf(
+      resolveInk(styleOf({ foreground: grey, attributes: 4 }), DEFAULT_SNAPSHOT).css,
+    )
+    const intensity = (c: readonly [number, number, number]) => c[0] + c[1] + c[2]
+    expect(intensity(faint)).toBeLessThanOrEqual(intensity(plain))
+    // And the reduction is real: half opacity over the same ink.
+    expect(
+      resolveInk(styleOf({ foreground: grey, attributes: 4 }), DEFAULT_SNAPSHOT).css,
+    ).toContain('opacity:0.5')
+  })
+
   it('maps the underline shapes the wire enumerates', () => {
     expect(resolveInk(styleOf({ underline: 1 }), DEFAULT_SNAPSHOT).css).toContain(
       'text-decoration:underline',
@@ -188,3 +223,11 @@ describe('resolveInk — the wire vocabulary to CSS', () => {
     expect(ink.css).toContain('text-decoration-color:rgb(1, 2, 3)')
   })
 })
+
+/** The `color:` a resolved ink declares, as channels. The tests above compare
+ *  strings; the faint pair compares INTENSITY, which needs the numbers. */
+function rgbOf(css: string): readonly [number, number, number] {
+  const match = /color:rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(css)
+  if (match === null) throw new Error(`no rgb colour in ${css}`)
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}

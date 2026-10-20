@@ -18070,8 +18070,12 @@ describe('the live region is the painter picture (nocx-zg3k3.2.5)', () => {
       // browser, which cleared it at the release.
       expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
       surface.dispatchEvent(pointer('pointerup', 0))
+      // ONE ROW OF MOVEMENT, because a wheel is counted in LINES and not in
+      // events (nocx-1ebrs.26): the pane supplies the row pitch, so anything
+      // smaller would accumulate instead of reporting. This frame's cell
+      // height is 16px.
       surface.dispatchEvent(
-        new WheelEvent('wheel', { bubbles: true, clientX: 26, clientY: 44, deltaY: -1 }),
+        new WheelEvent('wheel', { bubbles: true, clientX: 26, clientY: 44, deltaY: -16 }),
       )
 
       await vi.waitFor(() => expect(session.intent).toHaveBeenCalledTimes(3))
@@ -18123,8 +18127,12 @@ describe('the live region is the painter picture (nocx-zg3k3.2.5)', () => {
       window.dispatchEvent(pointer('pointermove', 1))
       expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
       surface.dispatchEvent(pointer('pointerup', 0))
+      // ONE ROW OF MOVEMENT, because a wheel is counted in LINES and not in
+      // events (nocx-1ebrs.26): the pane supplies the row pitch, so anything
+      // smaller would accumulate instead of reporting. This frame's cell
+      // height is 16px.
       surface.dispatchEvent(
-        new WheelEvent('wheel', { bubbles: true, clientX: 26, clientY: 44, deltaY: -1 }),
+        new WheelEvent('wheel', { bubbles: true, clientX: 26, clientY: 44, deltaY: -16 }),
       )
 
       expect(session.intent).not.toHaveBeenCalled()

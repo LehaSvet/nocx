@@ -19,10 +19,25 @@ package version
 //	github.com/shady2k/nocx/internal/version.Version
 //	github.com/shady2k/nocx/internal/version.Commit
 //	github.com/shady2k/nocx/internal/version.Date
+//	github.com/shady2k/nocx/internal/version.Wails
 var (
 	Version = "dev"
 	Commit  = "none"
 	Date    = "unknown"
+	// Wails is the desktop shell's module version, stamped by the release build
+	// from the pin in go.mod (nocx-1ebrs.11).
+	//
+	// IT CANNOT BE READ FROM THE RUNNING BINARY, which is why it is a -X value
+	// and not another runtime fact: app.about is answered by the coordinator
+	// (cmd/nocx-server), built `CGO_ENABLED=0 -tags release` because it has no
+	// window — so its own module list does not contain wails at all, and the
+	// field the About page reads said "unknown" in every shipped 0.6.x build
+	// while the desktop app beside it linked the shell.
+	//
+	// Empty means "nothing stamped it", and Info falls back to the module
+	// list, which is the right answer for a build that does link the shell
+	// (wails dev, the packaged app binary).
+	Wails = ""
 )
 
 // Requested reports whether args — os.Args[1:] — asks only for the build

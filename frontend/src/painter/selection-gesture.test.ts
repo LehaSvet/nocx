@@ -458,3 +458,238 @@ describe('live selection gesture', () => {
     root.remove()
   })
 })
+
+/** A pane, a painter and a gesture over one two-row frame — the shape every
+ *  case below needs, so each test is about the rule rather than the wiring. */
+function liveGesture(): {
+  gesture: ReturnType<typeof installLiveSelectionGesture>
+  painter: ReturnType<typeof createCellPainter>
+  surface: HTMLElement
+  model: ReturnType<typeof createCellModel>
+  root: HTMLElement
+  copy: ReturnType<typeof vi.fn>
+  next: (rows: CellSpec[][]) => ReturnType<typeof snapshotOf>
+} {
+  const model = createCellModel()
+  const root = document.createElement('div')
+  const surface = document.createElement('div')
+  root.append(surface)
+  document.body.append(root)
+  const first = frameOf(
+    1,
+    [
+      [
+        ['a', 1, true],
+        ['b', 1, true],
+        ['c', 1, true],
+        ['d', 1, true],
+      ],
+      [
+        ['e', 1, true],
+        ['f', 1, true],
+        ['g', 1, true],
+        ['h', 1, true],
+      ],
+    ],
+    { x: 0, y: 0, visible: false },
+    { cols: 4, rows: 2, cellWidthPx: 8, cellHeightPx: 20 },
+  )
+  model.apply(first)
+  const painter = createCellPainter({ surface, palette: () => DEFAULT_SNAPSHOT })
+  painter.apply(snapshotOf(first))
+  vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
+    left: 0,
+    top: 0,
+    right: 32,
+    bottom: 40,
+    width: 32,
+    height: 40,
+    x: 0,
+    y: 0,
+    toJSON: () => ({}),
+  })
+  const copy = vi.fn()
+  const gesture = installLiveSelectionGesture({
+    model,
+    painter,
+    surface,
+    gestureRoot: root,
+    surfaceId: 'live',
+    copy,
+  })
+  const next = (rows: CellSpec[][]): ReturnType<typeof snapshotOf> =>
+    snapshotOf(
+      frameOf(
+        2,
+        rows,
+        { x: 0, y: 0, visible: false },
+        {
+          cols: 4,
+          rows: rows.length,
+          cellWidthPx: 8,
+          cellHeightPx: 20,
+        },
+      ),
+    )
+  return { gesture, painter, surface, model, root, copy, next }
+}
+
+const DRAG: CellSpec[] = [
+  ['e', 1, true],
+  ['f', 1, true],
+  ['g', 1, true],
+  ['h', 1, true],
+]
+
+describe('a live selection has the lifetime of the text under it (nocx-1ebrs.19)', () => {
+  it('ends when the frame rewrites the cells it covers', () => {
+    // The program repainted the row the selection names: the highlight must go,
+    // because it is the copy source and the text it named is no longer there.
+    const { gesture, painter, surface, root, next } = liveGesture()
+    const press = (type: string, x: number, y: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y })
+    root.dispatchEvent(press('pointerdown', 8, 5))
+    window.dispatchEvent(press('pointermove', 16, 5))
+    window.dispatchEvent(press('pointerup', 16, 5))
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+
+    gesture.screenChanged(next([DRAG, DRAG]))
+    expect(surface.querySelector('.term-grid-selection')).toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+
+  it('keeps a selection a frame outside the range left alone', () => {
+    // Output BELOW the selected rows is the ordinary case in a terminal, and
+    // dropping the highlight for it would make a selection impossible to read
+    // while a program is printing.
+    const { gesture, painter, surface, root, next } = liveGesture()
+    const press = (type: string, x: number, y: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y })
+    root.dispatchEvent(press('pointerdown', 8, 5))
+    window.dispatchEvent(press('pointermove', 16, 5))
+    window.dispatchEvent(press('pointerup', 16, 5))
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+
+    gesture.screenChanged(
+      next([
+        [
+          ['a', 1, true],
+          ['b', 1, true],
+          ['c', 1, true],
+          ['d', 1, true],
+        ],
+        DRAG,
+      ]),
+    )
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+
+  it('ends when a key is sent to the program', () => {
+    const { gesture, painter, surface, root } = liveGesture()
+    const press = (type: string, x: number, y: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y })
+    root.dispatchEvent(press('pointerdown', 8, 5))
+    window.dispatchEvent(press('pointermove', 16, 5))
+    window.dispatchEvent(press('pointerup', 16, 5))
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+
+    gesture.dismiss()
+    expect(surface.querySelector('.term-grid-selection')).toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+
+  it('survives a key typed while the drag is still being made, and copies at the release', () => {
+    // A DRAG IN PROGRESS IS NOT A SELECTION YET (nocx-1ebrs.19). The person is
+    // still holding the button, so the range is not final and there is nothing
+    // to copy until it is. `dismiss()` answers the next key SENT TO THE
+    // PROGRAM, and the release is where the text reaches the clipboard — here,
+    // between the two, so it is neither the key nor the frame that ends the
+    // gesture.
+    //
+    // Measured red: the pane calls `dismiss()` for every key it forwards, and a
+    // drag in progress cleared with it — `clear()` drops the ANCHOR too, so the
+    // release found no gesture and copied nothing. In the browser that is
+    // e2e/live-to-card-joined.spec.ts, which types into a running `cat` during
+    // the drag to force a frame; the clipboard still held the text written
+    // before the drag, so the person's selection was lost unread.
+    const { gesture, painter, surface, root, copy, next } = liveGesture()
+    const press = (type: string, x: number, y: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y })
+    root.dispatchEvent(press('pointerdown', 8, 5))
+    window.dispatchEvent(press('pointermove', 16, 5))
+
+    gesture.dismiss()
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+
+    // AND A FRAME THAT REPAINTS THE CELLS UNDER A LIVE DRAG DOES NOT END IT
+    // EITHER: the next pointer event redraws from the capture, so clearing here
+    // would only make the highlight flicker and take the anchor with it.
+    gesture.screenChanged(next([DRAG, DRAG]))
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+
+    window.dispatchEvent(press('pointerup', 16, 5))
+    expect(copy).toHaveBeenCalledWith('bc')
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+
+  it('compares a settled selection against the snapshot it was captured on', () => {
+    // THE COPY SOURCE IS THE CAPTURE, so the comparison basis is too
+    // (nocx-1ebrs.19). Frames that land DURING the drag advance the model; the
+    // selection's text and its "has anything it names changed" question both
+    // still answer to the revision the person was looking at when they pressed.
+    // Measured red before: the release refreshed the basis to the newest frame,
+    // so a screen that came back to the captured text was reported as a change.
+    const { gesture, painter, model, surface, root } = liveGesture()
+    const press = (type: string, x: number, y: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y })
+    root.dispatchEvent(press('pointerdown', 8, 5))
+    window.dispatchEvent(press('pointermove', 16, 5))
+    // A frame arrives mid-drag and rewrites the selected row, so the model's
+    // current revision is no longer the one the person pressed on.
+    const repainted = frameOf(2, [DRAG, DRAG])
+    model.apply(repainted)
+    painter.apply(snapshotOf(repainted))
+    window.dispatchEvent(press('pointerup', 16, 5))
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+
+    // The screen the person selected from comes back, cell for cell: nothing
+    // the selection names has changed, so the highlight stays.
+    gesture.screenChanged(
+      snapshotOf(
+        frameOf(
+          3,
+          [
+            [
+              ['a', 1, true],
+              ['b', 1, true],
+              ['c', 1, true],
+              ['d', 1, true],
+            ],
+            [
+              ['e', 1, true],
+              ['f', 1, true],
+              ['g', 1, true],
+              ['h', 1, true],
+            ],
+          ],
+          { x: 0, y: 0, visible: false },
+          { cols: 4, rows: 2, cellWidthPx: 8, cellHeightPx: 20 },
+        ),
+      ),
+    )
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+})

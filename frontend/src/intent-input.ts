@@ -214,6 +214,13 @@ export interface IntentInputOptions {
    *  the pointer. Ordinary clicks and wheel events belong to selection and
    *  scrolling, not to a program that has not enabled mouse reporting. */
   mouseTracking?: () => boolean
+  /** The pane's row pitch in CSS pixels — the painter's accepted cell height,
+   *  read here so a pixel-delta wheel can be counted in LINES (nocx-1ebrs.26).
+   *  The pointer's geometry is the painter's (see `cellAt`), and a value of
+   *  zero or less is read as "no pitch yet": one event then reports one step,
+   *  which is the behaviour before the accumulator and never the intended
+   *  one. */
+  lineHeight?: () => number
 }
 
 const MOUSE_BUTTONS: Readonly<Record<number, string>> = {
@@ -235,7 +242,17 @@ export class IntentInput {
   private readonly cellAt:
     ((clientX: number, clientY: number) => { x: number; y: number } | null) | null
   private readonly mouseTracking: (() => boolean) | null
+  private readonly lineHeight: (() => number) | null
   private readonly listeners: Array<() => void> = []
+
+  /** The wheel's running total per axis, in CSS pixels, and the tracking state
+   *  it was accumulated under (nocx-1ebrs.26). A macOS trackpad emits dozens
+   *  of small deltas per gesture and keeps emitting through momentum after the
+   *  fingers lift, so one report per event told the program the person scrolled
+   *  dozens of times when they scrolled once. Reports are emitted per LINE of
+   *  movement, and the remainder is carried into the next event. */
+  private wheelPx = { x: 0, y: 0 }
+  private wheelTracking: boolean | null = null
 
   /** Set while the keydown that produced the text in flight went out as a KEY.
    *  Some platforms commit a character for a chord as well (Ctrl+A on some
@@ -256,6 +273,7 @@ export class IntentInput {
     this.surface = options.surface ?? null
     this.cellAt = options.cellAt ?? null
     this.mouseTracking = options.mouseTracking ?? null
+    this.lineHeight = options.lineHeight ?? null
 
     const element = createTerminalInput()
     this.element = element
@@ -316,6 +334,16 @@ export class IntentInput {
     this.listen(surface, 'pointerup', (e) => this.onPointer(e as PointerEvent, 'release'))
     this.listen(surface, 'pointermove', (e) => this.onPointer(e as PointerEvent, 'motion'))
     this.listen(surface, 'wheel', (e) => this.onWheel(e as WheelEvent))
+    // A gesture ENDS when the pointer leaves: a remainder left over from it
+    // must not be spent as the first line of the next one (nocx-1ebrs.26).
+    this.listen(surface, 'pointerleave', () => this.resetWheel())
+  }
+
+  /** Forget the wheel's running total. Called on leaving the pane and on any
+   *  change of the tracking mode, because the remainder belongs to the gesture
+   *  that produced it — not to the next one, and not to the other owner. */
+  private resetWheel(): void {
+    this.wheelPx = { x: 0, y: 0 }
   }
 
   private onKeydown(e: KeyboardEvent): void {
@@ -395,9 +423,27 @@ export class IntentInput {
     // own kind, and bracketed-paste wrapping is the program's mode and the
     // runtime's decision (ADR-0065).
     e.preventDefault()
-    const text = e.clipboardData?.getData('text') ?? ''
-    if (text === '') return
-    this.emit({ kind: 'paste', payload: text })
+    const data = e.clipboardData
+    const text = data?.getData('text') ?? ''
+    if (text !== '') {
+      this.emit({ kind: 'paste', payload: text })
+      return
+    }
+    // AN IMAGE-ONLY CLIPBOARD IS STILL A PASTE, AND THE PROGRAM IS OWED IT
+    // (nocx-1ebrs.14). There is no text to forward — the terminal cannot turn a
+    // screenshot into cells — but a full-screen program reads the clipboard
+    // over its own path and only knows to look because a paste arrived. This
+    // dropped the gesture on the floor, so the program showed nothing while the
+    // same gesture in another terminal showed the image it had fetched.
+    //
+    // What is emitted is an EMPTY paste, not an invented body: the runtime
+    // wraps it in the program's own bracketed-paste mode, so a program that
+    // asked for 2004 receives the bracket pair with nothing between it, and a
+    // program that did not receives nothing at all (there is no way to say
+    // "empty" outside that mode). A clipboard holding NO data is the other
+    // empty case and stays silent: nothing was copied, so there is no paste.
+    const carriesOtherData = (data?.types ?? []).some((type) => !type.startsWith('text/'))
+    if (carriesOtherData) this.emit({ kind: 'paste', payload: '' })
   }
 
   private onPointer(e: PointerEvent, action: 'press' | 'release' | 'motion'): void {
@@ -433,12 +479,72 @@ export class IntentInput {
     this.emitMouse('motion', this.heldButton ?? button ?? 'none', e)
   }
 
+  /** One wheel REPORT per line of movement, not per event (nocx-1ebrs.26).
+   *
+   *  A wheel event is a press and a release of one step in a single event, so
+   *  it is reported as the press the program's tracking mode is looking for —
+   *  and the count is the point. A high-resolution trackpad sends tens of
+   *  sub-line deltas per flick and keeps going through momentum, so reporting
+   *  each one told the program the person scrolled dozens of times when they
+   *  scrolled once. That is not a speed preference: it is a false statement
+   *  about the input, and the momentum tail arrives after the gesture ended.
+   *
+   *  The deltas are converted to pixels first, as scrollback/live-history.ts
+   *  does for the scroller (`_translateWheel`), so the three `deltaMode`s mean
+   *  the same thing here: a line is a line and must not be divided again, a
+   *  page is a viewport, and only a pixel delta is accumulated. */
   private onWheel(e: WheelEvent): void {
-    if (!(this.mouseTracking?.() ?? false)) return
-    const button = e.deltaY < 0 ? 'wheel-up' : 'wheel-down'
-    // A wheel event is a press and a release of one step in a single event, so
-    // it is reported as the press the program's tracking mode is looking for.
-    if (this.emitMouse('press', button, e)) e.preventDefault()
+    const tracking = this.mouseTracking?.() ?? false
+    if (!tracking) {
+      this.wheelTracking = false
+      this.resetWheel()
+      return
+    }
+    // A NEW OWNER STARTS A NEW GESTURE: a remainder accumulated while the
+    // program was reporting says nothing about what the person is doing now.
+    if (this.wheelTracking !== true) {
+      this.wheelTracking = true
+      this.resetWheel()
+    }
+    const line = this.lineHeight?.() ?? 0
+    if (!(line > 0)) {
+      // No row pitch to count in (the pane has no committed metric yet). One
+      // event is one step, which is what this did before and is the degrade
+      // rather than a second rule.
+      const button = e.deltaY < 0 ? 'wheel-up' : e.deltaY > 0 ? 'wheel-down' : null
+      if (button !== null && this.emitMouse('press', button, e)) e.preventDefault()
+      return
+    }
+    const scale =
+      e.deltaMode === WheelEvent.DOM_DELTA_LINE
+        ? line
+        : e.deltaMode === WheelEvent.DOM_DELTA_PAGE
+          ? Math.max(line, this.surface?.clientHeight ?? line)
+          : 1
+    this.wheelPx.x += e.deltaX * scale
+    this.wheelPx.y += e.deltaY * scale
+    let reported = false
+    while (this.wheelPx.y <= -line) {
+      if (!this.emitMouse('press', 'wheel-up', e)) break
+      this.wheelPx.y += line
+      reported = true
+    }
+    while (this.wheelPx.y >= line) {
+      if (!this.emitMouse('press', 'wheel-down', e)) break
+      this.wheelPx.y -= line
+      reported = true
+    }
+    while (this.wheelPx.x <= -line) {
+      if (!this.emitMouse('press', 'wheel-left', e)) break
+      this.wheelPx.x += line
+      reported = true
+    }
+    while (this.wheelPx.x >= line) {
+      if (!this.emitMouse('press', 'wheel-right', e)) break
+      this.wheelPx.x -= line
+      reported = true
+    }
+    if (reported) e.preventDefault()
   }
 
   private emitMouse(

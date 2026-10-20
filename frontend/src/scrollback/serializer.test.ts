@@ -51,7 +51,12 @@ describe('paletteToRGB', () => {
   })
 
   it('returns grayscale ramp for indices 232-255', () => {
+    // THE RAMP IS THE SCHEME'S, NOT THE THEME'S (nocx-1ebrs.16): 8 + 10n, so
+    // a program that asks for a grey by index gets the grey every terminal
+    // gives it. Indices 232, 240 and 255 are pinned because they are the
+    // three a dim separator lands on: the ends of the ramp and its middle.
     expect(paletteToRGB(DEFAULT_SNAPSHOT, 232)).toBe('rgb(8,8,8)')
+    expect(paletteToRGB(DEFAULT_SNAPSHOT, 240)).toBe('rgb(88,88,88)')
     expect(paletteToRGB(DEFAULT_SNAPSHOT, 255)).toBe('rgb(238,238,238)')
   })
 
@@ -132,6 +137,18 @@ describe('attrsEqual', () => {
 })
 
 describe('attrsToStyle', () => {
+  // THE FROZEN HALF OF nocx-1ebrs.16: a block must read as the live screen it
+  // froze from, so the readability floor and FAINT resolve in the order the
+  // painter resolves them — a faint cell keeps the colour the program chose.
+  it('leaves a faint cell at the intensity the program asked for', () => {
+    const grey = { ...emptyAttrs(), fg: 'rgb(90, 90, 90)' }
+    // Below the floor on the default background: the plain cell is lifted.
+    expect(attrsToStyle(DEFAULT_SNAPSHOT, grey)).not.toContain('color:rgb(90, 90, 90)')
+    const faint = attrsToStyle(DEFAULT_SNAPSHOT, { ...grey, dim: true })
+    expect(faint).toContain('color:rgb(90, 90, 90)')
+    expect(faint).toContain('opacity:0.5')
+  })
+
   it('writes nothing for a cell that asked for nothing', () => {
     // Reversed deliberately. This used to paint the snapshot's default fg and bg
     // onto every run, for snapshot fidelity — and the result was a finished block

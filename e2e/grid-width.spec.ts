@@ -214,3 +214,97 @@ test('the grid stays inside its box when the running command makes the scroller 
   expect(measured.overhang).toBeLessThanOrEqual(0)
   expect(measured.cols).toBe(measured.expectedCols)
 })
+
+/**
+ * AN ALTERNATE-SCREEN PROGRAM GETS THE WHOLE PANE (nocx-1ebrs.10).
+ *
+ * The owner's clean-Mac pass: a full-screen TUI drawn by herdr stopped about
+ * three columns short of the pane's right edge and left a strip before its own
+ * right-hand toolbar, while the same program filled the edge in another
+ * terminal. Three columns is 24px at this font, which is exactly one half of
+ * `--pane-inline-padding` — the ledger gutter that `nocx-9bpeq.8` moved from
+ * `.pane` into `.scrollback-inner > *`, so every row of the stack wears it.
+ *
+ * The live region is a child of that stack in EVERY mode, the alternate screen
+ * included, so an alt-screen program was fitted inside a gutter that exists for
+ * the ledger's prose and not for a program that owns the pane. The strip is the
+ * pane's own ground showing past the grid's last column, and the program is told
+ * a `cols` three too few — it draws honestly for a width nobody can use.
+ *
+ * The owner's assertion, and it is stated in CELLS rather than in pixels so it
+ * holds at any font size and any display ratio: the program's own columns, at
+ * the published cell width, fill the pane's content width within ONE cell —
+ * and by no more than one, because a grid that OVERFLOWS is the same defect
+ * with the opposite sign. One cell of slack is the remainder of the integer
+ * division, which no terminal can avoid.
+ */
+test('an alternate-screen program is fitted to the whole pane, not to the gutter', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/')
+  await promptReady(page)
+
+  // The alternate screen, then a program that holds it. `printf` is the shell
+  // the stand starts, so the buffer switch is the same escape any TUI sends.
+  await clickIntoEditor(page)
+  await page.keyboard.type("printf '\\033[?1049h\\033[H'; sleep 300")
+  await page.keyboard.press('Enter')
+
+  const geometry = () =>
+    page.evaluate(() => {
+      const pane = document.querySelector('.pane.active')
+      const area = pane?.querySelector('.scrollback-area') as HTMLElement | null
+      const live = pane?.querySelector('.terminal-live-container') as HTMLElement | null
+      const grid = pane?.querySelector('.term-grid') as HTMLElement | null
+      if (!area || !live || !grid) return { settled: false }
+      const cellWidth =
+        parseFloat(
+          getComputedStyle(document.querySelector('.scrollback-inner')!).getPropertyValue(
+            '--term-cell-width',
+          ),
+        ) || 0
+      const cols = Number(grid.getAttribute('aria-colcount'))
+      const cs = getComputedStyle(live)
+      const box = area.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)
+      const painted = cols * cellWidth
+      // The pane's CONTENT width is the whole box the program may draw in: the
+      // scroller is the pane's own width less the bar it reserves.
+      const panel = area.clientWidth
+      const shortByCells = (panel - painted) / cellWidth
+      const fullscreen = live.classList.contains('live-fullscreen')
+      return {
+        cols,
+        cellWidth: Math.round(cellWidth * 1e3) / 1e3,
+        box: Math.round(box),
+        panel: Math.round(panel),
+        painted: Math.round(painted),
+        shortByCells: Math.round(shortByCells * 100) / 100,
+        fullscreen,
+        settled: fullscreen && cellWidth > 0 && Math.abs(shortByCells) < 1,
+      }
+    })
+
+  let last: Awaited<ReturnType<typeof geometry>> | null = null
+  try {
+    await expect
+      .poll(
+        async () => {
+          last = await geometry()
+          return last.settled
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(true)
+  } catch (error) {
+    console.error('alt-screen grid-width last measured geometry:', JSON.stringify(last))
+    throw error
+  }
+  const measured = await geometry()
+
+  // One matcher each: a grid that gave the program fewer columns than the pane
+  // could paint, or one that overhangs it.
+  expect(measured.shortByCells!).toBeLessThan(1)
+  expect(measured.shortByCells!).toBeGreaterThan(-1)
+  await page.keyboard.press('Control+C')
+})
