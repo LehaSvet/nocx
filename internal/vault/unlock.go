@@ -358,18 +358,27 @@ func (v *Vault) raiseUnlock(ctx context.Context, req UnlockRequester, p *unlockP
 		v.mu.Unlock()
 		cancel()
 
-		if !tracked {
+		switch {
+		case abandoned:
+			// The ask stopped being answerable — the last client detached
+			// under it, or another path unsealed the vault and retired it. The
+			// error this attempt came back with is therefore NOT an answer,
+			// and the loop re-enters: the state read at the top answers an
+			// open vault with nil, and a vault still sealed suspends for the
+			// client that will come back.
+			//
+			// THIS CASE COMES FIRST, BEFORE THE UNWATCHED-VAULT RETURN BELOW,
+			// and that order is the difference between a retired ask being an
+			// answer and being a failure. A vault nobody reports presence to
+			// still gets retired asks — the transport's own tests build one,
+			// and any package that constructs a vault of its own can — and
+			// returning the retirement's cancellation to those callers reports
+			// the vault's own act as their error (nocx-1ebrs.7).
+		case !tracked:
 			// Nobody reports presence to this vault, so there is no attach
 			// to wait for and no second chance to take. One raise, one
 			// answer — what every caller saw before D9.
 			return err
-		}
-		switch {
-		case abandoned:
-			// The ask stopped being answerable — the last client detached
-			// under it, or another path unsealed the vault. Suspend and
-			// re-raise; the re-read at the top answers the second case with
-			// nil.
 		case errors.Is(err, ErrNoUnlockClient):
 			// The client left between the check and the broadcast.
 		default:

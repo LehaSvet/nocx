@@ -21,8 +21,8 @@ import (
 // carry the per-field shape: the ask's request id and its closed outcome
 // enum. The ask broker mints request ids as 16 hex chars; the id is checked
 // for presence and bound, not shape — a stale id must still reach the
-// handler's consume, whose "unknown request id" answer is the honest one for
-// an ask that timed out or was dropped.
+// handler's claim, which answers an id the broker retired as the no-op it is
+// and refuses only an id nobody ever minted.
 
 // validateUnlockResolvedRaw checks vault.unlockResolved. The outcome is a
 // closed enum. The handler currently resolves an unknown outcome by ERRORING
@@ -100,7 +100,24 @@ func validatePasswordResolvedRaw(raw json.RawMessage) string {
 type askBroker struct {
 	mu      sync.Mutex
 	pending map[string]*pendingAsk
+	// retired remembers the ids of asks that ENDED after a client had already
+	// been shown them, most recent last and bounded by retiredKeep. It is what
+	// lets a resolution that was already on its way be answered as the no-op
+	// it is instead of refused (retire, claim).
+	retired      map[string]struct{}
+	retiredOrder []string
 }
+
+// retiredKeep bounds how many ended ask ids are remembered.
+//
+// A COUNT, NOT A DEADLINE, and 32 is generous by two orders of magnitude: at
+// most one ask per caller is outstanding at a time, a retired id only has to
+// outlive the dialog a person is still looking at, and an ask that ends
+// WITHOUT an answer is the rare case — a person unlocking from somewhere
+// else, or a caller that gave up mid-prompt. The ring exists so a coordinator
+// that runs for days with reconnects cannot accumulate ids for asks nobody
+// will ever mention again.
+const retiredKeep = 32
 
 // pendingAsk tracks one in-flight ask.
 type pendingAsk struct {
@@ -120,6 +137,9 @@ func (b *askBroker) init() {
 	defer b.mu.Unlock()
 	if b.pending == nil {
 		b.pending = make(map[string]*pendingAsk)
+	}
+	if b.retired == nil {
+		b.retired = make(map[string]struct{})
 	}
 }
 
@@ -154,13 +174,52 @@ func (b *askBroker) consume(rid string) (*pendingAsk, bool) {
 	return pa, ok
 }
 
-// drop abandons the pending ask for rid (no client connected, context
-// done) so a late resolution cannot wake a waiter nobody is listening to.
+// drop abandons the pending ask for rid because NOBODY WAS SHOWN IT — the
+// broadcast found no client attached. There is then no renderer holding a
+// dialog that could answer it late, which is why this one keeps no memory.
 func (b *askBroker) drop(rid string) {
 	b.init()
 	b.mu.Lock()
 	delete(b.pending, rid)
 	b.mu.Unlock()
+}
+
+// retire ends the pending ask for rid because the ASK ITSELF ended: its
+// caller's context is done, which is how the vault retires a prompt whose
+// question another path answered (internal/vault/unlock.go's raise loop), and
+// how a caller that gave up for its own reasons ends one.
+//
+// IT IS drop PLUS A MEMORY, and that difference is the point. An ask that
+// ended after a client was shown it has a renderer holding a dialog the
+// person may still fill in, and answering that dialog a moment late is the
+// ordinary thing to do. Refusing it as an unknown request makes every surface
+// that shows a prompt inherit a race it has to swallow — which is exactly
+// what happened to an upgrade user whose passphrase had already been given
+// (nocx-1ebrs.7).
+func (b *askBroker) retire(rid string) {
+	b.init()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.pending, rid)
+	if _, seen := b.retired[rid]; !seen {
+		b.retired[rid] = struct{}{}
+		b.retiredOrder = append(b.retiredOrder, rid)
+	}
+	for len(b.retiredOrder) > retiredKeep {
+		oldest := b.retiredOrder[0]
+		b.retiredOrder = b.retiredOrder[1:]
+		delete(b.retired, oldest)
+	}
+}
+
+// wasRetired reports whether rid names an ask that ended after it was shown
+// to a client, with no answer ever delivered.
+func (b *askBroker) wasRetired(rid string) bool {
+	b.init()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.retired[rid]
+	return ok
 }
 
 // broadcastAsk sends a notification to every connected client. noClientErr
@@ -241,7 +300,11 @@ func (s *WSServer) RequestUnlock(ctx context.Context, reason string) error {
 	case res := <-ch:
 		return res.err
 	case <-ctx.Done():
-		s.asks.drop(rid)
+		// RETIRED, NOT DROPPED: this ask reached a renderer (the broadcast
+		// above succeeded), so a resolution may already be on its way — the
+		// vault retires a prompt the moment another path answers its
+		// question, and the person is still looking at the dialog.
+		s.asks.retire(rid)
 		return ctx.Err()
 	}
 }
@@ -259,6 +322,35 @@ type askResolverHandlers struct {
 	r    Responder
 }
 
+// claim takes the pending ask a resolution RPC names, and answers the RPC
+// itself when there is nothing left to resolve. ok=false means the reply has
+// already been sent, so the handler returns.
+//
+// A RESOLUTION FOR AN ASK THAT HAS ENDED IS A NO-OP, NOT AN ERROR — provided
+// the ask reached a renderer. The person may have been looking at that dialog
+// when the backend retired it (the vault does exactly that when another path
+// answers the question the prompt was asking), and finishing the dialog they
+// were given is the ordinary thing for a client to do. Answering an error
+// there makes every surface that shows a prompt carry a race it has to
+// swallow, which is how the frontend came to ignore this call's result
+// (nocx-1ebrs.7).
+//
+// An id this broker NEVER MINTED keeps the refusal: that is a client
+// resolving something nobody asked, and it must stay distinguishable from the
+// late answer above. TestUnlockResolved_UnknownRequestID and
+// TestPasswordResolved_UnknownRequestID hold that half.
+func (h askResolverHandlers) claim(req jsonrpcRequest, rid string) (*pendingAsk, bool) {
+	if pa, ok := h.asks.consume(rid); ok {
+		return pa, true
+	}
+	if h.asks.wasRetired(rid) {
+		_ = h.r.TryResult(req.ID, json.RawMessage("{}"))
+		return nil, false
+	}
+	_ = h.r.TryError(req.ID, RPCError{Code: -32602, Message: "Unknown request id"})
+	return nil, false
+}
+
 // handleUnlockResolved handles the vault.unlockResolved RPC from the
 // renderer: it looks up the pending request and signals its channel.
 func (h askResolverHandlers) handleUnlockResolved(req jsonrpcRequest) {
@@ -271,9 +363,8 @@ func (h askResolverHandlers) handleUnlockResolved(req jsonrpcRequest) {
 		return
 	}
 
-	pa, ok := h.asks.consume(params.RequestID)
+	pa, ok := h.claim(req, params.RequestID)
 	if !ok {
-		_ = h.r.TryError(req.ID, RPCError{Code: -32602, Message: "Unknown request id"})
 		return
 	}
 

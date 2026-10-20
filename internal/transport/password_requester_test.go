@@ -309,8 +309,14 @@ func TestPasswordRequest_Cancelled(t *testing.T) {
 	}
 }
 
-// TestPasswordRequest_ContextCancelled verifies a cancelled ask context
-// wakes the asker and drops the pending request.
+// TestPasswordRequest_ContextCancelled verifies a cancelled ask context wakes
+// the asker, and that the answer a person was already typing into the prompt
+// is still accepted afterwards.
+//
+// The second half is the same rule the unlock resolution follows
+// (askResolverHandlers.claim, nocx-1ebrs.7): an ask that reached a renderer
+// and then ended has somebody holding a dialog the person may still fill in,
+// so answering it a moment late is a no-op rather than a protocol error.
 func TestPasswordRequest_ContextCancelled(t *testing.T) {
 	ws := NewWSServer(log.NewSlogAdapter(nil), newRegWithStub(log.NewSlogAdapter(nil)),
 		WithVaultLifecycle(newFakeVaultLifecycle()))
@@ -336,10 +342,23 @@ func TestPasswordRequest_ContextCancelled(t *testing.T) {
 		done <- err
 	}()
 
-	// Drain the notification so we know it was sent.
+	// Drain the notification so we know it was sent, and keep the id: it is
+	// what the prompt on the other side is holding.
+	var notif struct {
+		Params struct {
+			RequestID string `json:"requestId"`
+		} `json:"params"`
+	}
 	_ = conn.SetReadDeadline(time.Now().Add(wantWithin))
-	if _, _, err := conn.ReadMessage(); err != nil {
-		t.Fatalf("read notification: %v", err)
+	_, raw, readErr := conn.ReadMessage()
+	if readErr != nil {
+		t.Fatalf("read notification: %v", readErr)
+	}
+	if err := json.Unmarshal(raw, &notif); err != nil {
+		t.Fatalf("unmarshal notification: %v", err)
+	}
+	if notif.Params.RequestID == "" {
+		t.Fatal("empty requestId")
 	}
 
 	cancel()
@@ -350,6 +369,17 @@ func TestPasswordRequest_ContextCancelled(t *testing.T) {
 		}
 	case <-time.After(wantWithin):
 		t.Fatal("RequestConnectionPassword did not resolve after cancel")
+	}
+
+	// AND THE ANSWER THAT WAS ALREADY ON ITS WAY IS ACCEPTED. The ask is
+	// retired by now; the prompt is still on someone's screen.
+	resp := vaultCall(t, conn, "connections.passwordResolved", map[string]any{
+		"requestId": notif.Params.RequestID,
+		"outcome":   "submitted",
+		"password":  "typed after the ask ended",
+	}, 2)
+	if resp.Error != nil {
+		t.Fatalf("a resolution after the ask was retired = %+v, want it accepted as a no-op", resp.Error)
 	}
 }
 
