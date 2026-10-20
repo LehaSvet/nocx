@@ -714,6 +714,30 @@
   min-height: auto;
 }
 
+/* AN ALTERNATE-SCREEN PROGRAM GETS THE WHOLE PANE (nocx-1ebrs.10).
+   The ledger gutter (`.scrollback-inner > *`, nocx-9bpeq.8) is padding for
+   PROSE: it keeps a command's output off the pane's edge so a row can paint its
+   own ground to that edge. A program that has taken the pane is not prose — it
+   draws a rectangle of cells and owns every pixel of it, which is why the same
+   program fills the edge in every other terminal.
+
+   Left on, the gutter was subtracted from the columns the program was TOLD:
+   `usableViewport` takes the scroller's clientWidth minus the live row's inline
+   inset, so the pty was resized to a width 48px narrower than the pane and the
+   program drew honestly for it, leaving a strip of the pane's own ground before
+   its right-hand edge — measured in the e2e container at a 974px pane, 132
+   columns where the box admits 139, 48px of strip. The owner saw three columns
+   of it on a narrower pane.
+
+   Written against the same `.scrollback-inner >` shape as the rule it overrides
+   so the specificity does not depend on source order, and stated on the mode's
+   own class: the inset the fit subtracts is read off this element
+   (`liveInlineInsetPx`), so zeroing it here is the whole fix, with no second
+   number to keep in step. */
+.scrollback-inner > .terminal-live-container.live-fullscreen {
+  padding-inline: 0;
+}
+
 /* Alt-screen: the pane belongs to the program, so everything the block layer
    draws steps aside and only the live region is left.
 
@@ -980,9 +1004,22 @@
    and positions the cursor overlay, which is placed by THE mapping
    (frontend/src/painter/mapping.ts) in pixels of the committed geometry —
    never a glyph in the text flow. */
+/* WHO OWNS THIS CLICK, DRAWN BY THE POINTER (nocx-1ebrs.24).
+   A program that reports the mouse owns every press over the grid, so the
+   arrow is the honest pointer: an I-beam there promises a text selection that
+   will be posted to the program instead. `auto` was the whole of the old rule,
+   and `auto` over the rows' own text IS an I-beam — which is why nocx showed
+   one in both states, and why the state has to be stated rather than inherited.
+   The state itself is the painter's: `data-pointer` is written from the same
+   accepted frame the selection gesture reads, so the two cannot disagree. */
 .term-grid {
   position: relative;
   font-family: var(--font-family-mono);
+  cursor: text;
+}
+
+.term-grid[data-pointer='program'] {
+  cursor: default;
 }
 
 .term-grid-row {

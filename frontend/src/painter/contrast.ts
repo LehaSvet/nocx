@@ -93,3 +93,21 @@ export function legibleForeground(fg: string, bg: string, target = MINIMUM_CONTR
   }
   return `rgb(${best[0]}, ${best[1]}, ${best[2]})`
 }
+
+/** The ink to paint for a cell, floor included (nocx-1ebrs.16).
+ *
+ *  ONE OWNER FOR THE ORDER OF TWO RULES, because the order is the defect: the
+ *  live painter and the frozen block both apply the floor, and both dim a
+ *  FAINT cell with `opacity`, and applying the floor FIRST lifted a colour the
+ *  program had deliberately made quiet and then cut it to half opacity — a
+ *  faint grey separator came out brighter than the plain grey beside it, in
+ *  both surfaces at once.
+ *
+ *  So a cell the program marked FAINT is exempt: SGR 2 is the program saying
+ *  "this is not for careful reading", which is the case the floor's comment
+ *  already excepted in words. Everything else keeps the floor, including a
+ *  plain dim grey nobody dimmed — that is the nocx-3lrm rescue, and it stays. */
+export function inkOf(fg: string, bg: string, faint: boolean): string {
+  if (faint) return fg
+  return legibleForeground(fg, bg)
+}

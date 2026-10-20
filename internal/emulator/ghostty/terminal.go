@@ -1772,15 +1772,23 @@ func (t *terminal) Paste(text []byte) ([]byte, error) {
 	if t.t == nil {
 		return nil, emulator.ErrClosed
 	}
-	if len(text) == 0 {
-		// Nothing to paste is nothing to say. An empty paste is not an error:
-		// an empty clipboard is a real thing, and the caller has nothing to
-		// write either way.
-		return nil, nil
-	}
 	bracketed, err := t.mode(modeBracketedPaste)
 	if err != nil {
 		return nil, err
+	}
+	if len(text) == 0 {
+		// AN EMPTY PASTE IS NOTHING TO SAY — UNLESS THE PROGRAM ASKED TO BE
+		// TOLD (nocx-1ebrs.14). Bracketed paste exists so a program can tell a
+		// paste from typing; inside it an empty body is a complete statement,
+		// and it is the only way a client can report a paste it could not turn
+		// into text (an image on the clipboard, which the program fetches for
+		// itself). Outside the mode there is no encoding for "nothing": the
+		// bytes would be no bytes, so nothing is sent and the caller is not
+		// told it failed — an empty clipboard is a real thing.
+		if !bracketed {
+			return nil, nil
+		}
+		return []byte("\x1b[200~\x1b[201~"), nil
 	}
 	// ghostty_paste_encode REWRITES ITS INPUT: the byte stripping happens in
 	// the buffer it is given. The buffer it is given is therefore a copy, so a

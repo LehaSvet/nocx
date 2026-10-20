@@ -125,6 +125,12 @@ const GRID_CLASS = 'term-grid'
 const CURSOR_CLASS = 'term-grid-cursor'
 const SELECTION_CLASS = 'term-grid-selection'
 
+/** The pointer state the stylesheet reads (nocx-1ebrs.24): `program` while the
+ *  program reports the mouse, `text` while the terminal owns the click. Named
+ *  here and read by style.css, so the two cannot spell the same state twice. */
+export const POINTER_ATTR = 'data-pointer'
+export type PointerOwner = 'program' | 'text'
+
 export function createCellPainter(opts: CellPainterOptions): CellPainter {
   const surface = opts.surface
   let lastPalette: TerminalSnapshot | null = null
@@ -231,6 +237,13 @@ export function createCellPainter(opts: CellPainterOptions): CellPainter {
 
   function apply(snapshot: ScreenSnapshot): void {
     surface.setAttribute('aria-colcount', String(snapshot.geometry.cols))
+    // WHO OWNS THE CLICK, read from the frame the gesture already reads
+    // (nocx-1ebrs.24). The backend ORs DECSET 1000/1002/1003 into one bit, and
+    // selection-gesture.ts asks the same field to decide whether a double click
+    // is a word or a report: one answer, two consumers. Set on the SURFACE and
+    // not on a row, because rows are replaced by the level diff and the
+    // pointer's state has to outlive every revision.
+    surface.setAttribute(POINTER_ATTR, snapshot.state.mouseTracking ? 'program' : 'text')
     // The metric first: reading it is what begins the fit's row context,
     // which its warm() measures against.
     const metric = opts.metric?.() ?? null
@@ -361,6 +374,7 @@ export function createCellPainter(opts: CellPainterOptions): CellPainter {
       surface.removeEventListener('pointerdown', onPointerDown)
       surface.removeAttribute('role')
       surface.removeAttribute('aria-label')
+      surface.removeAttribute(POINTER_ATTR)
       surface.classList.remove(GRID_CLASS)
     },
 

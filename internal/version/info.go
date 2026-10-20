@@ -78,6 +78,13 @@ func Info() BuildInfo {
 // built in a mode that carries no build info — and the answer then is the word,
 // not a blank.
 func wailsVersion() string {
+	// A STAMPED VALUE FIRST (nocx-1ebrs.11). The coordinator that answers
+	// app.about links no window, so its module list has no wails entry to read
+	// and the fallback below could only ever say "unknown" there; the release
+	// build stamps the pinned version for exactly that binary.
+	if strings.TrimSpace(Wails) != "" {
+		return Wails
+	}
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
 		return Unknown

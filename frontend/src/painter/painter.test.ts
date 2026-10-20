@@ -554,3 +554,56 @@ describe('accessible live rows (nocx-zg3k3.4.2)', () => {
     expect(surface.querySelector('.term-grid-row')).toBe(row)
   })
 })
+
+describe('the pointer answers who owns the click (nocx-1ebrs.24)', () => {
+  /** One accepted frame, with the program's mouse-reporting bit as the
+   *  backend measured it (1000/1002/1003 ORed together in
+   *  internal/emulator/ghostty — the SAME fact the selection gesture already
+   *  reads, never a second derivation of the escape sequences). */
+  const withTracking = (tracking: boolean) =>
+    snapshotOf(
+      frameOf(
+        1,
+        [[['a', 1, true]]],
+        undefined,
+        {},
+        {
+          bufferKind: 'alternate',
+          bufferInstance: '1',
+          baseRow: 0,
+          bracketedPaste: false,
+          mouseTracking: tracking,
+          title: null,
+          cwd: null,
+        },
+      ),
+    )
+
+  it('shows the arrow while the program reports the mouse, and the I-beam otherwise', () => {
+    // A program with mouse reporting on owns the click: the pointer must stop
+    // promising a text selection it will not get. Other terminals show the
+    // arrow in exactly this state and the I-beam in exactly the other, and
+    // nocx showed the I-beam in both, because nothing set a cursor at all and
+    // `auto` over the rows' text is an I-beam.
+    const { painter, surface } = mount(() => null)
+    painter.apply(withTracking(true))
+    expect(surface.dataset.pointer).toBe('program')
+    painter.apply(withTracking(false))
+    expect(surface.dataset.pointer).toBe('text')
+    painter.dispose()
+  })
+
+  it('keeps the state on the surface the pointer is over, not on a row it may replace', () => {
+    // Rows are replaced one at a time by the level diff, so a state carried by
+    // a row would be lost on the frame that touched it. The surface is the one
+    // element that outlives every revision.
+    const { painter, surface } = mount(() => null)
+    painter.apply(withTracking(true))
+    const stale = surface.firstElementChild
+    painter.apply(withTracking(true))
+    expect(surface.dataset.pointer).toBe('program')
+    expect(stale?.isConnected).toBe(true)
+    painter.dispose()
+    expect(surface.dataset.pointer).toBeUndefined()
+  })
+})

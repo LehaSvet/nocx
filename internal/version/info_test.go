@@ -1,6 +1,8 @@
 package version
 
 import (
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -68,5 +70,71 @@ func TestInfoReportsAStampedBuildAsARelease(t *testing.T) {
 	}
 	if got.Development {
 		t.Fatal("a stamped build is not a development build")
+	}
+}
+
+// THE SHIPPED APP'S SHELL VERSION IS STAMPED, NOT READ (nocx-1ebrs.11).
+//
+// app.about is answered by the coordinator, which is built without cgo and
+// without a window, so the module list it was linked from has no wails entry —
+// the fallback in wailsVersion cannot answer there, and the About page showed
+// "Wails: unknown" in the shipped 0.6.0. The release build stamps the pinned
+// version instead, and a stamped value has to win over a module list that will
+// never have one.
+func TestInfoPrefersTheStampedShellVersion(t *testing.T) {
+	defer func(w string) { Wails = w }(Wails)
+	Wails = "v3.0.0-beta.9"
+
+	if got := Info().Wails; got != "v3.0.0-beta.9" {
+		t.Fatalf("Wails = %q, want the stamped %q", got, "v3.0.0-beta.9")
+	}
+
+	// An empty stamp is "nothing stamped it", not a value: the module list is
+	// then the answer, and a build that links the shell keeps working.
+	Wails = ""
+	if got := Info().Wails; strings.TrimSpace(got) == "" {
+		t.Fatal("an unstamped build must still say something rather than nothing")
+	}
+}
+
+// AND THE RELEASE BUILD HAS TO DO THE STAMPING. The value above is only ever
+// set by a link flag, and a link flag the workflow does not pass is a field the
+// shipped binary cannot know — which is the defect, not a missing test.
+//
+// Asserted against the workflow itself because that file is the only thing
+// that runs the linker for a release: every LDFLAGS chain that stamps Version
+// must stamp Wails in the same chain, so a second build step cannot be added
+// later with half the stamps.
+func TestReleaseBuildStampsTheShellVersion(t *testing.T) {
+	path := filepath.Join("..", "..", ".github", "workflows", "release.yml")
+	raw, err := os.ReadFile(path) //nolint:gosec // this repository's own tracked workflow file
+	if err != nil {
+		t.Fatalf("the release workflow is the only place a release is linked: %v", err)
+	}
+	lines := strings.Split(string(raw), "\n")
+	chains := 0
+	for i, line := range lines {
+		if !strings.Contains(line, `LDFLAGS="`) || !strings.Contains(line, "internal/version.Version=") {
+			continue
+		}
+		chains++
+		stamped := false
+		for j := i; j < len(lines) && j < i+5; j++ {
+			if strings.Contains(lines[j], "internal/version.Wails=") {
+				stamped = true
+				break
+			}
+			// The chain ends where the build begins: a stamp written after
+			// `go build` is a stamp that build never saw.
+			if strings.Contains(lines[j], "go build") || strings.Contains(lines[j], "go list") {
+				break
+			}
+		}
+		if !stamped {
+			t.Errorf("release.yml line %d builds a release without stamping version.Wails", i+1)
+		}
+	}
+	if chains == 0 {
+		t.Fatal("no LDFLAGS chain stamps the version; the check above proved nothing")
 	}
 }

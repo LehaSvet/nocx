@@ -112,6 +112,15 @@ test('a drag from a historical card to live output copies the pinned text and ke
   await expect(page.locator('.term-grid-selection').first()).toBeVisible()
   // Typing into the running `cat` is a user action that deterministically
   // creates a real backend frame while the selection remains active.
+  //
+  // AND THE DRAG SURVIVES BOTH THE KEYS AND THAT FRAME (nocx-1ebrs.19). A range
+  // still under the pointer is not a selection yet: the person has not let go,
+  // and the release is where it is copied — so a key sent to the program
+  // mid-drag ends nothing here, and neither does the repaint it causes. Ending
+  // it was the regression: the clipboard kept `pasted` from the step above,
+  // which reads exactly like a drag that copied nothing, because that is what
+  // it was. The copy that follows is taken from the snapshot pinned at
+  // pointerdown, which is why `later` is not in it.
   await page.keyboard.type(later)
   await page.keyboard.press('Enter')
   await expect

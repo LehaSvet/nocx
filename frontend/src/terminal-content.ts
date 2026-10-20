@@ -2843,6 +2843,12 @@ export class TerminalContent extends BasePaneContent {
         // backend frame; with no accepted mode the pointer remains available
         // to selection and native scrollback.
         mouseTracking: () => this._cellModel?.current()?.state.mouseTracking ?? false,
+        // The wheel is counted in LINES, so it needs the row pitch: the
+        // painter's accepted cell height, which is the same number the caret,
+        // the selection and hit-testing are placed by (nocx-1ebrs.26). A
+        // second derivation here would be a second answer to "how tall is a
+        // row", and the one the program was resized against is this one.
+        lineHeight: () => this.liveCellMetrics()?.cellHeight ?? 0,
         // THE CHORD IS THE PANE'S, not the program's: consumed before it
         // becomes an intent, and handed to the ONE opener every keyboard
         // boundary answers through (design §10.1, AD-8) — the same
@@ -5183,6 +5189,11 @@ export class TerminalContent extends BasePaneContent {
       this._paintedCols = snapshot.geometry.cols
       this._liveHistory?.reflowed()
     }
+    // OUTPUT THAT LANDS ON THE SELECTED CELLS ENDS THE SELECTION
+    // (nocx-1ebrs.19): the highlight must describe the text under it, and the
+    // gesture compares the new frame with the snapshot the selection was
+    // captured on.
+    this._selectionGesture?.screenChanged(snapshot)
     this._pendingPaint = snapshot
     if (this._paintFrameHandle !== 0) return
     this._paintFrameHandle = requestAnimationFrame(() => {
@@ -8197,6 +8208,23 @@ export class TerminalContent extends BasePaneContent {
    *  own. That was the point of the tail, and it is preserved by construction. */
   private onSessionIntent(intent: SessionIntent): boolean {
     if (isAwaitingIntegration(this._integration, this._awaitsIntegration)) return false
+    // INPUT ENDS A LIVE SELECTION (nocx-1ebrs.19). A key, committed text or a
+    // paste is what makes a full-screen program redraw the screen the person
+    // had selected from, so the highlight is over the moment it is SENT —
+    // waiting for the redraw to prove it leaves a highlight naming text that is
+    // already gone, and the selection is the copy source.
+    //
+    // SENT is the word, hence the guard above: an intent this pane refuses
+    // reaches no program and redraws nothing.
+    //
+    // And what a drag in progress does with a key is the GESTURE's answer, not
+    // this one (`dismiss`): a range the person is still choosing is copied at
+    // the release, so ending it here would copy nothing — measured by
+    // e2e/live-to-card-joined.spec.ts, which types into a running program
+    // between the press and the release.
+    if (intent.kind === 'key' || intent.kind === 'text' || intent.kind === 'paste') {
+      this._selectionGesture?.dismiss()
+    }
     const held = this._heldRaw
     if (held !== null && !held.cancelled) {
       if (intent.kind === 'key' && intent.payload === INTERRUPT_KEY) {

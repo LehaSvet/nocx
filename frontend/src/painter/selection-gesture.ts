@@ -34,6 +34,23 @@ export interface LiveSelectionGestureOptions {
 
 export interface LiveSelectionGesture {
   dispose(): void
+  /** The program's screen changed: drop a selection that no longer describes
+   *  what is on it (nocx-1ebrs.19).
+   *
+   *  A selection is the COPY SOURCE, so one that outlives its text is worse
+   *  than a stale colour: a person copies what the program has since written
+   *  there. Every other terminal clears when output lands on the selected
+   *  cells, and so does this — compared against the snapshot the selection was
+   *  captured on, cell by cell, because that is the snapshot its text came
+   *  from. */
+  screenChanged(snapshot: ScreenSnapshot): void
+  /** Input went to the program: a SETTLED selection is over. The same rule as
+   *  the one above, stated for the other direction of the conversation — a key
+   *  sent to a full-screen program redraws the screen it was selected from.
+   *
+   *  A drag still under the pointer is not settled and is left alone: its text
+   *  is copied at the release, so ending it early copies nothing. */
+  dismiss(): void
 }
 
 type Position = { readonly row: number; readonly offset: number }
@@ -303,7 +320,7 @@ export function installLiveSelectionGesture(
       // A press and release on one cell is a click — how a person gives the
       // terminal focus — not a one-cell selection. Copying it would replace
       // the clipboard with whatever character sat under the pointer.
-      opts.painter.setSelection(null)
+      clear()
     } else if (focus && (anchor.kind === 'live' || focus.kind === 'live')) {
       drawLive(focus)
       const text = copyAcross(anchor, focus)
@@ -314,12 +331,23 @@ export function installLiveSelectionGesture(
       // (and different) value.
       if (anchor.kind === 'card') window.getSelection()?.removeAllRanges()
     } else if (!focus) {
-      opts.painter.setSelection(null)
+      clear()
     }
     anchor = null
-    selection = null
-    pinned = opts.model.current()
-    pinnedMapping = opts.painter.mapping()
+    // THE SELECTION OUTLIVES THE GESTURE THAT MADE IT (nocx-1ebrs.19). What
+    // ends is the DRAG; the highlight stays, because it is what the person
+    // reads and copies from — and because its lifetime is now somebody else's
+    // question (`screenChanged`, `dismiss`). This used to be nulled here, and
+    // nothing kept it: the painter went on painting a selection the gesture no
+    // longer knew about, which is why nothing could ever clear it.
+    //
+    // AND `pinned` STAYS THE CAPTURE. It is the snapshot the settled
+    // selection's text came from, so it is also what `touched` must ask.
+    // Refreshing it here — to whatever frame happened to land last, during the
+    // drag or after it — let a cell that changed WHILE the drag was being made
+    // pass as unchanged, and reported the captured text coming BACK as a
+    // change. The next press reads both again (`down`), which is the only
+    // later reader.
   }
 
   // A double click on the live grid selects the token under the pointer by
@@ -353,10 +381,71 @@ export function installLiveSelectionGesture(
     if (copied !== '') opts.copy(copied)
   }
 
+  /** Drop the live selection in the painter and in this gesture's own state. */
+  const clear = (): void => {
+    anchor = null
+    selection = null
+    opts.painter.setSelection(null)
+  }
+
+  /** Do the two snapshots disagree anywhere inside the selected range? */
+  const touched = (next: ScreenSnapshot): boolean => {
+    if (selection === null || pinned === null) return false
+    const start = selection.anchor
+    const end = selection.focus
+    if (start.surfaceId !== opts.surfaceId) return false
+    const fromRow = Math.min(start.row, end.row)
+    const toRow = Math.max(start.row, end.row)
+    for (let row = fromRow; row <= toRow; row++) {
+      const before = pinned.rows[row]?.cells ?? []
+      const after = next.rows[row]?.cells ?? []
+      const from = row === start.row ? start.offset : 0
+      const to = row === end.row ? end.offset : Math.max(before.length, after.length)
+      // A ROW THAT IS NO LONGER THERE IS A CHANGE: the screen shrank, so the
+      // text the selection named is gone.
+      if (next.rows[row] === undefined && before.length > 0) return true
+      for (let column = Math.max(0, from); column < to; column++) {
+        const a = before[column]
+        const b = after[column]
+        if (a === undefined || b === undefined) {
+          if (a !== b) return true
+          continue
+        }
+        if (a.grapheme !== b.grapheme || a.hasText !== b.hasText) return true
+      }
+    }
+    return false
+  }
+
   root.addEventListener('pointerdown', down)
   root.addEventListener('mousedown', tripleClick)
   root.addEventListener('dblclick', doubleClick)
+  /** A drag still under the pointer is not a selection yet: the range is not
+   *  final, the person has not let go, and `move` redraws it from the capture
+   *  on the next pointer event. So nothing outside the pointer may end it
+   *  (nocx-1ebrs.19).
+   *
+   *  `clear()` is the wrong answer here for a second, worse reason: it drops
+   *  the ANCHOR as well as the highlight, so the release that follows finds no
+   *  gesture and copies NOTHING. The person's selection is lost, not merely
+   *  unhighlighted — which is the opposite failure to the one this rule was
+   *  written for, and it is the one e2e/live-to-card-joined.spec.ts measured:
+   *  it types into a running program mid-drag to force a frame, the pane
+   *  forwards those keys as intents, and the clipboard finished the gesture
+   *  holding the text written before it. */
+  const dragging = (): boolean => anchor !== null
+
   return {
+    screenChanged(snapshot) {
+      if (dragging()) return
+      if (touched(snapshot)) clear()
+    },
+
+    dismiss() {
+      if (dragging()) return
+      if (selection !== null) clear()
+    },
+
     dispose() {
       root.removeEventListener('pointerdown', down)
       root.removeEventListener('mousedown', tripleClick)
