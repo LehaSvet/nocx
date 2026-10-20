@@ -146,6 +146,16 @@ func (f *integrationPTYFactory) NewPTY(_ context.Context, cfg pty.Config) (pty.P
 
 func newIntegrationEnv(t *testing.T) *integrationEnv {
 	t.Helper()
+	return newIntegrationEnvTuned(t, nil)
+}
+
+// newIntegrationEnvTuned is the same env with a last look at the server BEFORE
+// the session opens, which is the only moment a bound can be shortened: the
+// startup bound is armed by the registration that entering the axis performs
+// (ws_integration.go's armStartupBoundLocked), so a value written after the
+// open would arrive after the timer it was meant to shorten.
+func newIntegrationEnvTuned(t *testing.T, tune func(*WSServer)) *integrationEnv {
+	t.Helper()
 	kernel := lifecycle.New(lifecycle.Options{})
 	pub := lifecyclepub.New(kernel)
 	logger := log.NewSlogAdapter(nil)
@@ -153,6 +163,9 @@ func newIntegrationEnv(t *testing.T) *integrationEnv {
 	e := newLifecycleTestEnvWithReg(t, session.New(logger, f), WithLifecyclePublisher(pub))
 	f.ws.Store(e.ws)
 	pub.SetEmitter(e.ws)
+	if tune != nil {
+		tune(e.ws)
+	}
 	sid := e.openSession(t, 1)
 	const lane = lifecycle.LaneID("lane-1")
 	e.ws.RegisterLifecycleLane(lane, session.ID(sid))
@@ -386,6 +399,212 @@ func TestIntegration_AbandoningAnOpenDiscardsItsPendingTimeout(t *testing.T) {
 	got := awaitIntegration(t, e.conn, e.sid, IntegrationStarting)
 	if got.Reason != "" {
 		t.Fatalf("abandoned open left reason %q on a later session", got.Reason)
+	}
+}
+
+// ── the startup bound (nocx-1ebrs.20) ─────────────────────────────────────
+
+// timedIntegrationAnswer is one session.integrationChanged as it ARRIVED,
+// with how long after the collection began it did. The offset is the point:
+// "the axis did not give up before its bound" is a statement about when, and
+// the only other evidence of it would be a sleep that asserts itself.
+type timedIntegrationAnswer struct {
+	status string
+	reason string
+	shell  string
+	at     time.Duration
+}
+
+// integrationAnswersWithin collects every session.integrationChanged for one
+// session that arrives inside a fixed window, and stops at the window's end.
+//
+// ONE READER, ONE WINDOW, and it goes through the inbox (awaitFrame) so a
+// frame this collection is not about is retained for the next wait rather than
+// eaten: a gorilla connection whose read has timed out stays failed, so a
+// window read and a subsequent wait cannot both exist on one socket
+// (ws_inbox_test.go's own comment, and the reason wantWithin's history is
+// three false readings).
+func integrationAnswersWithin(t *testing.T, conn *websocket.Conn, sid string, window time.Duration) []timedIntegrationAnswer {
+	t.Helper()
+	start := time.Now()
+	deadline := start.Add(window)
+	var answers []timedIntegrationAnswer
+	for {
+		msg, err := awaitFrame(conn, deadline, func([]byte) bool { return true })
+		if err != nil {
+			return answers
+		}
+		f, _ := decodeFrame(msg)
+		if f.Method != "session.integrationChanged" {
+			continue
+		}
+		var p integrationChangedParams
+		if derr := json.Unmarshal(f.Params, &p); derr != nil {
+			t.Fatalf("decode session.integrationChanged: %v\nraw: %s", derr, f.Params)
+		}
+		if p.SessionID != sid {
+			continue
+		}
+		answers = append(answers, timedIntegrationAnswer{
+			status: p.Status, reason: p.Reason, shell: p.Shell, at: time.Since(start),
+		})
+	}
+}
+
+// The session integration axis has ONE bound of its own, and it is the reason
+// a pane can never sit at "Checking this shell…" for ever.
+//
+// THE TRANSPORT BELOW IS DELIBERATELY SILENT: no adapter, no publisher, no
+// loss, nothing that could answer. That is the state the defect is about — the
+// pane reads `starting`, hides its terminal and drops every keystroke
+// (frontend/src/integration/status.ts's isAwaitingIntegration is the only read
+// and terminal-content.ts's onSessionIntent refuses on it) — and every finer
+// detector in the product lives somewhere else and may be broken. Measured
+// before this bound existed: the axis stayed `starting` until the session was
+// destroyed, which is the pane that waits until the person quits.
+func TestIntegration_StartupBoundEndsAnIntervalNothingElseWould(t *testing.T) {
+	const bound = 1100 * time.Millisecond
+	e := newIntegrationEnvTuned(t, func(ws *WSServer) { ws.integrationStartupBound = bound })
+
+	answers := integrationAnswersWithin(t, e.conn, e.sid, 2*bound)
+
+	// ONE CONCLUSION, AND ONLY ONE. `starting` may be re-sent — the status is a
+	// state and the transport re-sends it — so the assertion is on the answers
+	// that CONCLUDE the axis: exactly one, and it is the bound's own word,
+	// `handshake-timeout`, which is also what the adapter's own expiry
+	// produces because it is the same event from where the person sits.
+	var concluded []timedIntegrationAnswer
+	for _, a := range answers {
+		if a.status != IntegrationStarting {
+			concluded = append(concluded, a)
+		}
+	}
+	if len(concluded) != 1 {
+		t.Fatalf("the axis concluded %d times, want exactly once: %+v", len(concluded), answers)
+	}
+	got := concluded[0]
+	if got.status != IntegrationConventional || got.reason != string(ssh.ReasonHandshakeTimeout) {
+		t.Errorf("the axis concluded %q/%q, want conventional/%q", got.status, got.reason, ssh.ReasonHandshakeTimeout)
+	}
+	if got.shell != "/bin/bash" {
+		t.Errorf("shell = %q, want the launch's own answer, unrevised", got.shell)
+	}
+	// AND NOT BEFORE ITS BOUND. The offset is measured from the start of the
+	// collection, which is a few milliseconds after the registration armed the
+	// timer, so the exact edge is not this test's to assert — what it asserts
+	// is the property that matters: the axis waited for the bound instead of
+	// giving up on the shell immediately.
+	if got.at < bound/2 {
+		t.Errorf("the axis concluded %s after the collection began, well inside its %s bound: it gave up on a shell that still had time",
+			got.at, bound)
+	}
+	// The same conclusion wakes whoever is holding for the axis: a caller in
+	// AwaitIntegration must not wait out its own deadline for a session the
+	// transport has already answered.
+	out, err := e.ws.AwaitIntegration(t.Context(), session.ID(e.sid))
+	if err != nil {
+		t.Fatalf("AwaitIntegration after the bound: %v", err)
+	}
+	if !out.Registered || out.Status != IntegrationConventional || out.Reason != ssh.ReasonHandshakeTimeout {
+		t.Fatalf("AwaitIntegration = %+v, want the conventional answer the bound published", out)
+	}
+}
+
+// The bound is a NET, not a verdict: a detector that describes the same
+// startup may still land its more specific word after it, because the net only
+// says "nothing arrived".
+//
+// WITHOUT THIS A SLOW STARTUP WOULD LOSE ITS DIAGNOSIS. The typed `ssh` path
+// re-opens the axis as `starting` and concludes it from its own bootstrap,
+// which is bounded at 60 s — a far host slower than one handshake bound would
+// otherwise keep the net's vaguer word and never see the reason it actually
+// produced (internal/app/typed_line.go's reportOutcome).
+func TestIntegration_ASpecificAnswerCorrectsTheBoundsNet(t *testing.T) {
+	cases := []struct {
+		name string
+		// report lands the detector's answer and returns what the axis says.
+		report func(e *integrationEnv) (integrationChangedParams, bool)
+		want   ssh.RefusalReason
+	}{
+		{
+			name: "the process observation",
+			report: func(e *integrationEnv) (integrationChangedParams, bool) {
+				e.ws.NoteShellReplaced(session.ID(e.sid), "kiro-cli-term")
+				return awaitIntegration(t, e.conn, e.sid, IntegrationConventional), true
+			},
+			want: ssh.ReasonStartupDidNotReturn,
+		},
+		{
+			name: "the bootstrap's own outcome",
+			report: func(e *integrationEnv) (integrationChangedParams, bool) {
+				e.ws.NoteBootstrapOutcome(e.lane, ssh.ReasonPublishUnavailable)
+				return awaitIntegration(t, e.conn, e.sid, IntegrationConventional), true
+			},
+			want: ssh.ReasonPublishUnavailable,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			const bound = 200 * time.Millisecond
+			e := newIntegrationEnvTuned(t, func(ws *WSServer) { ws.integrationStartupBound = bound })
+			// The net lands first, and the test reads it, so what follows is a
+			// CORRECTION of an answer already on the wire rather than a race.
+			if got := awaitIntegration(t, e.conn, e.sid, IntegrationConventional); got.Reason != string(ssh.ReasonHandshakeTimeout) {
+				t.Fatalf("the bound said %q, want %q", got.Reason, ssh.ReasonHandshakeTimeout)
+			}
+			got, _ := tc.report(e)
+			if got.Reason != string(tc.want) {
+				t.Errorf("the answer after the net = %q, want %q: a detector that knows what happened outranks one bound that ran out", got.Reason, tc.want)
+			}
+			out, err := e.ws.AwaitIntegration(t.Context(), session.ID(e.sid))
+			if err != nil || out.Reason != tc.want {
+				t.Fatalf("AwaitIntegration = %+v, %v; want %q", out, err, tc.want)
+			}
+		})
+	}
+}
+
+// And the reverse is forbidden: an answer a TRANSPORT reported is evidence,
+// and the net never existed for it. This is the existing rule — a session
+// already answered keeps its first answer — restated where the net could have
+// loosened it.
+func TestIntegration_TheNetDoesNotLoosenTheFirstAnswerRule(t *testing.T) {
+	const bound = 200 * time.Millisecond
+	e := newIntegrationEnvTuned(t, func(ws *WSServer) { ws.integrationStartupBound = bound })
+	// A real transport verdict, before the bound can have expired.
+	e.ws.NoteIntegrationLoss(e.lane, "end-of-stream")
+	if got := awaitIntegration(t, e.conn, e.sid, IntegrationConventional); got.Reason != string(ssh.ReasonUnknown) {
+		t.Fatalf("the loss said %q, want %q", got.Reason, ssh.ReasonUnknown)
+	}
+	e.ws.NoteShellReplaced(session.ID(e.sid), "kiro-cli-term")
+	e.ws.NoteBootstrapOutcome(e.lane, ssh.ReasonPublishUnavailable)
+	out, err := e.ws.AwaitIntegration(t.Context(), session.ID(e.sid))
+	if err != nil || out.Reason != ssh.ReasonUnknown {
+		t.Fatalf("a later detector replaced a transport's own verdict: %+v, %v", out, err)
+	}
+}
+
+// A session that answers is not revisited when the bound it was given would
+// have expired: the timer belongs to the question, and the answer cancels it.
+//
+// This is the pair to the test above, and it is the one that catches a bound
+// which degrades a working pane one bound into every good session.
+func TestIntegration_StartupBoundSaysNothingOnceTheAxisAnswered(t *testing.T) {
+	const bound = 300 * time.Millisecond
+	e := newIntegrationEnvTuned(t, func(ws *WSServer) { ws.integrationStartupBound = bound })
+	if got := e.establish(t); got.Status != IntegrationIntegrated {
+		t.Fatalf("status = %q, want integrated before the bound could expire", got.Status)
+	}
+	// READ FOR LONGER THAN THE BOUND ITSELF: silence after the answer is the
+	// assertion, and a window shorter than the bound would prove nothing.
+	for _, a := range integrationAnswersWithin(t, e.conn, e.sid, 4*bound) {
+		if a.status == IntegrationConventional || a.status == IntegrationLost {
+			t.Fatalf("a session that integrated was degraded %s into its bound: %+v", a.at, a)
+		}
+	}
+	out, err := e.ws.AwaitIntegration(t.Context(), session.ID(e.sid))
+	if err != nil || out.Status != IntegrationIntegrated {
+		t.Fatalf("AwaitIntegration = %+v, %v; want the integrated answer, untouched", out, err)
 	}
 }
 
