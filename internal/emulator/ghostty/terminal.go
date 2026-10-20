@@ -92,6 +92,11 @@ const (
 	// modeBracketedPaste is DEC private mode 2004: the program asks for pastes
 	// to be wrapped in the bracketed-paste sequences.
 	modeBracketedPaste = 2004
+	// modeSynchronizedOutput is DEC private mode 2026: the program holds the
+	// screen while it draws a complete frame, so nobody is shown the
+	// half-drawn state between clearing the screen and painting it
+	// (nocx-1ebrs.33).
+	modeSynchronizedOutput = 2026
 )
 
 // The grid reference's coordinate spaces, named once because every call
@@ -1968,6 +1973,10 @@ func (t *terminal) Focus(gained bool) ([]byte, error) {
 // the terminal rather than a field this adapter keeps: a mode the program set
 // is the library's state, and a copy of it here would be a second answer to the
 // same question.
+//
+// Mode 2026 is one of those queries and the library does track it: ghostty ends
+// a hold itself on a reset or a resize, so a caller that asked the terminal
+// rather than keeping the bit learns that without being told (nocx-1ebrs.33).
 func (t *terminal) Modes() (emulator.Modes, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -1986,7 +1995,11 @@ func (t *terminal) Modes() (emulator.Modes, error) {
 		}
 		tracking = tracking || active
 	}
-	return emulator.Modes{BracketedPaste: bracketed, MouseTracking: tracking}, nil
+	held, err := t.mode(modeSynchronizedOutput)
+	if err != nil {
+		return emulator.Modes{}, err
+	}
+	return emulator.Modes{BracketedPaste: bracketed, MouseTracking: tracking, SynchronizedOutput: held}, nil
 }
 
 func (t *terminal) mode(value int) (bool, error) {

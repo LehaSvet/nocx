@@ -123,11 +123,12 @@ func TestDecrqmAnswersTheAnsiForm(t *testing.T) {
 // an authoritative column width, and a colour that keeps its three shapes
 // apart. The wide cluster is the case a font measurement cannot answer and the
 // reason the emulator owns widths.
-// TestModesExposeOnlyTheClientRoutingFacts verifies the two mode facts the
-// client needs for local gesture routing. The modes are read from this same
-// emulator state; the frontend does not parse terminal bytes to reconstruct
-// them.
-func TestModesExposeOnlyTheClientRoutingFacts(t *testing.T) {
+// TestModesExposeOnlyWhatTheProgramSet verifies that the modes come from the
+// program's own state and from nothing else. Two of them are the facts the
+// client needs for local gesture routing; the frontend does not parse terminal
+// bytes to reconstruct them, and the third (the synchronized-output hold) is the
+// session runtime's own publish decision.
+func TestModesExposeOnlyWhatTheProgramSet(t *testing.T) {
 	term := newTerminal(t, 20, 4)
 	if got, err := term.Modes(); err != nil || got != (emulator.Modes{}) {
 		t.Fatalf("initial modes = %+v, %v; want zero modes", got, err)
@@ -140,6 +141,28 @@ func TestModesExposeOnlyTheClientRoutingFacts(t *testing.T) {
 	ingest(t, term, "\x1b[?2004l\x1b[?1002l")
 	if got, err := term.Modes(); err != nil || got != (emulator.Modes{}) {
 		t.Fatalf("reset modes = %+v, %v; want zero modes", got, err)
+	}
+}
+
+// TestModesReportTheSynchronizedOutputHold is the port's half of nocx-1ebrs.33:
+// DEC private mode 2026 is a fact the terminal tracks, so a caller reads it
+// here instead of hunting the byte stream for the sequence that set it (AD-6).
+// The RESET arm is why the read is a query and not a bit kept beside the
+// terminal: the library ends a hold itself on a full reset, and a copy in the
+// caller would go on believing a hold nobody is in.
+func TestModesReportTheSynchronizedOutputHold(t *testing.T) {
+	term := newTerminal(t, 20, 4)
+	ingest(t, term, "\x1b[?2026h")
+	if got, err := term.Modes(); err != nil || !got.SynchronizedOutput {
+		t.Fatalf("after BSU the modes are %+v, %v; want the hold reported", got, err)
+	}
+	ingest(t, term, "\x1b[?2026l")
+	if got, err := term.Modes(); err != nil || got.SynchronizedOutput {
+		t.Fatalf("after ESU the modes are %+v, %v; want no hold", got, err)
+	}
+	ingest(t, term, "\x1b[?2026h\x1bc")
+	if got, err := term.Modes(); err != nil || got.SynchronizedOutput {
+		t.Fatalf("after a full reset the modes are %+v, %v; want no hold: the terminal ends one itself", got, err)
 	}
 }
 
