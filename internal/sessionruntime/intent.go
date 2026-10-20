@@ -49,8 +49,8 @@ var ErrIntentUnsupported = errors.New("sessionruntime: the intent has no encodin
 // identity. The port owns the identities and carries no names of its own — a
 // name is a wire question and the wire is not declared yet — so the table
 // lives where the parsing does, and it is exhaustive over the alphabet, the
-// digits, the punctuation of a US layout, the control pad, the arrow pad and
-// F1–F12.
+// digits, the punctuation of a US layout, the control pad, the arrow pad,
+// F1–F12 and the keypad's Enter.
 var keyNames = map[string]emulator.Key{
 	"left": emulator.KeyLeft, "right": emulator.KeyRight,
 	"up": emulator.KeyUp, "down": emulator.KeyDown,
@@ -58,7 +58,13 @@ var keyNames = map[string]emulator.Key{
 	"pageup": emulator.KeyPageUp, "pagedown": emulator.KeyPageDown,
 	"insert": emulator.KeyInsert, "delete": emulator.KeyDelete,
 	"backspace": emulator.KeyBackspace, "enter": emulator.KeyEnter,
-	"tab": emulator.KeyTab, "escape": emulator.KeyEscape, "space": emulator.KeySpace,
+	// The keypad's Enter is its own identity, not a second spelling of "enter"
+	// (nocx-1ebrs.32). A program that asked for nothing gets the same CR from
+	// both; one that enabled application keypad mode gets SS3 M from this and CR
+	// from Return, and that decision is the emulator's against the mode it read
+	// — never the wire's, which is why the names differ here.
+	"numpadenter": emulator.KeyNumpadEnter,
+	"tab":         emulator.KeyTab, "escape": emulator.KeyEscape, "space": emulator.KeySpace,
 
 	"a": emulator.KeyA, "b": emulator.KeyB, "c": emulator.KeyC, "d": emulator.KeyD,
 	"e": emulator.KeyE, "f": emulator.KeyF, "g": emulator.KeyG, "h": emulator.KeyH,

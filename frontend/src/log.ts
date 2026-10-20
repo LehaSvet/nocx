@@ -105,6 +105,34 @@ export function logDecision(msg: string, fields?: LogFields): void {
   write('debug', `${DECISION_PREFIX} ${msg}`, fields)
 }
 
+/** What the browser reported for one keydown, on a surface that reads keys
+ *  (nocx-1ebrs.32).
+ *
+ *  WHY THIS EXISTS. A key a surface never sees and a key it sees and drops are
+ *  the same thing from the outside — nothing happens — and the one signal that
+ *  separates them is the four values a KeyboardEvent carries. The defect that
+ *  bought this line is macOS-only (the numeric keypad's Enter): the engines CI
+ *  runs cannot reproduce the shipped WebView's report, so the person on that
+ *  machine reads it here. `where` names the surface, which is the whole of the
+ *  discriminator — the composer's handler and the grid's input element each
+ *  report, and whichever one has no line for the key is the one that dropped
+ *  it.
+ *
+ *  OFF UNLESS ASKED FOR: it is the existing decision trace, so it is silent in
+ *  a shipped build and behind `window.nocxDebug = true` in the devtools that
+ *  NOCX_DEVTOOLS=1 opens. The four values are the DOM's own fields, not names
+ *  of ours: `keyCode` and `location` are legacy and deprecated, and they are
+ *  exactly what a report has to quote for a defect that only one engine has. */
+export function logKeydown(where: 'composer' | 'grid', e: KeyboardEvent): void {
+  logDecision('keydown', {
+    where,
+    key: e.key,
+    code: e.code,
+    keyCode: e.keyCode,
+    location: e.location,
+  })
+}
+
 export const log = {
   info(msg: string, fields?: LogFields): void {
     write('info', msg, fields)

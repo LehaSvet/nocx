@@ -417,6 +417,90 @@ func TestKeyIdentitiesEncodeTheirOwnSequences(t *testing.T) {
 	}
 }
 
+// TestNumpadEnterIsReturnUntilTheProgramAsksForItsOwnSequence is
+// nocx-1ebrs.32's rule, measured through the native binding: the numeric
+// keypad's Enter is a key of its own, and what it is WORTH is the program's,
+// not the client's.
+//
+// The defect it closes: the pane's key vocabulary had no name for the keypad's
+// Enter, so a keypress on it emitted no intent at all and reached the program as
+// silence — while Return worked. The fix is not a second encoding path; it is
+// this key's identity reaching the one encoder, where the modes the program set
+// decide what the key is worth.
+func TestNumpadEnterIsReturnUntilTheProgramAsksForItsOwnSequence(t *testing.T) {
+	// EVERY MODE COMBINATION BELOW WAS MEASURED against this encoder before it
+	// was written down, because the alternative is a protocol table of our own
+	// beside the library's. Two of the results are not the obvious guess:
+	//
+	//  - DECNKM (mode 66) ALONE changes nothing. Mode 1035, "ignore the keypad
+	//    with NumLock", is ON by default and this encoder reads the keypad as
+	//    numeric while it is on, whatever DECNKM says. That is xterm's rule and
+	//    the library owns it; a nocx-side rule that overrode it would be the
+	//    second key table ADR-0066 exists against.
+	//  - Under the Kitty protocol the keypad's Enter is its own codepoint
+	//    (57414, KP_ENTER), so there it parts from Return without any keypad
+	//    mode at all — the same rule one level further, not a different one.
+	for _, tc := range []struct {
+		name   string
+		modes  string
+		numpad string
+		enter  string
+	}{
+		{
+			name:   "no protocol enabled: the two keys are the same bytes",
+			numpad: "\r",
+			enter:  "\r",
+		},
+		{
+			name:   "DECNKM alone, with mode 1035 still on: numerically keypad, so CR",
+			modes:  "\x1b[?66h",
+			numpad: "\r",
+			enter:  "\r",
+		},
+		{
+			name:   "application keypad mode: the keypad's own sequence, and Return's stays CR",
+			modes:  "\x1b[?66h\x1b[?1035l",
+			numpad: "\x1bOM",
+			enter:  "\r",
+		},
+		{
+			name:   "the program takes application keypad mode back",
+			modes:  "\x1b[?66h\x1b[?1035l\x1b[?66l",
+			numpad: "\r",
+			enter:  "\r",
+		},
+		{
+			name:   "the Kitty keyboard protocol: the keypad's Enter is KP_ENTER",
+			modes:  "\x1b[>1u",
+			numpad: "\x1b[57414u",
+			enter:  "\r",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			term := newTerminal(t, 20, 4)
+			if tc.modes != "" {
+				ingest(t, term, tc.modes)
+			}
+			for _, key := range []struct {
+				name string
+				ev   emulator.KeyEvent
+				want string
+			}{
+				{"keypad Enter", emulator.KeyEvent{Key: emulator.KeyNumpadEnter}, tc.numpad},
+				{"Return", emulator.KeyEvent{Key: emulator.KeyEnter}, tc.enter},
+			} {
+				got, err := term.EncodeKey(key.ev)
+				if err != nil {
+					t.Fatalf("%s: encode: %v", key.name, err)
+				}
+				if string(got) != key.want {
+					t.Errorf("%s encoded as %q, want %q", key.name, got, key.want)
+				}
+			}
+		})
+	}
+}
+
 // TestEncodeKeyRefusesAKeyItDoesNotCarry is the port saying what it does not
 // know instead of encoding something else. The zero Key is the case that
 // matters: a Key nobody set must not become Escape or UNIDENTIFIED.

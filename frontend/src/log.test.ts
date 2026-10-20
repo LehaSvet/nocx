@@ -7,7 +7,7 @@
 // stepping through devtools) at the moment it mattered.
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import { setTransport } from '@wailsio/runtime'
-import { log } from './log'
+import { log, logKeydown, setDecisionTracing } from './log'
 import { installBrowserTransport } from './wails-runtime'
 
 type BridgeWindow = typeof globalThis & { go?: unknown }
@@ -42,6 +42,42 @@ describe('log — no Wails runtime (plain browser, jsdom)', () => {
     const info = vi.spyOn(console, 'log').mockImplementation(() => {})
     log.info('msg', { a: 1 })
     expect(info).toHaveBeenCalledWith('msg {"a":1}')
+  })
+})
+
+// The instrument nocx-1ebrs.32 is settled with, asserted where a person
+// actually reads it: a key a surface never sees and a key it sees and drops look
+// identical from outside, and the four values the browser reported are what
+// separates them. Off unless somebody asked for it — the trace is per
+// keystroke.
+describe('log — a keydown, as the browser reported it (nocx-1ebrs.32)', () => {
+  const keyEvent = (init: KeyboardEventInit) =>
+    new KeyboardEvent('keydown', { key: 'Enter', ...init })
+
+  afterEach(() => setDecisionTracing(false))
+
+  it('writes nothing until decision tracing is asked for', () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    logKeydown('grid', keyEvent({ code: 'NumpadEnter', keyCode: 13, location: 3 }))
+    expect(debug).not.toHaveBeenCalled()
+  })
+
+  it('names the surface and carries key, code, keyCode and location', () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    setDecisionTracing(true)
+    logKeydown('grid', keyEvent({ code: 'NumpadEnter', keyCode: 13, location: 3 }))
+    expect(debug).toHaveBeenCalledTimes(1)
+    const line = debug.mock.calls[0][0] as string
+    expect(line).toContain('nocx:decide keydown')
+    expect(line).toContain(
+      JSON.stringify({
+        where: 'grid',
+        key: 'Enter',
+        code: 'NumpadEnter',
+        keyCode: 13,
+        location: 3,
+      }),
+    )
   })
 })
 

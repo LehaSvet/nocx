@@ -125,6 +125,22 @@ describe('CommandEditor', () => {
     expect(ed.isVisible).toBe(true)
   })
 
+  // THE COMPOSER'S HALF OF nocx-1ebrs.32, and the reason the defect was never
+  // here: a browser reports the keypad's Enter as key "Enter" with code
+  // "NumpadEnter" (measured in Blink and WebKit), so this handler's
+  // `e.key === 'Enter'` fires for it exactly as it does for Return. The test
+  // states that as a result a person can reach — a draft submitted — rather
+  // than as the condition the code happens to test, so a future rewrite of the
+  // condition cannot quietly keep the two keys apart.
+  it('submits on the numeric keypad’s Enter, exactly as Return does', () => {
+    const { ed, view, submit } = setup()
+    ed.show()
+    ed.insertText('echo hi')
+    key(view, { key: 'Enter', code: 'NumpadEnter' })
+    expect(submit).toHaveBeenCalledWith('echo hi')
+    expect(ed.isVisible).toBe(false)
+  })
+
   it('submit receives the composed document byte-identical', () => {
     const { ed, view, submit } = setup()
     ed.show()
