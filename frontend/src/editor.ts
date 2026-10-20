@@ -22,7 +22,7 @@ import { currentPlatform } from './platform'
 import { Compartment, EditorState, Extension } from '@codemirror/state'
 import { drawSelection, EditorView, keymap } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
-import { blockCursor, CURSOR_BLINK_MS, cursorBlinkRate } from './block-cursor'
+import { blockCursor, caretBlink, CURSOR_BLINK_MS, cursorBlinkRate } from './block-cursor'
 import { setSecretCandidate } from './secret-candidate'
 import {
   firstUnresolved,
@@ -493,6 +493,12 @@ export class CommandEditor {
           // …and the cursor it draws is the terminal's block, not a bar
           // (block-cursor.ts owns the rule and the reason).
           blockCursor(),
+          // …which holds still while keys are arriving and blinks only once
+          // they stop. Both halves of the cursor read the phase this writes
+          // on the editor element, so neither can drift into a rhythm of its
+          // own; the constant and the answer for caret-moving keys are in
+          // block-cursor.ts.
+          caretBlink(),
           // Undo, and it belongs to the editor's own identity rather than to
           // whatever the caller installs: `@codemirror/commands` was a
           // dependency and `history()` was installed nowhere, so Ctrl+Z in

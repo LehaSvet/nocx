@@ -15,7 +15,14 @@ import type { EditorView } from '@codemirror/view'
 import { CommandEditor } from './editor'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { BLOCK_CURSOR_MARK, CURSOR_BLINK_MS } from './block-cursor'
+import {
+  BLOCK_CURSOR_MARK,
+  CARET_IDLE_MS,
+  CARET_PHASE_ATTR,
+  CURSOR_BLINK_MS,
+  caretPhase,
+} from './block-cursor'
+import { cursorCharLeft } from '@codemirror/commands'
 
 const viewOf = (ed: CommandEditor): EditorView => (ed as unknown as { view: EditorView }).view
 
@@ -122,5 +129,124 @@ describe('the composer draws the terminal block cursor', () => {
     // notification CM6 delivers itself, so the assertion is "the surface
     // arrives in this state", not "this many milliseconds later".
     await vi.waitFor(() => expect(blockOn(view)).toBeNull())
+  })
+})
+
+describe('the caret holds still while keys are arriving', () => {
+  // The standard, not a preference: macOS text fields, VS Code and iTerm all
+  // keep the caret SOLID while input arrives and let the blink resume on a
+  // pause. A caret caught mid-off by a key looks like the key was dropped.
+  //
+  // The phase is asserted through the module's own answer (`caretPhase`),
+  // never through a class name: what the CSS does with it is a stylesheet
+  // fact and is checked as one, below.
+  let teardown: (() => void)[] = []
+
+  beforeEach(() => {
+    teardown = []
+  })
+
+  afterEach(() => {
+    for (const t of teardown) t()
+    document.body.innerHTML = ''
+  })
+
+  const mount = (): { ed: CommandEditor; view: EditorView } => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const ed = new CommandEditor({ submit: vi.fn(), cancel: vi.fn() })
+    ed.mount(container)
+    ed.show()
+    // Only the idle timer is faked. CM6 schedules its own measuring on
+    // requestAnimationFrame and the clock stays real, so nothing but the
+    // caret's own idle wait is under this file's control.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    teardown.push(() => {
+      vi.useRealTimers()
+      container.remove()
+    })
+    return { ed, view: viewOf(ed) }
+  }
+
+  /** A prompt that has been quiet long enough to be blinking: the baseline. */
+  const quiet = (ed: CommandEditor, view: EditorView): void => {
+    ed.replaceDoc('echo hello')
+    view.dispatch({ selection: { anchor: 6 } })
+    vi.advanceTimersByTime(CARET_IDLE_MS)
+    expect(caretPhase(view)).toBe('blinking')
+  }
+
+  it('a typed character leaves the caret solid, and the blink resumes after the idle bound', () => {
+    const { ed, view } = mount()
+    quiet(ed, view)
+
+    // The shape CM6's own input handling produces for a key: a change AND the
+    // selection that follows it.
+    view.dispatch(view.state.replaceSelection('x'))
+
+    expect(caretPhase(view)).toBe('solid')
+    // The blink must not come back WHILE keys are arriving: one millisecond
+    // inside the idle bound it is still solid.
+    vi.advanceTimersByTime(CARET_IDLE_MS - 1)
+    expect(caretPhase(view)).toBe('solid')
+    vi.advanceTimersByTime(1)
+    expect(caretPhase(view)).toBe('blinking')
+  })
+
+  it('a key that only moves the caret is input too, and restarts the idle wait', () => {
+    // The decision this file records: an arrow, Home/End and a shift-selection
+    // count exactly as a character does. They are what a person presses while
+    // LOOKING at the caret, which is the moment a mid-off blink misleads most,
+    // and the standard treats them as input.
+    const { ed, view } = mount()
+    quiet(ed, view)
+
+    cursorCharLeft(view)
+    expect(caretPhase(view)).toBe('solid')
+
+    view.dispatch({ selection: { anchor: 2, head: 5 } })
+    expect(caretPhase(view)).toBe('solid')
+    vi.advanceTimersByTime(CARET_IDLE_MS)
+    expect(caretPhase(view)).toBe('blinking')
+  })
+
+  it('stays solid for as long as keys keep arriving, however long the typing lasts', () => {
+    const { ed, view } = mount()
+    quiet(ed, view)
+
+    // Four keys, each inside the idle bound of the one before: a person typing
+    // continuously must never see the caret flicker between them.
+    for (const ch of 'abcd') {
+      view.dispatch(view.state.replaceSelection(ch))
+      vi.advanceTimersByTime(CARET_IDLE_MS - 100)
+      expect(caretPhase(view)).toBe('solid')
+    }
+    vi.advanceTimersByTime(CARET_IDLE_MS)
+    expect(caretPhase(view)).toBe('blinking')
+  })
+
+  it('both halves of the cursor read that phase, so neither blinks on its own clock', () => {
+    // The two halves are drawn by two mechanisms — a decoration's CSS
+    // animation and CM6's own cursor layer, whose animation name is written
+    // INLINE and so outranks any ordinary rule. jsdom runs no animation, so
+    // the stylesheet is the only place this fact exists (the same reason the
+    // period is read from it above).
+    const css = readFileSync(
+      resolve(import.meta.dirname ?? '.', 'styles/surfaces/composer.css'),
+      'utf8',
+    )
+    // The attribute name comes from the module, so a rename on the TypeScript
+    // side fails here instead of silently un-suppressing the blink in a
+    // browser that no test is watching.
+    const solid =
+      String.raw`\.nocx-editor \.cm-editor\[` + CARET_PHASE_ATTR + String.raw`='solid'\] `
+    expect(
+      new RegExp(solid + String.raw`\.nocx-block-cursor \{[^}]*animation:\s*none`).test(css),
+    ).toBe(true)
+    expect(
+      new RegExp(
+        solid + String.raw`\.cm-cursorLayer \{[^}]*animation-name:\s*none !important`,
+      ).test(css),
+    ).toBe(true)
   })
 })

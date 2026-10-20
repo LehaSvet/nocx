@@ -70,6 +70,87 @@ export function cursorBlinkRate(): number {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 0 : CURSOR_BLINK_MS
 }
 
+/**
+ * How long the caret holds still after the last key, before the blink resumes.
+ *
+ * The standard rather than a taste: macOS text fields, VS Code and iTerm all
+ * keep the caret SOLID while input is arriving and let the blink return on a
+ * pause of about half a second. A caret caught mid-off by a key reads as a
+ * dropped key, which is the one thing a caret must never look like.
+ *
+ * A hold, not a second period: the blink's rhythm stays CURSOR_BLINK_MS.
+ */
+export const CARET_IDLE_MS = 500
+
+/** The attribute the phase is written on, which is what the stylesheet reads. */
+export const CARET_PHASE_ATTR = 'data-caret'
+
+/** Solid while keys are arriving; blinking once they have stopped. */
+export type CaretPhase = 'solid' | 'blinking'
+
+/**
+ * The caret's phase as the surface is rendering it.
+ *
+ * The state lives on the editor element and nowhere else, because the two
+ * halves of the cursor are drawn by two mechanisms that share no code — a CSS
+ * animation here, CM6's inline `animation-name` there — and a copy of the
+ * phase in a module variable would be a second answer to "is it blinking".
+ * This reads that attribute back as a type: the seam a test asks, and the same
+ * one the stylesheet consumes.
+ */
+export function caretPhase(view: EditorView): CaretPhase {
+  return view.dom.getAttribute(CARET_PHASE_ATTR) === 'solid' ? 'solid' : 'blinking'
+}
+
+/**
+ * Install in a CommandEditor to hold the caret still while keys arrive.
+ *
+ * Both halves of the cursor blinked on their own clocks before this existed.
+ * The mark half is a plain `animation: … infinite` in composer.css, which no
+ * keystroke could restart; CM6's half restarts itself on every transaction
+ * that carries a selection, so it was nearer the standard but on a rhythm of
+ * its own. One phase, written once per key and cleared on one idle timer, is
+ * what makes the two agree — and is the only way the phase can be asserted
+ * without naming a class.
+ *
+ * NOT keyed on doc changes alone. An arrow, Home/End and a shift-selection
+ * move the caret with no character in the document, and they are input: they
+ * are what a person presses while LOOKING at the caret, which is the moment a
+ * mid-off blink misleads most. `selectionSet` therefore resets the phase too,
+ * and the standard's own answer for them is the same as for typing.
+ */
+export function caretBlink(): Extension {
+  return ViewPlugin.fromClass(
+    class {
+      private idle: ReturnType<typeof setTimeout> | null = null
+
+      constructor(private readonly view: EditorView) {
+        // A caret that has been sitting there is blinking before the first
+        // key of the session, which is the state every text field opens in.
+        this.set('blinking')
+      }
+
+      update(update: ViewUpdate): void {
+        if (!update.docChanged && !update.selectionSet) return
+        this.set('solid')
+        if (this.idle !== null) clearTimeout(this.idle)
+        this.idle = setTimeout(() => {
+          this.idle = null
+          this.set('blinking')
+        }, CARET_IDLE_MS)
+      }
+
+      destroy(): void {
+        if (this.idle !== null) clearTimeout(this.idle)
+      }
+
+      private set(phase: CaretPhase): void {
+        this.view.dom.setAttribute(CARET_PHASE_ATTR, phase)
+      }
+    },
+  )
+}
+
 const MARK = Decoration.mark({ class: BLOCK_CURSOR_MARK })
 
 /**

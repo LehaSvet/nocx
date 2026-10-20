@@ -251,6 +251,21 @@
   }
 }
 
+/* …and it holds still while keys are arriving, blinking again only once they
+   stop. The phase is the editor's, not this file's: block-cursor.ts writes
+   `data-caret="solid"` on the editor element for every key that reaches the
+   caret — a character, an arrow, a shift-selection — and clears it on an idle
+   timer of CARET_IDLE_MS.
+
+   SUPPRESSED, not restarted. A CSS animation cannot be restarted without
+   forcing a reflow, and the mark element is CM6's to reuse or replace at will,
+   so "the animation is not running" is the only form of the reset this half
+   can be given; the base rule above already paints the solid block, so nothing
+   else needs to be said. */
+.nocx-editor .cm-editor[data-caret='solid'] .nocx-block-cursor {
+  animation: none;
+}
+
 @keyframes nocx-block-cursor-blink {
   0% {
     background: var(--terminal-cursor);
@@ -275,13 +290,27 @@
    writes the line's height on the element itself.
 
    The blink comes from CM6's base theme at the period editor.ts hands to
-   drawSelection — the same period the mark above animates on. It is not
-   controlled from this file, and cannot be: the layer writes an inline
-   `animation-name` on itself, which no rule here could ever outrank. */
+   drawSelection — the same period the mark above animates on. Its own restart
+   timing is not this file's to set: the layer writes an inline
+   `animation-name` on itself, which only the `!important` phase rule below can
+   reach. */
 .nocx-editor .cm-cursorLayer .cm-cursor {
   width: 1ch;
   border-left: none;
   background: var(--terminal-cursor);
+}
+
+/* …and the end-of-line half reads the same phase as the mark (block-cursor.ts).
+
+   `!important` here is the exception the paragraph above explains: CM6 writes
+   the layer's `animation-name` INLINE — toggling `cm-blink`/`cm-blink2` to
+   restart its blink — and an author declaration marked important is the one
+   thing that outranks an inline style. It is safe exactly because it says
+   nothing else: the period and the timing function stay CM6's, and removing
+   the attribute drops the suppression, which re-creates the animation from its
+   first frame (solid) rather than resuming it mid-cycle. */
+.nocx-editor .cm-editor[data-caret='solid'] .cm-cursorLayer {
+  animation-name: none !important;
 }
 
 /* …and it steps aside for the mark, which is the block whenever the caret has
