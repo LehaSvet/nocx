@@ -1415,6 +1415,9 @@ export class TerminalContent extends BasePaneContent {
   private _globalKeydown: ((e: KeyboardEvent) => void) | null = null
   /** The ONE recogniser of the target chord (nocx-a7mw7.6), in capture. */
   private _targetChordKeydown: ((e: KeyboardEvent) => void) | null = null
+  /** The ONE recogniser of the copy chord over a live-grid selection
+   *  (nocx-1ebrs.19.1), in capture, beside the target chord's. */
+  private _copyChordKeydown: ((e: KeyboardEvent) => void) | null = null
   private _cwd = '~'
   /** True only when _cwd came from a verified OSC 7 report (AD-5): the one
    *  cwd a composition layer may hand to files.open as rootPath (D2). A
@@ -4244,6 +4247,57 @@ export class TerminalContent extends BasePaneContent {
         void this.summonEditor(decision)
       }
       document.addEventListener('keydown', this._targetChordKeydown, true)
+
+      // ── THE COPY CHORD (nocx-1ebrs.19.1, the owner's decision of 2026-10-20)
+      // ──
+      //
+      // Cmd+C over a VISIBLE LIVE-GRID SELECTION copies that selection and
+      // clears it. With nothing selected the chord is unchanged, and CTRL+C IS
+      // NOT THIS CHORD AT ALL: it keeps interrupting the running command
+      // (`_globalKeydown` below) whether or not a selection is on screen,
+      // which is what every other terminal does and what a person reaching
+      // for a SIGINT means. The owner's decision names Cmd+C and only Cmd+C
+      // (nocx-1ebrs.19.1), and the split is the platform's: one chord copies,
+      // the other signals.
+      //
+      // WHY IT MUST BE HERE, IN CAPTURE. The owner it has to answer BEFORE is
+      // the program's input: the grid's own input element turns every keydown
+      // it receives into a session intent, with no notion of what is selected
+      // (intent-input.ts reads keys, not the painter's state), so the chord
+      // must be taken ahead of it or it is not a copy at all. A capture
+      // listener on the document is exactly the position the target chord
+      // already takes for the same reason, and it is the pane — not the
+      // gesture — that can answer "is this keystroke mine", which is why the
+      // claim lives here and the selection state stays in the gesture.
+      //
+      // The choice is the owner's and stated in nocx-1ebrs.19.1: a person who
+      // has selected text and pressed the copy chord asked for a copy, not to
+      // stop what is running. The text is already on the clipboard from the
+      // release (copy-on-select, docs/vision.md:113); the chord writes the
+      // same value again and takes the highlight away, which is the whole of
+      // what it adds — a second way to ask, never a second copy path.
+      this._copyChordKeydown = (e: KeyboardEvent) => {
+        if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
+        if (e.key.toLowerCase() !== 'c') return
+        if (!this._active || !target.isConnected) return
+        // Somebody else's text control (or an overlay) owns its own copy; the
+        // grid's input element is not somebody else's — it is this pane's, and
+        // it is exactly where this chord is pressed from.
+        if (hasOpenOverlays()) return
+        const active = document.activeElement
+        if (isTextEntry(active, this.scrollback?.terminalLiveContainer)) return
+        if (this.editor?.isVisible === true && active !== null && this.editor.rootContains(active))
+          return
+        // ONE CALL, ONE DECISION (AD-8): the gesture owns the selection, so it
+        // both answers "is one on screen" and copies it. Asking and then
+        // copying would be two reads of one state with a frame in between.
+        // False means nothing is selected, and every other meaning of the
+        // chord is left exactly as it was.
+        if (this._selectionGesture?.copyChord() !== true) return
+        e.preventDefault()
+        e.stopPropagation()
+      }
+      document.addEventListener('keydown', this._copyChordKeydown, true)
 
       this.grantController = new GrantController({
         chip:
@@ -8648,6 +8702,10 @@ export class TerminalContent extends BasePaneContent {
     if (this._targetChordKeydown) {
       document.removeEventListener('keydown', this._targetChordKeydown, true)
       this._targetChordKeydown = null
+    }
+    if (this._copyChordKeydown) {
+      document.removeEventListener('keydown', this._copyChordKeydown, true)
+      this._copyChordKeydown = null
     }
     this._endSummon(true)
     this.session?.detach()

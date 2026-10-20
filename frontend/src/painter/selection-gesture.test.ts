@@ -589,6 +589,98 @@ describe('a live selection has the lifetime of the text under it (nocx-1ebrs.19)
     root.remove()
   })
 
+  it('a press and release on one cell leaves no selection and clears one that exists', () => {
+    // THE OWNER'S CRITERION (nocx-1ebrs.19, 2026-10-20): a click without a
+    // drag selects nothing - and clears whatever a drag left behind. The press
+    // paints nothing and the same-cell release clears, so the character under
+    // the pointer must never become a one-cell selection.
+    const { gesture, painter, surface, root } = liveGesture()
+    const press = (type: string, x: number, y: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y })
+    root.dispatchEvent(press('pointerdown', 8, 5))
+    // No move: the press itself must not have painted a one-cell selection.
+    expect(surface.querySelector('.term-grid-selection')).toBeNull()
+    window.dispatchEvent(press('pointerup', 8, 5))
+    expect(surface.querySelector('.term-grid-selection')).toBeNull()
+
+    // A drag first, so a selection EXISTS; the next plain click must clear it.
+    root.dispatchEvent(press('pointerdown', 8, 5))
+    window.dispatchEvent(press('pointermove', 16, 5))
+    window.dispatchEvent(press('pointerup', 16, 5))
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+
+    root.dispatchEvent(press('pointerdown', 24, 5))
+    expect(surface.querySelector('.term-grid-selection')).toBeNull()
+    window.dispatchEvent(press('pointerup', 24, 5))
+    expect(surface.querySelector('.term-grid-selection')).toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+
+  it('the copy chord copies a settled selection and clears it', () => {
+    // THE OWNER'S DECISION (nocx-1ebrs.19.1, 2026-10-20): with a visible
+    // live-grid selection the copy chord copies it, and WITH NONE the chord
+    // keeps the interrupt. The decision says what the copy leaves behind in as
+    // many words — "the chord, when it comes, copies the same selection AND
+    // CLEARS IT" — and this asserts exactly that: a person who asked to copy
+    // sees that the copy happened, and the highlight they asked about is the
+    // thing that goes.
+    //
+    // WHERE THE CHORD IS CLAIMED is the pane's question, not this gesture's
+    // (`terminal-content.ts`, in capture, beside the target chord): whether a
+    // keystroke is this pane's to answer depends on which surface holds the
+    // keyboard, whether an overlay is up and whether the composer is on
+    // screen. This file owns the state and the copy.
+    const { gesture, painter, surface, root, copy } = liveGesture()
+    const press = (type: string, x: number, y: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y })
+    root.dispatchEvent(press('pointerdown', 8, 5))
+    window.dispatchEvent(press('pointermove', 16, 5))
+    window.dispatchEvent(press('pointerup', 16, 5))
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+    copy.mockClear()
+
+    // Copy-on-select wrote the text at the release; the chord writes the same
+    // value again — a second way to ask, never a second copy path.
+    expect(gesture.copyChord()).toBe(true)
+    expect(copy).toHaveBeenCalledWith(expect.stringContaining('bc'))
+    expect(surface.querySelector('.term-grid-selection')).toBeNull()
+
+    // AND WITH NOTHING SELECTED IT CHANGES NOTHING, which is what lets the
+    // pane leave every other meaning of the chord alone.
+    expect(gesture.copyChord()).toBe(false)
+    expect(copy).toHaveBeenCalledTimes(1)
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+
+  it('the copy chord refuses a drag still under the pointer', () => {
+    // A drag is not a selection yet: its range is not final and its RELEASE is
+    // what copies it. Clearing here would drop the anchor too, and the release
+    // that follows would copy nothing — the failure e2e/live-to-card-joined
+    // measured for `dismiss` (nocx-1ebrs.19). So the chord answers false and
+    // the drag goes on being a drag.
+    const { gesture, painter, surface, root, copy } = liveGesture()
+    const press = (type: string, x: number, y: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y })
+    root.dispatchEvent(press('pointerdown', 8, 5))
+    window.dispatchEvent(press('pointermove', 16, 5))
+    copy.mockClear()
+
+    expect(gesture.copyChord()).toBe(false)
+    expect(copy).not.toHaveBeenCalled()
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+
+    // And the drag still ends where a drag ends: the release copies.
+    window.dispatchEvent(press('pointerup', 16, 5))
+    expect(copy).toHaveBeenCalledWith(expect.stringContaining('bc'))
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+
   it('ends when a key is sent to the program', () => {
     const { gesture, painter, surface, root } = liveGesture()
     const press = (type: string, x: number, y: number) =>
