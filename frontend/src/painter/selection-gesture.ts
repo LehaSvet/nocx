@@ -206,9 +206,17 @@ export function installLiveSelectionGesture(
     if (!pinned || !pinnedMapping) return
     const point = endpoint(event)
     if (!point) return
+    // A PRESS PAINTS NOTHING (nocx-1ebrs.19): a click without a drag must
+    // leave no selection, and clear one that is already on screen - which is
+    // what every terminal does. Painting the pressed cell here is what made a
+    // single click select the character under the pointer: `drawLive` with an
+    // anchor equal to the point captures a one-cell range and highlights it
+    // before the person has dragged anything. So the press clears the PAINT
+    // only - the anchor stays, `selection` starts null, and the first paint
+    // happens in `move`, where a drag exists to paint.
     anchor = point
     selection = null
-    drawLive(point)
+    opts.painter.setSelection(null)
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up, { once: true })
     // Card-only selection uses the browser's native text selection and its
@@ -417,6 +425,24 @@ export function installLiveSelectionGesture(
     return false
   }
 
+  // THE COPY CHORD IS DECIDED (nocx-1ebrs.19.1, owner 2026-10-20): with a
+  // visible live-grid selection, Cmd/Ctrl+C COPIES it; with none, the chord
+  // keeps today's interrupt. Claimed in the CAPTURE phase so it answers
+  // before the interrupt handler and before the program's input, and only
+  // while a settled selection exists - a drag still under the pointer is not
+  // one. The selection itself SURVIVES the chord (the lifetime rule above:
+  // the chord copies, it does not clear), so a person can copy twice.
+  const copyChordKeydown = (event: KeyboardEvent): void => {
+    if (selection === null || anchor !== null) return
+    if (event.altKey || event.shiftKey) return
+    if (!((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c')) return
+    const text = selection.copy()
+    opts.copy(text)
+    event.preventDefault()
+    event.stopPropagation()
+  }
+  window.addEventListener('keydown', copyChordKeydown, true)
+
   root.addEventListener('pointerdown', down)
   root.addEventListener('mousedown', tripleClick)
   root.addEventListener('dblclick', doubleClick)
@@ -452,6 +478,7 @@ export function installLiveSelectionGesture(
       root.removeEventListener('dblclick', doubleClick)
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
+      window.removeEventListener('keydown', copyChordKeydown, true)
       anchor = null
       selection = null
     },

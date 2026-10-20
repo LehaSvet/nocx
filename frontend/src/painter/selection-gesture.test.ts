@@ -589,6 +589,69 @@ describe('a live selection has the lifetime of the text under it (nocx-1ebrs.19)
     root.remove()
   })
 
+  it('a press and release on one cell leaves no selection and clears one that exists', () => {
+    // THE OWNER'S CRITERION (nocx-1ebrs.19, 2026-10-20): a click without a
+    // drag selects nothing - and clears whatever a drag left behind. The press
+    // paints nothing and the same-cell release clears, so the character under
+    // the pointer must never become a one-cell selection.
+    const { gesture, painter, surface, root } = liveGesture()
+    const press = (type: string, x: number, y: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y })
+    root.dispatchEvent(press('pointerdown', 8, 5))
+    // No move: the press itself must not have painted a one-cell selection.
+    expect(surface.querySelector('.term-grid-selection')).toBeNull()
+    window.dispatchEvent(press('pointerup', 8, 5))
+    expect(surface.querySelector('.term-grid-selection')).toBeNull()
+
+    // A drag first, so a selection EXISTS; the next plain click must clear it.
+    root.dispatchEvent(press('pointerdown', 8, 5))
+    window.dispatchEvent(press('pointermove', 16, 5))
+    window.dispatchEvent(press('pointerup', 16, 5))
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+
+    root.dispatchEvent(press('pointerdown', 24, 5))
+    expect(surface.querySelector('.term-grid-selection')).toBeNull()
+    window.dispatchEvent(press('pointerup', 24, 5))
+    expect(surface.querySelector('.term-grid-selection')).toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+
+  it('Cmd+C with a settled selection copies it and keeps it on screen', () => {
+    // THE OWNER'S DECISION (nocx-1ebrs.19.1, 2026-10-20): the chord copies a
+    // visible live-grid selection and keeps the interrupt when there is none.
+    // The copy comes from the CAPTURE (selection.copy()), the same text the
+    // release already wrote, and the selection SURVIVES the chord - the
+    // lifetime rule says the chord copies, it does not clear.
+    const { gesture, painter, surface, root, copy } = liveGesture()
+    const press = (type: string, x: number, y: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y })
+    root.dispatchEvent(press('pointerdown', 8, 5))
+    window.dispatchEvent(press('pointermove', 16, 5))
+    window.dispatchEvent(press('pointerup', 16, 5))
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+
+    const chord = new KeyboardEvent('keydown', {
+      key: 'c',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    const prevented = vi.spyOn(chord, 'preventDefault')
+    window.dispatchEvent(chord)
+    expect(prevented).toHaveBeenCalled()
+    // Copy-on-select already wrote the selection at the release; the chord is
+    // the SECOND call, and it wrote the same text again.
+    expect(copy).toHaveBeenLastCalledWith(expect.stringContaining('bc'))
+
+    // And it is still there afterwards: the chord copies, it does not clear.
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+
   it('ends when a key is sent to the program', () => {
     const { gesture, painter, surface, root } = liveGesture()
     const press = (type: string, x: number, y: number) =>
