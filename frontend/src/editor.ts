@@ -19,6 +19,7 @@
 // keymap at Prec.highest is W2's job; W1 only preserves today's behaviour.
 
 import { currentPlatform } from './platform'
+import { logKeydown } from './log'
 import { Compartment, EditorState, Extension } from '@codemirror/state'
 import { drawSelection, EditorView, keymap } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
@@ -949,6 +950,10 @@ export class CommandEditor {
   }
 
   private onKeydown = (e: KeyboardEvent): void => {
+    // What this handler was actually given, before any early return below
+    // (nocx-1ebrs.32): a key consumed further down reads as "does nothing" from
+    // outside, and this line is what says whether the composer ever saw it.
+    logKeydown('composer', e)
     // IME in progress: the composition owns the key stream, and CM6 handles
     // composition itself. Interpreting a composing Enter as submit or a
     // composing Ctrl-C as interrupt would destroy the composition (spec

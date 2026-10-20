@@ -183,6 +183,8 @@ func cKey(k emulator.Key) (C.GhosttyKey, bool) {
 		return C.GHOSTTY_KEY_BACKSPACE, true
 	case emulator.KeyEnter:
 		return C.GHOSTTY_KEY_ENTER, true
+	case emulator.KeyNumpadEnter:
+		return C.GHOSTTY_KEY_NUMPAD_ENTER, true
 	case emulator.KeyTab:
 		return C.GHOSTTY_KEY_TAB, true
 	case emulator.KeyEscape:

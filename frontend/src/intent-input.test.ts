@@ -148,6 +148,31 @@ describe('a physical key and committed text stay distinguishable', () => {
     ])
   })
 
+  // THE NUMERIC KEYPAD'S ENTER IS A KEY OF ITS OWN (nocx-1ebrs.32). A browser
+  // reports it as key "Enter" with code "NumpadEnter" — measured in both
+  // engines, and the reason the composer's `e.key === 'Enter'` was never the
+  // broken seam. The vocabulary below had no name for that CODE, so keyIntentOf
+  // returned null and the keydown was dropped here: the program received
+  // nothing, which is exactly "does nothing" and not "sends the wrong byte".
+  //
+  // It is NAMED rather than folded into "enter" because what the two keys are
+  // worth is the program's: once a program asks for the keypad's own sequences
+  // (application keypad mode, DECNKM) the keypad's Enter is SS3 M and Return is
+  // still CR, and that decision needs the key's identity. A client that mapped
+  // it to "enter" would send CR where the program asked for the keypad's own
+  // sequence (ADR-0066).
+  it('names the keypad’s Enter, rather than dropping it as an unknown key', () => {
+    const { input, intents } = makeInput()
+
+    input.element.dispatchEvent(keydown('Enter', { key: 'Enter' }))
+    input.element.dispatchEvent(keydown('NumpadEnter', { key: 'Enter' }))
+
+    expect(intents).toEqual([
+      { kind: 'key', payload: 'enter' },
+      { kind: 'key', payload: 'numpadenter' },
+    ])
+  })
+
   // A PUNCTUATION KEY IS TWO DIFFERENT THINGS depending on the chord. Bare, it
   // is the character the layout produced, and text carries it — sending "quote"
   // as a key would ask the runtime to derive an apostrophe from a key name it

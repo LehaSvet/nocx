@@ -36,6 +36,7 @@
  *  it. The payload's shape follows from the kind: a key name with modifier
  *  prefixes, committed UTF-8 text, a paste body, a pointer event in cells, or
  *  "in"/"out". */
+import { logKeydown } from './log'
 import { createTerminalInput } from './ui/terminal-input-element'
 
 export type SessionIntent =
@@ -72,6 +73,15 @@ const KEY_NAMES: Readonly<Record<string, string>> = {
   Delete: 'delete',
   Backspace: 'backspace',
   Enter: 'enter',
+  // THE KEYPAD'S ENTER IS ITS OWN KEY, not a second spelling of Return
+  // (nocx-1ebrs.32). To a program that has asked for nothing the two are the
+  // same CR, and to one that has asked for the keypad's own sequences
+  // (application keypad mode, DECNKM) both keys keep their identity: the keypad
+  // sends SS3 M where Return still sends CR. Folding them into one name here
+  // would be the CLIENT deciding bytes before the program's modes have been
+  // read, which is the defect ADR-0066 exists against — so the table says which
+  // key was pressed and the runtime says what it is worth.
+  NumpadEnter: 'numpadenter',
   Tab: 'tab',
   Escape: 'escape',
   Space: 'space',
@@ -347,6 +357,11 @@ export class IntentInput {
   }
 
   private onKeydown(e: KeyboardEvent): void {
+    // BEFORE ANY DECISION, what the browser actually reported (nocx-1ebrs.32):
+    // a key the pane never sees and a key it sees and drops look identical from
+    // outside — "does nothing" — and only this line tells them apart. It is the
+    // existing decision trace, so it is silent unless somebody asked for it.
+    logKeydown('grid', e)
     if (this.consume?.(e)) {
       // The pane's own chord: consumed here, prevented from reaching the
       // browser AND from becoming an intent — the caller just opened

@@ -10,12 +10,20 @@ package emulator
 // close.
 //
 // The set is the keys a program receives as events: the alphabet, the digits,
-// the punctuation of a US layout, the control pad, the arrow pad, and F1–F12.
-// Numpad keys, media keys, international keys and the modifier keys themselves
-// are deliberately out — the first three because the layout's own layer is a
-// client question and the last because a modifier alone is not a key event a
-// program is sent. The zero value is [KeyUnknown], so a Key that was never set
-// is a key no caller meant.
+// the punctuation of a US layout, the control pad, the arrow pad, F1–F12, and
+// the keypad's Enter. Media keys, international keys and the modifier keys
+// themselves are deliberately out — the first two because the layout's own
+// layer is a client question and the last because a modifier alone is not a key
+// event a program is sent. The zero value is [KeyUnknown], so a Key that was
+// never set is a key no caller meant.
+//
+// THE KEYPAD'S ENTER IS IN because it is not interchangeable with Return
+// (nocx-1ebrs.32): a program that asked for the keypad's own sequences
+// (application keypad mode, DECNKM, with mode 1035 off) receives SS3 M from it
+// and CR from Return, and a Key table that folded the two together could not
+// express that. The other keypad keys stay out for the reason the paragraph
+// above gives: they are characters on a US layout, and their characters carry
+// them.
 type Key uint16
 
 const (
@@ -33,6 +41,7 @@ const (
 	KeyDelete
 	KeyBackspace
 	KeyEnter
+	KeyNumpadEnter
 	KeyTab
 	KeyEscape
 	KeySpace
