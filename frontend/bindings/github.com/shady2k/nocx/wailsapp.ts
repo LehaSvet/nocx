@@ -36,7 +36,11 @@ export function ApplyUpdate(): $CancellablePromise<void> {
 /**
  * CheckForUpdate fetches and verifies the signed release manifest.
  * Returns an update description if a newer version is available,
- * or null when already current or on a dev build.
+ * null when already current or on a dev build, and the check's own
+ * error when the check failed. A failure is a state the renderer
+ * surfaces (About, nocx-1ebrs.36) — returning null for it made a dead
+ * check indistinguishable from "no update", which is how 0.6.0 never
+ * offered anybody 0.6.1.
  */
 export function CheckForUpdate(): $CancellablePromise<update$0.UpdateInfo | null> {
     return $Call.ByName("main.WailsApp.CheckForUpdate").then(($result: any) => {

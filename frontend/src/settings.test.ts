@@ -240,13 +240,14 @@ function hasSkillRow(root: HTMLElement, name: string): boolean {
 }
 
 /** SettingsContent with a skills store and nothing else — the store is the
- *  fifteenth positional dependency, which is worth writing down once. */
+ *  sixteenth positional dependency, which is worth writing down once. */
 function newSettingsContentWithSkills(
   profileClient: ProfileClient,
   skillsStore: SkillsStore,
 ): SettingsContent {
   return new SettingsContent(
     profileClient,
+    undefined,
     undefined,
     undefined,
     undefined,

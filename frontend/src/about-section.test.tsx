@@ -146,4 +146,36 @@ describe('AboutSection', () => {
     expect(card?.getAttribute('data-tone')).toBe('danger')
     expect(screen.getByText(/could not read this build's details/i)).toBeTruthy()
   })
+
+  it('says why the last update check failed, where a person goes to look (nocx-1ebrs.36)', async () => {
+    // A soft degrade must be visible in the product: 0.6.0's failed checks
+    // vanished in a silent catch, and the About page is where somebody who
+    // wonders "why has it not offered me 0.6.1?" goes to read.
+    render(() => (
+      <AboutSection
+        load={load(RELEASE)}
+        clipboard={fakeClipboard()}
+        updateCheckError={() => 'fetch manifest: unexpected status 500'}
+      />
+    ))
+
+    await waitFor(() =>
+      expect(
+        screen.getByText('update check failed: fetch manifest: unexpected status 500'),
+      ).toBeTruthy(),
+    )
+  })
+
+  it('makes no claim about the update check when it has not failed', async () => {
+    render(() => (
+      <AboutSection
+        load={load(RELEASE)}
+        clipboard={fakeClipboard()}
+        updateCheckError={() => null}
+      />
+    ))
+
+    await waitFor(() => expect(screen.getByText(RELEASE.version)).toBeTruthy())
+    expect(screen.queryByText(/update check failed/i)).toBeNull()
+  })
 })

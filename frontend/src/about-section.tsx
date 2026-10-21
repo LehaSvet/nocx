@@ -13,7 +13,7 @@
  * surface would then be the second owner of.
  */
 
-import { For, Show, createResource } from 'solid-js'
+import { For, Show, createResource, type Accessor } from 'solid-js'
 
 import { Badge, Button, PageSection, Stack, StatusCard } from './ui'
 import { showToast } from './ui/toast'
@@ -33,6 +33,12 @@ export interface AboutSectionProps {
    *  the page can be driven from a stub without one existing. */
   load: () => Promise<AppAbout>
   clipboard: ClipboardAccess
+  /** Why the last automatic update check failed, or null when it succeeded
+   *  or has not run (nocx-1ebrs.36). Absent in an embedding with no window
+   *  updater; the page then makes no claim either way. An accessor rather
+   *  than a string, because the 24-hour re-check can clear it after the
+   *  page is open. */
+  updateCheckError?: Accessor<string | null>
 }
 
 /** Every fact this page knows, in the order a bug report wants them: what it
@@ -100,6 +106,19 @@ export function AboutSection(props: AboutSectionProps) {
         <Show when={about()} fallback={<p class="ab-loading">Reading the build…</p>}>
           {(build) => (
             <Stack gap="loose">
+              {/* A soft degrade is visible in the product, not only in a log:
+                  this is the surface a person reads when they wonder why no
+                  update was offered. The state is live — the accessor, not a
+                  snapshot — so a re-check that succeeds clears the card. */}
+              <Show when={props.updateCheckError?.() ?? null}>
+                {(reason) => (
+                  <StatusCard
+                    tone="warning"
+                    title="Updates"
+                    description={`update check failed: ${reason()}`}
+                  />
+                )}
+              </Show>
               <div class="ab-identity">
                 {/* Decorative: the name is beside it in text, so an alt would
                     be read out twice by a screen reader. */}

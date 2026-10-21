@@ -170,7 +170,16 @@ type GitHubManifestFetcher struct {
 }
 
 // NewGitHubManifestFetcher returns a fetcher pointed at the nocx releases.
+//
+// A nil client means "no client was chosen", not "no client exists": it
+// falls back to the same 30-second-timeout default NewUpdater applies to
+// its download client. One package, one rule for the same missing input —
+// before nocx-1ebrs.36 the nil was stored instead and panicked on every
+// check, because main.go (the one production caller) passes nil.
 func NewGitHubManifestFetcher(client *http.Client) *GitHubManifestFetcher {
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
 	return &GitHubManifestFetcher{
 		BaseURL:    "https://github.com/shady2k/nocx/releases/latest/download",
 		HTTPClient: client,

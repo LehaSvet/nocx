@@ -1,5 +1,5 @@
 import './style.css'
-import { CheckForUpdate, ReportHealthy } from '../bindings/github.com/shady2k/nocx/wailsapp'
+import { ReportHealthy } from '../bindings/github.com/shady2k/nocx/wailsapp'
 import { render } from 'solid-js/web'
 import { Show, createSignal, untrack } from 'solid-js'
 import App from './App'
@@ -50,6 +50,7 @@ import { HorizontalTabStrip, VerticalTabStrip } from './tab-strip'
 import { SurfaceRegistry, SURFACE_ID_SETTINGS } from './surface-registry'
 import { apiSidebarAction, registerApiSurface } from './api'
 import { createApiWorkbenchServices, nativePickers } from './api/api-client'
+import { createUpdateCheck } from './update-check'
 import { mountUpdateNotice } from './update-notice'
 import { mountConnectionOverlay, type ConnectionOverlayState } from './ui/connection-overlay'
 import { IconButton } from './ui/icon-button'
@@ -694,6 +695,9 @@ function main(): void {
         historyStatusStore,
         aboutClient,
         clipboard,
+        // Why the last update check failed, or null — the About page's
+        // visible-degrade card (nocx-1ebrs.36).
+        updateCheck.error,
         policyClient,
         // The same source the workbench takes below: one panel, one
         // fallback, one place a store row can land (nocx-3o0ed.4).
@@ -1808,32 +1812,15 @@ function main(): void {
     }
   })
 
-  // Check for updates. Failures are silent (airplane mode, DNS hiccup, etc.).
-  void (async () => {
-    try {
-      const info = await CheckForUpdate()
-      if (info) {
-        notice.showAvailable(info.Version, info.NotesURL)
-      }
-    } catch {
-      // Silent — automatic check failures are not surfaced to the user.
-    }
-  })()
-
-  // Re-check every 24 hours.
+  // Check for updates, at startup and every 24 hours. One controller owns
+  // the outcome for both (nocx-1ebrs.36): an available update reaches the
+  // notice, a failure is kept with its cause — logged at warn and shown in
+  // Settings > About — instead of vanishing in a silent catch the way
+  // 0.6.0's did.
+  const updateCheck = createUpdateCheck(notice)
+  void updateCheck.run()
   const DAY_MS = 24 * 60 * 60 * 1000
-  setInterval(() => {
-    void (async () => {
-      try {
-        const info = await CheckForUpdate()
-        if (info) {
-          notice.showAvailable(info.Version, info.NotesURL)
-        }
-      } catch {
-        // Silent.
-      }
-    })()
-  }, DAY_MS)
+  setInterval(() => void updateCheck.run(), DAY_MS)
 
   // ── Vault dialogs ────────────────────────────────────────────────────
   // Mounted at the app level so they float over every page, not just Settings.
