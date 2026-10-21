@@ -138,12 +138,34 @@ func writeZshPluginFixtureHome(t *testing.T, wrapperDir string) string {
 		body.WriteString(". " + shellQuoteForSh(requireZshFixturePlugin(t, p)) + "\n")
 	}
 	// The fixture's ssh shim rides on PATH ahead of everything else; only
-	// the directory is quoted, so $PATH keeps expanding.
-	body.WriteString("export PATH=" + shellQuoteForSh(wrapperDir) + ":$PATH\n")
+	// the directory is quoted, so $PATH keeps expanding. A test that runs no
+	// ssh names no shim directory.
+	if wrapperDir != "" {
+		body.WriteString("export PATH=" + shellQuoteForSh(wrapperDir) + ":$PATH\n")
+	}
 	body.WriteString(`print -r -- "AGENT=${SSH_AUTH_SOCK-unset} WRAPPED=${widgets[accept-line]-none}"` + "\n")
 	home := t.TempDir()
 	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte(body.String()), 0o600); err != nil {
 		t.Fatalf("write fixture .zshrc: %v", err)
+	}
+	// A full-screen program with no dependencies: it enters the alternate
+	// screen, draws, and leaves when its stdin names the quit - the exact
+	// terminal shape of an editor session, the same bytes on every machine,
+	// so the full-screen tests never depend on what a runner happens to
+	// have installed (a pod without vi measured this).
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatalf("mkdir fixture bin: %v", err)
+	}
+	program := "#!/bin/sh\n" +
+		"printf '\\033[?1049h\\033[H\\033[2J'\n" +
+		"printf 'FIXTURE-SCREEN\\n'\n" +
+		"read -r __line\n" +
+		"printf '\\033[?1049l'\n"
+	// #nosec G306 — the program is executable by design (0700, root-owned
+	// test temp dir): it is run, never sourced.
+	if err := os.WriteFile(filepath.Join(bin, "fixture-alt"), []byte(program), 0o700); err != nil {
+		t.Fatalf("write fixture-alt: %v", err)
 	}
 	return home
 }
@@ -416,4 +438,259 @@ func TestLiveSshd_ZshParentBlockClosesWhenTheSshChildExits(t *testing.T) {
 	if a, _ := k.Attempt(sshAtt); a.State != lifecycle.AttemptCompleted {
 		t.Fatalf("the ssh attempt = %v after everything settled, want completed", a.State)
 	}
+}
+
+// THE OWNER'S SHAPE (a) OF nocx-1ebrs.39, IN A PANE WITH NO PRIOR SSH: a
+// plain full-screen program run at the first prompt of a fresh integrated
+// zsh - the widget-wrapping plugin stack loaded, nothing nested ever
+// requested - must end as an ordinary block: the shell's complete accepted
+// with the program's real exit status, and the prompt printed exactly ONCE
+// after the program's screen ends. Twice would be two prompt boundaries for
+// one command; inside a stale block would mean an interval that never
+// sealed. The coordinator asked this shape proved (or reproduced) on its
+// own, because the owner's vi case may never have had an ssh before it.
+// The program is the fixture's own (writeZshPluginFixtureHome): the
+// alternate-screen shape of an editor session, with no editor installed.
+func TestZshPane_FreshPaneViBlockClosesAndPromptsOnce(t *testing.T) {
+	fx := startLiveSshd(t, true) // the fixture's randomness and logger; no ssh runs here
+	logger := fx.log()
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Fatalf("zsh is required by this test and was not found on PATH; "+
+			"CI provisions it through scripts/install-zsh-ci.sh: %v", err)
+	}
+
+	k := lifecycle.New(lifecycle.Options{Rand: fx.rand})
+	pub := lifecyclepub.New(k)
+	facts := &factLog{}
+	pub.SetEmitter(facts)
+
+	kernelEnd, shellEnd := lifecyclePair(t)
+	adapter, err := lifecyclechannel.NewStream(logger, pub, kernelEnd)
+	if err != nil {
+		t.Fatalf("lifecycle adapter: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	addr := adapter.Launch()
+
+	home := writeZshPluginFixtureHome(t, "")
+	prevZDOTDIR, hadZDOTDIR := os.LookupEnv("ZDOTDIR")
+	_ = os.Unsetenv("ZDOTDIR")
+	t.Cleanup(func() {
+		if hadZDOTDIR {
+			_ = os.Setenv("ZDOTDIR", prevZDOTDIR)
+		}
+	})
+
+	opts := shellintegration.LaunchOptions{
+		SessionID:   assemblySID,
+		Enhanced:    true,
+		Capability:  addr.Capability,
+		Recovery:    addr.Recovery,
+		Lane:        string(addr.Lane),
+		Domain:      string(addr.Domain),
+		Epoch:       addr.Epoch,
+		LifecycleFD: 4,
+	}
+	// #nosec G204 — addr-resolved login shell; a real interactive zsh is the
+	// thing under test.
+	lo, err := shellintegration.LocalEnhancedLaunchInMemory(zsh, shellintegration.ShellZsh, opts)
+	if err != nil {
+		t.Fatalf("LocalEnhancedLaunchInMemory: %v", err)
+	}
+	// #nosec G204 — lo.Command is the resolved login shell; starting a real
+	// interactive shell is the only way to observe what a user gets.
+	cmd := exec.Command(lo.Command, lo.Args...)
+	cmd.ExtraFiles = append(append([]*os.File{}, lo.ExtraFiles...), shellEnd)
+	// The full environment minus this test's own noise (see the ssh fixture
+	// for why it is deduplicated, later value wins). The lifecycle read
+	// bound stays at the script's own default.
+	envSet := map[string]string{}
+	order := []string{}
+	set := func(kv string) {
+		key, _, _ := strings.Cut(kv, "=")
+		if _, seen := envSet[key]; !seen {
+			order = append(order, key)
+		}
+		envSet[key] = kv
+	}
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "NOCX_") || strings.HasPrefix(e, "__nocx_") || strings.HasPrefix(e, "ZDOTDIR=") {
+			continue
+		}
+		set(e)
+	}
+	set("HOME=" + home)
+	set("TMPDIR=" + t.TempDir())
+	set("TERM=xterm")
+	set("HISTFILE=/dev/null")
+	for _, kv := range lo.Env {
+		set(kv)
+	}
+	set("NOCX_SNAPSHOT_WAIT_MS=15000")
+	var env []string
+	for _, key := range order {
+		env = append(env, envSet[key])
+	}
+	cmd.Env = env
+
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		lo.Abort()
+		t.Fatalf("pty start: %v", err)
+	}
+	lo.Cleanup()
+	t.Cleanup(func() {
+		_ = ptmx.Close()
+		_ = cmd.Process.Kill()
+	})
+	var outMu sync.Mutex
+	var out []byte
+	paneOutput := func() string {
+		outMu.Lock()
+		defer outMu.Unlock()
+		return string(out)
+	}
+	go func() {
+		buf := make([]byte, 8192)
+		for {
+			n, rerr := ptmx.Read(buf)
+			if n > 0 {
+				outMu.Lock()
+				out = append(out, buf[:n]...)
+				outMu.Unlock()
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+
+	parentDomain := addr.Domain
+	lane := addr.Lane
+	waittest.WaitForTimeoutDetail(t, "the fresh pane integrated", 30*time.Second,
+		func() string { return fmt.Sprintf("facts=%d", len(facts.all)) },
+		func() bool {
+			d, ok := k.Domain(parentDomain)
+			return ok && d.State == lifecycle.DomainEstablished
+		})
+	// The first prompt is up, and the fixture really is the owner-shaped
+	// stack: the wrapped accept-line is the accept-line.
+	waittest.WaitForTimeoutDetail(t, "the first prompt with the plugin stack bound", 30*time.Second,
+		func() string { return paneOutput() },
+		func() bool {
+			o := paneOutput()
+			return strings.Contains(o, "WRAPPED=user:_zsh_highlight_widget_") &&
+				strings.Contains(o, "\x1b]133;A")
+		})
+
+	// The user runs a full-screen program and quits it. Every wait below
+	// ends on an observable state: the alternate screen entered, the
+	// program's screen drawn, the alternate screen left. The program is the
+	// fixture's own (writeZshPluginFixtureHome): the same alternate-screen
+	// shape an editor makes, with nothing installed.
+	if _, err := ptmx.Write([]byte("~/bin/fixture-alt\n")); err != nil {
+		t.Fatalf("type the full-screen program: %v", err)
+	}
+	waittest.WaitForTimeoutDetail(t, "the program entered the alternate screen", 30*time.Second,
+		func() string { return paneOutput() },
+		func() bool { return strings.Contains(paneOutput(), "\x1b[?1049h") })
+	waittest.WaitForTimeoutDetail(t, "the program drew its screen", 30*time.Second,
+		func() string { return paneOutput() },
+		func() bool {
+			o := paneOutput()
+			i := strings.LastIndex(o, "\x1b[?1049h")
+			return i >= 0 && strings.Contains(o[i:], "FIXTURE-SCREEN")
+		})
+	if _, err := ptmx.Write([]byte("q\n")); err != nil {
+		t.Fatalf("quit the program: %v", err)
+	}
+	waittest.WaitForTimeoutDetail(t, "the program left the alternate screen", 30*time.Second,
+		func() string { return paneOutput() },
+		func() bool {
+			o := paneOutput()
+			i := strings.LastIndex(o, "\x1b[?1049h")
+			return i >= 0 && strings.Contains(o[i:], "\x1b[?1049l")
+		})
+
+	// THE BLOCK CLOSES: the shell's complete for vi is accepted with the
+	// program's real exit status, and the lane is back at a ready prompt.
+	var viAtt lifecycle.AttemptID
+	waittest.WaitForTimeoutDetail(t, "the full-screen block completed with the program's own exit status", 30*time.Second,
+		func() string { return fmt.Sprintf("commands=%v", facts.commands(parentDomain)) },
+		func() bool {
+			id, ok := facts.attemptFor(parentDomain, "~/bin/fixture-alt")
+			if !ok {
+				return false
+			}
+			a, ok := k.Attempt(id)
+			if !ok {
+				return false
+			}
+			viAtt = id
+			return a.State == lifecycle.AttemptCompleted && a.ExitCode != nil && *a.ExitCode == 0
+		})
+	waittest.WaitForTimeoutDetail(t, "the lane back at a ready prompt", 15*time.Second,
+		func() string { return fmt.Sprintf("commands=%v", facts.commands(parentDomain)) },
+		func() bool {
+			st, err := k.State(lane)
+			return err == nil && st.Domain == parentDomain && st.Lifecycle == lifecycle.LifecyclePromptReady
+		})
+	// ...and zle is back: the boundary's own B mark after the prompt's A is
+	// the observable that the boundary finished rendering before the count.
+	waittest.WaitForTimeoutDetail(t, "the line editor re-armed after the boundary", 15*time.Second,
+		func() string { return paneOutput() },
+		func() bool {
+			o := paneOutput()
+			i := strings.LastIndex(o, "\x1b[?1049l")
+			return i >= 0 && strings.Contains(o[i:], "\x1b]133;B")
+		})
+
+	if _, open := k.OpenAttempt(parentDomain); open {
+		t.Fatal("a fresh pane left an open attempt behind the full-screen program")
+	}
+	if a, _ := k.Attempt(viAtt); a.State != lifecycle.AttemptCompleted {
+		t.Fatalf("the vi attempt = %v after everything settled, want completed", a.State)
+	}
+
+	// THE PROMPT PRINTED ONCE. The region after the program's screen ends
+	// holds exactly one boundary: one fence, one D, one A - not the two
+	// boundaries (two prompts, blank lines between) the owner's pane showed.
+	o := paneOutput()
+	i := strings.LastIndex(o, "\x1b[?1049l")
+	if i < 0 {
+		t.Fatal("no alternate-screen exit in the pane; nothing to count")
+	}
+	region := o[i:]
+	if got := strings.Count(region, "\x1b]1337;NOCX_FENCE;"); got != 1 {
+		t.Errorf("fences after the program quit = %d, want exactly 1 (one closed boundary): %q", got, printableEsc(region))
+	}
+	if got := strings.Count(region, "\x1b]133;D;"); got != 1 {
+		t.Errorf("end marks after the program quit = %d, want exactly 1: %q", got, printableEsc(region))
+	}
+	if got := strings.Count(region, "\x1b]133;A"); got != 1 {
+		t.Errorf("prompt marks after the program quit = %d, want exactly 1 (the prompt printed once): %q", got, printableEsc(region))
+	}
+}
+
+// printableEsc renders control bytes visibly for a failure message.
+func printableEsc(b string) string {
+	var sb strings.Builder
+	for _, r := range b {
+		switch {
+		case r == '\x1b':
+			sb.WriteString("<ESC>")
+		case r == '\a':
+			sb.WriteString("<BEL>")
+		case r == '\r':
+			sb.WriteString("<CR>")
+		case r == '\n':
+			sb.WriteString("<LF>")
+		case r < 0x20:
+			sb.WriteString(fmt.Sprintf("<%02x>", r))
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
 }
