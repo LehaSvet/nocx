@@ -311,6 +311,40 @@ jobs:
       - name: Test (release build tag)
         run: go test -race -count=1 -tags release ./internal/storage/...
 
+      # THE FIRST COMMAND'S BLOCK, ON THE OS IT FAILED ON (nocx-ruf5o). A
+      # 0.6.1 build on macOS never settled a fresh tab's first command — the
+      # block stayed Running with the prompt already printed inside it, and no
+      # lifecycle complete fact was ever minted. Both fixes in that family
+      # (#433, nocx-1ebrs.39; #447, nocx-1ebrs.50) predate this step: it holds
+      # the CURRENT tree to the behaviour they bought, in the two shapes the
+      # owner measured — an empty ZDOTDIR and the widget-wrapping plugin stack.
+      #
+      # WHY THIS JOB. A local pane runs the account's own login shell —
+      # panes.create chooses no shell — so a stock macOS runner, whose account
+      # logs in with zsh, is the only CI place the zsh shapes run end to end;
+      # the empty-ZDOTDIR variant also runs against bash in ci-e2e's
+      # containers, which is why this step runs one spec file and nothing more
+      # on the scarcest runner in this workflow.
+      #
+      # NO SECOND PROVISIONING. The plugin-stack variant reuses the pinned
+      # widget-wrapping plugins the Go composition test installed above: that
+      # step already wrote NOCX_ZSH_PLUGINS to $GITHUB_ENV, so the spec reads
+      # the same pinned checkouts rather than a bottle that moves.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - name: e2e (macOS, the first command completes)
+        run: |
+          npm ci --prefer-offline --no-audit --no-fund
+          (cd frontend && npm ci --prefer-offline --no-audit --no-fund)
+          npx playwright install chromium
+          PW_PROJECTS=chromium e2e/run-headless-macos.sh e2e/first-command-completes.spec.ts
+
   # ci-backend — the PORTABLE half of the Go suite on Linux, with and without a
   # Secret Service. Its OS-specific half is ci-linux, immediately below.
   #
