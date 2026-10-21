@@ -113,8 +113,9 @@ func main() {
 	// open a second one over the daemon's (ADR-0043 is the same argument one
 	// level up). So the opening pass asks the rule for its default with
 	// nothing saved, which is what it has always answered for a first launch,
-	// and restoring the real geometry moves to the client host with the rest
-	// of the native-window surface (design D3, A1.2).
+	// and the real geometry is restored once the renderer has read it from
+	// the coordinator — HostRestoreWindow below, the client-host shape of
+	// design D3 (ADR-0098).
 	opening := uistate.Restore(uistate.Window{}, nil)
 
 	window := shell.Window.NewWithOptions(application.WebviewWindowOptions{
@@ -163,6 +164,17 @@ func main() {
 	// the call works — see afterLaunch (nocx-1ebrs.6).
 	wailsApp.window = window
 	wailsApp.shell = &wailsShell{window: window, logger: logger}
+	// The window half of the UI-state document (ADR-0098). The shell owns
+	// the native window and the coordinator owns the document, so the shell
+	// restores from what the renderer relays and samples for the renderer to
+	// relay back — see HostRestoreWindow for the ordering that makes that
+	// safe.
+	wailsApp.geometry = newWindowGeometry(
+		wailsWindowProbe{window: window, screens: shell.Screen.GetAll},
+		wailsWindowPlacer{window: window},
+		func(sample uistate.Window) { window.EmitEvent(windowSampledEvent, sample) },
+		uistate.DefaultSampleInterval,
+	)
 
 	if err := shell.Run(); err != nil {
 		logger.Error("application error", "error", err)
@@ -351,6 +363,12 @@ type WailsApp struct {
 	// would not start it is still built — every raise then fails loudly per
 	// call, which is the contract that predates the split.
 	attention *wailsadapter.Host
+
+	// geometry owns this window's half of the UI-state document's window
+	// record (ADR-0098): applying the saved placement once the renderer has
+	// read it from the coordinator, and sampling the live window for the
+	// renderer to relay back. nil until main has created the window.
+	geometry *windowGeometry
 }
 
 // Log logs a message from the frontend.
@@ -574,6 +592,9 @@ func (w *WailsApp) resolveNotificationPermission(host *wailsadapter.Host) {
 //
 //wails:ignore
 func (w *WailsApp) ServiceShutdown() error {
+	if w.geometry != nil {
+		w.geometry.stop()
+	}
 	if w.notifications != nil {
 		return w.notifications.ServiceShutdown()
 	}
@@ -1095,6 +1116,32 @@ func (w *WailsApp) HostFocusWindow() error {
 		return fmt.Errorf("window %q is gone", mainWindowName)
 	}
 	w.window.Focus()
+	return nil
+}
+
+// HostRestoreWindow puts the window back where the person left it, from the
+// geometry the renderer just read over the control plane (ADR-0098).
+//
+// THE SHELL PERFORMS AND DECIDES NOTHING: what the saved geometry means on
+// these displays — the clamp, whether the position can be trusted, which
+// state to re-enter — is uistate.Restore's, applied through uistate.Apply.
+// The renderer calls this once at bootstrap, after the backend has answered
+// uistate.window.get; the sampler starts here and only here, so a launch can
+// never record its own opening over the geometry being restored. A renderer
+// reload calls it again, and the second call is deliberately inert.
+func (w *WailsApp) HostRestoreWindow(width, height, x, y int, maximised, fullScreen bool, displays string) error {
+	if w.geometry == nil {
+		return fmt.Errorf("window %q is gone", mainWindowName)
+	}
+	w.geometry.restore(uistate.Window{
+		Width:      width,
+		Height:     height,
+		X:          x,
+		Y:          y,
+		Maximised:  maximised,
+		FullScreen: fullScreen,
+		Displays:   displays,
+	})
 	return nil
 }
 
