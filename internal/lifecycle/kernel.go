@@ -402,8 +402,41 @@ func (k *Kernel) TransportLost(t TransportID) error {
 		}
 	}
 	for lane := range affected {
-		if ls, ok := k.lanes[lane]; ok {
+		ls, ok := k.lanes[lane]
+		if !ok {
+			continue
+		}
+		// The lane is lost only when nothing live remains on it. A lane can
+		// lose ONE domain while its parent survives on another transport —
+		// the ssh child whose forwarded channel dies after the parent
+		// re-activated (nocx-1ebrs.39) — and a blanket Lost would stomp the
+		// live parent's own lifecycle a moment after it claimed the lane.
+		// What remains decides: no live domain at all is a lost lane; a
+		// live top re-derives the state its own events would have set.
+		top := ls.top()
+		if top == "" {
 			k.setLifecycle(ls, LifecycleLost, "", "")
+			continue
+		}
+		d, ok := k.registry.Lookup(top)
+		if !ok {
+			k.setLifecycle(ls, LifecycleLost, "", "")
+			continue
+		}
+		switch d.State {
+		case DomainEstablished:
+			if open := k.openAttemptFor(d.ID); open != nil {
+				k.setLifecycle(ls, LifecycleRunning, d.ID, open.ID)
+			} else {
+				k.setLifecycle(ls, LifecyclePromptReady, d.ID, "")
+			}
+		case DomainSuspended:
+			// A suspended parent with no active child: the lane has no
+			// active domain — the same state applyClose leaves (§9).
+			k.setLifecycle(ls, LifecycleNative, "", "")
+		default:
+			// Pending and Desynchronized tops publish their own states; a
+			// loss elsewhere on the transport does not speak for them.
 		}
 	}
 	return nil
@@ -914,8 +947,39 @@ func (k *Kernel) applyActivate(d *Domain, ls *laneState, env Envelope) ([]Outbou
 	if d.State != DomainSuspended {
 		return nil, ErrNotSuspended
 	}
-	if ls.top() != d.ID {
-		return nil, ErrDomainNotTop // a live child is above; close it first
+	// Everything above the activating domain must be its own descendant
+	// (the chain is linear — protocol §9, one child at a time), and its
+	// presence is not a refusal: it is a child whose interactive session
+	// ended without the kernel having heard of it yet. The parent shell's
+	// widget sends domain_activated the moment the nested child's process
+	// returns (docs/lifecycle-protocol.md §9: "The parent resumes at its
+	// next prompt boundary"), and the child's own end reaches the kernel by
+	// a DIFFERENT channel — a forwarded transport's EOF, or a goodbye frame
+	// the dying shell may never send (nocx-1ebrs.39: a zsh far-shell has no
+	// exit-time domain_closed, and the ssh child's teardown races the
+	// parent's local-channel activation on every exit). The parent is the
+	// only witness that cannot be wrong about the child process having
+	// returned: its widget physically waited for it. Refusing the frame
+	// would strand the lane suspended forever — the shell never re-sends
+	// the activation, and every later frame of the pane is rejected under
+	// it, which is the shipped "a block never completes" defect.
+	for ls.top() != d.ID {
+		topID := ls.top()
+		top, ok := k.registry.Lookup(topID)
+		if !ok || !isDescendantOf(k, top, d.ID, len(ls.stack)) {
+			// A stack entry the activator did not own is a corruption this
+			// frame must not paper over; the old refusal stands for it.
+			return nil, ErrDomainNotTop
+		}
+		// Revoke exactly as its own goodbye would have (applyClose's
+		// effects, without the lifecycle write — the activation below owns
+		// the lane's next state): the interactive session is over, its open
+		// attempts can never complete, and a block that can never end must
+		// not exist.
+		top.State = DomainClosed
+		top.refreshRequest = nil
+		k.unknownOpenAttempts(top.ID)
+		k.removeFromStack(ls, top.ID)
 	}
 	d.State = DomainEstablished
 	if open := k.openAttemptFor(d.ID); open != nil {
@@ -924,6 +988,29 @@ func (k *Kernel) applyActivate(d *Domain, ls *laneState, env Envelope) ([]Outbou
 		k.setLifecycle(ls, LifecyclePromptReady, d.ID, "")
 	}
 	return nil, nil
+}
+
+// isDescendantOf walks the parent chain from d upward and answers whether it
+// reaches ancestor within bound steps. The bound is the lane's own stack
+// depth: the chain cannot be longer than the stack it produced, and a cycle
+// — unproducible through RequestDomain, which mints only under a suspended
+// top — must terminate the walk rather than spin.
+func isDescendantOf(k *Kernel, d *Domain, ancestor DomainID, bound int) bool {
+	cur := d
+	for i := 0; i < bound; i++ {
+		if cur.Parent == nil {
+			return false
+		}
+		if *cur.Parent == ancestor {
+			return true
+		}
+		next, ok := k.registry.Lookup(*cur.Parent)
+		if !ok {
+			return false
+		}
+		cur = next
+	}
+	return false
 }
 
 func (k *Kernel) applyClose(d *Domain, ls *laneState, env Envelope) ([]Outbound, error) {

@@ -141,6 +141,16 @@ func (t *outputTap) takeLine() (string, bool, error) {
 		t.buf = t.buf[next:]
 		return line, true, nil
 	}
+	// A line editor's own redraw and partial-line echo precede a loader's
+	// token with CARRIAGE-RETURN endings and no newline at all, and a
+	// positional parser can never advance past them - the token behind them
+	// starved this reader to its deadline on CI (nocx-1ebrs.39). The next
+	// line can only begin at its own OSC opening; the bytes before it are
+	// the terminal program's drawing, and this tap's copy of them is the
+	// only copy being dropped.
+	if start, ok := bootstrapstream.NextLineStart(t.buf); ok && start > 0 {
+		t.buf = t.buf[start:]
+	}
 	if len(t.buf) > maxWindowLine {
 		// Not our protocol. The bytes are the renderer's and it already
 		// has them; what this drops is only the tap's copy.

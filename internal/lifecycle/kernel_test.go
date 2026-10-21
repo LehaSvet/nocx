@@ -1122,13 +1122,20 @@ func TestActivateAndCloseOrdering(t *testing.T) {
 	mustIngest(t, k, "T", env("L", hA, 3, suspendEvt()))
 	hB := establish(t, k, "T", p, "L", &hA.Domain)
 
-	// The parent cannot be activated while the child is on top.
-	if _, err := k.Ingest("T", env("L", hA, 4, activateEvt())); !errors.Is(err, ErrDomainNotTop) {
-		t.Fatalf("activation under a live child must be rejected, got %v", err)
+	// The parent's activation under a child that never said goodbye is the
+	// shipped ssh-exit ordering (nocx-1ebrs.39): the authenticated
+	// activation is the parent's own witness that the child's interactive
+	// session ended, so it revokes the child (open attempts unknown) and
+	// reclaims the lane rather than stranding it suspended.
+	mustIngest(t, k, "T", env("L", hA, 4, activateEvt()))
+	if dB, _ := k.Domain(hB.Domain); dB.State != DomainClosed {
+		t.Fatalf("the child the activation superseded = %v, want closed", dB.State)
 	}
-	// The child closes; closing it again is rejected.
-	mustIngest(t, k, "T", env("L", hB, 2, closeEvt()))
-	if _, err := k.Ingest("T", env("L", hB, 3, closeEvt())); !errors.Is(err, ErrDomainNotLive) {
+	if st := mustState(t, k, "L"); st.Domain != hA.Domain {
+		t.Fatalf("after the activation the lane belongs to %s, want %s", st.Domain, hA.Domain)
+	}
+	// Closing the revoked child again is rejected: it ended once.
+	if _, err := k.Ingest("T", env("L", hB, 2, closeEvt())); !errors.Is(err, ErrDomainNotLive) {
 		t.Fatalf("closing a closed domain must be rejected, got %v", err)
 	}
 }

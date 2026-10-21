@@ -74,17 +74,33 @@ const assemblySID = "aabbccddeeff00112233445566778899"
 // does not exist yet at that point, so the window waits for it.
 
 type harnessWindow struct {
-	mu       sync.Mutex
-	buf      []byte
-	sig      chan struct{}
-	ptmx     *os.File
-	attached chan struct{}
-	written  []byte
-	closed   bool
+	mu        sync.Mutex
+	buf       []byte
+	sig       chan struct{}
+	ptmx      *os.File
+	attached  chan struct{}
+	written   []byte
+	closed    bool
+	recording bool
 }
 
 func newHarnessWindow() *harnessWindow {
 	return &harnessWindow{sig: make(chan struct{}, 1), attached: make(chan struct{})}
+}
+
+// recordFromArm makes the window's buffer START at the moment the delivery
+// arms (OpenBootstrapWindow), which is the production window's own shape:
+// it sees the pane from the instant the typed delivery exists, never from
+// the pane's first byte. A buffer that begins mid-prompt is a buffer no
+// line can ever complete in — LineEnd splits at a leading OSC or a newline,
+// and the bytes before the delivery existed are neither (measured,
+// nocx-1ebrs.39's fixture: the loader's readiness token sat behind the
+// prompt's own bytes, unread, while the far side waited for frame 1).
+func (w *harnessWindow) recordFromArm() {
+	w.mu.Lock()
+	w.recording = true
+	w.buf = nil
+	w.mu.Unlock()
 }
 
 // attach hands the window the terminal, once the composed line is running.
@@ -109,6 +125,8 @@ func (w *harnessWindow) feed(p []byte) {
 
 func (w *harnessWindow) ReadLine(ctx context.Context, timeout time.Duration) (string, error) {
 	deadline := time.After(timeout)
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
 	for {
 		w.mu.Lock()
 		// The protocol's own line shape, from the ONE owner the production
@@ -122,15 +140,35 @@ func (w *harnessWindow) ReadLine(ctx context.Context, timeout time.Duration) (st
 			w.mu.Unlock()
 			return line, nil
 		}
+		// The same stale-prefix trim the session window makes: a line
+		// editor's redraw and partial-line echo before a loader's token have
+		// CARRIAGE-RETURN endings and no newline, and a positional parser
+		// starves behind them (nocx-1ebrs.39, measured on CI).
+		if start, ok := bootstrapstream.NextLineStart(w.buf); ok && start > 0 {
+			w.buf = w.buf[start:]
+		}
 		closed := w.closed
 		w.mu.Unlock()
 		if closed {
 			return "", io.EOF
 		}
+		// The tick is a POLL BACKSTOP, not a schedule: feed's signal slot is
+		// one deep, so a byte batch that lands while a previous signal is
+		// still queued posts no tick of its own — and a complete line could
+		// then sit in the buffer behind a consumed tick forever (measured in
+		// nocx-1ebrs.39's fixture: the loader's readiness token unread while
+		// the far side waited for frame 1). Re-parse on the tick; every wait
+		// still ends on the deadline or the context, never on a duration.
 		select {
 		case <-w.sig:
+		case <-tick.C:
 		case <-deadline:
-			return "", errors.New("harness window: deadline")
+			// The shared sentinel, not an ad-hoc error: the bootstrap
+			// reader's caller classifies on bootstrapstream.ErrDeadline
+			// ("the far side is waiting for bytes that are not coming" —
+			// the abort frame's branch), and an ad-hoc error here reads as
+			// a stream that ENDED, which skips that branch entirely.
+			return "", fmt.Errorf("%w: harness window deadline", bootstrapstream.ErrDeadline)
 		case <-ctx.Done():
 			return "", ctx.Err()
 		}
@@ -198,6 +236,7 @@ type harnessTerminals struct {
 }
 
 func (h harnessTerminals) OpenBootstrapWindow(session.ID) (session.BootstrapWindow, error) {
+	h.win.recordFromArm()
 	return h.win, nil
 }
 
@@ -920,10 +959,16 @@ func TestLiveSshd_SSHChildAssembly_ExitFreezesTheChildBlockAndCompletesTheParent
 	// own completion. Its block can never receive one — but it must still
 	// END, with a stated unknown rather than a running dot that never stops.
 	proc.typeExit()
-	waittest.WaitForTimeout(t, "child ended and left the stack", 30*time.Second, func() bool {
-		st := h.domainState(h.child)
-		return st == lifecycle.DomainClosed || st == lifecycle.DomainLost
-	})
+	// THE SHIPPED ORDERING (nocx-1ebrs.39), not the hand-driven one this
+	// test used to wait for: the parent shell's widget sends
+	// domain_activated the moment the ssh client returns, racing the child's
+	// forwarded-channel teardown across the two transports. The old flow
+	// waited for the child to end FIRST, which is an order the shell cannot
+	// observe and the shipped script does not run; keeping it would guard an
+	// assembly the product never performs. From here both endings — the
+	// child's own goodbye or transport loss landing first, or the parent's
+	// activation landing first — must converge on the same settled state.
+	h.activateParent()
 	// Whether `exit` ever becomes an ATTEMPT is a race the product cannot
 	// win and must not depend on: the shell emits its start frame and then
 	// destroys itself, so the frame reaches the kernel or dies with the
@@ -954,10 +999,9 @@ func TestLiveSshd_SSHChildAssembly_ExitFreezesTheChildBlockAndCompletesTheParent
 			"the child published: %v", h.facts.commands(h.child))
 	}
 
-	// The parent comes back and completes its own block with the status the
+	// The parent is back and completes its own block with the status the
 	// ssh client really exited with — the local D of the ssh line, which the
 	// child's departure neither supplies nor invalidates.
-	h.activateParent()
 	waittest.WaitForTimeout(t, "parent re-established and owning the lane", 10*time.Second, func() bool {
 		if st := h.domainState(h.parent); st != lifecycle.DomainEstablished {
 			return false
