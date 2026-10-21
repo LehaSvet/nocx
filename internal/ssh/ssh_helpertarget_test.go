@@ -899,3 +899,145 @@ func TestResolveTargetDoesNotRekeyAProfileThatBindsAPassword(t *testing.T) {
 		t.Fatalf("credential = %q, want %q", got, want)
 	}
 }
+
+// ── the rung that follows discovered keys (nocx-1ebrs.44) ─────────────────
+//
+// A connection that names NO credential and NO mode is the ordinary "connect
+// with my keys" — and on a host that wants a password, ssh itself prompts
+// after the keys fail. The helper wire carried ONE auth kind per dial, so the
+// same host from the connect UI ended in "no supported methods remain" with
+// no way to ask. The destination now carries the prompt rung beside its keys.
+
+// TestResolveTargetFollowsDiscoveredKeysWithThePromptRung: auto mode, keys
+// discovered, a person available — the destination offers the key queue AND
+// the rung after it.
+func TestResolveTargetFollowsDiscoveredKeysWithThePromptRung(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+
+	keyPath, signer := identityFileKey(t, "id_ed25519")
+	rc := resolvingHostFor(t, "prod.example.com", keyPath)
+	asker := &countingAsker{}
+
+	target, err := rc.ResolveTarget(context.Background(), "prod.example.com",
+		WithUser("deploy"), WithPasswordRequester(asker))
+	if err != nil {
+		t.Fatalf("ResolveTarget: %v", err)
+	}
+	if target.Auth != DialAuthKey {
+		t.Fatalf("auth = %q, want %q: the keys are still what is offered first", target.Auth, DialAuthKey)
+	}
+	if !target.PromptAfterKeys {
+		t.Fatal("the destination carries no rung after its keys: a host that rejects them ends in 'no supported methods remain' with no way to ask (nocx-1ebrs.44)")
+	}
+	// Resolution ASKS nobody: the rung is an offer the helper makes when the
+	// server challenges, not a dialog raised before the dial.
+	if asker.asks != 0 {
+		t.Fatalf("resolution raised %d ask(s); the prompt belongs to the handshake, not to ResolveTarget", asker.asks)
+	}
+	_ = signer
+}
+
+// TestResolveTargetFollowsDiscoveredKeysWithNoRungWhenNobodyCanAnswer is the
+// probe's half of the same arm: the requester taken off, the keys offered
+// alone. A probe answers a question the product asked itself and may not stop
+// to ask a person.
+func TestResolveTargetFollowsDiscoveredKeysWithNoRungWhenNobodyCanAnswer(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+
+	keyPath, _ := identityFileKey(t, "id_ed25519")
+	rc := resolvingHostFor(t, "prod.example.com", keyPath)
+
+	target, err := rc.ResolveTarget(context.Background(), "prod.example.com",
+		WithUser("deploy"), WithoutPasswordPrompt())
+	if err != nil {
+		t.Fatalf("ResolveTarget: %v", err)
+	}
+	if target.Auth != DialAuthKey {
+		t.Fatalf("auth = %q, want %q", target.Auth, DialAuthKey)
+	}
+	if target.PromptAfterKeys {
+		t.Fatal("a probe's destination offers the prompt rung after its keys; a probe may not raise a dialog")
+	}
+}
+
+// TestResolveTargetExplicitPublicKeyModeOffersNoRungAfterTheKeys: a
+// connection set to publicKey means keys — the person chose a method, and a
+// password prompt after it would be the connection overriding its own mode.
+func TestResolveTargetExplicitPublicKeyModeOffersNoRungAfterTheKeys(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+
+	keyPath, _ := identityFileKey(t, "id_ed25519")
+	rc := resolvingHostFor(t, "prod.example.com", keyPath)
+	asker := &countingAsker{}
+
+	target, err := rc.ResolveTarget(context.Background(), "prod.example.com",
+		WithUser("deploy"), WithAuthMode("publicKey"), WithPasswordRequester(asker))
+	if err != nil {
+		t.Fatalf("ResolveTarget: %v", err)
+	}
+	if target.Auth != DialAuthKey || target.PromptAfterKeys {
+		t.Fatalf("auth = %q promptAfterKeys = %v, want keys with no rung after them: the connection named publicKey",
+			target.Auth, target.PromptAfterKeys)
+	}
+}
+
+// TestResolveTargetInteractiveCarriesNoRungAfterKeys covers the wire's other
+// direction: the interactive identity and the password identity name no keys,
+// so the fallback flag has nothing to follow and must not travel.
+func TestResolveTargetInteractiveCarriesNoRungAfterKeys(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	rc := targetTestClient(t)
+	asker := &countingAsker{}
+
+	target, err := rc.ResolveTarget(context.Background(), "prod.example.com",
+		WithUser("deploy"), WithPasswordRequester(asker))
+	if err != nil {
+		var noMethod *ErrNoAuthMethod
+		if errors.As(err, &noMethod) {
+			return // no keys on this machine and none configured: the refusal is the answer
+		}
+		t.Fatalf("ResolveTarget: %v", err)
+	}
+	if target.Auth == DialAuthKey {
+		t.Skip("this machine discovered keys; the interactive arm is not the case under test here")
+	}
+	if target.PromptAfterKeys {
+		t.Fatalf("auth %q carries the after-keys flag; there are no keys for it to follow", target.Auth)
+	}
+}
+
+// TestWireDestinationCarriesTheRungBesideItsKeys: the flag crosses the wire
+// conversion ONCE, on a key identity, and is absent from the kinds that name
+// no keys.
+func TestWireDestinationCarriesTheRungBesideItsKeys(t *testing.T) {
+	keyPath, _ := identityFileKey(t, "id_ed25519")
+	rc := resolvingHostFor(t, "prod.example.com", keyPath)
+	asker := &countingAsker{}
+
+	target, err := rc.ResolveTarget(context.Background(), "prod.example.com",
+		WithUser("deploy"), WithPasswordRequester(asker))
+	if err != nil {
+		t.Fatalf("ResolveTarget: %v", err)
+	}
+	d := WireDestination(target)
+	if !d.Identity.PromptAfterKeys {
+		t.Fatal("the wire identity carries no promptAfterKeys: the helper would offer the keys alone and stop")
+	}
+
+	// And the interactive kind, resolved where nothing else exists, carries
+	// no flag — the schema forbids it there, and so does the conversion.
+	locked := lockedIdentityFile(t, "id_ed25519")
+	rc2 := resolvingHostFor(t, "prod.example.com", locked.path)
+	target2, err := rc2.ResolveTarget(context.Background(), "prod.example.com",
+		WithUser("deploy"), WithPasswordRequester(asker))
+	if err != nil {
+		t.Fatalf("ResolveTarget (locked key): %v", err)
+	}
+	if target2.Auth != DialAuthInteractive {
+		t.Fatalf("auth = %q, want %q: a locked key falls through and the rung stands alone", target2.Auth, DialAuthInteractive)
+	}
+	d2 := WireDestination(target2)
+	if d2.Identity.PromptAfterKeys {
+		t.Fatal("the interactive identity carries promptAfterKeys; the schema refuses it there and so should the conversion")
+	}
+}

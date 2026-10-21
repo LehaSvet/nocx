@@ -358,6 +358,12 @@ func gosshFingerprint(key testKey) string {
 	return gossh.FingerprintSHA256(key.signer.PublicKey())
 }
 
+// gosshFingerprintString is the same fingerprint for a signer the test holds
+// directly (rather than a testKey wrapper).
+func gosshFingerprintString(signer gossh.Signer) string {
+	return gossh.FingerprintSHA256(signer.PublicKey())
+}
+
 // TestAProbeAnswersAServersKeyboardInteractiveChallengeFromTheCoordinator is the
 // prompt rung's success: the server asks its own question, the helper relays it
 // to the coordinator, and the answer somebody gave is what authenticates.
@@ -673,5 +679,170 @@ func TestAKeyIdentityThisHelperCannotOfferIsRefused(t *testing.T) {
 				t.Fatalf("the server was offered %q by a probe that should never have dialed", passwords)
 			}
 		})
+	}
+}
+
+// ── the rung that follows the keys (nocx-1ebrs.44) ────────────────────────
+//
+// A key identity whose queue the server rejects used to end the handshake:
+// one auth kind per dial, and "no supported methods remain" was the whole
+// answer a password-only host gave a connection that arrived with its
+// discovered keys. The flag beside the queue offers the prompt rung after
+// the keys — ssh's own order, nothing stored repeated — and these tests are
+// its acceptance and its refusal halves.
+
+// keyThenPromptParams is keyProbeParams with the flag set, which is what the
+// coordinator's discovery arm resolves for a connection that named no
+// credential in auto mode.
+func keyThenPromptParams(t *testing.T, f *fixture, offer gossh.Signer) proto.ProbeParams {
+	t.Helper()
+	p := keyProbeParams(t, f, offer)
+	p.Destination.Identity.PromptAfterKeys = true
+	return p
+}
+
+// TestAProbeWhoseKeysAreRejectedAuthenticatesThroughThePromptRung is the
+// acceptance half: keys offered and refused, then the interactive rung asks
+// the coordinator and the answer the person gave authenticates. RED before
+// the flag — the same probe was `rejected`, keys only.
+func TestAProbeWhoseKeysAreRejectedAuthenticatesThroughThePromptRung(t *testing.T) {
+	const answer = "the password the person typed"
+	accepted := newTestKey(t)
+	offered := newTestKey(t)
+	// A host that accepts a key that is not the one offered, and takes a
+	// keyboard-interactive answer: the exact shape of the defect, one layer down.
+	f := newFixture(t, "", accepted.signer)
+	f.mu.Lock()
+	f.kbdPassword = answer
+	f.mu.Unlock()
+	coord := &coordinator{
+		signer:        offered.signer,
+		promptAnswers: []string{answer},
+		verdict:       proto.HostKeyTrusted,
+		fingerprint:   f.hostKeyFingerprint(),
+	}
+	stand := newStand(t, coord)
+
+	result, err := stand.probe(t, keyThenPromptParams(t, f, offered.signer))
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if result.Outcome != proto.ProbeAccepted {
+		t.Fatalf("outcome = %q (%s), want accepted: after the keys are rejected the person still gets to answer",
+			result.Outcome, result.Detail)
+	}
+	// The keys were offered first, and the person's answer reached the server.
+	_, fingerprints := f.authAttempts()
+	if len(fingerprints) != 1 || fingerprints[0] != gosshFingerprintString(offered.signer) {
+		t.Fatalf("the server was offered %v, want exactly the queue's key first", fingerprints)
+	}
+	asked := coord.promptsAsked()
+	if len(asked) != 1 {
+		t.Fatalf("the coordinator relayed %d keyboard-interactive challenge(s), want 1", len(asked))
+	}
+	if !contains(coord.asked(), proto.OpPrompt) {
+		t.Fatalf("reverse ops = %v, want the prompt relay among them", coord.asked())
+	}
+}
+
+// TestAProbeWhoseKeysAreRejectedAnswersABarePasswordChallenge is the same
+// acceptance with the server speaking `password` only: keyboard-interactive
+// refused, so the rung's second method asks through the coordinator's
+// connection-password ask (OpPasswordPrompt) — the path an unsaved host's
+// dialog rides.
+func TestAProbeWhoseKeysAreRejectedAnswersABarePasswordChallenge(t *testing.T) {
+	const answer = "the bare-password answer"
+	accepted := newTestKey(t)
+	offered := newTestKey(t)
+	// password arms the fixture's own PasswordCallback; kbdPassword stays
+	// empty, which is the fixture's spelling of "this host offers no
+	// keyboard-interactive".
+	f := newFixture(t, answer, accepted.signer)
+	coord := &coordinator{
+		signer:      offered.signer,
+		password:    answer,
+		verdict:     proto.HostKeyTrusted,
+		fingerprint: f.hostKeyFingerprint(),
+	}
+	stand := newStand(t, coord)
+
+	result, err := stand.probe(t, keyThenPromptParams(t, f, offered.signer))
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if result.Outcome != proto.ProbeAccepted {
+		t.Fatalf("outcome = %q (%s), want accepted through the bare password challenge",
+			result.Outcome, result.Detail)
+	}
+	passwords, _ := f.authAttempts()
+	if len(passwords) != 1 || passwords[0] != answer {
+		t.Fatalf("the server saw %q, want the answer that came through OpPasswordPrompt", passwords)
+	}
+	if len(coord.passwordPrompts) != 1 {
+		t.Fatalf("the coordinator answered %d password-prompt ask(s), want 1", len(coord.passwordPrompts))
+	}
+}
+
+// TestAProbeWithWorkingKeysNeverRaisesTheRung: the fallback is a FALLBACK.
+// A host that accepts one of the offered keys authenticates on the keys, and
+// the person is asked nothing — the rung exists for the server that says no,
+// not for the one that says yes.
+func TestAProbeWithWorkingKeysNeverRaisesTheRung(t *testing.T) {
+	key := newTestKey(t)
+	f := newFixture(t, "", key.signer)
+	f.mu.Lock()
+	f.kbdPassword = "an answer nobody should be asked for"
+	f.mu.Unlock()
+	coord := &coordinator{
+		signer:        key.signer,
+		promptAnswers: []string{"nobody"},
+		verdict:       proto.HostKeyTrusted,
+		fingerprint:   f.hostKeyFingerprint(),
+	}
+	stand := newStand(t, coord)
+
+	result, err := stand.probe(t, keyThenPromptParams(t, f, key.signer))
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if result.Outcome != proto.ProbeAccepted {
+		t.Fatalf("outcome = %q (%s), want accepted on the keys alone", result.Outcome, result.Detail)
+	}
+	for _, op := range coord.asked() {
+		if op == proto.OpPrompt || op == proto.OpPasswordPrompt {
+			t.Fatalf("the coordinator was asked %s; a host that accepted the keys must not prompt", op)
+		}
+	}
+}
+
+// TestAProbeWithKeysAndNoFlagStopsAtTheKeys is the paired refusal that names
+// what the flag is FOR: the same destination without the flag, against the
+// same host, is rejected — today's behaviour, kept for every caller that
+// does not ask for the rung (a probe, an explicit publicKey connection, and
+// every older generation still holding sessions).
+func TestAProbeWithKeysAndNoFlagStopsAtTheKeys(t *testing.T) {
+	accepted := newTestKey(t)
+	offered := newTestKey(t)
+	f := newFixture(t, "", accepted.signer)
+	f.mu.Lock()
+	f.kbdPassword = "the answer the flag would have carried"
+	f.mu.Unlock()
+	coord := &coordinator{
+		signer:        offered.signer,
+		promptAnswers: []string{"unused"},
+		verdict:       proto.HostKeyTrusted,
+		fingerprint:   f.hostKeyFingerprint(),
+	}
+	stand := newStand(t, coord)
+
+	result, err := stand.probe(t, keyProbeParams(t, f, offered.signer))
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if result.Outcome != proto.ProbeRejected {
+		t.Fatalf("outcome = %q (%s), want rejected: without the flag the keys are the whole dial", result.Outcome, result.Detail)
+	}
+	if len(coord.promptsAsked()) != 0 {
+		t.Fatal("the coordinator was asked a prompt without the flag; the dial stopped at the keys, as it should")
 	}
 }

@@ -191,6 +191,17 @@ type sessionOpener struct {
 	// (nocx-xn63t.1.4). Nil is the ordinary shape for a server nobody wired
 	// a note into; the open neither fails nor slows for its absence.
 	paneOpened paneOpenedNote
+	// passwordAsk raises the connection-password dialog for a DIRECT-HOST
+	// open (nocx-1ebrs.44). A saved profile's config carries the connection
+	// resolver's own asker (AskerFor, remember included); a hand-typed host
+	// has no profile for a remember to bind to, so its ask is the bare wire
+	// ask — the same one the resolver wraps — and it is use-once by
+	// construction: the renderer shows no remember checkbox for an ask that
+	// names no connection (ConnectionPasswordPrompt's own rule), so nothing
+	// here decides storage and nothing here can silently drop a "remember".
+	// Nil keeps the old shape — a direct-host dial with no rung to offer —
+	// which is what every server and test built before this seam had.
+	passwordAsk ssh.ConnectionPasswordRequester
 }
 
 // paneOpenedNote is what the open path tells the composition root about a
@@ -496,6 +507,18 @@ func (o *sessionOpener) resolveRemote(ctx context.Context, svc capability.OpenSe
 			// leaves the destination at auto, exactly as before this field
 			// existed.
 			DesiredMode: spec.DesiredMode,
+			// THE PROMPT RUNG REACHES AN UNSAVED HOST TOO (nocx-1ebrs.44).
+			// Without this line the helper's resolution saw a password-capable
+			// connection with nothing to offer: discovered keys followed by
+			// "no supported methods remain", and the connect UI showed the
+			// raw ssh error where typing `ssh` to the same host would have
+			// prompted. The saved-profile path has carried its asker since
+			// the resolver learned to (resolver.go's buildConfig); this is
+			// the same wiring at the same layer for the open that names no
+			// profile. A probe that borrows these options takes the rung
+			// back off with ssh.WithoutPasswordPrompt, appended last, so
+			// "ask a person" stays a dial's ability and never a probe's.
+			PasswordRequester: o.passwordAsk,
 		}
 
 		log.From(ctx).Info("SSH open via direct host", "host", spec.Host, "resolvedHost", remoteHost, "user", user)

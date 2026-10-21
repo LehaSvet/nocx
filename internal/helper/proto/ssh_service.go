@@ -306,6 +306,20 @@ type SSHIdentity struct {
 	// a reference to material that stays in the coordinator, and `sign` is what
 	// turns a challenge into a signature.
 	Keys []SSHKeyOffer `json:"keys,omitempty"`
+	// PromptAfterKeys offers the interactive rung after the key queue is
+	// rejected: ssh's own answer to a server that wants a password from a
+	// connection that arrived with its discovered keys (nocx-1ebrs.44). It
+	// is legal ONLY on a key identity — there is nothing for it to follow
+	// otherwise — and the schema refuses it beside every other kind.
+	//
+	// An ABSENT field is the old wire: a helper generation from before
+	// nocx-1ebrs.44 decodes a destination that carries it as keys-only and
+	// dials exactly as it always did. That is the frozen ABI's own
+	// evolution rule — a helper is never newer than the coordinator that
+	// installed it, so the only mixed pair is a new coordinator sending to
+	// an older, still-live generation, and that pair degrades to today's
+	// behaviour rather than to a refusal.
+	PromptAfterKeys bool `json:"promptAfterKeys,omitempty"`
 }
 
 // SSHKeyOffer is ONE key in an identity's queue: the public half the helper

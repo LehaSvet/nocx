@@ -68,6 +68,10 @@
           "items": {
             "$ref": "#/$defs/keyOffer"
           }
+        },
+        "promptAfterKeys": {
+          "description": "Offer the interactive rung AFTER the key queue in `keys` is rejected \u2014 ssh's own answer to a server that wants a password from a connection that arrived with its discovered keys (nocx-1ebrs.44). The rung carried is the same one an `interactive` identity carries, so nothing stored is repeated under a second name: this is the ladder's last rung following the keys, not a second attempt with a secret. Legal ONLY beside `auth: key`, which the rules below enforce \u2014 there is nothing for it to follow otherwise. Absent on every destination an older coordinator built: a helper generation from before nocx-1ebrs.44 decodes such a destination as keys-only and dials as it always did, which is the frozen ABI's own evolution rule.",
+          "type": "boolean"
         }
       },
       "allOf": [
@@ -83,7 +87,8 @@
           "then": {
             "required": ["credential"],
             "properties": {
-              "keys": false
+              "keys": false,
+              "promptAfterKeys": false
             }
           }
         },
@@ -115,7 +120,24 @@
           "then": {
             "properties": {
               "credential": false,
-              "keys": false
+              "keys": false,
+              "promptAfterKeys": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "auth": {
+                "const": "key"
+              }
+            },
+            "required": ["auth"]
+          },
+          "then": {},
+          "else": {
+            "properties": {
+              "promptAfterKeys": false
             }
           }
         }

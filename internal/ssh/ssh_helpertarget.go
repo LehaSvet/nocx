@@ -130,6 +130,21 @@ type DialEndpoint struct {
 	// attempt after a failed authentication, which is what MaxAuthTries exists
 	// to bound.
 	Keys []DialKey
+	// PromptAfterKeys offers the interactive rung AFTER the queue in Keys
+	// is rejected. It exists for the discovery arm — a connection that
+	// named no credential and no mode, the ordinary "connect with my
+	// keys" — whose server wants a password: ssh itself answers that with
+	// a prompt after the keys fail, and a helper dial carrying keys only
+	// ended instead with "no supported methods remain" and no way to ask
+	// (nocx-1ebrs.44). The rung carried is the SAME one a DialAuthInteractive
+	// dial carries — the coordinator's own connection-password ask, nothing
+	// stored repeated under a second name — so this is the ladder's last
+	// rung following the keys, not a stored secret sprayed after them.
+	//
+	// Set only for auto mode with a wired requester: an explicit publicKey
+	// connection means keys, and a probe takes the requester off. False
+	// leaves the dial exactly as it was.
+	PromptAfterKeys bool
 	// KnownHostsAddr is the address this endpoint's host key is stored under,
 	// which is the dial address for a direct route and a route-derived digest
 	// for a host reached through a jump (see knownHostsTargetAddr). It is
@@ -344,6 +359,17 @@ func (rc *RealClient) resolveCredential(ctx context.Context, resolved *resolvedC
 		if keys := rc.discoveredKeys(ctx, resolved, cfg); len(keys) > 0 {
 			endpoint.Auth = DialAuthKey
 			endpoint.Keys = keys
+			// The prompt rung FOLLOWS the keys on a connection in auto mode
+			// that can ask a person (nocx-1ebrs.44): ssh itself answers a
+			// server that rejects every discovered key with a password
+			// prompt, and a dial that stopped at the keys ended instead in
+			// "no supported methods remain" — an unsaved host whose server
+			// wants a password was unreachable from the connect UI. An
+			// explicit publicKey connection means keys, so nothing follows
+			// them, and a probe (requester off) is never asked anything.
+			if mode == "" && cfg.PasswordRequester != nil {
+				endpoint.PromptAfterKeys = true
+			}
 			return nil
 		}
 		// Nothing was found to offer, and that is a state with two different
@@ -632,6 +658,10 @@ func WireIdentity(ep DialEndpoint) proto.SSHIdentity {
 				PublicKey: k.PublicKey,
 			})
 		}
+		// The rung that follows the keys rides with them (nocx-1ebrs.44);
+		// the switch's default arm — password and interactive — carries no
+		// keys, so a fallback after them has no meaning and is not set.
+		id.PromptAfterKeys = ep.PromptAfterKeys
 	default:
 		if !ep.Credential.IsZero() {
 			// A password has no second half: the passphrase belongs to a KEY,
