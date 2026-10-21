@@ -66,13 +66,25 @@ func TestIngestHoldIsOpenOnlyWhileAnIngestIsInsideTheLock(t *testing.T) {
 		t.Fatal("the hold was still open after the call returned")
 	}
 
-	// Not sticky: a second call opens and closes its own record.
+	// Not sticky: a second call opens and closes its own record. The return
+	// is awaited, not assumed: the hold is read only after the call's own
+	// done receive, which is the happens-before edge that makes the read see
+	// exitIngestHold's store. The first shape of this check pre-filled
+	// entered and received from it before the call had been scheduled, so
+	// the receive consumed the test's own element and proved nothing, and
+	// the hold was read against a call that might be anywhere — which is
+	// the load-flake nocx-k3d2f records: under a loaded runner the read
+	// landed inside the second call's hold and reported it open "after the
+	// return" that had not happened yet.
 	inner.em.entered = make(chan struct{}, 1)
 	inner.em.release = make(chan struct{})
 	close(inner.em.release)
-	inner.em.entered <- struct{}{}
-	go func() { _ = s.Ingest([]byte("again")) }()
+	again := make(chan error, 1)
+	go func() { again <- s.Ingest([]byte("again")) }()
 	<-inner.em.entered
+	if err := <-again; err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
 	if _, held := s.IngestHold(); held {
 		t.Fatal("the second call's hold outlived its return")
 	}
