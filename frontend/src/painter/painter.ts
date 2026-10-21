@@ -48,6 +48,7 @@ export function metricOf(fit: Measurer): RunMetric | null {
     defaultSpacing: g.rowDelta,
     signature: g.signature,
     ...(g.padY === undefined ? {} : { padY: g.padY }),
+    ...(g.pitch === undefined ? {} : { pitch: g.pitch }),
     ...measurersOf(fit),
   }
 }
@@ -299,6 +300,7 @@ export function createCellPainter(opts: CellPainterOptions): CellPainter {
       current.cellWidth !== lastMetric.cellWidth ||
       current.defaultSpacing !== lastMetric.defaultSpacing ||
       current.padY !== lastMetric.padY ||
+      current.pitch !== lastMetric.pitch ||
       current.signature !== lastMetric.signature ||
       current.advanceOf !== lastMetric.advanceOf ||
       current.boxOf !== lastMetric.boxOf

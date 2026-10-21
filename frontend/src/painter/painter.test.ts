@@ -718,6 +718,44 @@ describe('the armed link underline (nocx-1ebrs.48)', () => {
     expect(surface.querySelector('.term-grid-link')).not.toBeNull()
     painter.dispose()
     expect(surface.querySelector('.term-grid-link')).toBeNull()
+// The pitch is a paint input (nocx-1ebrs.15): the procedural ink bakes the
+// row pitch into its geometry, so a republished pitch must repaint rows the
+// way a metric change does — even though the cells, and the row comparison,
+// are unchanged.
+
+describe('the published pitch is a paint input (nocx-1ebrs.15)', () => {
+  const fit = {
+    geometry: () => ({ cellWidth: 8, rowDelta: -0.5, signature: 'regular' }),
+    advanceOf: () => null,
+    boxOf: () => null,
+  }
+  it('repaints unchanged rows when the pitch changes', () => {
+    let pitch: number | undefined = 20
+    const shifting = {
+      ...fit,
+      geometry: () => ({ cellWidth: 8, rowDelta: -0.5, signature: 's', pitch }),
+    }
+    const surface = document.createElement('div')
+    document.body.appendChild(surface)
+    const painter = createCellPainter({
+      surface,
+      metric: () => metricOf(shifting),
+      palette: () => DEFAULT_SNAPSHOT,
+    })
+    painter.apply(snapshotOf(frameOf(1, [MERGE_ROW])))
+    const before = liveRow(surface)
+    pitch = 24
+    painter.apply(snapshotOf(frameOf(2, [MERGE_ROW])))
+    expect(liveRow(surface)).not.toBe(before)
+  })
+
+  it('carries the pitch into RunMetric through metricOf', () => {
+    const withPitch = {
+      ...fit,
+      geometry: () => ({ cellWidth: 8, rowDelta: -0.5, signature: 's', pitch: 20 }),
+    }
+    expect(metricOf(withPitch)?.pitch).toBe(20)
+    expect(metricOf(fit)?.pitch).toBeUndefined()
   })
 })
 
