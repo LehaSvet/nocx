@@ -607,3 +607,113 @@ describe('the pointer answers who owns the click (nocx-1ebrs.24)', () => {
     expect(surface.dataset.pointer).toBeUndefined()
   })
 })
+
+describe('the armed link underline (nocx-1ebrs.48)', () => {
+  // ADR-0072 took xterm's own hover underline away with xterm itself; the
+  // armed provider's spans were left with nothing to paint them. The
+  // underline is an overlay like the cursor and the selection — positioned
+  // by THE mapping, over exactly the span's cells — and `from`/`to` arrive
+  // in the grammar's own units (UTF-16 offsets into the row's text), the
+  // same numbers `LivePolicy.ranges` speaks.
+  const URL_ROW: CellSpec[] = [...'xhttps://e.co'].map((ch) => [ch, 1, true] as CellSpec)
+
+  it('underlines exactly the span\u2019s cells, in the grammar\u2019s UTF-16 units', () => {
+    const { painter, surface } = mount(() => null)
+    painter.apply(
+      snapshotOf(frameOf(1, [URL_ROW], { x: 0, y: 0, visible: false }, { cols: 13, rows: 1 })),
+    )
+    painter.setLinkHighlight({ row: 0, from: 1, to: 13 })
+    const link = surface.querySelector<HTMLElement>('.term-grid-link')
+    expect(link).not.toBeNull()
+    // The `x` before the url is not the link's: column 1 through 12.
+    expect(link?.style.left).toBe('8px')
+    expect(link?.style.width).toBe('96px')
+    expect(link?.style.top).toBe('0px')
+    expect(link?.style.height).toBe('20px')
+    expect(link?.dataset.row).toBe('0')
+    expect(link?.dataset.start).toBe('1')
+    expect(link?.dataset.end).toBe('13')
+    painter.dispose()
+  })
+
+  it('carries a wide cell whole: the underline covers its columns, not its code units', () => {
+    // `a漢b`: the wide cluster is one code unit and two columns. A span
+    // naming it in UTF-16 (1..2) must underline both of its columns.
+    const { painter, surface } = mount(() => null)
+    painter.apply(
+      snapshotOf(
+        frameOf(1, [
+          [
+            ['a', 1, true],
+            ['漢', 2, true],
+            ['', 3, false],
+            ['b', 1, true],
+          ],
+        ]),
+      ),
+    )
+    painter.setLinkHighlight({ row: 0, from: 1, to: 2 })
+    const link = surface.querySelector<HTMLElement>('.term-grid-link')
+    expect(link?.style.left).toBe('8px')
+    expect(link?.style.width).toBe('16px')
+    // And `b` — text offset 2, because the spacer column spells no
+    // character — still lands on column 3, its own column.
+    painter.setLinkHighlight({ row: 0, from: 2, to: 3 })
+    const b = surface.querySelector<HTMLElement>('.term-grid-link')
+    expect(b?.style.left).toBe('24px')
+    expect(b?.style.width).toBe('8px')
+    painter.dispose()
+  })
+
+  it('clears when told the pointer left the link, and stays clear', () => {
+    const { painter, surface } = mount(() => null)
+    painter.apply(
+      snapshotOf(frameOf(1, [URL_ROW], { x: 0, y: 0, visible: false }, { cols: 13, rows: 1 })),
+    )
+    painter.setLinkHighlight({ row: 0, from: 1, to: 13 })
+    expect(surface.querySelector('.term-grid-link')).not.toBeNull()
+    painter.setLinkHighlight(null)
+    expect(surface.querySelector('.term-grid-link')).toBeNull()
+    // Clearing twice is the steady state, not a second removal of one node.
+    painter.setLinkHighlight(null)
+    expect(surface.querySelector('.term-grid-link')).toBeNull()
+    painter.dispose()
+  })
+
+  it('keeps the underline across a repaint that keeps the row, and drops it when the row goes', () => {
+    const { painter, surface } = mount(() => null)
+    painter.apply(
+      snapshotOf(frameOf(1, [URL_ROW], { x: 0, y: 0, visible: false }, { cols: 13, rows: 1 })),
+    )
+    painter.setLinkHighlight({ row: 0, from: 1, to: 13 })
+    // A new revision whose row is unchanged keeps its DOM, so the overlay
+    // would survive anyway; a PALETTE change repaints every row, and the
+    // underline has to come back with them.
+    painter.apply(
+      snapshotOf(frameOf(2, [URL_ROW], { x: 0, y: 0, visible: false }, { cols: 13, rows: 1 })),
+    )
+    expect(surface.querySelector('.term-grid-link')).not.toBeNull()
+    const shrunk = frameOf(
+      3,
+      [[['z', 1, true]]],
+      { x: 0, y: 0, visible: false },
+      { cols: 1, rows: 1 },
+    )
+    painter.apply(snapshotOf(shrunk))
+    expect(surface.querySelector('.term-grid-link')).toBeNull()
+    painter.dispose()
+  })
+
+  it('takes no overlay for a row the grid does not have, and removes everything on dispose', () => {
+    const { painter, surface } = mount(() => null)
+    painter.apply(
+      snapshotOf(frameOf(1, [URL_ROW], { x: 0, y: 0, visible: false }, { cols: 13, rows: 1 })),
+    )
+    painter.setLinkHighlight({ row: 5, from: 1, to: 13 })
+    expect(surface.querySelector('.term-grid-link')).toBeNull()
+    painter.setLinkHighlight({ row: 0, from: 1, to: 13 })
+    expect(surface.querySelector('.term-grid-link')).not.toBeNull()
+    painter.dispose()
+    expect(surface.querySelector('.term-grid-link')).toBeNull()
+  })
+})

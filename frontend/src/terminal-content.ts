@@ -123,7 +123,7 @@ import { KIND_LABELS } from './secret-kind'
 import { NATIVE_RESTORE_COMMAND } from './native-mode'
 import { isInteractiveTransition, extractDestination } from './ssh-transition'
 import { shouldCopy, type ClipboardAccess, type ClipboardGate } from './clipboard'
-import { attachTerminalLinks } from './terminal-links'
+import { attachTerminalLinks, type TerminalLinksHandle } from './terminal-links'
 import type { ClipboardBanner } from './banner'
 import { ScrollbackController } from './scrollback/controller'
 import { LiveHistorySurface } from './scrollback/live-history'
@@ -1829,9 +1829,9 @@ export class TerminalContent extends BasePaneContent {
 
   // _readyPromise resolves true when the painter and PTY session
   // opens; resolves false when mount() throws. Never rejects.
-  /** Detaches this tab's link surfaces (terminal-links/): the scrollback's
-   *  click listeners and the live grid's link policy. */
-  private _detachLinks: (() => void) | null = null
+  /** This tab's link surfaces (terminal-links/): the scrollback's click
+   *  listeners, the live grid's link policy and its armed-link hover. */
+  private _detachLinks: TerminalLinksHandle | null = null
   private readonly _readyPromise: Promise<boolean>
   /** The drop gesture's detach, held for dispose. */
   private _dropDetach: (() => void) | null = null
@@ -4150,12 +4150,12 @@ export class TerminalContent extends BasePaneContent {
           scrollbackArea,
           painterSurface,
           () => this.activeOrigin(),
-          (event) => {
+          (x, y) => {
             const snapshot = this._cellModel?.current()
             const mapping = this._painter?.mapping()
             if (!snapshot || !mapping) return null
             const rect = painterSurface.getBoundingClientRect()
-            const cell = mapping.pixelToCell(event.clientX - rect.left, event.clientY - rect.top)
+            const cell = mapping.pixelToCell(x - rect.left, y - rect.top)
             if (cell === null) return null
             const row = snapshot.rows[cell.row]
             if (!row) return null
@@ -4164,10 +4164,12 @@ export class TerminalContent extends BasePaneContent {
               .slice(0, cell.col)
               .reduce((total, item) => total + item.grapheme.length, 0)
             return {
+              row: cell.row,
               text,
               offset: row.cells[cell.col]?.grapheme ? offset : Math.max(0, offset - 1),
             }
           },
+          this._painter,
         )
       }
 
@@ -5268,6 +5270,10 @@ export class TerminalContent extends BasePaneContent {
     // gesture compares the new frame with the snapshot the selection was
     // captured on.
     this._selectionGesture?.screenChanged(snapshot)
+    // THE ARMED LINK'S UNDERLINE NAMES THE TEXT UNDER IT (nocx-1ebrs.48):
+    // output that moved the row under a still pointer re-derives the hover,
+    // before the frame paints it.
+    this._detachLinks?.screenChanged()
     this._pendingPaint = snapshot
     if (this._paintFrameHandle !== 0) return
     this._paintFrameHandle = requestAnimationFrame(() => {
@@ -8663,7 +8669,7 @@ export class TerminalContent extends BasePaneContent {
     this._blockRowsInFlight.clear()
     this._blockRowsRefreshPending.clear()
     this._blockRowsFinalPending.clear()
-    this._detachLinks?.()
+    this._detachLinks?.detach()
     this._detachLinks = null
     this._homeUnsub?.()
     this._scrollerWidthObserver?.disconnect()

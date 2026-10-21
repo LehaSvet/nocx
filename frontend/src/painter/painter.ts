@@ -114,6 +114,12 @@ export interface CellPainter {
       readonly focus: { readonly row: number; readonly offset: number }
     } | null,
   ): void
+  /** Paint the armed link's underline over one row's character span, or
+   *  clear it. `from`/`to` are UTF-16 offsets into the row's own text —
+   *  the units the link grammar and the pane's hit-test already speak —
+   *  and this file converts them to columns, because the overlay's
+   *  geometry is the painter's answer, not the caller's. */
+  setLinkHighlight(range: LinkHighlightRange | null): void
   /** THE mapping, bound to the installed revision's committed geometry.
    *  Null before the first apply — there is nothing to map yet. */
   mapping(): PixelMapping | null
@@ -124,6 +130,17 @@ export interface CellPainter {
 const GRID_CLASS = 'term-grid'
 const CURSOR_CLASS = 'term-grid-cursor'
 const SELECTION_CLASS = 'term-grid-selection'
+const LINK_CLASS = 'term-grid-link'
+
+/** The armed link the pointer is over: one row's character span. The units
+ *  are the link grammar's (UTF-16 offsets into the row's text), so the
+ *  caller never converts — the pane's hit-test hands the same numbers to
+ *  `LivePolicy.ranges` that it hands here. */
+interface LinkHighlightRange {
+  readonly row: number
+  readonly from: number
+  readonly to: number
+}
 
 /** The pointer state the stylesheet reads (nocx-1ebrs.24): `program` while the
  *  program reports the mouse, `text` while the terminal owns the click. Named
@@ -216,6 +233,8 @@ export function createCellPainter(opts: CellPainterOptions): CellPainter {
     focus: { row: number; offset: number }
   } | null = null
   let selectionNodes: HTMLDivElement[] = []
+  let linkHighlight: LinkHighlightRange | null = null
+  let linkNodes: HTMLDivElement[] = []
 
   /** A changed metric re-verdicts every run's spacing — rule 1's output is
    *  painted output — so it repaints like a content change. The numbers
@@ -280,6 +299,7 @@ export function createCellPainter(opts: CellPainterOptions): CellPainter {
     installed = snapshot
     placeCursor(snapshot)
     paintSelection(snapshot)
+    paintLinkHighlight(snapshot)
   }
 
   function paintSelection(snapshot: ScreenSnapshot): void {
@@ -319,6 +339,65 @@ export function createCellPainter(opts: CellPainterOptions): CellPainter {
     }
   }
 
+  /** Where a character span of one row's text lands on the grid: the
+   *  columns its cells own. The row's text is its cells' graphemes joined —
+   *  a blank column contributes nothing — which is the same text the pane's
+   *  hit-test and the link grammar count offsets in, so this conversion is
+   *  arithmetic over those cells and never a measurement. A grapheme is
+   *  never split: a span ending inside one underlines the cell(s) it
+   *  occupies, wide cluster included. Null when either end resolves to no
+   *  inked cell — a stale range over a row that has since changed, which
+   *  the tracker re-derives on the frame that changed it. */
+  function columnsOfCharSpan(
+    row: ScreenSnapshot['rows'][number],
+    from: number,
+    to: number,
+  ): { from: number; to: number } | null {
+    if (to <= from) return null
+    let startCol: number | null = null
+    let endCol: number | null = null
+    let offset = 0
+    for (const cell of row.cells) {
+      const length = cell.grapheme.length
+      if (length === 0) continue
+      const end = offset + length
+      if (startCol === null && end > from && offset < to) startCol = cell.column
+      if (startCol !== null && end >= to) {
+        endCol = cell.column + cell.span
+        break
+      }
+      offset = end
+    }
+    return startCol !== null && endCol !== null && endCol > startCol
+      ? { from: startCol, to: endCol }
+      : null
+  }
+
+  function paintLinkHighlight(snapshot: ScreenSnapshot): void {
+    for (const node of linkNodes) node.remove()
+    linkNodes = []
+    if (linkHighlight === null) return
+    const row = snapshot.rows[linkHighlight.row]
+    if (row === undefined) return
+    const columns = columnsOfCharSpan(row, linkHighlight.from, linkHighlight.to)
+    if (columns === null) return
+    const point = createMapping(snapshot).cellToPixel(columns.from, linkHighlight.row)
+    if (point === null) return
+    const dpr = displayDpr()
+    const node = document.createElement('div')
+    node.className = LINK_CLASS
+    node.setAttribute('aria-hidden', 'true')
+    node.dataset.row = String(linkHighlight.row)
+    node.dataset.start = String(columns.from)
+    node.dataset.end = String(columns.to)
+    node.style.left = `${point.x}px`
+    node.style.top = `${point.y}px`
+    node.style.width = `${(columns.to - columns.from) * devicePxToCssPx(snapshot.geometry.cellWidthPx, dpr)}px`
+    node.style.height = `${devicePxToCssPx(snapshot.geometry.cellHeightPx, dpr)}px`
+    surface.insertBefore(node, cursor)
+    linkNodes.push(node)
+  }
+
   function placeCursor(snapshot: ScreenSnapshot): void {
     const position = createMapping(snapshot).cellToPixel(snapshot.cursor.x, snapshot.cursor.y)
     const height = devicePxToCssPx(snapshot.geometry.cellHeightPx, displayDpr())
@@ -356,6 +435,11 @@ export function createCellPainter(opts: CellPainterOptions): CellPainter {
       if (installed !== null) paintSelection(installed)
     },
 
+    setLinkHighlight(range) {
+      linkHighlight = range === null ? null : { ...range }
+      if (installed !== null) paintLinkHighlight(installed)
+    },
+
     mapping() {
       return installed === null ? null : createMapping(installed)
     },
@@ -367,6 +451,9 @@ export function createCellPainter(opts: CellPainterOptions): CellPainter {
       lastMetric = null
       selection = null
       selectionNodes = []
+      linkHighlight = null
+      for (const node of linkNodes) node.remove()
+      linkNodes = []
       cursor.remove()
       surface.removeEventListener('focusin', onFocus)
       surface.removeEventListener('focusout', onFocusOut)
