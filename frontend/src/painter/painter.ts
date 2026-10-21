@@ -21,6 +21,7 @@
 // terminal input — this module deliberately knows nothing about how it is mounted.
 
 import type { ScreenSnapshot } from '../cell-model'
+import { CARET_IDLE_MS, CARET_PHASE_ATTR, type CaretPhase } from '../caret-phase'
 import type { CellFit, FitCandidate } from '../scrollback/cell-fit'
 import type { RunMetric } from '../scrollback/run-geometry'
 import type { TerminalSnapshot } from '../scrollback/serializer'
@@ -123,6 +124,12 @@ export interface CellPainter {
   /** THE mapping, bound to the installed revision's committed geometry.
    *  Null before the first apply — there is nothing to map yet. */
   mapping(): PixelMapping | null
+  /** The person acted on the keyboard: a key, committed text or a paste
+   *  reached this pane's input (nocx-1ebrs.37). The overlay holds solid and
+   *  resumes blinking after CARET_IDLE_MS of nothing — the rule the
+   *  composer's caret already follows (nocx-1ebrs.31), from the same
+   *  vocabulary (caret-phase.ts). */
+  noteInput(): void
   dispose(): void
   readonly surface: HTMLElement
 }
@@ -223,7 +230,51 @@ export function createCellPainter(opts: CellPainterOptions): CellPainter {
   const cursor = document.createElement('div')
   cursor.className = CURSOR_CLASS
   cursor.setAttribute('aria-hidden', 'true')
+  // A cursor that has been sitting there is blinking before the first input
+  // of the session, which is the state every terminal opens in (nocx-1ebrs.37).
+  cursor.setAttribute(CARET_PHASE_ATTR, 'blinking')
   surface.appendChild(cursor)
+
+  let caretIdle: ReturnType<typeof setTimeout> | null = null
+
+  function setCaretPhase(phase: CaretPhase): void {
+    cursor.setAttribute(CARET_PHASE_ATTR, phase)
+  }
+
+  /** Solid now; blinking again after the idle bound (caret-phase.ts's
+   *  standard). One timer for the overlay: every wake restarts it, so a
+   *  keystroke or a write inside the bound holds the cursor solid as long
+   *  as they keep arriving. */
+  function wakeCaret(): void {
+    setCaretPhase('solid')
+    if (caretIdle !== null) clearTimeout(caretIdle)
+    caretIdle = setTimeout(() => {
+      caretIdle = null
+      setCaretPhase('blinking')
+    }, CARET_IDLE_MS)
+  }
+
+  /** A program write AT the cursor is the keystroke's twin (nocx-1ebrs.37):
+   *  the echo a shell paints under a typed key, a full-screen program
+   *  redrawing where the person is looking. The cursor position moving is a
+   *  write too — a shell echoing an arrow key moves it, and a redraw moves
+   *  it first. A frame that changes nothing at the cursor — a write far
+   *  from it, the installed snapshot re-applied by a theme switch — wakes
+   *  nothing, or the cursor would blink whenever the screen moved. */
+  function noteCursorWrite(previous: ScreenSnapshot | null, next: ScreenSnapshot): void {
+    if (previous === null) return
+    const coveredAt = (snap: ScreenSnapshot): string => {
+      const covered = snap.rows[snap.cursor.y]?.cells[snap.cursor.x]
+      return covered !== undefined && covered.hasText ? covered.grapheme : ''
+    }
+    if (
+      previous.cursor.x !== next.cursor.x ||
+      previous.cursor.y !== next.cursor.y ||
+      coveredAt(previous) !== coveredAt(next)
+    ) {
+      wakeCaret()
+    }
+  }
 
   let rows: HTMLDivElement[] = []
   let installed: ScreenSnapshot | null = null
@@ -296,6 +347,7 @@ export function createCellPainter(opts: CellPainterOptions): CellPainter {
     updateRowAccessibility()
     lastMetric = metric
     lastPalette = palette
+    noteCursorWrite(installed, snapshot)
     installed = snapshot
     placeCursor(snapshot)
     paintSelection(snapshot)
@@ -444,7 +496,13 @@ export function createCellPainter(opts: CellPainterOptions): CellPainter {
       return installed === null ? null : createMapping(installed)
     },
 
+    noteInput() {
+      wakeCaret()
+    },
+
     dispose() {
+      if (caretIdle !== null) clearTimeout(caretIdle)
+      caretIdle = null
       for (const row of rows) row.remove()
       rows = []
       installed = null

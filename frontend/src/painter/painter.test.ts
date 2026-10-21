@@ -10,7 +10,7 @@
 
 // @vitest-environment jsdom
 
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   DEFAULT_SNAPSHOT,
   serializeLine,
@@ -20,6 +20,9 @@ import {
 import { lineWith } from '../scrollback/test-helpers'
 import type { RunMetric } from '../scrollback/run-geometry'
 import { createCellPainter, metricOf } from './painter'
+import { CARET_IDLE_MS, CARET_PHASE_ATTR } from '../caret-phase'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { frameOf, snapshotOf, styleOf, type CellSpec } from './fixtures'
 
 /** The row the one-owner test drives: `a`, wide `漢` plus its spacer, `b`.
@@ -715,5 +718,163 @@ describe('the armed link underline (nocx-1ebrs.48)', () => {
     expect(surface.querySelector('.term-grid-link')).not.toBeNull()
     painter.dispose()
     expect(surface.querySelector('.term-grid-link')).toBeNull()
+
+  })
+})
+
+describe('the grid cursor holds still while input arrives (nocx-1ebrs.37)', () => {
+  // The rule the composer's caret already follows (nocx-1ebrs.31), applied to
+  // the painter's overlay: solid while keys arrive and while the program
+  // writes at the cursor, blinking again after the idle bound. A grid cursor
+  // caught mid-off by a keystroke reads as a dropped key, the one thing a
+  // cursor must never look like.
+  //
+  // The phase is asserted through the attribute the painter writes — the
+  // same seam the stylesheet consumes — never through a class name. What the
+  // stylesheet does with it is a stylesheet fact and is checked as one, in
+  // the last test of this block.
+  const GEOMETRY = { cols: 4, rows: 3, cellWidthPx: 8, cellHeightPx: 20 }
+  const BLANK: CellSpec = ['', 1, false]
+
+  /** Three rows whose only text is `first` in the top-left cell. */
+  const rowsWith = (first: string): CellSpec[][] => [
+    [[first, 1, true], BLANK, BLANK, BLANK],
+    [BLANK, BLANK, BLANK, BLANK],
+    [BLANK, BLANK, BLANK, BLANK],
+  ]
+  const at = (x: number, y: number) => ({ x, y, visible: true as const })
+
+  const caretOf = (surface: HTMLElement): string | null =>
+    surface.querySelector<HTMLElement>('.term-grid-cursor')?.getAttribute(CARET_PHASE_ATTR) ?? null
+
+  /** A cursor that has been sitting quiet long enough to be blinking: the
+   *  state every pane opens in and returns to. */
+  const quiet = (painter: ReturnType<typeof createCellPainter>): void => {
+    painter.apply(snapshotOf(frameOf(1, rowsWith('a'), at(0, 0), GEOMETRY)))
+    vi.advanceTimersByTime(CARET_IDLE_MS)
+  }
+
+  beforeEach(() => {
+    // Only the idle timer is faked, the way the composer's own file does it:
+    // the painter schedules nothing else.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('blinks from the first frame and stays blinking while nothing arrives', () => {
+    const { painter, surface } = mount(() => null)
+    quiet(painter)
+    expect(caretOf(surface)).toBe('blinking')
+    vi.advanceTimersByTime(CARET_IDLE_MS * 3)
+    expect(caretOf(surface)).toBe('blinking')
+  })
+
+  it('a keystroke leaves the cursor solid, and the blink resumes after the idle bound', () => {
+    const { painter, surface } = mount(() => null)
+    quiet(painter)
+
+    painter.noteInput() // the seam the intent path calls for every key, text and paste
+
+    expect(caretOf(surface)).toBe('solid')
+    vi.advanceTimersByTime(CARET_IDLE_MS - 1)
+    expect(caretOf(surface)).toBe('solid')
+    vi.advanceTimersByTime(1)
+    expect(caretOf(surface)).toBe('blinking')
+  })
+
+  it('a program write at the cursor is input too: the covered character changed', () => {
+    const { painter, surface } = mount(() => null)
+    quiet(painter)
+
+    // The frame a shell's echo produces: the cell under the cursor now
+    // spells what was typed.
+    painter.apply(snapshotOf(frameOf(2, rowsWith('b'), at(0, 0), GEOMETRY)))
+
+    expect(caretOf(surface)).toBe('solid')
+    vi.advanceTimersByTime(CARET_IDLE_MS)
+    expect(caretOf(surface)).toBe('blinking')
+  })
+
+  it('the cursor moving under a frame is the program writing at it too', () => {
+    const { painter, surface } = mount(() => null)
+    quiet(painter)
+
+    painter.apply(snapshotOf(frameOf(2, rowsWith('a'), at(1, 0), GEOMETRY)))
+
+    expect(caretOf(surface)).toBe('solid')
+  })
+
+  it('a frame that changes nothing at the cursor wakes nothing', () => {
+    // A theme switch re-applies the installed snapshot; a program may write
+    // far from the cursor. Neither is activity AT the cursor, and a cursor
+    // that went solid for them would blink whenever the screen moved.
+    const { painter, surface } = mount(() => null)
+    quiet(painter)
+
+    const rows = rowsWith('a')
+    rows[2] = [BLANK, BLANK, BLANK, ['z', 1, true]] // row the cursor is not on
+    painter.apply(snapshotOf(frameOf(2, rows, at(0, 0), GEOMETRY)))
+
+    expect(caretOf(surface)).toBe('blinking')
+  })
+
+  it('stays solid for as long as input and writes keep arriving', () => {
+    const { painter, surface } = mount(() => null)
+    quiet(painter)
+
+    // Four acts, each inside the idle bound of the one before: a person
+    // typing into a streaming program must never see the cursor flicker.
+    for (const ch of 'abcd') {
+      painter.noteInput()
+      painter.apply(snapshotOf(frameOf(2, rowsWith(ch), at(0, 0), GEOMETRY)))
+      vi.advanceTimersByTime(CARET_IDLE_MS - 100)
+      expect(caretOf(surface)).toBe('solid')
+    }
+    vi.advanceTimersByTime(CARET_IDLE_MS)
+    expect(caretOf(surface)).toBe('blinking')
+  })
+
+  it('a write restarts a half-spent idle wait', () => {
+    const { painter, surface } = mount(() => null)
+    quiet(painter)
+
+    painter.noteInput()
+    vi.advanceTimersByTime(300)
+    painter.apply(snapshotOf(frameOf(2, rowsWith('b'), at(0, 0), GEOMETRY)))
+    vi.advanceTimersByTime(300)
+    expect(caretOf(surface)).toBe('solid') // 600 since the key, 300 since the write
+    vi.advanceTimersByTime(200)
+    expect(caretOf(surface)).toBe('blinking')
+  })
+
+  it('disposing stops the wait: no idle timer outlives the painter', () => {
+    const { painter } = mount(() => null)
+    quiet(painter)
+    painter.noteInput()
+    expect(vi.getTimerCount()).toBe(1)
+
+    painter.dispose()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('the phase is what the stylesheet reads: solid suspends the blink, focused runs it', () => {
+    // jsdom computes no CSS and runs no animation, so the stylesheet is the
+    // only place this fact exists — read as text, the way the composer's
+    // file checks its own half.
+    const css = readFileSync(resolve(import.meta.dirname ?? '.', '..', 'style.css'), 'utf8')
+    const blink =
+      /\.terminal-live-inner:focus-within \.term-grid-cursor \{[^}]*animation:\s*term-cursor-blink/.exec(
+        css,
+      )
+    expect(blink).not.toBeNull()
+    const solid =
+      /\.terminal-live-inner:focus-within \.term-grid-cursor\[data-caret='solid'\] \{[^}]*animation:\s*none/.exec(
+        css,
+      )
+    expect(solid).not.toBeNull()
+
   })
 })
