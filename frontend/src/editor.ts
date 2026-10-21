@@ -1237,6 +1237,20 @@ export class CommandEditor {
     const rect = this.root.getBoundingClientRect()
     if (rect.width < 1 || rect.height < 1) return
     const ghost = this.root.cloneNode(true) as HTMLElement
+    // The composer's identity stays unique to the box: e2e/harness.ts promises
+    // that a bare `.nocx-editor` / `.nocx-editor-input` locator answers ONE
+    // element per tab, and Playwright's strict mode reads two as a product bug
+    // (run 39602953353: both identity classes rode the clone, and the first
+    // strict poll after Enter failed on all four e2e shards). The ink classes
+    // — cm-editor, cm-content, the chrome rows, the tokens — stay, because
+    // they are the ink; only the two names the suite locates the composer by
+    // do not ride the clone. `nocx-editor-ghost` is the completion tail's own
+    // span, so the departure is named after what it is. composer.css mirrors
+    // the ink onto those names.
+    ghost.classList.replace('nocx-editor', 'nocx-editor-departure')
+    ghost
+      .querySelector('.nocx-editor-input')
+      ?.classList.replace('nocx-editor-input', 'nocx-editor-departure-input')
     ghost.setAttribute('inert', '')
     ghost.setAttribute('aria-hidden', 'true')
     ghost.setAttribute('data-nocx-motion-ghost', '')
@@ -1253,9 +1267,11 @@ export class CommandEditor {
     // BODY, not the pane: a ghost inside the pane would answer the suite's
     // `.pane.active .nocx-editor-input` locators twice for 140ms and trip
     // Playwright's strict mode on every submit. At body level no pane-scoped
-    // locator can see it. The cost is the overlay placement's sibling
-    // selector (`.nocx-summon-stack > …`) during a summon's own hide — the
-    // ghost then wears the base chrome for its 140ms.
+    // locator can see it, and the departure's own class name (below) keeps
+    // the document-wide composer locators single-answer too. The cost is the
+    // overlay placement's sibling selector (`.nocx-summon-stack > …`) during
+    // a summon's own hide — the ghost then wears the base chrome for its
+    // 140ms.
     this.root.ownerDocument.body.appendChild(ghost)
     const anim = ghost.animate([{ opacity: from || '1' }, { opacity: '0' }], {
       duration: SETTLE_MS,

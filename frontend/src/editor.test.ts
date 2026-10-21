@@ -1361,6 +1361,53 @@ describe('the box transition (nocx-1ebrs.40)', () => {
     }
   })
 
+  it('the departure wears no composer identity: a document-wide query still answers one composer', () => {
+    // The suite's promise (e2e/harness.ts): a bare `.nocx-editor` /
+    // `.nocx-editor-input` locator resolves to ONE element per tab, and
+    // Playwright's strict mode reads two as a product bug. Bought on CI run
+    // 39602953353: both identity classes rode the clone, so for the 140ms of
+    // every submit two elements answered, and the first strict poll after
+    // Enter — command-editor.spec.ts:246, enhanced-input.spec.ts:21 — failed
+    // on all four e2e shards. The departure carries its own name; the ink
+    // classes stay, because they are the ink.
+    // This file's earlier tests leave their roots in the document, so a
+    // whole-document count is the FILE's, not the product's: the assertion is
+    // this test's own surfaces — the box is the only composer its container
+    // holds, and the ghost, the one other element hide() puts in the
+    // document, answers neither name. The document-wide strictness itself is
+    // owned by the two e2e specs that bought it.
+    const { ed, view, container } = setup()
+    ed.show()
+    rect(ed, BOX)
+    const { restore } = animateAny()
+    try {
+      ed.hide()
+      const editors = [...document.querySelectorAll('.nocx-editor')].filter((el) =>
+        container.contains(el),
+      )
+      expect(editors).toHaveLength(1)
+      expect(editors[0]).toBe(ed.root)
+      const inputs = [...document.querySelectorAll('.nocx-editor-input')].filter((el) =>
+        container.contains(el),
+      )
+      expect(inputs).toHaveLength(1)
+      expect(inputs[0]).toBe(view.contentDOM)
+      // The ghost keeps its own names, and the ink classes with them.
+      const ghost = ghostOf()!
+      expect(ghost.matches('.nocx-editor')).toBe(false)
+      expect(ghost.closest('.nocx-editor')).toBeNull()
+      expect(ghost.querySelector('.nocx-editor-input')).toBeNull()
+      expect(ghost.classList.contains('nocx-editor-departure')).toBe(true)
+      const ghostInput = ghost.querySelector<HTMLElement>('.nocx-editor-departure-input')!
+      expect(ghostInput).not.toBeNull()
+      expect(ghostInput.classList.contains('cm-content')).toBe(true)
+      expect(ghostInput.classList.contains('nocx-editor-input')).toBe(false)
+      expect(ghost.querySelector('.cm-editor')).not.toBeNull()
+    } finally {
+      restore()
+    }
+  })
+
   it('the ghost is removed when its fade ends, and when dispose() runs', async () => {
     const { ed } = setup()
     ed.show()
