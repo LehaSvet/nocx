@@ -255,9 +255,9 @@ export class CommandEditor {
   /** Input ownership is independent of layout: a submitted command leaves
    *  the empty composer's box reserved while the terminal owns keys. */
   private _inputActive = false
-  /** The box transition in flight (nocx-1ebrs.40), tagged with its
-   *  direction: hide() during a climb turns the climb around, and a second
-   *  hide() during a collapse lets it finish rather than restarting it. */
+  /** The box's fade in flight (nocx-1ebrs.40), tagged with its direction:
+   *  hide() during a fade-in turns the fade around, and a second hide()
+   *  during a fade-out lets it finish rather than restarting it. */
   private _boxTransition: Animation | null = null
   private _boxTransitionLeaves = false
   /** Optional keyboard arbiter: called (capture phase) BEFORE the editor's
@@ -1149,24 +1149,28 @@ export class CommandEditor {
    * the scrollback by its own height — so the caller settles around this (see
    * `_syncLifecycleOwnership`), and holds the bottom while it does.
    *
-   * The rejoin is a TRANSITION, not a pop (nocx-1ebrs.40): the box grows to
-   * its height over SETTLE_MS, from nothing after a display:none return, or
-   * from wherever a collapse still in flight had taken it — which is why a
-   * quick command's prompt, returning while its box is only mid-collapse,
-   * never vanishes at all. Ownership is not deferred by this: `_inputActive`
+   * The rejoin's INK is a transition, not a pop (nocx-1ebrs.40): the box
+   * re-enters the layout at its full height in one step — the fit numbers the
+   * grid and the pty are sized from move here or nowhere — and its ink fades
+   * in over SETTLE_MS, from nothing after a display:none return, or from
+   * whatever opacity a departure still on screen had reached — which is why a
+   * quick command's prompt, returning mid-fade, is never seen to vanish.
+   * Ownership is not deferred by this: `_inputActive`
    * is true and the view is focused the instant this runs.
    */
   show(): void {
     this._inputActive = true
     const wasHidden = this.root.style.display === 'none'
-    // Where the box starts its growth: nothing after a display:none return,
-    // or the painted height of a collapse still in flight, read while its
-    // animation is live — the height the person is actually looking at.
-    let from: number | null = wasHidden ? 0 : null
-    if (from === null && this._boxTransition !== null && this._boxTransitionLeaves) {
-      from = this.root.getBoundingClientRect().height
-    }
+    // A departure still fading: the box comes back to full ink from the
+    // opacity the person is actually looking at. A return from display:none
+    // fades in from nothing. Either way OPACITY only — the box's layout
+    // height never animates, so no fit number the grid or the pty are sized
+    // from moves mid-transition (CI run 39563565073).
+    const leaving = this._boxTransition !== null && this._boxTransitionLeaves
+    const reversing = !wasHidden && leaving
+    const from = reversing ? getComputedStyle(this.root).opacity : wasHidden ? '0' : null
     this._cancelBoxTransition()
+    if (reversing) this._clearBoxSizing()
     this.root.style.display = ''
     this.root.removeAttribute('inert')
 
@@ -1182,21 +1186,17 @@ export class CommandEditor {
     // A view that was display:none can cache zero or stale geometry; ask CM6
     // to re-measure before it is painted and focused (spec W1 check 5).
     this.view.requestMeasure()
-    if (from !== null) this._growBox(from)
+    if (from !== null) this._fadeBackIn(from)
     this.view.focus()
   }
 
-  /** Grow the box to its natural height over SETTLE_MS. `from` is the height
-   *  the box is painted at — zero after a display:none return, or wherever a
-   *  reversal caught a collapse. Motionless builds (jsdom, a reduced-motion
-   *  preference) leave the box at its natural height in the same frame. */
-  private _growBox(from: number): void {
-    this._clearBoxSizing()
-    const to = this.root.getBoundingClientRect().height
-    if (to < 1 || from >= to - 0.5 || !motionAllowed(this.root)) return
-    this.root.style.overflow = 'hidden'
-    this.root.style.height = `${from}px`
-    const anim = this.root.animate([{ height: `${from}px` }, { height: `${to}px` }], {
+  /** Fade the box's ink back to full over SETTLE_MS. `from` is the opacity
+   *  a reversal caught the departure at. Opacity only: the box's LAYOUT
+   *  height never animates, so no fit number the grid or the pty are sized
+   *  from moves mid-transition (CI run 39563565073). */
+  private _fadeBackIn(from: string): void {
+    if (!motionAllowed(this.root)) return
+    const anim = this.root.animate([{ opacity: from }, { opacity: '1' }], {
       duration: SETTLE_MS,
       easing: SETTLE_EASING,
     })
@@ -1206,7 +1206,6 @@ export class CommandEditor {
       () => {
         if (this._boxTransition !== anim) return
         this._boxTransition = null
-        this._clearBoxSizing()
       },
       () => {
         /* cancelled — hide() owns the element now */
@@ -1219,10 +1218,15 @@ export class CommandEditor {
     this._boxTransition = null
   }
 
-  /** The box's own layout again: no frozen height, no clipping, no inert. */
+  /** The box's own layout again: back in the flow at its natural size, no
+   *  fixed ghost position, no inert. */
   private _clearBoxSizing(): void {
+    this.root.style.position = ''
+    this.root.style.left = ''
+    this.root.style.top = ''
+    this.root.style.width = ''
     this.root.style.height = ''
-    this.root.style.overflow = ''
+    this.root.style.margin = ''
     this.root.inert = false
   }
 
@@ -1363,39 +1367,52 @@ export class CommandEditor {
     this._inputActive = false
     this.view.contentDOM.blur()
     this.root.removeAttribute('inert')
+    if (this.root.style.display === 'none') return
     if (this._boxTransition !== null && !this._boxTransitionLeaves) {
-      // An expansion is still climbing: turn it around from wherever it has
+      // A return is still fading in: turn it around from the opacity it has
       // got to, rather than snapping it away or restarting the departure.
-      const from = this.root.getBoundingClientRect().height
+      const from = getComputedStyle(this.root).opacity
       this._cancelBoxTransition()
-      this._shrinkBox(from)
+      this._fadeAway(from)
       return
     }
     if (this._boxTransition !== null) return // already leaving; let it finish
-    this._shrinkBox(this.root.getBoundingClientRect().height)
+    this._fadeAway()
   }
 
-  /** Collapse the box to nothing over SETTLE_MS, then take it out of the
-   *  layout. `from` is the height the box is painted at. Motionless builds
-   *  (jsdom, a reduced-motion preference) keep the old one-frame removal.
+  /** Take the box out of the layout in ONE step — the geometry change
+   *  display:none always was, at the moment it always happened — and fade
+   *  what the person was looking at away in place.
    *
-   *  Input ownership does not wait for the animation: `_inputActive` is
-   *  false, the contentDOM is blurred and the box is inert from the instant
-   *  this runs — the handoff's step 1 (ADR-0004 §2) is the routing, never
-   *  the routing's box. What is animated is only how the departure is
-   *  PAINTED, for the same reason the settle glide plays a block's
-   *  displacement back instead of letting it land as a jump. */
-  private _shrinkBox(from: number): void {
-    if (from < 1 || !motionAllowed(this.root)) {
+   *  The one step first, deliberately: the viewport the grid and the pty are
+   *  sized from reads this box as in-flow or gone and nothing between. The
+   *  first cut of this fix animated the box's HEIGHT instead, and the pane
+   *  re-fitted per frame — four e2e shards red with a pty resized mid-command
+   *  and rows past their clip (CI run 39563565073). Out of the flow at the
+   *  rectangle it occupies, then fading: the caller's settle plays the one
+   *  displacement back, the fit numbers move here or nowhere, and a quick
+   *  command's prompt — arriving mid-fade — turns the fade around instead of
+   *  ever being seen to vanish.
+   *
+   *  Input ownership does not wait for any of it: `_inputActive` is false,
+   *  the contentDOM is blurred and the box is inert from the instant this
+   *  runs — the handoff's step 1 (ADR-0004 §2) is the routing, never the
+   *  routing's box. Motionless builds (jsdom, a reduced-motion preference)
+   *  keep the old one-frame removal. */
+  private _fadeAway(from?: string): void {
+    if (!motionAllowed(this.root)) {
       this.root.style.display = 'none'
       return
     }
-    // Frozen height and clipping: the box shrinks through its OWN heights
-    // instead of reflowing the card inside it row by row.
-    this.root.style.overflow = 'hidden'
-    this.root.style.height = `${from}px`
+    const rect = this.root.getBoundingClientRect()
+    this.root.style.position = 'fixed'
+    this.root.style.left = `${rect.left}px`
+    this.root.style.top = `${rect.top}px`
+    this.root.style.width = `${rect.width}px`
+    this.root.style.height = `${rect.height}px`
+    this.root.style.margin = '0'
     this.root.inert = true
-    const anim = this.root.animate([{ height: `${from}px` }, { height: '0px' }], {
+    const anim = this.root.animate([{ opacity: from ?? '1' }, { opacity: '0' }], {
       duration: SETTLE_MS,
       easing: SETTLE_EASING,
     })
@@ -1405,13 +1422,22 @@ export class CommandEditor {
       () => {
         if (this._boxTransition !== anim) return
         this._boxTransition = null
-        this._clearBoxSizing()
-        this.root.style.display = 'none'
+        this._takeBoxOutOfLayout()
       },
       () => {
         /* cancelled — show() owns the element now */
       },
     )
+  }
+
+  /** The display:none the box always ended at, played through the host's
+   *  settle so the displacement it frees is glided, not pinned. */
+  private _takeBoxOutOfLayout(): void {
+    const settle = this.actions.settleAround ?? ((m: () => void) => m())
+    settle(() => {
+      this._clearBoxSizing()
+      this.root.style.display = 'none'
+    })
   }
 
   get isVisible(): boolean {

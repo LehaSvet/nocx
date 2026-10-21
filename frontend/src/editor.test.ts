@@ -1254,10 +1254,13 @@ describe('the grant chip (nocx-wcswn)', () => {
 describe('the box transition (nocx-1ebrs.40)', () => {
   // jsdom performs no layout and ships no Web Animations API, so the animated
   // path needs both named by the test: `rect` stands in for the box's
-  // measured height, `animateWith` for Element.animate — a controllable
+  // measured rectangle, `animateWith` for Element.animate — a controllable
   // stand-in that records the keyframes the editor asked for.
-  const rect = (ed: CommandEditor, height: number): void => {
-    vi.spyOn(ed.root, 'getBoundingClientRect').mockReturnValue({ height } as DOMRect)
+  const rect = (
+    ed: CommandEditor,
+    box: { x: number; y: number; left: number; top: number; width: number; height: number },
+  ): void => {
+    vi.spyOn(ed.root, 'getBoundingClientRect').mockReturnValue(box as DOMRect)
   }
   const animateWith = (ed: CommandEditor) => {
     const calls: { keyframes: Keyframe[]; options: number | KeyframeAnimationOptions }[] = []
@@ -1281,6 +1284,7 @@ describe('the box transition (nocx-1ebrs.40)', () => {
     }
     return { calls, anims }
   }
+  const BOX = { x: 8, y: 9, left: 8, top: 9, width: 300, height: 130 }
 
   it('without the Web Animations API the box leaves in one frame, as before', () => {
     // jsdom is that build: no `animate` on the element, so hide() is the
@@ -1292,72 +1296,97 @@ describe('the box transition (nocx-1ebrs.40)', () => {
     expect(ed.isVisible).toBe(false)
   })
 
-  it('hide() collapses the box as a transition, and only then removes it', async () => {
+  it('hide() takes the box out of the flow in one step and fades it in place', () => {
     const { ed } = setup()
     ed.show()
-    rect(ed, 130)
-    const { calls, anims } = animateWith(ed)
+    rect(ed, BOX)
+    const { calls } = animateWith(ed)
     ed.hide()
     // Input ownership has already moved — isVisible is false the instant
-    // hide() ran — but the box is still in the layout, shrinking.
+    // hide() ran — and the box is out of the layout AT ITS RECTANGLE, not
+    // shrunk: the fit numbers the grid and the pty read move here or
+    // nowhere, never mid-animation.
     expect(ed.isVisible).toBe(false)
     expect(ed.root.style.display).toBe('')
+    expect(ed.root.style.position).toBe('fixed')
+    expect(ed.root.style.left).toBe('8px')
+    expect(ed.root.style.top).toBe('9px')
+    expect(ed.root.style.width).toBe('300px')
     expect(ed.root.style.height).toBe('130px')
-    expect(ed.root.style.overflow).toBe('hidden')
+    expect(ed.root.style.margin).toBe('0px')
     expect(ed.root.inert).toBe(true)
     expect(calls).toHaveLength(1)
-    expect(calls[0].keyframes).toEqual([{ height: '130px' }, { height: '0px' }])
+    expect(calls[0].keyframes).toEqual([{ opacity: '1' }, { opacity: '0' }])
+  })
+
+  it('the fade ends by removing the box, through the host settle', async () => {
+    const { ed } = setup()
+    ed.show()
+    rect(ed, BOX)
+    const settle = vi.fn((m: () => void) => m())
+    const second = new CommandEditor(
+      { submit: vi.fn(), cancel: vi.fn(() => true), settleAround: settle },
+      [],
+    )
+    second.mount(document.createElement('div'))
+    document.body.appendChild(second.root)
+    second.show()
+    rect(second, BOX)
+    const { anims } = animateWith(second)
+    second.hide()
     anims[0].resolve()
     await anims[0].finished
-    expect(ed.root.style.display).toBe('none')
-    expect(ed.root.style.height).toBe('')
-    expect(ed.root.style.overflow).toBe('')
+    expect(second.root.style.display).toBe('none')
+    expect(second.root.style.position).toBe('')
+    expect(settle).toHaveBeenCalledTimes(1)
+    second.dispose()
+    ed.dispose()
+  })
+
+  it('show() mid-fade turns the fade around from the opacity it reached', () => {
+    const { ed } = setup()
+    ed.show()
+    rect(ed, BOX)
+    const away = animateWith(ed)
+    ed.hide()
+    // The prompt returns while the departure is mid-fade; the box is
+    // painted at 0.4 ink.
+    ed.root.style.opacity = '0.4'
+    const back = animateWith(ed)
+    ed.show()
+    expect(away.anims[0].cancel).toHaveBeenCalled()
+    expect(back.calls).toHaveLength(1)
+    expect(back.calls[0].keyframes).toEqual([{ opacity: '0.4' }, { opacity: '1' }])
+    expect(ed.isVisible).toBe(true)
+    expect(ed.root.style.position).toBe('')
     expect(ed.root.inert).toBe(false)
   })
 
-  it('show() mid-collapse turns the box around from where it was', () => {
+  it('the return from display:none fades in from nothing, at full height', async () => {
     const { ed } = setup()
     ed.show()
-    rect(ed, 130)
-    const collapse = animateWith(ed)
+    rect(ed, BOX)
+    const away = animateWith(ed)
     ed.hide()
-    // The prompt returns while the collapse is mid-flight: the box is
-    // painted at 52px, and the return grows from THERE, not from nothing.
-    const spy = vi.spyOn(ed.root, 'getBoundingClientRect')
-    spy.mockReturnValueOnce({ height: 52 } as DOMRect)
-    spy.mockReturnValue({ height: 130 } as DOMRect)
-    const expand = animateWith(ed)
-    ed.show()
-    expect(collapse.anims[0].cancel).toHaveBeenCalled()
-    expect(expand.calls).toHaveLength(1)
-    expect(expand.calls[0].keyframes).toEqual([{ height: '52px' }, { height: '130px' }])
-    expect(ed.isVisible).toBe(true)
-  })
-
-  it('the hand-back grows the box from nothing to its height', async () => {
-    const { ed } = setup()
-    ed.show()
-    rect(ed, 130)
-    const collapse = animateWith(ed)
-    ed.hide()
-    collapse.anims[0].resolve()
-    await collapse.anims[0].finished
+    away.anims[0].resolve()
+    await away.anims[0].finished
+    // The fade-end removal runs through actions.settleAround, absent here —
+    // the direct mutation.
     expect(ed.root.style.display).toBe('none')
-    const expand = animateWith(ed)
+    const back = animateWith(ed)
     ed.show()
-    expect(expand.calls).toHaveLength(1)
-    expect(expand.calls[0].keyframes).toEqual([{ height: '0px' }, { height: '130px' }])
+    // Opacity only, from nothing: the box's layout height never animates,
+    // so no fit number moves mid-return.
+    expect(ed.root.style.display).toBe('')
+    expect(back.calls).toHaveLength(1)
+    expect(back.calls[0].keyframes).toEqual([{ opacity: '0' }, { opacity: '1' }])
     expect(ed.isVisible).toBe(true)
-    expand.anims[0].resolve()
-    await expand.anims[0].finished
-    expect(ed.root.style.height).toBe('')
-    expect(ed.root.style.display).not.toBe('none')
   })
 
   it('a reduced-motion preference keeps the old instant box', () => {
     const { ed } = setup()
     ed.show()
-    rect(ed, 130)
+    rect(ed, BOX)
     // jsdom defines no matchMedia at all; motion.ts reads it optionally, so
     // the stub is the whole answer.
     vi.stubGlobal('matchMedia', () => ({ matches: true }))

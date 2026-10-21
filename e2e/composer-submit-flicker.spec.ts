@@ -3,22 +3,17 @@ import { appReadyForInput, test, expect } from './harness'
 /**
  * nocx-1ebrs.40 — the composer flickers on submit.
  *
- * The submit hand-off removes the composer's box in one frame
- * (`display:none`, editor.ts `hide()`) and the hand-back restores it in one
- * frame (`show()`), so a quick command's input panel vanishes for an instant;
- * meanwhile nothing re-pins the scroller, content accumulates below the fold,
- * and the fold snaps back when a later mutation pins at last — the jump.
+ * The submit hand-off must not blink the input panel. From painted frames
+ * (one sample per animation frame across the hand-off) this asserts the
+ * shape the fix is:
  *
- * This spec drives the REAL hand-off (a real pane, a real shell command) and
- * asserts, from frames sampled every animation frame:
- *
- *  1. the box's collapse is a TRANSITION — it passes through intermediate
- *     heights instead of stepping full-height → gone;
- *  2. the box's return is a TRANSITION — it grows through intermediate
- *     heights instead of popping back;
+ *  1. the pane-level geometry the grid and the pty are sized from never
+ *     animates — the box's own height is always its full height or gone
+ *     (display:none), never anything between;
+ *  2. the INK fades — the panel's departure and its return pass through
+ *     intermediate opacities instead of stepping visible↔gone in one frame;
  *  3. the tail never detaches — while the person is following, content does
- *     not accumulate below the fold on any painted frame, so no later pin
- *     can land as a jump.
+ *     not stay below the fold across frames, so no late pin lands as a jump.
  */
 
 const TITLE = '.nocx-tab-title'
@@ -28,6 +23,7 @@ interface Frame {
   t: number
   disp: string
   eH: number
+  op: number
   st: number
   ch: number
   sh: number
@@ -35,25 +31,20 @@ interface Frame {
   gl: number
 }
 
-test('submit hands the panel over as a transition, and the tail never detaches', async ({
-  page,
-}, testInfo) => {
+async function sampleAcrossSubmit(page: import('@playwright/test').Page, command: string) {
   await page.goto('/')
   await expect(page.locator(TITLE).first()).not.toHaveText('', { timeout: 15000 })
   await appReadyForInput(page)
   const input = page.locator(INPUT)
   await expect(input).toBeVisible({ timeout: 8000 })
-  // Long enough that the collapse completes and the panel is genuinely gone
-  // for a while — the shape the owner sees on any ordinary command — short
-  // enough that the spec stays quick.
-  await input.fill('sleep 0.4')
+  await input.fill(command)
 
   await page.evaluate(() => {
     const pane = document.querySelector('.pane.active') as HTMLElement
     const editor = pane.querySelector<HTMLElement>('.nocx-editor') as HTMLElement
     const area = pane.querySelector<HTMLElement>('.scrollback-area') as HTMLElement
     const inner = pane.querySelector<HTMLElement>('.scrollback-inner') as HTMLElement
-    const w = window as unknown as { __frames: Frame[]; __t0: number; __stop?: boolean }
+    const w = window as unknown as { __frames: unknown[]; __t0: number; __stop?: boolean }
     w.__frames = []
     w.__t0 = performance.now()
     const sample = (): void => {
@@ -62,6 +53,7 @@ test('submit hands the panel over as a transition, and the tail never detaches',
         t: +(performance.now() - w.__t0).toFixed(1),
         disp: getComputedStyle(editor).display,
         eH: +editor.getBoundingClientRect().height.toFixed(1),
+        op: +getComputedStyle(editor).opacity.slice(0, 5),
         st: +area.scrollTop.toFixed(1),
         ch: area.clientHeight,
         sh: area.scrollHeight,
@@ -73,24 +65,23 @@ test('submit hands the panel over as a transition, and the tail never detaches',
     requestAnimationFrame(sample)
   })
 
-  // The panel's resting height, read before anything moves.
+  // The panel's resting height and ink, read before anything moves.
   const fullH = await page.evaluate(
     () => document.querySelector('.pane.active .nocx-editor')?.getBoundingClientRect().height ?? 0,
   )
 
   await page.keyboard.press('Enter')
 
-  // The hand-back: the composer returns when the prompt does. NOT
-  // toBeVisible — the animated collapse keeps the box non-empty (visible,
-  // to Playwright) while it is leaving — the return is the box back at its
-  // height. The settle glide lands before the pane is at rest.
+  // The hand-back: the box is back at its full height and its full ink. NOT
+  // toBeVisible — a mid-fade box is non-empty and Playwright-visible.
   await page.waitForFunction(
     (full) => {
       const ed = document.querySelector('.pane.active .nocx-editor')
       return (
         ed !== null &&
         getComputedStyle(ed).display !== 'none' &&
-        ed.getBoundingClientRect().height >= full * 0.9
+        ed.getBoundingClientRect().height >= full * 0.9 &&
+        Number(getComputedStyle(ed).opacity) >= 0.95
       )
     },
     fullH,
@@ -107,74 +98,128 @@ test('submit hands the panel over as a transition, and the tail never detaches',
     })
   })
   await page.waitForTimeout(120)
-  const frames = (await page.evaluate(
-    () => (window as unknown as { __frames: Frame[] }).__frames,
-  )) as Frame[]
-
-  const dump = JSON.stringify(frames)
-  await testInfo.attach('frames', { body: dump, contentType: 'application/json' })
-  expect(frames.length, `frames sampled: ${dump}`).toBeGreaterThan(6)
-
-  // The panel's resting height before anything happened.
-  expect(fullH, `panel has a box before submit: ${dump}`).toBeGreaterThan(20)
-
-  // The submit frame: the first sample that differs from the pre-submit rest.
-  let submitAt = frames.findIndex((f) => f.eH < fullH - 1 || f.disp === 'none' || f.gl > 0)
-  if (submitAt < 0) submitAt = frames.length - 1
-
-  // ── 1 + 2: the box leaves and returns as a transition ──
-  const absent = frames.map((f, i) => ({ f, i })).filter(({ f }) => f.eH <= 1)
-  if (absent.length === 0) {
-    // The prompt returned before the collapse finished: the panel never
-    // fully left. The flicker is dead only if the dip itself was gradual.
-    const dipped = frames.slice(submitAt).some((f) => f.eH > 1 && f.eH < fullH * 0.75)
-    expect(dipped, `panel dipped gradually, frames: ${dump}`).toBe(true)
-  } else {
-    const firstAbsent = absent[0].i
-    const lastFull = frames
-      .slice(0, firstAbsent)
-      .map((f, i) => ({ f, i }))
-      .filter(({ f }) => f.eH >= fullH * 0.9)
-      .pop()
-    expect(lastFull, `panel was full before it left: ${dump}`).toBeTruthy()
-    // Collapse: between the last full-height frame and the first gone frame
-    // there must be an intermediate height. The old code steps 130 → 0.
-    const collapse = frames
-      .slice(lastFull!.i + 1, firstAbsent)
-      .some((f) => f.eH > 1 && f.eH < fullH * 0.75)
-    expect(collapse, `collapse passes through intermediate heights, frames: ${dump}`).toBe(true)
-
-    const lastAbsent = absent[absent.length - 1].i
-    const restoredAt = frames.findIndex((f, i) => i > lastAbsent && f.eH >= fullH * 0.9)
-    expect(restoredAt, `panel returns to full height, frames: ${dump}`).toBeGreaterThan(0)
-    // Restore: between gone and full there must be an intermediate height.
-    // The old code pops 0 → 130 in one frame.
-    const restore = frames
-      .slice(lastAbsent + 1, restoredAt)
-      .some((f) => f.eH > 1 && f.eH < fullH * 0.75)
-    expect(restore, `restore grows through intermediate heights, frames: ${dump}`).toBe(true)
+  return {
+    fullH,
+    frames: (await page.evaluate(
+      () => (window as unknown as { __frames: unknown[] }).__frames,
+    )) as Frame[],
   }
+}
 
-  // ── 3: the tail never detaches while the person is following ──
-  // Content below the fold, per painted frame. The old code lets ~130px
-  // accumulate during the vanish and sits there for frames before a late pin
-  // snaps it back. A box change can show ONE sampled frame of small
-  // under-flow — the sampler's animation-frame callback runs before that
-  // frame's ResizeObserver delivery, and the pin lands before paint — so a
-  // PERSISTENT fold is the defect, and so is any accumulation of the old
-  // size. The old run: 127px, four consecutive samples; the fixed run's one
-  // pre-RO sample can be a whole block tall for a single frame and is still
-  // never painted.
-  const below = frames
-    .slice(submitAt + 1)
-    .map((f) => ({ f, below: +(f.sh - f.st - f.ch).toFixed(1) }))
-  const persistent = below.filter(({ below: b }, i) => {
-    if (b <= 2) return false
-    const next = below[i + 1]
-    return next === undefined || next.below > 2
+test.describe('the submit hand-off (nocx-1ebrs.40)', () => {
+  test('a quick command dips the panel and turns it around; the geometry never animates', async ({
+    page,
+  }, testInfo) => {
+    // The owner's case: a command that finishes while the departure is still
+    // on screen. The panel must dim and come back — never vanish, never pop.
+    const { fullH, frames } = await sampleAcrossSubmit(page, 'true')
+    const dump = JSON.stringify(frames)
+    await testInfo.attach('frames', { body: dump, contentType: 'application/json' })
+    expect(frames.length, `frames sampled: ${dump}`).toBeGreaterThan(6)
+
+    // 1. The box's own height is full or gone, never between: the pane-level
+    // geometry the grid and the pty are fitted from does not animate.
+    const midHeight = frames.filter((f) => f.eH > 1 && f.eH < fullH - 1)
+    expect(
+      midHeight,
+      `box at intermediate heights: ${JSON.stringify(midHeight)}; all: ${dump}`,
+    ).toEqual([])
+
+    // 2. The ink moved gradually: it dipped below full and came back.
+    const dipped = frames.some((f) => f.disp !== 'none' && f.op < 0.95)
+    expect(dipped, `panel ink dipped during the hand-off: ${dump}`).toBe(true)
+    const last = frames[frames.length - 1]
+    expect(last.op, `panel back at full ink: ${dump}`).toBeGreaterThanOrEqual(0.95)
+    expect(last.eH, `panel back at full height: ${dump}`).toBeGreaterThanOrEqual(fullH - 1)
   })
-  expect(
-    persistent,
-    `fold stayed detached across frames (px): ${JSON.stringify(persistent)}; all: ${dump}`,
-  ).toEqual([])
+
+  test('a real command departs through a fade, and the tail never detaches', async ({
+    page,
+  }, testInfo) => {
+    // Long enough that the departure completes and the panel is genuinely
+    // gone for a while — the shape the owner sees on any ordinary command.
+    const { fullH, frames } = await sampleAcrossSubmit(page, 'sleep 0.4')
+    const dump = JSON.stringify(frames)
+    await testInfo.attach('frames', { body: dump, contentType: 'application/json' })
+    expect(frames.length, `frames sampled: ${dump}`).toBeGreaterThan(6)
+
+    // 1. Two-valued layout height, all the way through.
+    const midHeight = frames.filter((f) => f.eH > 1 && f.eH < fullH - 1)
+    expect(
+      midHeight,
+      `box at intermediate heights: ${JSON.stringify(midHeight)}; all: ${dump}`,
+    ).toEqual([])
+
+    // 2. The departure fades: between the last full-ink frame and the first
+    // gone frame there is an intermediate opacity. The old code stepped
+    // visible → gone in one frame.
+    let submitAt = frames.findIndex((f) => f.disp === 'none' || f.op < 0.95 || f.eH < fullH - 1)
+    if (submitAt < 0) submitAt = frames.length - 1
+    const absent = frames.map((f, i) => ({ f, i })).filter(({ f }) => f.disp === 'none')
+    expect(absent.length, `panel fully departs: ${dump}`).toBeGreaterThan(0)
+    const lastFullInk = frames
+      .slice(0, absent[0].i)
+      .map((f, i) => ({ f, i }))
+      .filter(({ f }) => f.op >= 0.95 && f.eH >= fullH - 1)
+      .pop()
+    expect(lastFullInk, `panel was full before it left: ${dump}`).toBeTruthy()
+    const fadeOut = frames
+      .slice(lastFullInk!.i + 1, absent[0].i)
+      .some((f) => f.disp !== 'none' && f.op > 0.05 && f.op < 0.9)
+    expect(fadeOut, `departure passes through intermediate ink: ${dump}`).toBe(true)
+
+    // And the return fades back in from nothing rather than popping.
+    const lastAbsent = absent[absent.length - 1].i
+    const restoredAt = frames.findIndex(
+      (f, i) => i > lastAbsent && f.eH >= fullH - 1 && f.op >= 0.95,
+    )
+    expect(restoredAt, `panel returns at full ink: ${dump}`).toBeGreaterThan(0)
+    const fadeIn = frames
+      .slice(lastAbsent + 1, restoredAt)
+      .some((f) => f.disp !== 'none' && f.op > 0.05 && f.op < 0.9)
+    expect(fadeIn, `return passes through intermediate ink: ${dump}`).toBe(true)
+
+    // 3. The tail never detaches while the panel is gone: content below the
+    // fold on the ABSENT frames. The old code let ~130px accumulate there
+    // (echo + process bar, nothing re-pinning) and sat on it for frames
+    // before a late pin snapped scrollTop 98px in one frame. After the
+    // panel is back the hand-off settle owns the transition and the idle
+    // re-fit drains the content glided — painted steps stay small and the
+    // fold metric decays without a scroll — so the drain is asserted by its
+    // painted continuity below, not here.
+    const belowAbsent = frames
+      .slice(submitAt + 1)
+      .map((f) => ({ disp: f.disp, below: +(f.sh - f.st - f.ch).toFixed(1) }))
+      .filter(({ disp }) => disp === 'none')
+    const stuck = belowAbsent.filter(({ below: b }, i) => {
+      if (b <= 2) return false
+      const next = belowAbsent[i + 1]
+      return next !== undefined && next.below > 2
+    })
+    expect(
+      stuck,
+      `fold stayed detached while the panel was gone (px): ${JSON.stringify(stuck)}; all: ${dump}`,
+    ).toEqual([])
+
+    // 4. The restore is continuous in what was PAINTED: between the last
+    // absent frame and the restored one, the stack's painted top never steps
+    // far in one frame. The old code teleported it ~75px when the box popped
+    // back; the glided restore moves it a few tens of px at most.
+    const steps: { from: number; to: number; dy: number }[] = []
+    for (let i = lastAbsent + 1; i < restoredAt; i++) {
+      const dy = +(frames[i].iT - frames[i - 1].iT).toFixed(1)
+      if (Math.abs(dy) > 40) steps.push({ from: frames[i - 1].iT, to: frames[i].iT, dy })
+    }
+    expect(
+      steps,
+      `painted stack stepped mid-restore: ${JSON.stringify(steps)}; all: ${dump}`,
+    ).toEqual([])
+    // And the hand-off ends with the tail where the reader can see it.
+    const lastBelow = +(
+      frames[frames.length - 1].sh -
+      frames[frames.length - 1].st -
+      frames[frames.length - 1].ch
+    ).toFixed(1)
+    expect(lastBelow, `fold at rest: ${dump}`).toBeLessThanOrEqual(2)
+  })
 })
