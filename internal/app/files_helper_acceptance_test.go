@@ -95,6 +95,11 @@ type filesStand struct {
 	// file panel's factory is handed (nocx-k6p18.35).
 	opener *localHelperOpener
 	routes installLeaseRoutes
+	// prompts is the reverse side's prompt seam: the value a test sets an
+	// asker on so a person's answer reaches the helper's questions. Nil-asker
+	// is the stand's default, which refuses every ask with no_auth_channel —
+	// the honest state for tests that raise no password.
+	prompts *helperPrompt
 	// registry is the session registry an opened pane is ADOPTED into. It is
 	// what makes a hosted open an open rather than a spawn: the helper mints
 	// the id, and this process takes the session under it.
@@ -197,11 +202,12 @@ func startFilesStand(t *testing.T, srv *pwSSHServer, secrets credential.Resolver
 		}
 	})
 
+	prompts := &helperPrompt{log: logger}
 	peer, err := helperclient.Dial(ctx, helperclient.Config{
 		Exec:        helperclient.NewSocketConn(coordEnd),
 		ExpectHash:  filesFixtureGenera,
 		SentinelTTL: 5 * time.Second,
-		Reverse:     helperReverseHandlers(rc, secrets, &helperPrompt{log: logger}, nil, logger),
+		Reverse:     helperReverseHandlers(rc, secrets, prompts, nil, logger),
 		Log:         logger,
 	})
 	if err != nil {
@@ -240,6 +246,7 @@ func startFilesStand(t *testing.T, srv *pwSSHServer, secrets credential.Resolver
 		khPath:   khPath,
 		opener:   opener,
 		routes:   routes,
+		prompts:  prompts,
 		registry: registry,
 		factory:  filesystemProviderFactory(routes),
 		opts: []ssh.ConnectOption{
