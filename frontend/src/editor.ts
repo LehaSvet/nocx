@@ -255,11 +255,13 @@ export class CommandEditor {
   /** Input ownership is independent of layout: a submitted command leaves
    *  the empty composer's box reserved while the terminal owns keys. */
   private _inputActive = false
-  /** The box's fade in flight (nocx-1ebrs.40), tagged with its direction:
-   *  hide() during a fade-in turns the fade around, and a second hide()
-   *  during a fade-out lets it finish rather than restarting it. */
-  private _boxTransition: Animation | null = null
-  private _boxTransitionLeaves = false
+  /** The box's return fade in flight (nocx-1ebrs.40). hide() cancels it and
+   *  hands its reached ink to the ghost. */
+  private _returnAnim: Animation | null = null
+  /** The departure's ghost: the box's frozen copy, fixed where the box was,
+   *  fading while the box itself is already display:none. */
+  private _ghost: HTMLElement | null = null
+  private _ghostAnim: Animation | null = null
   /** Optional keyboard arbiter: called (capture phase) BEFORE the editor's
    *  own key handling. Return true to consume the key. One arbiter chain,
    *  composed at the root (terminal-content.ts): recall first, completion
@@ -1149,28 +1151,24 @@ export class CommandEditor {
    * the scrollback by its own height — so the caller settles around this (see
    * `_syncLifecycleOwnership`), and holds the bottom while it does.
    *
-   * The rejoin's INK is a transition, not a pop (nocx-1ebrs.40): the box
+   * The return's INK is a transition, not a pop (nocx-1ebrs.40): the box
    * re-enters the layout at its full height in one step — the fit numbers the
    * grid and the pty are sized from move here or nowhere — and its ink fades
-   * in over SETTLE_MS, from nothing after a display:none return, or from
-   * whatever opacity a departure still on screen had reached — which is why a
-   * quick command's prompt, returning mid-fade, is never seen to vanish.
-   * Ownership is not deferred by this: `_inputActive`
-   * is true and the view is focused the instant this runs.
+   * in over SETTLE_MS from nothing, so a quick command's prompt is never
+   * seen to vanish: the departure it missed is on the ghost, and this return
+   * cancels that ghost rather than painting over it. Ownership is not
+   * deferred by this: `_inputActive` is true and the view is focused the
+   * instant this runs.
    */
   show(): void {
     this._inputActive = true
+    // A departure still on screen is a ghost, not the box: the box's own
+    // timeline is main's exact one — display:none landed in the same frame
+    // as the blur — so a return is always a return from display:none. The
+    // ghost goes first: its half-faded ink over a returning box would read
+    // as a second flicker.
+    this._cancelGhost()
     const wasHidden = this.root.style.display === 'none'
-    // A departure still fading: the box comes back to full ink from the
-    // opacity the person is actually looking at. A return from display:none
-    // fades in from nothing. Either way OPACITY only — the box's layout
-    // height never animates, so no fit number the grid or the pty are sized
-    // from moves mid-transition (CI run 39563565073).
-    const leaving = this._boxTransition !== null && this._boxTransitionLeaves
-    const reversing = !wasHidden && leaving
-    const from = reversing ? getComputedStyle(this.root).opacity : wasHidden ? '0' : null
-    this._cancelBoxTransition()
-    if (reversing) this._clearBoxSizing()
     this.root.style.display = ''
     this.root.removeAttribute('inert')
 
@@ -1186,26 +1184,24 @@ export class CommandEditor {
     // A view that was display:none can cache zero or stale geometry; ask CM6
     // to re-measure before it is painted and focused (spec W1 check 5).
     this.view.requestMeasure()
-    if (from !== null) this._fadeBackIn(from)
+    if (wasHidden) this._fadeBackIn()
     this.view.focus()
   }
 
-  /** Fade the box's ink back to full over SETTLE_MS. `from` is the opacity
-   *  a reversal caught the departure at. Opacity only: the box's LAYOUT
-   *  height never animates, so no fit number the grid or the pty are sized
-   *  from moves mid-transition (CI run 39563565073). */
-  private _fadeBackIn(from: string): void {
+  /** Fade the box's ink back to full over SETTLE_MS. Opacity only: the box's
+   *  LAYOUT height never animates, so no fit number the grid or the pty are
+   *  sized from moves mid-transition (CI run 39563565073). */
+  private _fadeBackIn(): void {
     if (!motionAllowed(this.root)) return
-    const anim = this.root.animate([{ opacity: from }, { opacity: '1' }], {
+    const anim = this.root.animate([{ opacity: '0' }, { opacity: '1' }], {
       duration: SETTLE_MS,
       easing: SETTLE_EASING,
     })
-    this._boxTransition = anim
-    this._boxTransitionLeaves = false
+    this._returnAnim = anim
     void anim.finished.then(
       () => {
-        if (this._boxTransition !== anim) return
-        this._boxTransition = null
+        if (this._returnAnim !== anim) return
+        this._returnAnim = null
       },
       () => {
         /* cancelled — hide() owns the element now */
@@ -1213,21 +1209,80 @@ export class CommandEditor {
     )
   }
 
-  private _cancelBoxTransition(): void {
-    this._boxTransition?.cancel()
-    this._boxTransition = null
+  private _cancelReturnAnim(): void {
+    this._returnAnim?.cancel()
+    this._returnAnim = null
   }
 
-  /** The box's own layout again: back in the flow at its natural size, no
-   *  fixed ghost position, no inert. */
-  private _clearBoxSizing(): void {
-    this.root.style.position = ''
-    this.root.style.left = ''
-    this.root.style.top = ''
-    this.root.style.width = ''
-    this.root.style.height = ''
-    this.root.style.margin = ''
-    this.root.inert = false
+  /** The departure's ghost (nocx-1ebrs.40): the box's frozen copy, fixed at
+   *  the rectangle the box occupied, fading while the box itself is already
+   *  display:none.
+   *
+   *  Why a copy, and why the copy: the box's own timeline has to stay main's
+   *  exact one — display:none in the same frame as the blur — because every
+   *  consumer that waits for the composer to be VISIBLE (the e2e helpers
+   *  included) has to wait for a box that owns input. The first cut kept the
+   *  real box on screen for the fade (fixed, inert, blurred), and a submit
+   *  typed into that dying window fell through to the pty: the command ran
+   *  and no block was ever recorded (nocxify-journey, run 39592338852). The
+   *  ghost owns paint only — `inert`, `pointer-events: none`, `aria-hidden`
+   *  — and is gone when its fade ends, cancelled or not. */
+  private _fadeAway(): void {
+    // The reached ink is read BEFORE the return is cancelled: cancelling
+    // reverts the animation's effect, and the value it hands the ghost must
+    // be the one the person is looking at.
+    const reachedInk = getComputedStyle(this.root).opacity
+    this._cancelReturnAnim()
+    if (!motionAllowed(this.root)) return
+    const rect = this.root.getBoundingClientRect()
+    if (rect.width < 1 || rect.height < 1) return
+    const ghost = this.root.cloneNode(true) as HTMLElement
+    ghost.setAttribute('inert', '')
+    ghost.setAttribute('aria-hidden', 'true')
+    ghost.setAttribute('data-nocx-motion-ghost', '')
+    ghost.style.position = 'fixed'
+    ghost.style.left = `${rect.left}px`
+    ghost.style.top = `${rect.top}px`
+    ghost.style.width = `${rect.width}px`
+    ghost.style.height = `${rect.height}px`
+    ghost.style.margin = '0'
+    ghost.style.pointerEvents = 'none'
+    // The ink it starts from is the ink the person is looking at — a return
+    // mid-flight hands over the opacity it had reached.
+    const from = reachedInk
+    // BODY, not the pane: a ghost inside the pane would answer the suite's
+    // `.pane.active .nocx-editor-input` locators twice for 140ms and trip
+    // Playwright's strict mode on every submit. At body level no pane-scoped
+    // locator can see it. The cost is the overlay placement's sibling
+    // selector (`.nocx-summon-stack > …`) during a summon's own hide — the
+    // ghost then wears the base chrome for its 140ms.
+    this.root.ownerDocument.body.appendChild(ghost)
+    const anim = ghost.animate([{ opacity: from || '1' }, { opacity: '0' }], {
+      duration: SETTLE_MS,
+      easing: SETTLE_EASING,
+    })
+    this._ghost = ghost
+    this._ghostAnim = anim
+    void anim.finished.then(
+      () => this._removeGhost(ghost),
+      () => this._removeGhost(ghost),
+    )
+  }
+
+  private _removeGhost(ghost: HTMLElement): void {
+    if (this._ghost === ghost) {
+      this._ghost = null
+      this._ghostAnim = null
+    }
+    ghost.remove()
+  }
+
+  private _cancelGhost(): void {
+    if (this._ghostAnim !== null) {
+      // The cancel settles `finished` in rejection, whose handler removes
+      // the element; nothing else to clear here.
+      this._ghostAnim.cancel()
+    }
   }
 
   /** The caret's x, in px relative to the editor root — the anchor for a
@@ -1368,76 +1423,13 @@ export class CommandEditor {
     this.view.contentDOM.blur()
     this.root.removeAttribute('inert')
     if (this.root.style.display === 'none') return
-    if (this._boxTransition !== null && !this._boxTransitionLeaves) {
-      // A return is still fading in: turn it around from the opacity it has
-      // got to, rather than snapping it away or restarting the departure.
-      const from = getComputedStyle(this.root).opacity
-      this._cancelBoxTransition()
-      this._fadeAway(from)
-      return
-    }
-    if (this._boxTransition !== null) return // already leaving; let it finish
+    // The departure's ink goes to the ghost FIRST — it has to read the box's
+    // rectangle while the box still has one — and the box leaves in the SAME
+    // frame as the blur, exactly as main's hide() always did. The layout
+    // change is the caller's settle to glide (see `commit`); the ghost is
+    // paint the layout never sees.
     this._fadeAway()
-  }
-
-  /** Take the box out of the layout in ONE step — the geometry change
-   *  display:none always was, at the moment it always happened — and fade
-   *  what the person was looking at away in place.
-   *
-   *  The one step first, deliberately: the viewport the grid and the pty are
-   *  sized from reads this box as in-flow or gone and nothing between. The
-   *  first cut of this fix animated the box's HEIGHT instead, and the pane
-   *  re-fitted per frame — four e2e shards red with a pty resized mid-command
-   *  and rows past their clip (CI run 39563565073). Out of the flow at the
-   *  rectangle it occupies, then fading: the caller's settle plays the one
-   *  displacement back, the fit numbers move here or nowhere, and a quick
-   *  command's prompt — arriving mid-fade — turns the fade around instead of
-   *  ever being seen to vanish.
-   *
-   *  Input ownership does not wait for any of it: `_inputActive` is false,
-   *  the contentDOM is blurred and the box is inert from the instant this
-   *  runs — the handoff's step 1 (ADR-0004 §2) is the routing, never the
-   *  routing's box. Motionless builds (jsdom, a reduced-motion preference)
-   *  keep the old one-frame removal. */
-  private _fadeAway(from?: string): void {
-    if (!motionAllowed(this.root)) {
-      this.root.style.display = 'none'
-      return
-    }
-    const rect = this.root.getBoundingClientRect()
-    this.root.style.position = 'fixed'
-    this.root.style.left = `${rect.left}px`
-    this.root.style.top = `${rect.top}px`
-    this.root.style.width = `${rect.width}px`
-    this.root.style.height = `${rect.height}px`
-    this.root.style.margin = '0'
-    this.root.inert = true
-    const anim = this.root.animate([{ opacity: from ?? '1' }, { opacity: '0' }], {
-      duration: SETTLE_MS,
-      easing: SETTLE_EASING,
-    })
-    this._boxTransition = anim
-    this._boxTransitionLeaves = true
-    void anim.finished.then(
-      () => {
-        if (this._boxTransition !== anim) return
-        this._boxTransition = null
-        this._takeBoxOutOfLayout()
-      },
-      () => {
-        /* cancelled — show() owns the element now */
-      },
-    )
-  }
-
-  /** The display:none the box always ended at, played through the host's
-   *  settle so the displacement it frees is glided, not pinned. */
-  private _takeBoxOutOfLayout(): void {
-    const settle = this.actions.settleAround ?? ((m: () => void) => m())
-    settle(() => {
-      this._clearBoxSizing()
-      this.root.style.display = 'none'
-    })
+    this.root.style.display = 'none'
   }
 
   get isVisible(): boolean {
@@ -1465,7 +1457,8 @@ export class CommandEditor {
     // The arbiter outlives the overlay it points at otherwise; a closed tab
     // must not keep consuming keys through a dead closure.
     this.keyArbiter = null
-    this._cancelBoxTransition()
+    this._cancelReturnAnim()
+    if (this._ghost !== null) this._removeGhost(this._ghost)
     this._onGrantChipClick = null
     this.root.removeEventListener('keydown', this.onKeydown, true)
     this.root.removeEventListener('focusin', this.onFocusIn)
