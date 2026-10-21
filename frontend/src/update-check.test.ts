@@ -82,3 +82,66 @@ describe('createUpdateCheck', () => {
     expect(notice.showAvailable).not.toHaveBeenCalled()
   })
 })
+
+describe('createUpdateCheck with a channel bridge (nocx-1ebrs.35.1)', () => {
+  it('applies the stored channel before checking, so the check fetches what the store names', async () => {
+    checkForUpdate.mockResolvedValue(null)
+    const apply = vi.fn<(channel: string) => Promise<void>>().mockResolvedValue(undefined)
+    const notice = fakeNotice()
+    const check = createUpdateCheck(notice, {
+      resolve: () => Promise.resolve('nightly'),
+      apply,
+    })
+
+    await check.run()
+
+    expect(apply).toHaveBeenCalledWith('nightly')
+    expect(checkForUpdate).toHaveBeenCalled()
+    expect(check.error()).toBeNull()
+  })
+
+  it('surfaces a channel that could not be applied instead of checking the wrong manifest', async () => {
+    const apply = vi
+      .fn<(channel: string) => Promise<void>>()
+      .mockRejectedValue(new Error('the updater is not available in this window'))
+    const notice = fakeNotice()
+    const check = createUpdateCheck(notice, {
+      resolve: () => Promise.resolve('nightly'),
+      apply,
+    })
+
+    await check.run()
+
+    // Not checked at all: a check against the previous channel would make
+    // the stored setting decorative — the exact failure the bead names.
+    expect(checkForUpdate).not.toHaveBeenCalled()
+    expect(check.error()).toBe('update channel: the updater is not available in this window')
+    expect(logWarn).toHaveBeenCalled()
+    expect(notice.showAvailable).not.toHaveBeenCalled()
+  })
+
+  it('re-resolves the channel on every run, so a switch reaches the next check', async () => {
+    checkForUpdate.mockResolvedValue(null)
+    const apply = vi.fn<(channel: string) => Promise<void>>().mockResolvedValue(undefined)
+    const current = 'stable'
+    const values = ['stable', 'nightly', 'nightly']
+    let i = 0
+    const check = createUpdateCheck(fakeNotice(), {
+      resolve: () => {
+        const v = values[Math.min(i, values.length - 1)]
+        i++
+        return Promise.resolve(v)
+      },
+      apply,
+    })
+
+    await check.run()
+    await check.run()
+    await check.run()
+
+    expect(apply).toHaveBeenNthCalledWith(1, 'stable')
+    expect(apply).toHaveBeenNthCalledWith(2, 'nightly')
+    expect(apply).toHaveBeenNthCalledWith(3, 'nightly')
+    expect(current).toBe('stable')
+  })
+})

@@ -11,9 +11,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -21,6 +23,7 @@ import (
 	"github.com/shady2k/nocx/internal/coordinator"
 	"github.com/shady2k/nocx/internal/log"
 	"github.com/shady2k/nocx/internal/log/logtest"
+	"github.com/shady2k/nocx/internal/settings"
 	"github.com/shady2k/nocx/internal/update"
 )
 
@@ -476,4 +479,160 @@ func testPublicKey(t *testing.T) ed25519.PublicKey {
 		t.Fatal(err)
 	}
 	return pub
+}
+
+// ---------------------------------------------------------------------------
+// SetUpdateChannel — the window binding that makes the stored setting select
+// the manifest the next check fetches (nocx-1ebrs.35.1, ADR-0097)
+// ---------------------------------------------------------------------------
+
+// signedChannelServer serves TWO signed manifests, one per channel root, with
+// different versions, and records which root each request hit — so a test can
+// prove the SELECTED channel was fetched, not just that a fetch happened.
+func signedChannelServer(t *testing.T, stable, nightly string) (*httptest.Server, []ed25519.PublicKey) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := update.NewPlatform().ArtifactID()
+	manifest := func(version string) []byte {
+		m := update.Manifest{
+			Version:  version,
+			Released: "2026-10-21T00:00:00Z",
+			NotesURL: "https://example.com/releases/v" + version,
+			Artifacts: []update.Artifact{{
+				OS:     id.OS,
+				Arch:   id.Arch,
+				Format: id.Format,
+				URL:    "https://example.com/nocx-" + version,
+				SHA256: "0000000000000000000000000000000000000000000000000000000000000000",
+				Size:   1,
+			}},
+		}
+		body, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	bodies := map[string][]byte{"/stable": manifest(stable), "/nightly": manifest(nightly)}
+	sigs := make(map[string][]byte, len(bodies))
+	for root, body := range bodies {
+		sigs[root] = []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(priv, body)))
+	}
+	var mu sync.Mutex
+	fetched := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		root := path.Dir(r.URL.Path)
+		body, ok := bodies[root]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		fetched[root]++
+		mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, ".sig") {
+			_, _ = w.Write(sigs[root])
+			return
+		}
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, []ed25519.PublicKey{pub}
+}
+
+// channelUpdaterAsMainBuildsIt wires the updater the way ServiceStartup does,
+// both channel roots pointed at the test server, and hands back the fetcher
+// the channel binding flips.
+func channelUpdaterAsMainBuildsIt(t *testing.T, srv *httptest.Server, keyring []ed25519.PublicKey) (update.Updater, *update.GitHubManifestFetcher) {
+	t.Helper()
+	fetcher := update.NewGitHubManifestFetcher(nil)
+	fetcher.BaseURL = srv.URL + "/stable"
+	fetcher.NightlyBaseURL = srv.URL + "/nightly"
+	return update.NewUpdater(update.UpdaterConfig{
+		Platform:       update.NewPlatform(),
+		Fetcher:        fetcher,
+		Keyring:        keyring,
+		CurrentVersion: "0.0.1",
+		InstallPath:    filepath.Join(t.TempDir(), "nocx"),
+		Logger:         log.NewSlogAdapter(logtest.Slog(t)),
+	}), fetcher
+}
+
+// The criterion the bead names: a STORED setting that does not select the
+// corresponding channel disproves the feature. Here the store is represented
+// by the binding the renderer calls with the setting's value, and the proof
+// is which channel root the next check actually fetched.
+func TestSetUpdateChannelSelectsTheManifestTheNextCheckFetches(t *testing.T) {
+	srv, keyring := signedChannelServer(t, "1.1.1", "2.2.2-nightly")
+	updater, fetcher := channelUpdaterAsMainBuildsIt(t, srv, keyring)
+	w := &WailsApp{updater: updater, updateFetch: fetcher, logger: logtest.Slog(t)}
+
+	// Default: stable, before anybody opts in.
+	info, err := w.CheckForUpdate()
+	if err != nil {
+		t.Fatalf("stable check: %v", err)
+	}
+	if info == nil || info.Version != "1.1.1" {
+		t.Fatalf("default channel fetch = %+v, want the stable 1.1.1", info)
+	}
+
+	err = w.SetUpdateChannel("nightly")
+	if err != nil {
+		t.Fatalf("select nightly: %v", err)
+	}
+	info, err = w.CheckForUpdate()
+	if err != nil {
+		t.Fatalf("nightly check: %v", err)
+	}
+	if info == nil || info.Version != "2.2.2-nightly" {
+		t.Fatalf("nightly channel fetch = %+v, want 2.2.2-nightly — the stored setting did not select the channel", info)
+	}
+
+	// Back to stable, by the same road the renderer takes.
+	err = w.SetUpdateChannel("stable")
+	if err != nil {
+		t.Fatalf("select stable: %v", err)
+	}
+	info, err = w.CheckForUpdate()
+	if err != nil {
+		t.Fatalf("second stable check: %v", err)
+	}
+	if info == nil || info.Version != "1.1.1" {
+		t.Fatalf("stable channel fetch = %+v, want 1.1.1", info)
+	}
+}
+
+// An unknown channel is refused and changes nothing: the next check keeps
+// the channel it had, rather than guessing what "beta" might mean.
+func TestSetUpdateChannelRefusesAnUnknownChannel(t *testing.T) {
+	srv, keyring := signedChannelServer(t, "1.1.1", "2.2.2-nightly")
+	updater, fetcher := channelUpdaterAsMainBuildsIt(t, srv, keyring)
+	w := &WailsApp{updater: updater, updateFetch: fetcher, logger: logtest.Slog(t)}
+
+	if err := w.SetUpdateChannel("beta"); err == nil {
+		t.Fatal("an unknown channel must be refused, not silently mapped")
+	}
+	info, err := w.CheckForUpdate()
+	if err != nil {
+		t.Fatalf("check after a refused channel: %v", err)
+	}
+	if info == nil || info.Version != "1.1.1" {
+		t.Fatalf("fetch after a refused channel = %+v, want the unchanged stable 1.1.1", info)
+	}
+}
+
+// The settings declaration and the window binding are two surfaces over one
+// vocabulary (ADR-0097): every value the Select offers must be a channel the
+// binding accepts, or a person could pick a setting the updater refuses.
+func TestUpdateChannelSettingValuesAreChannelsTheWindowAccepts(t *testing.T) {
+	for _, o := range settings.UpdateChannel.Options() {
+		if _, err := update.ParseChannel(o.Value); err != nil {
+			t.Errorf("update.channel offers %q, but the window refuses it: %v", o.Value, err)
+		}
+	}
+	// The default is one of the options (asserted in internal/settings),
+	// so the loop above already covers it.
 }

@@ -49,6 +49,18 @@ export function CheckForUpdate(): $CancellablePromise<update$0.UpdateInfo | null
 }
 
 /**
+ * SetUpdateChannel selects which signed manifest the next check fetches:
+ * stable (the default) or nightly (ADR-0097). The renderer calls this with
+ * the persisted update.channel setting — at startup and whenever the person
+ * changes it — so the stored value, not a window-side guess, decides the
+ * channel. An unknown channel is an error rather than a fallback: the two
+ * there are were decided, and a third spelling is a bug to surface.
+ */
+export function SetUpdateChannel(channel: string): $CancellablePromise<void> {
+    return $Call.ByName("main.WailsApp.SetUpdateChannel", channel);
+}
+
+/**
  * GetUpdateState returns the updater state for the UI notice.
  * "pending" means an update was applied and is waiting for a restart;
  * empty string means nothing in flight.
