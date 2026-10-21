@@ -53,6 +53,10 @@ export class SettingsContent extends SolidPaneContent {
     private readonly aboutClient?: import('./about-client').AboutClient,
     /** The clipboard the About page's Copy diagnostics writes through. */
     private readonly clipboard?: import('./clipboard').ClipboardAccess,
+    /** Why the last automatic update check failed, or null when it succeeded
+     *  (nocx-1ebrs.36). The About page's visible-degrade card; absent in an
+     *  embedding with no window updater, which then makes no claim. */
+    private readonly updateCheckError?: import('./update-check').UpdateCheckController['error'],
     private readonly policyClient?: import('./policy-client').PolicyClient,
     /** The ONE secret picker source (nocx-3o0ed.4). Built by the composition
      *  root, not here: the Connections and Endpoints pages place the same
@@ -116,6 +120,7 @@ export class SettingsContent extends SolidPaneContent {
           checkoutsStatus: this.checkoutsStatus,
           aboutClient: this.aboutClient,
           clipboard: this.clipboard,
+          updateCheckError: this.updateCheckError,
           observer: this.observer,
           onConnect: (profile: SSHProfile) => {
             this.onConnect?.(profile)

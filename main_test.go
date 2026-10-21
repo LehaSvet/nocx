@@ -2,9 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -12,7 +19,9 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 
 	"github.com/shady2k/nocx/internal/coordinator"
+	"github.com/shady2k/nocx/internal/log"
 	"github.com/shady2k/nocx/internal/log/logtest"
+	"github.com/shady2k/nocx/internal/update"
 )
 
 func TestResolveBackendReportsSuccessAndFailure(t *testing.T) {
@@ -346,4 +355,125 @@ func bindingKeys(bindings map[string]func(application.Window)) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// ---------------------------------------------------------------------------
+// CheckForUpdate — the seam the renderer's startup check goes through
+// (nocx-1ebrs.36)
+// ---------------------------------------------------------------------------
+
+// signedUpdateServer serves a signed manifest whose only artefact matches the
+// platform this test runs on, so the check path is exercised the way the
+// shipped app exercises it on every host.
+func signedUpdateServer(t *testing.T, version string) (*httptest.Server, []ed25519.PublicKey) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := update.NewPlatform().ArtifactID()
+	m := update.Manifest{
+		Version:  version,
+		Released: "2026-10-21T00:00:00Z",
+		NotesURL: "https://example.com/releases/v" + version,
+		Artifacts: []update.Artifact{{
+			OS:     id.OS,
+			Arch:   id.Arch,
+			Format: id.Format,
+			URL:    "https://example.com/nocx-" + version,
+			SHA256: "0000000000000000000000000000000000000000000000000000000000000000",
+			Size:   1,
+		}},
+	}
+	body, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(priv, body)))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/manifest.json":
+			_, _ = w.Write(body)
+		case "/manifest.json.sig":
+			_, _ = w.Write(sig)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, []ed25519.PublicKey{pub}
+}
+
+// updaterBuiltAsMainBuildsIt wires the updater exactly as ServiceStartup does
+// — GitHubManifestFetcher over a nil client — pointed at the test server.
+func updaterBuiltAsMainBuildsIt(t *testing.T, srv *httptest.Server, keyring []ed25519.PublicKey) update.Updater {
+	t.Helper()
+	fetcher := update.NewGitHubManifestFetcher(nil)
+	fetcher.BaseURL = srv.URL
+	return update.NewUpdater(update.UpdaterConfig{
+		Platform:       update.NewPlatform(),
+		Fetcher:        fetcher,
+		Keyring:        keyring,
+		CurrentVersion: "0.0.1",
+		InstallPath:    filepath.Join(t.TempDir(), "nocx"),
+		Logger:         log.NewSlogAdapter(logtest.Slog(t)),
+	})
+}
+
+// An update newer than the running version must be REPORTED through the seam
+// the renderer calls at startup, not swallowed. On 0.6.0 this seam panicked
+// inside the fetcher on every call (nocx-1ebrs.36). Red first.
+func TestCheckForUpdateReportsANewerVersionThroughTheAppSeam(t *testing.T) {
+	srv, keyring := signedUpdateServer(t, "9.9.9")
+	w := &WailsApp{
+		updater: updaterBuiltAsMainBuildsIt(t, srv, keyring),
+		logger:  logtest.Slog(t),
+	}
+
+	info, err := w.CheckForUpdate()
+	if err != nil {
+		t.Fatalf("check through the app seam: %v", err)
+	}
+	if info == nil {
+		t.Fatal("an update newer than the running version was swallowed — the seam returned null")
+	}
+	if info.Version != "9.9.9" {
+		t.Errorf("reported version = %q, want 9.9.9", info.Version)
+	}
+}
+
+// The paired failure path: a server that errors must come back out of the
+// seam as an error the renderer can surface, not as a silent null.
+func TestCheckForUpdateReportsAFailedCheckThroughTheAppSeam(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	w := &WailsApp{
+		updater: updaterBuiltAsMainBuildsIt(t, srv, []ed25519.PublicKey{testPublicKey(t)}),
+		logger:  logtest.Slog(t),
+	}
+
+	info, err := w.CheckForUpdate()
+	if err == nil {
+		t.Fatal("a failed check must be reported as an error, not swallowed")
+	}
+	if !strings.Contains(err.Error(), "update check failed") {
+		t.Errorf("error should say what failed, got: %v", err)
+	}
+	if info != nil {
+		t.Errorf("a failed check must not report an update, got %+v", info)
+	}
+}
+
+// testPublicKey mints a throwaway key so a failing check can still get past
+// keyring construction — the failure happens in the fetch, before any key is
+// consulted.
+func testPublicKey(t *testing.T) ed25519.PublicKey {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pub
 }

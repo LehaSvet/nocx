@@ -1092,18 +1092,22 @@ func (w *WailsApp) HostFocusWindow() error {
 
 // CheckForUpdate fetches and verifies the signed release manifest.
 // Returns an update description if a newer version is available,
-// or null when already current or on a dev build.
-func (w *WailsApp) CheckForUpdate() *update.UpdateInfo {
+// null when already current or on a dev build, and the check's own
+// error when the check failed. A failure is a state the renderer
+// surfaces (About, nocx-1ebrs.36) — returning null for it made a dead
+// check indistinguishable from "no update", which is how 0.6.0 never
+// offered anybody 0.6.1.
+func (w *WailsApp) CheckForUpdate() (*update.UpdateInfo, error) {
 	if w.updater == nil {
-		return nil
+		return nil, nil
 	}
 	info, err := w.updater.Check(context.Background())
 	if err != nil {
 		w.logger.Warn("update check failed", "error", err)
-		return nil
+		return nil, fmt.Errorf("update check failed: %w", err)
 	}
 	w.updateInfo = info
-	return info
+	return info, nil
 }
 
 // ApplyUpdate applies a previously checked update. No arguments —
