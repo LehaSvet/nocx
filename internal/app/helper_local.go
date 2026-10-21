@@ -48,6 +48,7 @@ import (
 	"github.com/shady2k/nocx/internal/helper/proto"
 	"github.com/shady2k/nocx/internal/lifecycle"
 	"github.com/shady2k/nocx/internal/lifecyclechannel"
+	"github.com/shady2k/nocx/internal/log"
 	"github.com/shady2k/nocx/internal/procwatch"
 	"github.com/shady2k/nocx/internal/profile"
 	"github.com/shady2k/nocx/internal/session"
@@ -899,6 +900,37 @@ func (o *localHelperOpener) openHostedOnce(ctx context.Context, cfg session.Conf
 	return out, true, c, nil
 }
 
+// paneAuthRejection is the sentence a person reads when the far host has
+// refused every credential this open offered it (nocx-1ebrs.44).
+//
+// What it replaces is the helper's own classified chain — "ssh authentication
+// failed for u@h: ssh: unable to authenticate, attempted methods [none
+// publickey], no supported methods remain" — which is the far side's accounting
+// of its handshake and names nothing a person can do. What a person can do is
+// check the password and the account; the raw chain is kept in the log beside
+// it, which is where a defect report quotes it from.
+//
+// The answer is TYPED, not a bare sentence: ssh.ErrAuthRejected is the error
+// nocx-1ebrs.18's rule reads ("can another attempt possibly succeed" — no),
+// and carrying the sentence as its Reason keeps both halves on one value —
+// a caller that must tell a definitive rejection from a transient failure
+// still can (TestASSHPaneWhoseCredentialTheServerRefusesAuthenticatesOnce),
+// and the person still reads a sentence they can act on. The refusal is
+// otherwise unchanged at every other consumer: the retry rules still hold,
+// and the host-key evidence still reaches its sheet
+// (hostKeyErrorFromHelperRefusal runs first at the spawn).
+func paneAuthRejection(ctx context.Context, user, host string, err error) error {
+	log.From(ctx).Warn("ssh pane: the server rejected every credential this open offered",
+		"host", host, "user", user, "error", err)
+	return &ssh.ErrAuthRejected{
+		Host: host,
+		User: user,
+		Reason: fmt.Sprintf(
+			"the server rejected the sign-in for %s@%s — the password or key it was offered was not accepted; check the password and the account, then try again",
+			user, host),
+	}
+}
+
 // openSSH hosts an ssh pane on this machine's helper: the daemon dials the far
 // host and the session's process is the shell channel it opens (nocx-50w7p.5).
 //
@@ -1009,7 +1041,8 @@ func (o *localHelperOpener) openSSH(ctx context.Context, spawn hostedSpawn, cfg 
 			// tried: `no supported methods remain` is the server saying stop.
 			if definitiveAuthRejection(herr) {
 				return hostedSpawnResult{}, fmt.Errorf(
-					"open an ssh pane on this machine's helper: %w", herr)
+					"open an ssh pane on this machine's helper: %w",
+					paneAuthRejection(ctx, target.User, target.Host, herr))
 			}
 			if o.log != nil {
 				o.log.Warn("ssh pane: could not hold the connection across the publish; the spawn may re-authenticate",
@@ -1036,7 +1069,8 @@ func (o *localHelperOpener) openSSH(ctx context.Context, spawn hostedSpawn, cfg 
 		// reported, once, and the open stops here.
 		if definitiveAuthRejection(perr) {
 			return hostedSpawnResult{}, fmt.Errorf(
-				"open an ssh pane on this machine's helper: %w", perr)
+				"open an ssh pane on this machine's helper: %w",
+				paneAuthRejection(ctx, target.User, target.Host, perr))
 		}
 		// THE LOGGER IS OPTIONAL and the failure is not: a test that wires an
 		// opener without one must still get the fail-open behaviour below
@@ -1131,7 +1165,17 @@ func (o *localHelperOpener) openSSH(ctx context.Context, spawn hostedSpawn, cfg 
 		// hostKeyInfoFromError to find — the defect connection-password
 		// .spec.ts:307 measured: the "Unknown host key" dialog never
 		// appeared at open time.
-		return res, hostKeyErrorFromHelperRefusal(err)
+		if hk := hostKeyErrorFromHelperRefusal(err); hk != err {
+			return res, hk
+		}
+		// And the server's "no" to every credential becomes a sentence a
+		// person acts on (nocx-1ebrs.44), not the handshake's own accounting.
+		// A cancelled prompt and a coordinator with nowhere to ask keep their
+		// own answers — a decision and a state, not a rejection.
+		if definitiveAuthRejection(err) {
+			return res, paneAuthRejection(ctx, target.User, target.Host, err)
+		}
+		return res, err
 	}
 	// BOUND TO THE SESSION THE HELPER REPORTED, which is the id the interval
 	// will be created under when this pane's agent enrols and a person answers.

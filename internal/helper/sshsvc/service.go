@@ -530,6 +530,13 @@ func validateIdentity(id proto.SSHIdentity) error {
 			// prompt would ask a person for something already in hand.
 			return fmt.Errorf("%w: interactive auth carries no credential", errBadProbeParams)
 		}
+		if id.PromptAfterKeys {
+			// The flag follows KEYS; an interactive identity is already the
+			// rung it would follow, so carrying it says two different
+			// things about how to authenticate (the same rule the material
+			// checks above enforce).
+			return fmt.Errorf("%w: interactive auth cannot also ask for a rung after keys", errBadProbeParams)
+		}
 		return nil
 	case proto.SSHAuthPassword:
 		if id.Credential == nil || id.Credential.Ref == "" {
@@ -537,6 +544,9 @@ func validateIdentity(id proto.SSHIdentity) error {
 		}
 		if len(id.Keys) != 0 {
 			return fmt.Errorf("%w: password auth carries keys", errBadProbeParams)
+		}
+		if id.PromptAfterKeys {
+			return fmt.Errorf("%w: password auth cannot also ask for a rung after keys", errBadProbeParams)
 		}
 		return nil
 	case proto.SSHAuthKey:
@@ -728,26 +738,7 @@ func (s *Service) authMethods(ctx context.Context, conn *host.Host, ep dialEndpo
 		})}, nil
 
 	case proto.SSHAuthInteractive:
-		// The rung a PERSON answers, on whichever of the server's two
-		// password-shaped methods it actually offers — each through its OWN
-		// relay, because the two are different questions with different
-		// owners (clientConfig's own comment): the server's own
-		// keyboard-interactive questions travel to the coordinator verbatim
-		// through OpPrompt, and a bare `password` challenge — which carries
-		// no question of its own, RFC 4252 §8's challenge is bare — is asked
-		// through the coordinator's own connection-password ask
-		// (askPassword, OpPasswordPrompt), the same one a direct dial's
-		// prompt rung uses, so it reaches the "Password for {profile}"
-		// dialog with its remember checkbox rather than a bare box with no
-		// connection to name (nocx-y6fh7 item 4, round 3).
-		return []gossh.AuthMethod{
-			gossh.KeyboardInteractive(func(_, _ string, questions []string, echos []bool) ([]string, error) {
-				return s.askInteractive(ctx, conn, ep, questions, echos)
-			}),
-			gossh.PasswordCallback(func() (string, error) {
-				return s.askPassword(ctx, conn, ep)
-			}),
-		}, nil
+		return s.interactiveMethods(ctx, conn, ep), nil
 
 	case proto.SSHAuthKey:
 		// ONE method, every key in the queue: `gossh.PublicKeys` sends a
@@ -785,12 +776,50 @@ func (s *Service) authMethods(ctx context.Context, conn *host.Host, ep dialEndpo
 				ctx: ctx, conn: conn, cred: offer.Credential, pub: pub, log: s.log,
 			})
 		}
-		return []gossh.AuthMethod{gossh.PublicKeys(signers...)}, nil
+		// The rung that FOLLOWS the keys (nocx-1ebrs.44): a destination in
+		// auto mode whose discovered keys the server rejects still ends at
+		// the prompt, the way ssh itself does. The methods are the SAME
+		// interactive pair, so the one-method-per-stored-secret rule is
+		// untouched — nothing stored is repeated, and what follows the keys
+		// is a person answering through the coordinator's one ask.
+		methods := []gossh.AuthMethod{gossh.PublicKeys(signers...)}
+		if ep.Identity.PromptAfterKeys {
+			methods = append(methods, s.interactiveMethods(ctx, conn, ep)...)
+		}
+		return methods, nil
 	}
 	// validateIdentity has already refused every other value; this arm exists
 	// so a kind added to the wire without a method here is a refusal and not a
 	// nil method the handshake would send.
 	return nil, fmt.Errorf("%w: auth %q is not one this helper knows", errBadProbeParams, ep.Identity.Auth)
+}
+
+// interactiveMethods is the prompt rung, spelled once: the method pair a
+// PERSON answers, on whichever of the server's two password-shaped methods it
+// actually offers — each through its OWN relay, because the two are different
+// questions with different owners (clientConfig's own comment): the server's
+// own keyboard-interactive questions travel to the coordinator verbatim
+// through OpPrompt, and a bare `password` challenge — which carries
+// no question of its own, RFC 4252 §8's challenge is bare — is asked
+// through the coordinator's own connection-password ask
+// (askPassword, OpPasswordPrompt), the same one a direct dial's
+// prompt rung uses, so it reaches the "Password for {profile}"
+// dialog with its remember checkbox rather than a bare box with no
+// connection to name (nocx-y6fh7 item 4, round 3).
+//
+// One definition, two carriers: the interactive identity offers it alone, and
+// a key identity with PromptAfterKeys offers it after its keys
+// (nocx-1ebrs.44). A second spelling of the pair would be two answers to
+// "how does a person answer this host".
+func (s *Service) interactiveMethods(ctx context.Context, conn *host.Host, ep dialEndpoint) []gossh.AuthMethod {
+	return []gossh.AuthMethod{
+		gossh.KeyboardInteractive(func(_, _ string, questions []string, echos []bool) ([]string, error) {
+			return s.askInteractive(ctx, conn, ep, questions, echos)
+		}),
+		gossh.PasswordCallback(func() (string, error) {
+			return s.askPassword(ctx, conn, ep)
+		}),
+	}
 }
 
 // askInteractive relays one keyboard-interactive challenge to the coordinator
