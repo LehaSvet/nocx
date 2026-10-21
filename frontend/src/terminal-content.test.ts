@@ -17171,7 +17171,9 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
         "3.9 MB of this session's output is missing",
       )
       const historical = cards.find((card) => card.title.includes("of this session's output"))!
-      expect(historical.description).toContain("3.9 MB the recording's size limit dropped")
+      expect(historical.description).toContain(
+        "the recording's size limit dropped the oldest 3.9 MB",
+      )
       expect(historical.description).not.toContain('hostWindow')
     } finally {
       teardown()
@@ -17195,7 +17197,7 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
       await vi.waitFor(() =>
         expect(cardTitle(tab)).toBe("3.3 MB of this session's output is missing"),
       )
-      expect(cardDesc(tab)).toContain("3.3 MB the recording's size limit dropped")
+      expect(cardDesc(tab)).toContain("the recording's size limit dropped the oldest 3.3 MB")
 
       // …and the recording drops more while the person is reading it.
       session.fireRecoveryChanged({
@@ -17206,7 +17208,7 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
       await vi.waitFor(() =>
         expect(cardTitle(tab)).toBe("3.9 MB of this session's output is missing"),
       )
-      expect(cardDesc(tab)).toContain("3.9 MB the recording's size limit dropped")
+      expect(cardDesc(tab)).toContain("the recording's size limit dropped the oldest 3.9 MB")
     } finally {
       teardown()
     }
@@ -17309,10 +17311,10 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
         titleOf(notice).includes("of this session's output"),
       )!
       expect(historical.querySelector('.ui-status-card__desc')?.textContent).toContain(
-        '5 B missing as "hostWindow"',
+        '5 B went missing as "hostWindow"',
       )
       expect(historical.querySelector('.ui-status-card__desc')?.textContent).toContain(
-        "10 B the recording's size limit dropped",
+        "the recording's size limit dropped the oldest 10 B",
       )
 
       const firstLive = notices.find(
@@ -17381,7 +17383,7 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
     try {
       await vi.waitFor(() => expect(cardTitle(tab)).not.toBeNull())
       expect(cardTitle(tab)).toBe("100 B of this session's output is missing")
-      expect(cardDesc(tab)).toContain('missing as "hostWindow"')
+      expect(cardDesc(tab)).toContain('went missing as "hostWindow"')
     } finally {
       teardown()
     }
@@ -17545,6 +17547,62 @@ describe('a pane drawing a session it did not size (nocx-eidfb.3)', () => {
       } finally {
         vi.useRealTimers()
       }
+    } finally {
+      teardown()
+    }
+  })
+
+  // THE RESTORED TAB THAT STAYED AT THE DEFAULT (nocx-1ebrs.42). The order
+  // here is a restore's, not an attach's: the pane's viewport is delivered
+  // BEFORE the recovered screen exists, and the first accepted frame is an
+  // alternate-buffer screen at the size the backend dropped the detached
+  // session to — the default grid and NO pixel metrics (internal/session/
+  // size.go: NoClient hands back a grid and no pixels). In a real layout
+  // that pane is fullscreen, so the natural-advance probe the fit measures
+  // with is one of the children the fullscreen rule has hidden — both width
+  // sources dead, the fit never ran, and the program was never told the
+  // pane it had come back into. The rows the painter put up are the one
+  // measurement that survives every mode: a row is exactly cols cells wide.
+  it('refits a restored full-screen pane whose frames carry no pixel metrics', async () => {
+    const session = makeSession({ recovered: { produced: 0, gaps: [] } })
+    const mounted = await mountTerminal(makeClipboard(), {
+      hooks: { adoptSession: () => Promise.resolve(asSessionHandleForTest(session)) },
+    })
+    const { content, tab, teardown } = mounted
+    try {
+      tab.pane.classList.add('active')
+      // The real restore order: the viewport arrives first; the recovered
+      // screen follows it.
+      content.viewportChanged({ width: 1632, height: 832 })
+      const frame = screenFrame(1, [RECOVERED], {
+        cols: 80,
+        rows: 24,
+        cellWidthPx: 0,
+        cellHeightPx: 0,
+      })
+      frame.state.bufferKind = 'alternate'
+      session.fireScreenFrame(frame)
+
+      // The pane painted the recovered screen; give its rows the box a real
+      // layout would (80 cols at 8 px, a 16 px row) — jsdom measures nothing.
+      const live = tab.pane.querySelector<HTMLElement>('.terminal-live-container')!
+      await vi.waitFor(() => expect(live.querySelector('.term-grid-row')).not.toBeNull())
+      const row = live.querySelector<HTMLElement>('.term-grid-row')!
+      Object.defineProperty(row, 'getBoundingClientRect', {
+        value: () =>
+          ({ width: 80 * 8, height: 16, top: 0, left: 0, right: 640, bottom: 16 }) as DOMRect,
+      })
+
+      // The rows are measurable now; re-deliver the pane's box the way a
+      // real re-measure arrives and wait for the fit's own report.
+      content.viewportChanged({ width: 1632, height: 832 })
+      await vi.waitFor(() => {
+        const reports = session.sendResize.mock.calls.map((call) => call[0])
+        const mine = reports.find((report) => report.cols > 80)
+        expect(mine).toBeDefined()
+        expect(mine!.cols).toBe(Math.floor(1632 / 8))
+        expect(mine!.xpixel).toBe(mine!.cols * 8)
+      })
     } finally {
       teardown()
     }
