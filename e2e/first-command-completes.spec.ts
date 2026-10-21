@@ -64,6 +64,21 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+/** Where this spec's disposable homes are made. macOS $TMPDIR is
+ *  /private/var/folders/<two random components>/T/ — 49 bytes before the
+ *  home's own name — and a home is where this spec's backend binds its
+ *  sockets (<home>/Library/Application Support/nocx-dev/run/*.sock): under
+ *  $TMPDIR that came to 130 bytes against darwin's 103-byte sun_path limit
+ *  on the first ci-mac run of this spec (39678155081), the server refused to
+ *  serve, and every variant failed before a pane opened. Linux's /tmp is
+ *  short, which is why the container runs never saw it. The Go suite's answer
+ *  is /tmp on darwin for exactly this (storagetest.DisposableRoot,
+ *  nocx-lvdj3): a real user's home is short, only a test's under $TMPDIR is
+ *  not — mirrored here rather than invented a second time. */
+function disposableRoot(): string {
+  return process.platform === 'darwin' ? '/tmp' : tmpdir()
+}
+
 import {
   appReadyForInput,
   bindEndpoint,
@@ -218,7 +233,7 @@ test.describe('a fresh pane completes its first command (nocx-ruf5o)', () => {
   let backend: VaultBackend
 
   test.beforeEach(() => {
-    home = { root: mkdtempSync(join(tmpdir(), 'nocx-ruf5o-')) }
+    home = { root: mkdtempSync(join(disposableRoot(), 'nocx-ruf5o-')) }
     backend = new VaultBackend(readStand().server, home)
   })
 
