@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -80,6 +81,12 @@ func workerTestDial(t *testing.T, ws *transport.WSServer) *websocket.Conn {
 // crash (the reason internal/transport's own tests read this way).
 type workerNotifications struct {
 	frames chan workerNotification
+	conn   *websocket.Conn
+	// done ends the stand-in heartbeat when the reader exits.
+	done chan struct{}
+	// closed is the reader's own record that the connection is gone: the one
+	// observable "nothing else will ever arrive here".
+	closed atomic.Bool
 }
 
 type workerNotification struct {
@@ -89,9 +96,40 @@ type workerNotification struct {
 
 func readWorkerNotifications(t *testing.T, conn *websocket.Conn) *workerNotifications {
 	t.Helper()
-	r := &workerNotifications{frames: make(chan workerNotification, 64)}
+	r := &workerNotifications{frames: make(chan workerNotification, 64), conn: conn, done: make(chan struct{})}
 	go func() {
-		defer close(r.frames)
+		defer func() {
+			close(r.done)
+			r.closed.Store(true)
+			close(r.frames)
+		}()
+		// THE STAND-IN'S HEARTBEAT, the real renderer's own contract
+		// (dispatcher.ts): the server reaps a connection that has sent it
+		// nothing for heartbeatReadWindow — 30s, refreshed by client frames
+		// alone, and nothing but an outbound frame refreshes it — and a real
+		// renderer arms transport.ping whenever it goes idle. This pane sends
+		// nothing of its own, so a journey longer than the window used to
+		// lose the connection mid-flight and every notification after it
+		// (nocx-1ebrs.34's loaded reproduction: the tabClosed frame was
+		// broadcast to a socket the server had already reaped).
+		heartbeat := time.NewTicker(10 * time.Second)
+		defer heartbeat.Stop()
+		go func() {
+			// r.done is closed by the reader's own defer and by nobody else:
+			// this goroutine only reads it.
+			for id := 1; ; id++ {
+				select {
+				case <-heartbeat.C:
+				case <-r.done:
+					return
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(
+					fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"transport.ping","params":{}}`, id),
+				)); err != nil {
+					return
+				}
+			}
+		}()
 		for {
 			typ, msg, err := conn.ReadMessage()
 			if err != nil {
@@ -117,12 +155,19 @@ func readWorkerNotifications(t *testing.T, conn *websocket.Conn) *workerNotifica
 }
 
 // await waits for one notification of that method, as an observable state and
-// never as a duration: the frame either arrived or the package's own wait
-// reports what never came.
+// never as a duration: the frame ends the wait when it arrives, the reader's
+// own record of a dead connection ends it in failure (nothing else will ever
+// arrive), and the package's own deadline is the last resort — a five-second
+// ceiling here fired on a green pipeline whenever the machine was loaded
+// (nocx-1ebrs.34).
 func (r *workerNotifications) await(t *testing.T, method string) json.RawMessage {
 	t.Helper()
 	var got json.RawMessage
-	waittest.WaitFor(t, "the "+method+" notification to arrive", func() bool {
+	waittest.WaitForHealthy(t, "the "+method+" notification to arrive", func() string {
+		return "the renderer's websocket is the only source of these frames, and it has stopped"
+	}, func() bool {
+		return !r.closed.Load()
+	}, func() bool {
 		select {
 		case f, ok := <-r.frames:
 			if !ok {

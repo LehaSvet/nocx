@@ -87,10 +87,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/shady2k/nocx/internal/agentdriver"
+	"github.com/shady2k/nocx/internal/assistant"
 	"github.com/shady2k/nocx/internal/content"
 	"github.com/shady2k/nocx/internal/notify"
 	"github.com/shady2k/nocx/internal/paneobserve"
@@ -146,6 +148,15 @@ func (s *s14RealStand) liveSession(t *testing.T, participant string) string {
 		return err == nil && stored.Liveness.SessionID != ""
 	})
 	return stored.Liveness.SessionID
+}
+
+// sessionAlive says the pane's session is still in the registry — the one
+// observable that the agent which owes an answer is gone. Close and EndSession
+// both remove the id, so a missing session is the supervisor's own record that
+// this pane will never answer, however load-starved the machine is.
+func (s *s14RealStand) sessionAlive(sessionID string) bool {
+	_, err := s.reg.Get(session.ID(sessionID))
+	return err == nil
 }
 
 // readWorker is a coordinator's own session.read of one of its workers, made
@@ -404,9 +415,27 @@ func (s *s14RealStand) cueAnswer(t *testing.T, sessionID, tool string, args any)
 		t.Fatalf("cue %s for %s: %v", tool, sessionID, err)
 	}
 	var answer string
-	waittest.WaitForDetail(t, fmt.Sprintf("%s to answer the %s call from %s", sessionID, tool, sessionID), func() string {
+	// THE ANSWER IS THE OBSERVABLE, and no ceiling stands in for it
+	// (nocx-1ebrs.34): this wait's five-second form fired on green pipelines
+	// whenever CI runs overlapped, because the ceiling — not the answer —
+	// decided. What ends it instead: the answer itself; the pane's session
+	// leaving the registry (the supervisor's own record that the agent that
+	// owes the answer is gone); or the test's own deadline.
+	waittest.WaitForHealthy(t, fmt.Sprintf("%s to answer the %s call from %s", sessionID, tool, sessionID), func() string {
 		lines := s14CallLog(t, s.stateDir, sessionID)
-		return fmt.Sprintf("the call log holds %d answers, wanted more than %d: %q", len(lines), before, strings.Join(lines, " | "))
+		// WHICH HALF OF THE PIPELINE STOPPED, in the failure itself: the mock
+		// writes the cue's seq to its taken file before it makes the call, so
+		// the detail says "the agent took the cue and did not answer it" —
+		// the runtime's own progress, readable at the failure — rather than a
+		// bare count.
+		if s14CallTaken(t, s.stateDir, sessionID, before+1) {
+			return fmt.Sprintf("the call log holds %d answers, wanted more than %d; the mock took the cue (seq %d) and did not answer it: %q",
+				len(lines), before, before+1, strings.Join(lines, " | "))
+		}
+		return fmt.Sprintf("the call log holds %d answers, wanted more than %d; the mock never took the cue (seq %d): %q",
+			len(lines), before, before+1, strings.Join(lines, " | "))
+	}, func() bool {
+		return s.sessionAlive(sessionID)
 	}, func() bool {
 		lines := s14CallLog(t, s.stateDir, sessionID)
 		if len(lines) <= before {
@@ -441,6 +470,27 @@ func TestS14CallLogWaitsForTheCompleteAnswerLine(t *testing.T) {
 	if got := s14CallLog(t, stateDir, "worker"); len(got) != 2 || got[1] != second {
 		t.Fatalf("complete call log = %q, want the completed second answer %q", got, second)
 	}
+}
+
+// s14CallTaken says whether the pane's mock agent took the cue carrying this
+// seq — its own acknowledgement, written before the call is made. The file is
+// absent until the mock's first call, and an earlier or later seq in it is
+// the same answer as no: this cue specifically was not taken.
+func s14CallTaken(t *testing.T, stateDir, sessionID string, seq int) bool {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(stateDir, "calltaken", sessionID)) // #nosec G304 -- this test's own state directory
+	if os.IsNotExist(err) {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("read the taken cues for %s: %v", sessionID, err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if strings.TrimSpace(line) == strconv.Itoa(seq) {
+			return true
+		}
+	}
+	return false
 }
 
 // s14CallLog is every complete answer a pane's agent has recorded, oldest first.
@@ -721,7 +771,14 @@ func TestACoordinatorHearsItsWorkersThroughTheRealHelper(t *testing.T) {
 	// ONE pending row is the shape the bead is about: two of them would be the
 	// two-turn delivery a worker answered with "I received no task".
 	w1Read := s14ReadResult{}
-	waittest.WaitForDetail(t, "the worker's pane to be given the briefing and the task as one message", func() string {
+	// THE RECORD CARRIES THE DELIVERY'S OWN VERDICT, so the wait reads it
+	// instead of a ceiling (nocx-1ebrs.34): each poll is one whole agent round
+	// trip, and on a loaded runner one of those can outlive five seconds on a
+	// perfectly green delivery — the ceiling fired, the delivery did not. What
+	// ends this wait: submitted (the condition), a terminal phase that is not
+	// submitted (the runtime's own refusal — waiting longer cannot change it),
+	// a pane gone, or the test's own deadline.
+	waittest.WaitForHealthy(t, "the worker's pane to be given the briefing and the task as one message", func() string {
 		read := stand.readWorker(t, coordinator, w1Session)
 		pending := make([]string, 0, len(read.Pending))
 		for _, p := range read.Pending {
@@ -730,8 +787,17 @@ func TestACoordinatorHearsItsWorkersThroughTheRealHelper(t *testing.T) {
 		return fmt.Sprintf("pane %s classifies %q, pending %v; the mock's own stdin log holds %q",
 			w1Session, read.Classification, pending, stand.paneTyped(t, w1Session))
 	}, func() bool {
+		switch s14PendingPhase(w1Read, briefingID) {
+		case string(assistant.PhaseRefused), string(assistant.PhaseFailedPartial),
+			string(assistant.PhaseDeliveryUnknown), string(assistant.PhasePartial),
+			string(assistant.PhaseWritten), string(assistant.PhaseCancelled),
+			string(assistant.PhaseIndeterminate):
+			return false
+		}
+		return stand.sessionAlive(w1Session) && stand.sessionAlive(coordinator)
+	}, func() bool {
 		w1Read = stand.readWorker(t, coordinator, w1Session)
-		return len(w1Read.Pending) == 1 && s14PendingPhase(w1Read, briefingID) == "submitted"
+		return len(w1Read.Pending) == 1 && s14PendingPhase(w1Read, briefingID) == string(assistant.PhaseSubmitted)
 	})
 
 	// And the ORDER, from the pane's own byte stream: the rules reached the
