@@ -1178,6 +1178,12 @@ func (s *WSServer) sessionSpecs(lane control.Admission, sessionGate, configGate 
 		ledger: sessionLedger, helper: s.helperSessionOpener,
 		laneRegistrar: laneRegistrar,
 		paneOpened:    s.paneOpenedNote,
+		// The server IS the wire ask (RequestConnectionPassword), the same
+		// value the composition root hands the vault and the connection
+		// resolver — one asker, three consumers (nocx-1ebrs.44 stamps it on
+		// the direct-host config; the resolver wraps it with the remember;
+		// the vault's unlock ask is its sibling).
+		passwordAsk: s,
 	}
 	sessionOps := capability.NewSessionOperations(sessionGate, lane, s.registry, s.profileUsage)
 	// The whole-domain operation sessions.live reads the registry under, beside

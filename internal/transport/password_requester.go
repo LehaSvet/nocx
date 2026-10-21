@@ -65,6 +65,11 @@ func (s *WSServer) RequestConnectionPassword(ctx context.Context, req ssh.Passwo
 	}
 }
 
+// The server satisfies the ssh seam directly, which is how the direct-host
+// open carries the ask (nocx-1ebrs.44): the sessionOpener stamps the server
+// itself on the config, and a compile break here names the field that moved.
+var _ ssh.ConnectionPasswordRequester = (*WSServer)(nil)
+
 // ErrPasswordNoClientConnected is returned by RequestConnectionPassword
 // when no renderer is attached to receive the notification. One of the
 // three distinct outcomes of a connection-password ask (with the sealed

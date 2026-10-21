@@ -202,3 +202,167 @@ type wirePasswordAsker struct {
 func (w wirePasswordAsker) RequestConnectionPassword(ctx context.Context, req ssh.PasswordRequest) (ssh.PasswordAnswer, error) {
 	return w.ws.RequestConnectionPassword(ctx, req)
 }
+
+// TestWSServer_OpenDirectHost_CarriesTheConnectionPasswordAsk is the UNSAVED
+// half of the same rule the test above pins for saved profiles
+// (nocx-1ebrs.44): an open that names a HOST and no profile — the connect
+// UI's direct entry — must carry the server's own connection-password ask on
+// its config, so a host that wants a password raises the prompt instead of
+// ending in the raw "no supported methods remain".
+//
+// The config the dial sees is built by resolveRemote's direct-host branch,
+// which stamped nothing before the fix: the dial below answered
+// "dial saw no password requester", which is the red this test opens with.
+// The resolver path needs no such wiring from THIS package (the connection
+// resolver stamps its own asker); the direct-host path is the transport's to
+// wire, and the asker it wires is the server itself — the same
+// RequestConnectionPassword the resolver wraps.
+func TestWSServer_OpenDirectHost_CarriesTheConnectionPasswordAsk(t *testing.T) {
+	logger := log.NewSlogAdapter(nil)
+	reg := newRegWithStub(logger)
+
+	var ws *WSServer
+	var answerUsed string
+	var askConnection string
+	reg.WithSSHFactory(&stubSSHFactory{
+		connectFn: func(ctx context.Context, _ string, opts ...ssh.ConnectOption) (ssh.Channel, error) {
+			// Rebuild the config the way a dial does and raise the ask
+			// exactly as the prompt rung does. The requester being here at
+			// all is the assertion: the direct-host branch built this config.
+			cfg := &ssh.ConnectConfig{}
+			for _, o := range opts {
+				o(cfg)
+			}
+			if cfg.PasswordRequester == nil {
+				return nil, errors.New("dial saw no password requester")
+			}
+			ans, err := cfg.PasswordRequester.RequestConnectionPassword(ctx, ssh.PasswordRequest{
+				Connection: cfg.ConnectionName,
+				User:       cfg.User,
+				Host:       "host.example.com",
+				Reason:     "no password is stored for this connection",
+			})
+			if err != nil {
+				return nil, err
+			}
+			askConnection = cfg.ConnectionName
+			answerUsed = ans.Password
+			return ssh.NewStubChannel(logger), nil
+		},
+	})
+
+	resolver := newLauncherTestResolver()
+	resolver.add("host.example.com", ssh.HostConfig{HostName: "host.example.com", User: "tester", Port: 22})
+
+	ws = NewWSServer(logger, reg,
+		sshHelperOpt(reg),
+		WithSSHConfigResolver(resolver, "/nonexistent/config"),
+	)
+
+	ctx := context.Background()
+	if err := ws.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = ws.Stop(ctx) })
+
+	conn := connectWS(t, ws)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	// The open names a HOST and no profile: the direct-host path, which the
+	// connection resolver never sees.
+	req, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      100,
+		"method":  "open",
+		"params": map[string]any{
+			"cols": 80, "rows": 24, "xpixel": 0, "ypixel": 0,
+			"kind": "ssh",
+			"host": "host.example.com",
+			"user": "tester",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if writeErr := conn.WriteMessage(websocket.TextMessage, req); writeErr != nil {
+		t.Fatalf("write open: %v", writeErr)
+	}
+
+	// The prompt reaches the renderer as connections.passwordRequest, with
+	// NO connection name — there is no saved connection to name, and that
+	// absence is what hides the remember checkbox (ConnectionPasswordPrompt).
+	_ = conn.SetReadDeadline(time.Now().Add(wantWithin))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read password request notification: %v", err)
+	}
+	var notif struct {
+		Method string `json:"method"`
+		Params struct {
+			RequestID  string `json:"requestId"`
+			Connection string `json:"connection"`
+		} `json:"params"`
+	}
+	if unmarshalErr := json.Unmarshal(data, &notif); unmarshalErr != nil {
+		t.Fatalf("unmarshal notification: %v", unmarshalErr)
+	}
+	if notif.Method != "connections.passwordRequest" {
+		t.Fatalf("expected connections.passwordRequest, got %q", notif.Method)
+	}
+	if notif.Params.Connection != "" {
+		t.Errorf("the ask names connection %q, want empty: a direct-host open is not a saved connection", notif.Params.Connection)
+	}
+
+	// Answer over the same socket.
+	answer, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "connections.passwordResolved",
+		"params": map[string]any{
+			"requestId": notif.Params.RequestID,
+			"outcome":   "submitted",
+			"password":  "the-direct-host-password",
+			"remember":  false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal passwordResolved: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, answer); err != nil {
+		t.Fatalf("write passwordResolved: %v", err)
+	}
+
+	// Both responses arrive in one loop, in either order — the same two
+	// goroutines handing off as the saved-profile test above.
+	var resolvedResp, openResp vaultRPCResult
+	for resolvedResp.ID == 0 || openResp.ID == 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(wantWithin))
+		_, data, rerr := conn.ReadMessage()
+		if rerr != nil {
+			t.Fatalf("waiting for both responses (passwordResolved seen: %v, open seen: %v): %v",
+				resolvedResp.ID != 0, openResp.ID != 0, rerr)
+		}
+		var msg vaultRPCResult
+		if err := json.Unmarshal(data, &msg); err != nil {
+			continue
+		}
+		switch msg.ID {
+		case 2:
+			resolvedResp = msg
+		case 100:
+			openResp = msg
+		}
+	}
+	if resolvedResp.Error != nil {
+		t.Fatalf("passwordResolved error: %s", resolvedResp.Error.Message)
+	}
+	if openResp.Error != nil {
+		t.Fatalf("open failed: %s", openResp.Error.Message)
+	}
+	if answerUsed != "the-direct-host-password" {
+		t.Errorf("dial used %q, want the submitted password", answerUsed)
+	}
+	if askConnection != "" {
+		t.Errorf("the dial's config names connection %q, want empty", askConnection)
+	}
+}

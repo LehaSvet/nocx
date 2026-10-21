@@ -18,7 +18,7 @@ export interface ConnectionsPasswordRequest {
    */
   requestId: string
   /**
-   * The saved profile's display name the prompt is asking for. Empty for asks that do not name a profile (never sent today — direct-host opens do not raise prompts).
+   * The saved profile's display name the prompt is asking for. Empty for a DIRECT-HOST open (nocx-1ebrs.44): the connect UI's unsaved entry names no saved connection, there is nothing for a remember to bind to, and the renderer shows no remember checkbox for an ask that carries no connection name.
    */
   connection: string
   /**
