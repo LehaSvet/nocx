@@ -344,7 +344,15 @@ Transitions are authenticated events, never frontend stack guessing (decision 2)
   active.
 - **`domain_activated`** — the top-of-stack suspended domain reclaims the lane. If
   it has an open attempt the lane goes `Running(attempt)`, else `PromptReady`.
-  Activation is the _only_ way a suspended domain returns.
+  Activation is the _only_ way a suspended domain returns. An activation may
+  also arrive while a child of the activating domain is still on the stack —
+  the child's interactive session ended with its process, and the child's own
+  end reaches the kernel by another channel (a forwarded transport's EOF) or
+  not at all (a far shell with no exit-time goodbye), so the authenticated
+  activation supersedes those descendants: they are removed, their open
+  attempts become `unknown`, and the parent reclaims the lane in the same
+  frame (nocx-1ebrs.39). A stack entry the activator does not own is still
+  refused.
 - **`domain_closed`** — the top-of-stack domain ends. It is removed; its open
   attempts become `unknown`; the lane has no active domain (a suspended parent
   below does **not** auto-activate — it needs its own authenticated activation).
