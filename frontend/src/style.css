@@ -997,6 +997,40 @@
   transform-origin: 0 50%;
 }
 
+/* PROCEDURAL BOX AND BLOCK INK (nocx-1ebrs.15). Box drawing and block
+   elements are drawn to cell bounds by painter/cell-ink.ts — segments from
+   the cell's own geometry, not the font's glyph, which is built for a
+   typographic cell and cannot tile (a vertical │ run paints dashed). The
+   box spans the run's own pixel rectangle (inline width/height written by
+   paint-row.ts from the metric), so only the layout facts live here: the
+   box hangs from the line-box top, exactly as tall as the row's pitch, so
+   two adjacent rows' ink meets at the shared edge; and the SVG is allowed
+   to paint past its viewport, because the half-pixel overshoot that joins
+   the rows is drawn outside it by design. */
+.term-cell[data-procedural] {
+  vertical-align: top;
+  /* The ink is positioned to the cell's own rectangle, behind the
+     character: the glyph paints in the positioned layer above the SVG, in
+     DOM order. */
+  position: relative;
+}
+
+.term-cell[data-procedural] > svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* The font glyph of a procedurally drawn character is invisible (the
+   transparent colour is written by paint-row.ts beside the run's own ink
+   colour, which the SVG's currentColor must keep reading) and paints above
+   the ink only so selection and find land on it in document order. */
+.term-cell[data-procedural] > .term-cell-glyph {
+  position: relative;
+}
+
 /* THE LIVE CELL GRID (nocx-zg3k3.2.4) — the painter's surface and cursor.
    The rows are .term-grid-row, a class of its own per ADR-0009 (the
    shared rule above gives them the frozen rows' type context, and nothing

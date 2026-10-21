@@ -263,11 +263,15 @@ test.describe('a restored tab refits its program (nocx-1ebrs.42)', () => {
         { timeout: 30_000, message: 'the TUI never repainted at its PTY width' },
       )
       .toBe(true)
-    const startCols = await paintedCols(first)
-
+    // The program was told the truth in window 1: it painted as wide as its
+    // PTY. The poll above proved that with both halves read in one pass; a
+    // pane whose settle resize lands under it is waited out, not raced. The
+    // pane's own geometry is read the same way — one pass, no second read of
+    // the row's text to compare against, because the row legitimately
+    // widens when that late WINCH repaint lands between two reads
+    // (CI webkit, run 39644536217: expected 132, received 139).
     const firstMeasure = await measurePane(first)
-    // The program was told the truth in window 1: it painted as wide as its PTY.
-    expect(firstMeasure.paintedCols).toBe(startCols)
+    expect(firstMeasure.paintedCols).toBeGreaterThan(0)
 
     const sessionsBefore = await liveSessions(ep)
     expect(sessionsBefore).toHaveLength(1)
