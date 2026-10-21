@@ -186,7 +186,7 @@ import { IconButton } from './ui/icon-button'
 import { CloseIcon } from './ui/icons'
 import { createPaneContext, updatePaneContext, type PaneContextFacts } from './ui/pane-context'
 import { createProcessBar, updateProcessBar } from './ui/process-bar'
-import { cwdLabel } from './cwd-label'
+import { cwdLabel, homeRelation } from './cwd-label'
 import { secretReference } from './secret-reference'
 import { hasSecretReference } from './snippets/resolve'
 import { LOCAL_TARGET_ID } from './ports-client'
@@ -772,14 +772,20 @@ const FALLBACK_TITLE = ''
 
 /**
  * Names a tab after its directory, the way every other terminal does.
- * Keeps the tail — the CSS ellipsis cuts from the right.
+ * Keeps the tail — the CSS ellipsis cuts from the right. The `~` spelling
+ * itself has ONE owner (`homeRelation` in cwd-label.ts, the same decision
+ * the prompt line renders from, nocx-1ebrs.45): at a known home the tab
+ * reads `~`, under it the rooted `~/…` form, and with no known home the
+ * raw tail stands — never a guessed `~`.
  */
-function directoryLabel(cwd: string): string {
+function directoryLabel(cwd: string, home?: string): string {
   const path = cwd.trim().replace(/\/+$/, '')
   if (!path) return FALLBACK_TITLE
-  const parts = path.split('/').filter(Boolean)
-  if (path === '~' || parts.length === 0) return path || FALLBACK_TITLE
-  return parts.slice(-2).join('/')
+  if (path === '~') return path
+  const rel = homeRelation(path, home)
+  if (rel.kind === 'home') return '~'
+  if (rel.kind === 'under') return `~/${rel.rest.slice(-2).join('/')}`
+  return rel.segments.slice(-2).join('/')
 }
 
 /**
@@ -2240,7 +2246,7 @@ export class TerminalContent extends BasePaneContent {
     this._host = view.host
     this._user = view.user
     this.programTitle = view.programTitle
-    this.cwdTitle = directoryLabel(view.cwd)
+    this.cwdTitle = directoryLabel(view.cwd, this.currentHome())
     this.editor?.setCwd(view.cwd)
     this.onTooltipChange(
       view.host
@@ -2393,12 +2399,19 @@ export class TerminalContent extends BasePaneContent {
    *  from `_blockBranch`, never the pane's current one (a block's branch
    *  is history; only its path takes the new `~` form). Ask/tool/text
    *  blocks are not command records and are out of this loop's reach —
-   *  `blockManager.blocks` names only what it can reach. */
+   *  `blockManager.blocks` names only what it can reach.
+   *
+   *  The tab title re-derives too (nocx-1ebrs.45): home is learned
+   *  asynchronously, AFTER the first OSC 7 that already named the tab
+   *  with the raw path — resolving it is exactly the moment `~` becomes
+   *  the truthful spelling. */
   private _onHomeKnown(home: string): void {
     this.editor?.setWhereFacts({ home, branch: this.branchSource?.branch() })
     for (const rec of this.scrollback?.blockManager.blocks ?? []) {
       setBlockWhere(rec.el, { home, branch: this._blockBranch.get(rec.id) })
     }
+    this.cwdTitle = directoryLabel(this._cwd, home)
+    this.pushTitle()
     this._syncPaneContext()
   }
 

@@ -3940,6 +3940,65 @@ describe("the pane's where-facts, fed from fake sources (nocx-9bpeq.16)", () => 
     }
   })
 
+  it('names the tab `~` at home once the home resolves — never before (nocx-1ebrs.45)', async () => {
+    const client = makeClient()
+    const sessionHome = makeFakeSessionHome()
+    const { content, tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true, hooks: { sessionHome } },
+      client,
+    )
+    const sessionId = sessionOf(content).sessionId
+    try {
+      content.setVisible(true)
+      // The shell's OSC 7 reports the home directory as an ABSOLUTE path —
+      // the exact reported moment: the title showed the path's tail
+      // (`Users/dev`) where a person reads `~`.
+      fireFrameMetadata(sessionOf(content), 1, { cwd: { host: '', path: '/Users/dev' } })
+      // Home has not resolved yet, so the raw tail stands — never a guessed
+      // `~` (the same rule the prompt line holds, spec §2).
+      expect(tab.title).toBe('Users/dev')
+
+      // The binding resolves the home AFTER the cwd: the title re-derives
+      // from the same fact the prompt line already takes.
+      sessionHome.resolveHome(sessionId, '/Users/dev')
+      expect(tab.title).toBe('~')
+    } finally {
+      teardown()
+    }
+  })
+
+  it("names a directory under home rooted at `~`, keeping the tab's own tail (nocx-1ebrs.45)", async () => {
+    const client = makeClient()
+    const sessionHome = makeFakeSessionHome()
+    const { content, tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true, hooks: { sessionHome } },
+      client,
+    )
+    const sessionId = sessionOf(content).sessionId
+    try {
+      content.setVisible(true)
+      fireFrameMetadata(sessionOf(content), 1, {
+        cwd: { host: '', path: '/Users/dev/Projects/nocx' },
+      })
+      // Unknown home: the raw tail, exactly as before the fix.
+      expect(tab.title).toBe('Projects/nocx')
+
+      sessionHome.resolveHome(sessionId, '/Users/dev')
+      expect(tab.title).toBe('~/Projects/nocx')
+
+      // A later OSC 7 re-derives with the home already known — the rooted
+      // form, tail cut by the tab's own short-tail policy.
+      fireFrameMetadata(sessionOf(content), 2, {
+        cwd: { host: '', path: '/Users/dev/other/deep/one' },
+      })
+      expect(tab.title).toBe('~/deep/one')
+    } finally {
+      teardown()
+    }
+  })
+
   it('a branch change after a command was submitted updates the composer and not the already-created block', async () => {
     const client = makeClient()
     const branchSource = makeFakeBranchSource()
