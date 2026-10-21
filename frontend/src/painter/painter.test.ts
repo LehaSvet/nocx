@@ -718,7 +718,6 @@ describe('the armed link underline (nocx-1ebrs.48)', () => {
     expect(surface.querySelector('.term-grid-link')).not.toBeNull()
     painter.dispose()
     expect(surface.querySelector('.term-grid-link')).toBeNull()
-
   })
 })
 
@@ -875,6 +874,5 @@ describe('the grid cursor holds still while input arrives (nocx-1ebrs.37)', () =
         css,
       )
     expect(solid).not.toBeNull()
-
   })
 })
