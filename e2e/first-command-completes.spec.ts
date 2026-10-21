@@ -31,11 +31,11 @@
 // Anywhere else it skips with the reason said out loud, because a zsh plugin
 // composition measured under bash is not evidence of anything.
 
-import { existsSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 import { appReadyForInput, promptReady, test, expect } from './harness'
-import { readStand, standBackendLogTail } from './stand'
+import { MANIFEST, readStand } from './stand'
 
 const COMMAND = 'echo ruf5o-complete-done'
 /** Below every declared deadline (carrier 3 s, pane screen / tool surface
@@ -57,13 +57,26 @@ const PLUGIN_ENTRIES = [
 /** The shell the pane actually ran, from the backend's own launch decision —
  *  the pane launch decided line is Info level, so it is in every stand's log,
  *  and it names the account's login shell without this spec guessing it from
- *  an environment the stand deliberately strips. */
+ *  an environment the stand deliberately strips.
+ *
+ *  THE WHOLE FILE, not a tail: the launch lines sit near the log's START, and
+ *  a debug-level stand log outruns any tail budget mid-run — measured in the
+ *  Linux container, where the tail read printed shell=unknown. The plugin
+ *  variant's skip decision reads this, so a tail cut would silently skip the
+ *  zsh coverage this spec exists to carry on ci-mac. */
 function lastPaneShellKind(): string {
-  const log = standBackendLogTail(2_000_000)
-  const lines = log.split('\n').filter((l) => l.includes('pane launch decided'))
-  const last = lines[lines.length - 1] ?? ''
-  const m = last.match(/shell_kind=(\w+)/)
-  return m?.[1] ?? 'unknown'
+  try {
+    const log = readFileSync(
+      join(dirname(MANIFEST), 'test-results', 'stand', 'backend.log'),
+      'utf8',
+    )
+    const lines = log.split('\n').filter((l) => l.includes('pane launch decided'))
+    const last = lines[lines.length - 1] ?? ''
+    const m = last.match(/shell_kind=(\w+)/)
+    return m?.[1] ?? 'unknown'
+  } catch {
+    return 'unknown'
+  }
 }
 
 async function openFreshPane(page: import('@playwright/test').Page): Promise<string> {
