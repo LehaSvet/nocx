@@ -664,7 +664,7 @@ function uuidv7(): string {
 //   // … test …
 //   const { port: p2, token: t2 } = await backend.restart()
 
-import { spawn, execSync, type ChildProcess } from 'node:child_process'
+import { spawn, execSync, execFileSync, type ChildProcess } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, openSync, mkdirSync, copyFileSync } from 'node:fs'
 import { resolve, basename, join } from 'node:path'
 
@@ -1593,6 +1593,75 @@ export class VaultBackend {
   get isolatedHome(): string {
     if (!this.isolation) throw new Error('backend has not been started yet')
     return this.isolation.isolatedHome
+  }
+}
+
+/**
+ * End the helper daemons started under one home — the debt every spec that
+ * raises its own backend with a local pane owes on teardown.
+ *
+ * Moved here from local-session-reattach.spec.ts, unchanged, when
+ * first-command-completes.spec.ts became the second spec needing it: the
+ * daemon is DETACHED by design (D1) and nothing retires a generation yet
+ * (D2 is unimplemented), so a spec that stopped only its own `nocx-server`
+ * would leave a process holding a PTY under a home the run is finished
+ * with. `stopStand` does not do this either: it signals vite and the
+ * stand's backend and nothing else.
+ *
+ * SIGTERM FIRST AND SIGKILL ONLY FOR WHAT IGNORED IT. A helper's SIGTERM path
+ * is the one it ships with, `VaultBackend.stop` takes the same two steps for
+ * the coordinator, and the escalation is what makes the guarantee real rather
+ * than a request: neither daemon may outlive this spec.
+ *
+ * AND EACH PHASE IS WAITED FOR, on the OS's own answer (is this pid still
+ * there) rather than on a duration, so a daemon that will not go is REPORTED
+ * — a leak nobody is told about is the thing this function exists to prevent.
+ * An empty home is a legitimate argument: a spec whose backend never started
+ * started no daemon either.
+ */
+export async function endDaemonsUnder(isolatedHome: string): Promise<void> {
+  if (isolatedHome === '') return
+  for (const signal of ['SIGTERM', 'SIGKILL'] as const) {
+    const survivors = daemonsFor(isolatedHome)
+    if (survivors.length === 0) return
+    for (const pid of survivors) {
+      try {
+        process.kill(pid, signal)
+      } catch {
+        /* already gone */
+      }
+    }
+    if (await daemonsGone(isolatedHome, 15_000)) return
+  }
+  throw new Error(
+    `this spec's helper daemon(s) ${daemonsFor(isolatedHome).join(', ')} outlived SIGTERM and SIGKILL`,
+  )
+}
+
+/** Whether every helper daemon under a home has gone, bounded by a deadline. */
+async function daemonsGone(isolatedHome: string, withinMs: number): Promise<boolean> {
+  const deadline = Date.now() + withinMs
+  for (;;) {
+    if (daemonsFor(isolatedHome).length === 0) return true
+    if (Date.now() > deadline) return false
+    const { promise, resolve: resume } = Promise.withResolvers<void>()
+    setTimeout(resume, 50)
+    await promise
+  }
+}
+
+/** The pids of this machine's helper daemons started under one home. */
+function daemonsFor(isolatedHome: string): number[] {
+  try {
+    return execFileSync('pgrep', ['-f', join(isolatedHome, '.nocx', 'helper')], {
+      encoding: 'utf8',
+    })
+      .split('\n')
+      .map((line) => Number(line.trim()))
+      .filter((pid) => Number.isInteger(pid) && pid > 0)
+  } catch {
+    // pgrep exits non-zero when nothing matches, which is an answer.
+    return []
   }
 }
 
