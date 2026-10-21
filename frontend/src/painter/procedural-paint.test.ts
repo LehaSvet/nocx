@@ -192,9 +192,13 @@ function copiedText(el: HTMLElement): string {
 }
 
 describe('the painted characters copy exactly (nocx-1ebrs.15)', () => {
-  it('a live-painted row copies as │ a ─┼ b ▀▄', () => {
+  it('a live-painted row is and copies exactly │ a ─┼ b ▀▄', () => {
     const el = paintRow(rowOf(COPY_ROW), { metric, palette })
     document.body.appendChild(el)
+    // EXACT equality on BOTH halves (ADR-0096: the character stays text):
+    // the row's own full text — what find and every reader walk — and the
+    // DOM Selection's copy of the same row, character for character.
+    expect(el.textContent).toBe(EXACT)
     expect(copiedText(el)).toBe(EXACT)
     el.remove()
   })
@@ -214,6 +218,7 @@ describe('the painted characters copy exactly (nocx-1ebrs.15)', () => {
     )
     const row = block.querySelector<HTMLElement>('.term-grid-row')
     expect(row).not.toBeNull()
+    expect(row!.textContent).toBe(EXACT)
     expect(copiedText(row!)).toBe(EXACT)
     block.remove()
   })
