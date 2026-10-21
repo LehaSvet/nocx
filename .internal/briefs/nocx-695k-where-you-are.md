@@ -6,7 +6,7 @@ you start; this brief adds the boundaries, the seams and the traps.
 
 Three reports from the owner on 2026-08-04, one root cause.
 
-1. Typing `ssh pi@192.168.0.93` in a local tab: no offer to integrate, no blocks, nothing.
+1. Typing `ssh <user>@<lan-ip>` in a local tab: no offer to integrate, no blocks, nothing.
 2. The Ports panel goes on listing the **backend machine's** listeners — `0.0.0.0:22`,
    `orca-ide`, `devharness` — under a tab titled `pi@raspberrypi`, with nothing saying
    whose they are.

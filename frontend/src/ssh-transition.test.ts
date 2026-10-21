@@ -305,7 +305,7 @@ describe('isInteractiveTransition / extractDestination (legacy seam, unchanged c
   })
 
   it('extracts the destination from a simple ssh command', () => {
-    expect(extractDestination('ssh pi@192.168.0.93')).toBe('pi@192.168.0.93')
+    expect(extractDestination('ssh pi@192.0.2.93')).toBe('pi@192.0.2.93')
     expect(extractDestination('ssh -p 2222 root@box')).toBe('root@box')
     expect(extractDestination('ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no bob@h')).toBe(
       'bob@h',
