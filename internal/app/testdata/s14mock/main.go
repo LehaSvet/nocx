@@ -263,6 +263,15 @@ type callRequest struct {
 	Args json.RawMessage `json:"args,omitempty"`
 }
 
+// callCue is what the stand writes into the call file: the seq is what makes
+// two identical calls two cues (the mock ignores a cue equal to the one
+// before it), and it is what the taken marker records.
+type callCue struct {
+	Seq  int             `json:"seq"`
+	Tool string          `json:"tool"`
+	Args json.RawMessage `json:"args,omitempty"`
+}
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "s14mock:", err)
@@ -299,8 +308,9 @@ func run() error {
 	logDir := filepath.Join(stateDir, "log")
 	callDir := filepath.Join(stateDir, "call")
 	callLogDir := filepath.Join(stateDir, "calllog")
+	takenDir := filepath.Join(stateDir, "calltaken")
 	launchDir := filepath.Join(stateDir, "launch")
-	for _, dir := range []string{cueDir, logDir, callDir, callLogDir, launchDir} {
+	for _, dir := range []string{cueDir, logDir, callDir, callLogDir, takenDir, launchDir} {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return err
 		}
@@ -344,6 +354,20 @@ func run() error {
 		return err
 	}
 	defer func() { _ = callLog.Close() }()
+	// THE CUE'S OWN ACK, written before the call is made: a wait that
+	// outlived its ceiling reads this file and says whether this program took
+	// the cue and never answered it, or never saw the cue at all — the
+	// distinction between a broken pipeline and a starved one that a red has
+	// to carry (nocx-1ebrs.34).
+	takenLog, err := os.OpenFile(filepath.Join(takenDir, sessionID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304 -- this test's own state directory
+	if err != nil {
+		return err
+	}
+	defer func() { _ = takenLog.Close() }()
+	// THE PANE'S ONE BRIDGE CHILD, the way a real agent keeps its mcp.json's
+	// servers: started on the first call, alive until this program exits.
+	mcpBridge := &bridge{}
+	defer mcpBridge.stop()
 
 	out := bufio.NewWriter(os.Stdout)
 	defer func() { _ = out.Flush() }()
@@ -465,7 +489,8 @@ func run() error {
 				continue
 			}
 			lastCall = raw
-			outcome := m.callTool(raw, mcpConfigFile, mcpConfigStaged)
+			markCallTaken(takenLog, raw)
+			outcome := m.callTool(raw, mcpConfigFile, mcpConfigStaged, mcpBridge)
 			if _, werr := callLog.WriteString(outcome + "\n"); werr != nil {
 				return werr
 			}
@@ -565,11 +590,14 @@ func (m *mock) paintLocked() []byte {
 
 // callTool makes one real tools/call on cue and answers one line saying what
 // came back: the tool result for the test to read, or the failure that stopped
-// it. Nothing is retried and nothing is judged here — a mock that silently
-// retried would hide exactly the failure a test is looking for, and this
-// program is the only agent in a worker's or a coordinator's pane, so every
-// call a journey needs is written here as a cue.
-func (m *mock) callTool(raw, configPath string, staged bool) string {
+// it. The call travels over THE pane's one bridge child (the bridge type
+// below), which is how a real agent calls: its mcp.json's servers are started
+// once per session and every call is a round trip on the warm pipe. Nothing is
+// retried and nothing is judged here — a mock that silently retried would hide
+// exactly the failure a test is looking for, and this program is the only agent
+// in a worker's or a coordinator's pane, so every call a journey needs is
+// written here as a cue.
+func (m *mock) callTool(raw, configPath string, staged bool, br *bridge) string {
 	var req callRequest
 	if err := json.Unmarshal([]byte(raw), &req); err != nil {
 		return fmt.Sprintf("CUE-MALFORMED %v", err)
@@ -588,7 +616,7 @@ func (m *mock) callTool(raw, configPath string, staged bool) string {
 	// here because discovering which tools a pane's agent has IS a call an
 	// agent makes: the bridge answers it from the endpoint's own catalogue.
 	if req.Tool == "tools/list" {
-		resp, err := callMCPMethod(cfg, "tools/list", nil)
+		resp, err := br.call(cfg, "tools/list", nil)
 		if err != nil {
 			return fmt.Sprintf("CALL-FAILED %v", err)
 		}
@@ -598,78 +626,139 @@ func (m *mock) callTool(raw, configPath string, staged bool) string {
 	if len(args) == 0 {
 		args = json.RawMessage(`{}`)
 	}
-	resp, err := callMCPMethod(cfg, "tools/call", map[string]any{"name": req.Tool, "arguments": args})
+	resp, err := br.call(cfg, "tools/call", map[string]any{"name": req.Tool, "arguments": args})
 	if err != nil {
 		return fmt.Sprintf("CALL-FAILED %v", err)
 	}
 	return resp
 }
 
-// callMCPMethod starts the shipped MCP bridge as this process's own child and
-// makes one request over it: `initialize` first, because the bridge negotiates
-// its protocol version from that request and the version decides the shape of
-// the result, then the request itself. One JSON object per line is the
-// bridge's whole framing (internal/mcpstdio).
-//
-// THE CHILD IS NECESSARY AND NOT CONVENIENCE. The endpoint admits a local
-// caller by the process tree it runs in, so a call made from THIS process —
-// a descendant of the pane's own shell — is a call made as the pane's session
-// and can name no other.
-//
-// The bridge's stderr is discarded rather than inherited: on a pty this
-// program's stderr is the pane, and a diagnostic line painted into the frame
-// the sweep classifies would be this mock corrupting its own screen. A
-// failure the caller must act on arrives as a JSON-RPC error on stdout, which
-// is the wire.
-func callMCPMethod(cfg mcpConfig, method string, params any) (string, error) {
-	if cfg.Helper == "" || cfg.Socket == "" {
-		return "", fmt.Errorf("the mcp config names no helper or socket: %+v", cfg)
-	}
-	cmd := exec.Command(cfg.Helper, "mcp", "--socket", cfg.Socket) // #nosec G204 -- this test's own config file
-	// THE ENVIRONMENT THE CONFIG NAMED, which is how a real MCP client hands
-	// its server the pane's bearer. Empty for the stand's own two-field file.
-	if len(cfg.Env) > 0 {
-		cmd.Env = append(os.Environ(), cfg.Env...)
-	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return "", err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", err
-	}
-	if err := cmd.Start(); err != nil {
-		return "", err
-	}
-	defer func() {
-		_ = stdin.Close()
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	}()
-	recordTree(cfg, cmd.Process.Pid)
-	lines := bufio.NewReader(stdout)
-	if err := writeMCPLine(stdin, map[string]any{
-		"jsonrpc": "2.0", "id": "m-init", "method": "initialize",
-		"params": map[string]any{"protocolVersion": "2025-11-25"},
-	}); err != nil {
-		return "", fmt.Errorf("initialize: %w", err)
-	}
-	if _, err := readMCPLine(lines); err != nil {
-		return "", fmt.Errorf("the bridge never answered initialize: %w", err)
+// bridge is ONE MCP bridge child kept for this mock's whole life, the way a
+// real agent keeps the servers its mcp.json names: started on the first call,
+// initialize once, and every later call is one request on the warm pipe —
+// internal/mcpstdio's Serve loop takes unlimited requests per connection, and
+// ONE ENDPOINT CONNECTION FOR THE LIFE OF THIS SESSION is its own design
+// comment. Spawning a child per call was this fixture's own load-sensitive
+// latency, and the wake journey's waits kept meeting it (nocx-1ebrs.34): a
+// fork+exec and a handshake stood in front of EVERY call, serialized with the
+// cue loop, so on a loaded runner an answer landed seconds behind its cue and
+// a five-second wait read that as a missing answer. A child that dies or
+// answers nothing is torn down here, so the next call starts fresh — the same
+// recover-with-a-new-child the per-call spawn gave, minus the per-call cost.
+type bridge struct {
+	cfg   mcpConfig
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+	lines *bufio.Reader
+}
+
+// call makes one request over the bridge, starting or restarting the child
+// when the config changed or the last one is gone, and returns the answer
+// line or the error that stopped it.
+func (b *bridge) call(cfg mcpConfig, method string, params any) (string, error) {
+	if b.cmd == nil || b.cfg.Helper != cfg.Helper || b.cfg.Socket != cfg.Socket || !sameEnv(b.cfg.Env, cfg.Env) {
+		b.stop()
+		b.cfg = cfg
+		if err := b.start(); err != nil {
+			return "", err
+		}
 	}
 	request := map[string]any{"jsonrpc": "2.0", "id": "m-call", "method": method}
 	if params != nil {
 		request["params"] = params
 	}
-	if err := writeMCPLine(stdin, request); err != nil {
+	if err := writeMCPLine(b.stdin, request); err != nil {
+		b.stop()
 		return "", fmt.Errorf("%s: %w", method, err)
 	}
-	line, err := readMCPLine(lines)
+	line, err := readMCPLine(b.lines)
 	if err != nil {
+		b.stop()
 		return "", fmt.Errorf("the bridge never answered %s: %w", method, err)
 	}
 	return line, nil
+}
+
+// start forks THE bridge child: `<helper> mcp --socket <socket>`, exactly the
+// invocation the shell integration stages into the agent's mcp.json.
+//
+// THE CHILD IS NECESSARY AND NOT CONVENIENCE. The endpoint admits a local
+// caller by the process tree it runs in, so a call made from a child of THIS
+// process — a descendant of the pane's own shell — is a call made as the
+// pane's session and can name no other.
+//
+// The child's stderr is discarded rather than inherited: on a pty this
+// program's stderr is the pane, and a diagnostic line painted into the frame
+// the sweep classifies would be this mock corrupting its own screen. A failure
+// the caller must act on arrives as a JSON-RPC error on stdout, which is the
+// wire.
+func (b *bridge) start() error {
+	cmd := exec.Command(b.cfg.Helper, "mcp", "--socket", b.cfg.Socket) // #nosec G204 -- this test's own config file
+	// THE ENVIRONMENT THE CONFIG NAMED, which is how a real MCP client hands
+	// its server the pane's bearer. Empty for the stand's own two-field file.
+	if len(b.cfg.Env) > 0 {
+		cmd.Env = append(os.Environ(), b.cfg.Env...)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	b.cmd, b.stdin, b.lines = cmd, stdin, bufio.NewReader(stdout)
+	recordTree(b.cfg, cmd.Process.Pid)
+	if err := writeMCPLine(b.stdin, map[string]any{
+		"jsonrpc": "2.0", "id": "m-init", "method": "initialize",
+		"params": map[string]any{"protocolVersion": "2025-11-25"},
+	}); err != nil {
+		b.stop()
+		return fmt.Errorf("initialize: %w", err)
+	}
+	if _, err := readMCPLine(b.lines); err != nil {
+		b.stop()
+		return fmt.Errorf("the bridge never answered initialize: %w", err)
+	}
+	return nil
+}
+
+// stop tears the child down: after a failed call the next one starts fresh,
+// and the mock's own exit ends the session the ordinary way.
+func (b *bridge) stop() {
+	if b == nil || b.cmd == nil {
+		return
+	}
+	_ = b.stdin.Close()
+	_ = b.cmd.Process.Kill()
+	_ = b.cmd.Wait()
+	b.cmd, b.stdin, b.lines = nil, nil, nil
+}
+
+func sameEnv(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// markCallTaken records the seq of the cue this program has picked up, before
+// the call is made, so a wait's failure detail can tell "took the cue, no
+// answer yet" from "never saw the cue".
+func markCallTaken(w io.Writer, raw string) {
+	var cue callCue
+	if err := json.Unmarshal([]byte(raw), &cue); err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "%d\n", cue.Seq)
 }
 
 // recordTree writes the connecting process's own ancestry where a diagnosis
