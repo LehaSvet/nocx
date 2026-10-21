@@ -77,7 +77,7 @@ import {
 import { BackupRestoreSection } from './backup-restore-section'
 import { AboutSection } from './about-section'
 import type { AboutClient } from './about-client'
-import type { UpdateCheckController } from './update-check'
+import type { UpdateCheckController, UpdateCheckOutcome } from './update-check'
 import type { ClipboardAccess } from './clipboard'
 import { VaultSection } from './vault'
 import { log } from './log'
@@ -258,6 +258,10 @@ export interface SettingsComponentProps {
    *  (nocx-1ebrs.36). Passed through to the About page, whose card is the
    *  product-visible half of a check that can fail. */
   updateCheckError?: UpdateCheckController['error']
+  /** Runs one update check through the shared controller, for the About
+   *  page's Check for updates action (nocx-1ebrs.55). Absent in an
+   *  embedding with no updater, which then offers no dead button. */
+  checkForUpdates?: () => Promise<UpdateCheckOutcome | null>
   /** The agent policy client (ADR-0020 §7 as amended). Absent in
    *  embeddings that never configure the agent; the page then says so. */
   policyClient?: PolicyClient
@@ -884,6 +888,7 @@ export function SettingsComponent(props: SettingsComponentProps) {
           }
           clipboard={props.clipboard ?? unavailableClipboard}
           updateCheckError={props.updateCheckError}
+          onCheckForUpdates={props.checkForUpdates}
         />
       ),
     }
