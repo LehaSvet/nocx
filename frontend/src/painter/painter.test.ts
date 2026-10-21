@@ -718,6 +718,9 @@ describe('the armed link underline (nocx-1ebrs.48)', () => {
     expect(surface.querySelector('.term-grid-link')).not.toBeNull()
     painter.dispose()
     expect(surface.querySelector('.term-grid-link')).toBeNull()
+  })
+})
+
 // The pitch is a paint input (nocx-1ebrs.15): the procedural ink bakes the
 // row pitch into its geometry, so a republished pitch must repaint rows the
 // way a metric change does — even though the cells, and the row comparison,
