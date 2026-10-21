@@ -18392,18 +18392,24 @@ describe('the live region is the painter picture (nocx-zg3k3.2.5)', () => {
       const pointer = (
         type: 'pointerdown' | 'pointermove' | 'pointerup',
         buttons: number,
+        x = 26,
       ): Event => {
         const event = new Event(type, { bubbles: true, cancelable: true })
         Object.defineProperties(event, {
           button: { value: 0 },
           buttons: { value: buttons },
-          clientX: { value: 26 },
+          clientX: { value: x },
           clientY: { value: 44 },
         })
         return event
       }
       surface.dispatchEvent(pointer('pointerdown', 1))
-      window.dispatchEvent(pointer('pointermove', 1))
+      // A drag is a MOTION (nocx-zg3k3.14.19): the selection gesture paints
+      // only once the pointer has left its 4 px slop around the press, so the
+      // moved pointer carries real distance — 64 px, five cells right. The
+      // move rides the window, the gesture's own listener; the press and the
+      // release stay on the surface at the pinned cell (2, 1).
+      window.dispatchEvent(pointer('pointermove', 1, 90))
       // THE DRAG IS THE PERSON'S EVEN WHILE THE PROGRAM REPORTS THE MOUSE
       // (nocx-zg3k3.15.5). The intents asserted below are what the program
       // receives, and they travel this pane's own intent path — not the
@@ -18454,19 +18460,23 @@ describe('the live region is the painter picture (nocx-zg3k3.2.5)', () => {
       const pointer = (
         type: 'pointerdown' | 'pointermove' | 'pointerup',
         buttons: number,
+        x = 26,
       ): Event => {
         const event = new Event(type, { bubbles: true, cancelable: true })
         Object.defineProperties(event, {
           button: { value: 0 },
           buttons: { value: buttons },
-          clientX: { value: 26 },
+          clientX: { value: x },
           clientY: { value: 44 },
         })
         return event
       }
       session.intent.mockClear()
       surface.dispatchEvent(pointer('pointerdown', 1))
-      window.dispatchEvent(pointer('pointermove', 1))
+      // A drag is a MOTION (nocx-zg3k3.14.19): the selection gesture paints
+      // only once the pointer has left its 4 px slop around the press, so the
+      // moved pointer carries real distance — 64 px, five cells right.
+      window.dispatchEvent(pointer('pointermove', 1, 90))
       expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
       surface.dispatchEvent(pointer('pointerup', 0))
       // ONE ROW OF MOVEMENT, because a wheel is counted in LINES and not in

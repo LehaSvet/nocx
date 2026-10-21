@@ -133,6 +133,126 @@ describe('live selection gesture', () => {
     root.remove()
   })
 
+  it('a click whose pointer jitters across a cell boundary still copies nothing', () => {
+    // THE ~1-IN-5 CLICK (nocx-zg3k3.14.19): a press on one cell and a release
+    // a pixel or two away — hand tremor, not a drag — landed in the ADJACENT
+    // cell whenever the press sat near a boundary, and the release then read
+    // as a drag: the cells between were selected and written to the clipboard.
+    // A click is decided by the motion it carried, not only by the cell each
+    // end landed on.
+    const model = createCellModel()
+    const root = document.createElement('div')
+    const surface = document.createElement('div')
+    root.append(surface)
+    document.body.append(root)
+    const frame = frameOf(
+      1,
+      [
+        [
+          ['a', 1, true],
+          ['b', 1, true],
+          ['c', 1, true],
+          ['d', 1, true],
+        ],
+      ],
+      { x: 0, y: 0, visible: false },
+      { cols: 4, rows: 1, cellWidthPx: 8, cellHeightPx: 20 },
+    )
+    model.apply(frame)
+    const painter = createCellPainter({ surface, palette: () => DEFAULT_SNAPSHOT })
+    painter.apply(snapshotOf(frame))
+    vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 32,
+      bottom: 20,
+      width: 32,
+      height: 20,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    })
+    const copy = vi.fn()
+    const gesture = installLiveSelectionGesture({
+      model,
+      painter,
+      surface,
+      gestureRoot: root,
+      surfaceId: 'live',
+      copy,
+    })
+    const event = (type: string, x: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: 5 })
+    // x=15 is the last pixel of column 1; two pixels of tremor land in
+    // column 2 — different cells, which the exact-equality release rule read
+    // as a drag and copied as 'bc'.
+    root.dispatchEvent(event('pointerdown', 15))
+    window.dispatchEvent(event('pointermove', 17))
+    window.dispatchEvent(event('pointerup', 17))
+    expect(copy).not.toHaveBeenCalled()
+    expect(surface.querySelector('.term-grid-selection')).toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+
+  it('a drag of real distance across the same boundary still selects and copies', () => {
+    // The paired success: the slop must not take a deliberate drag with it.
+    // Twelve pixels is a motion a hand makes on purpose, across the same
+    // boundary the jitter case trips on.
+    const model = createCellModel()
+    const root = document.createElement('div')
+    const surface = document.createElement('div')
+    root.append(surface)
+    document.body.append(root)
+    const frame = frameOf(
+      1,
+      [
+        [
+          ['a', 1, true],
+          ['b', 1, true],
+          ['c', 1, true],
+          ['d', 1, true],
+        ],
+      ],
+      { x: 0, y: 0, visible: false },
+      { cols: 4, rows: 1, cellWidthPx: 8, cellHeightPx: 20 },
+    )
+    model.apply(frame)
+    const painter = createCellPainter({ surface, palette: () => DEFAULT_SNAPSHOT })
+    painter.apply(snapshotOf(frame))
+    vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 32,
+      bottom: 20,
+      width: 32,
+      height: 20,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    })
+    const copy = vi.fn()
+    const gesture = installLiveSelectionGesture({
+      model,
+      painter,
+      surface,
+      gestureRoot: root,
+      surfaceId: 'live',
+      copy,
+    })
+    const event = (type: string, x: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: 5 })
+    root.dispatchEvent(event('pointerdown', 8))
+    window.dispatchEvent(event('pointermove', 20))
+    window.dispatchEvent(event('pointerup', 20))
+    expect(copy).toHaveBeenCalledWith('bc')
+    expect(surface.querySelector('.term-grid-selection')).not.toBeNull()
+    gesture.dispose()
+    painter.dispose()
+    root.remove()
+  })
+
   it('a double click selects the word under the pointer and copies it', () => {
     const model = createCellModel()
     const root = document.createElement('div')
