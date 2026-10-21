@@ -1,9 +1,8 @@
-# ADR-0096 — Trunk-based releases with a nightly channel
+# ADR-0097 — Trunk-based releases with a nightly channel
 
-- **Status:** Proposed (the owner approved the feature and its five-point shape on
-  2026-10-20, `nocx-1ebrs.35`; the choices still open are listed last, under
-  "Decisions for the owner" — the coordinator brings them to the owner one at a
-  time)
+- **Status:** Accepted (owner decision, 2026-10-21: the five-point shape approved
+  2026-10-20 on `nocx-1ebrs.35`, and all eight choices it opened, recorded as
+  decided in "The eight decisions" below)
 - **Date:** 2026-10-21
 - **Decided by:** the worker on `nocx-1ebrs.35`, from the measured cost of the two
   v0.6.1 release runs and the 2026-10-19 dry run, and from the records named below.
@@ -74,12 +73,12 @@ The owner approved the feature and its shape on 2026-10-20 (`nocx-1ebrs.35`):
    API that CI was green on that sha.
 5. Unfinished work goes behind a settings flag, not a long branch.
 
-This record evaluates that shape rather than assuming it, and it ends with the
-choices that remain the owner's.
+This record evaluated that shape rather than assuming it; the eight choices it
+opened were taken by the owner on 2026-10-21 and are recorded below as decided.
 
 ## Decision
 
-**Adopt the shape as approved, with the version scheme and proof below.**
+**Adopt the shape as approved, with the version scheme and proof below. The eight choices the shape opened were decided by the owner on 2026-10-21 and are recorded here as decided, not as recommendations.**
 
 - **Per-PR CI is unchanged.** `ci.yml` keeps its triggers and its twelve jobs. A
   pull request is where quality is bought; nothing in this record moves that.
@@ -114,11 +113,22 @@ choices that remain the owner's.
   the update rule is today's semver comparison. On the nightly channel it is
   "newer semver **or same version with different artefact bytes**" — see the
   version scheme for why.
-- **The cask follows stable only.** `auto_updates true` stands (ADR-0086): the app
-  updates itself in place, and `brew upgrade` must not fight it. A nightly is
-  never offered to `brew`, and `scripts/install/install.sh` (ADR-0087) keeps
-  fetching the stable latest release only — the nightly channel is reachable only
-  from inside an installed app, which is the population that can leave it again.
+- **The tap carries two casks, and each follows its own channel.** `Casks/nocx.rb`
+  follows stable and `Casks/nocx@nightly.rb` follows nightly, each declared
+  `conflicts_with` the other so neither can shadow its sibling. `auto_updates
+true` stands on both (ADR-0086): each install self-updates on its own channel
+  in place, and `brew upgrade` must not fight either. The promotion updates the
+  stable cask's version and sha256; the nightly workflow updates the nightly
+  cask's on **every published nightly** — one tap commit per nightly, a real
+  pinned sha256, never `version :latest` or `sha256 :no_check`: brew must verify
+  the bytes it installs, the same verification ADR-0086 built the tap on. The
+  nightly cask installs the app preset to the nightly update channel, so a
+  `brew install nocx@nightly` keeps self-updating on nightly from its first
+  launch. Leaving nightly is a reinstall — `brew uninstall nocx@nightly`, then
+  `brew install nocx` — never a downgrade, which is the same no-downgrade rule
+  the channel setting carries. `scripts/install/install.sh` (ADR-0087) keeps
+  fetching the stable latest release only: the Linux installer gains no channel
+  of its own.
 
 ### The version scheme, and why promotion forces it
 
@@ -176,6 +186,67 @@ Prerequisites, in order, all already tracked:
   cannot work (AGENTS.md: a soft degrade is visible in the product).
 - The owner's Mac pass (`nocx-1ebrs.4`) — the darwin half of the proof.
 
+### The eight decisions, owner-decided 2026-10-21
+
+Each was opened by this record in recommendation form; the owner accepted all
+eight as recommended, and they are recorded here as decided.
+
+1. **Where nightlies live.** The same repository, as prereleases under a moving
+   `nightly` tag plus dated copies (owner-decided 2026-10-21). Consequence: `latest` never
+   serves them (prereleases are excluded), so the stable channel's URL is
+   untouched by construction; URLs stay under `releases/download/` where
+   ADR-0087's pin expects them; one signing secret and one threat surface. The
+   alternative — a separate repository — doubles the secrets, widens ADR-0003's
+   "compromised repository" boundary to a second repo, and buys isolation this
+   record cannot find a use for.
+2. **How many nightlies are kept.** The last 7 (owner-decided 2026-10-21).
+   Consequence: a week
+   of bisect points at 488 MB each (~3.4 GB), the oldest deleted by the workflow;
+   retention is a setting, not a promise, and the moving `nightly` tag always
+   points at today's.
+3. **Mac-only at first, or both platforms.** Both from day one
+   (owner-decided 2026-10-21).
+   Consequence: the pipeline already builds both and the Linux runner cost is
+   negligible; but until `nocx-azxe.8` is fixed the Linux nightly is install-only
+   — its in-app self-update cannot apply — and the channel setting must say so
+   rather than offer a dead control.
+4. **Channel-switch UX.** Settings → Updates, stable default, with the nightly
+   opt-in naming its nature in one sentence ("built from main every night it
+   moved; not tried by anyone before you") and the return path stated
+   ("switching back never downgrades; you wait for the next stable or reinstall")
+   (owner-decided 2026-10-21). Consequence: no silent channel changes, and the one irreversible edge (leaving
+   nightly) is consented to at the switch, not discovered after it.
+5. **Minutes budget per day.** The nightly runs build, sign and publish only —
+   no CI re-run — so a day costs the measured ~6-minute pipeline plus the macOS
+   build's runner minutes, and nothing when `main` did not move
+   (owner-decided 2026-10-21).
+   Consequence: the queue the v0.6.1 tag run measured (~40 minutes waiting for
+   `ci-mac`) is never paid by a scheduled job; under the public-repo reading the
+   dollars are zero and the constraint is concurrency, under the private-repo
+   reading the cap is what keeps the 15k frame from returning.
+6. **The version scheme.** The one above — nightlies stamp the next stable
+   version, nightly-ness lives in the channel (owner-decided 2026-10-21). Consequence: promotion is
+   byte-identical and no comparison rule can loop; the cost is the channel-aware
+   update rule and a version source on `main` the promotion bumps. The
+   prerelease-suffix alternative keeps versions self-describing but, measured
+   against `IsNewer`'s canonicalisation and the `CFBundleVersion` grammar, either
+   never updates nightly-to-nightly or loops after promotion — both are worse.
+7. **Who may promote.** The owner only, by naming a nightly they have tried
+   (owner-decided 2026-10-21). Consequence: promotion is a manual dispatch, never automatic; a
+   bad nightly is caught by the person the release is for, which is the shape the
+   owner approved.
+8. **The nightly channel's brew surface.** The tap carries a second cask,
+   `Casks/nocx@nightly.rb` beside `nocx.rb`, each `conflicts_with` the other
+   (owner-decided 2026-10-21). The nightly workflow updates the nightly cask's
+   version and sha256 on every published nightly — one tap commit per nightly, a
+   real pinned sha256, never `version :latest` or `sha256 :no_check`: brew must
+   verify the bytes it installs, the same verification ADR-0086 built the tap on.
+   The nightly cask installs the app preset to the nightly update channel, so a
+   `brew install nocx@nightly` keeps self-updating on nightly from its first
+   launch; leaving nightly is `brew uninstall nocx@nightly` then `brew install
+nocx` — a reinstall, never a downgrade, matching the channel's own
+   no-downgrade rule.
+
 ## What stands and what changes, record by record
 
 - **[ADR-0003] — stands.** No Developer ID, no notarization, the manual quarantine
@@ -197,10 +268,14 @@ Prerequisites, in order, all already tracked:
   `requirement.txt` gate, so a keychain identity written by one nightly is
   recognised by the next. A nightly channel without a stable identity would churn
   the keychain on every update; with ADR-0052 it does not. Nothing changes.
-- **[ADR-0086] — stands.** The tap, the postflight quarantine step, `auto_updates
-true`: unchanged. What moves is the trigger: the cask's version and sha256 are
-  updated by the **promotion**, not by a tag-triggered from-scratch release. The
-  cask never points at a nightly.
+- **[ADR-0086] — stands, and grows a second cask.** The tap, the postflight
+  quarantine step, `auto_updates true`: unchanged, on both casks. What moves is
+  the trigger and the surface: the stable cask's version and sha256 are updated
+  by the **promotion**, not by a tag-triggered from-scratch release, and the tap
+  gains `Casks/nocx@nightly.rb` beside `nocx.rb` — each `conflicts_with` the
+  other, the nightly cask's version and sha256 updated by every published
+  nightly (owner-decided 2026-10-21). Both casks pin a real sha256; neither uses
+  `version :latest` or `sha256 :no_check`.
 - **[ADR-0087] — stands.** The installer keeps fetching the stable latest release
   and keeps its URL pin. Nightlies do not change what the installer accepts,
   because the installer never sees them.
@@ -246,50 +321,3 @@ true`: unchanged. What moves is the trigger: the cask's version and sha256 are
 - The macOS runner queue stops being the constraint it measured as, or the
   repository's visibility changes and every "free minutes" assumption flips — that
   is the day the 15k frame becomes the live price again.
-
-## Decisions for the owner
-
-Each with the recommended option and its consequence. Nothing below is decided by
-this record; the coordinator brings them one at a time.
-
-1. **Where nightlies live.** _Recommended: the same repository, as prereleases
-   under a moving `nightly` tag plus dated copies._ Consequence: `latest` never
-   serves them (prereleases are excluded), so the stable channel's URL is
-   untouched by construction; URLs stay under `releases/download/` where
-   ADR-0087's pin expects them; one signing secret and one threat surface. The
-   alternative — a separate repository — doubles the secrets, widens ADR-0003's
-   "compromised repository" boundary to a second repo, and buys isolation this
-   record cannot find a use for.
-2. **How many nightlies are kept.** _Recommended: the last 7._ Consequence: a week
-   of bisect points at 488 MB each (~3.4 GB), the oldest deleted by the workflow;
-   retention is a setting, not a promise, and the moving `nightly` tag always
-   points at today's.
-3. **Mac-only at first, or both platforms.** _Recommended: both from day one._
-   Consequence: the pipeline already builds both and the Linux runner cost is
-   negligible; but until `nocx-azxe.8` is fixed the Linux nightly is install-only
-   — its in-app self-update cannot apply — and the channel setting must say so
-   rather than offer a dead control.
-4. **Channel-switch UX.** _Recommended: Settings → Updates, stable default, with
-   the nightly opt-in naming its nature in one sentence ("built from main every
-   night it moved; not tried by anyone before you") and the return path stated
-   ("switching back never downgrades; you wait for the next stable or reinstall")._
-   Consequence: no silent channel changes, and the one irreversible edge (leaving
-   nightly) is consented to at the switch, not discovered after it.
-5. **Minutes budget per day.** _Recommended: the nightly runs build, sign and
-   publish only — no CI re-run — so a day costs the measured ~6-minute pipeline
-   plus the macOS build's runner minutes, and nothing when `main` did not move._
-   Consequence: the queue the v0.6.1 tag run measured (~40 minutes waiting for
-   `ci-mac`) is never paid by a scheduled job; under the public-repo reading the
-   dollars are zero and the constraint is concurrency, under the private-repo
-   reading the cap is what keeps the 15k frame from returning.
-6. **The version scheme.** _Recommended: the one above — nightlies stamp the next
-   stable version, nightly-ness lives in the channel._ Consequence: promotion is
-   byte-identical and no comparison rule can loop; the cost is the channel-aware
-   update rule and a version source on `main` the promotion bumps. The
-   prerelease-suffix alternative keeps versions self-describing but, measured
-   against `IsNewer`'s canonicalisation and the `CFBundleVersion` grammar, either
-   never updates nightly-to-nightly or loops after promotion — both are worse.
-7. **Who may promote.** _Recommended: the owner only, by naming a nightly they
-   have tried._ Consequence: promotion is a manual dispatch, never automatic; a
-   bad nightly is caught by the person the release is for, which is the shape the
-   owner approved.
