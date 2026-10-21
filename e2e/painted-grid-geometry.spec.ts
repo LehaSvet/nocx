@@ -37,17 +37,32 @@ for (const ratio of [1, 1.8]) {
           "printf '\\033[12;6HX\\033[12;6H\\033[?25h'; sleep 60",
       )
       await page.keyboard.press('Enter')
-      await expect(page.locator(`${LIVE} .term-grid-row`, { hasText: 'plain row 6' })).toHaveCount(
-        1,
-        {
+      // THE MEASURED GRID MUST BE THE PROGRAM'S SCREEN. Each of the six rows
+      // is awaited by its own text, and measured by that text in one
+      // snapshot, because this guard once confirmed ONE row and measured all
+      // six by index — and a red put the typed command's echo in row 0
+      // (nocx-zg3k3.21): grid rows persist across frames, so a frame beside
+      // the settled one measures garbage — a NaN where a background was
+      // expected, a seam that belongs to two different frames. A measure
+      // that cannot find its row says what was in the way instead.
+      const rowTexts = [
+        'plain row 1',
+        'plain row 2',
+        'plain row 3',
+        '⣿⣿⡿⠿ braille ⠿⢿⣿',
+        '┌──┐ box │ ═══ ║',
+        'plain row 6',
+      ]
+      for (const text of rowTexts) {
+        await expect(page.locator(`${LIVE} .term-grid-row`, { hasText: text })).toHaveCount(1, {
           timeout: 15_000,
-        },
-      )
+        })
+      }
       await expect
         .poll(() => cursorRow(page), { message: 'the cursor was never painted on row 12' })
         .not.toBeNull()
 
-      const m = await measure(page)
+      const m = await measure(page, rowTexts)
       // Rows 3 and 4 (braille, box drawing) can be drawn from a fallback face
       // whose content box is not the primary font's, so the padding measured
       // on the primary font leaves them a fraction of a device pixel off
@@ -58,20 +73,30 @@ for (const ratio of [1, 1.8]) {
       for (let i = 0; i < 6; i++) {
         const row = m.rows[i]!
         const fallback = i >= 3 && i <= 5
-        expect(row.bgHeight, `row ${String(i)}'s background covers the row`).toBeCloseTo(
-          row.height,
-          1,
-        )
+        expect(
+          row.text.startsWith(rowTexts[i]!),
+          `row ${String(i)} is the row the program painted; measured ${JSON.stringify(row)}`,
+        ).toBe(true)
+        expect(
+          row.bgHeight,
+          `row ${String(i)}'s background covers the row; measured ${JSON.stringify(row)}`,
+        ).toBeCloseTo(row.height, 1)
         if (i > 0) {
           const above = m.rows[i - 1]!
           const seam = Math.abs(row.bgTop - (above.bgTop + above.bgHeight))
-          expect(seam, `row ${String(i)}'s background meets the one above`).toBeLessThan(
-            fallback ? devicePixel : 0.05,
-          )
+          expect(
+            seam,
+            `row ${String(i)}'s background meets the one above; measured ${JSON.stringify(m.rows)}`,
+          ).toBeLessThan(fallback ? devicePixel : 0.05)
         }
       }
+      // Row 12 is blank, so it has no text to be found by: its top is the
+      // measured rows' own stack — five rows plus the measured pitch, not a
+      // twelfth element picked by index.
+      const pitch = m.rows[1]!.top - m.rows[0]!.top
+      const twelfthTop = m.rows[5]!.top + 6 * pitch
       expect(m.cursorTop, 'the cursor is on row 12, where the X was written').toBeCloseTo(
-        m.rows[11]!.top,
+        twelfthTop,
         0,
       )
       await page.keyboard.press('Control+C')
@@ -86,16 +111,32 @@ async function cursorRow(page: Page): Promise<number | null> {
   }, LIVE)
 }
 
-async function measure(page: Page): Promise<{
-  rows: { top: number; height: number; bgTop: number; bgHeight: number }[]
+async function measure(
+  page: Page,
+  rowTexts: string[],
+): Promise<{
+  rows: { top: number; height: number; bgTop: number; bgHeight: number; text: string }[]
   cursorTop: number
 }> {
-  return page.evaluate((sel) => {
-    const grid = document.querySelector<HTMLElement>(sel)!
-    const origin = grid.getBoundingClientRect().top
-    const rows = [...grid.querySelectorAll<HTMLElement>('.term-grid-row')]
-      .slice(0, 12)
-      .map((row) => {
+  return page.evaluate(
+    ({ sel, rowTexts }) => {
+      const grid = document.querySelector<HTMLElement>(sel)!
+      const origin = grid.getBoundingClientRect().top
+      const all = [...grid.querySelectorAll<HTMLElement>('.term-grid-row')]
+      // Each measured row is found BY ITS TEXT, and the text comes back with
+      // the numbers: one snapshot carries both, so a number can never be
+      // attributed to a row the program did not paint (nocx-zg3k3.21).
+      const rows = rowTexts.map((want) => {
+        const row = all.find((r) => r.textContent!.startsWith(want))
+        if (!row) {
+          return {
+            top: Number.NaN,
+            height: Number.NaN,
+            bgTop: Number.NaN,
+            bgHeight: Number.NaN,
+            text: `(no row starts with ${want})`,
+          }
+        }
         const box = row.getBoundingClientRect()
         const painted = [...row.querySelectorAll<HTMLElement>('span')].find(
           (s) => getComputedStyle(s).backgroundColor !== 'rgba(0, 0, 0, 0)',
@@ -106,11 +147,19 @@ async function measure(page: Page): Promise<{
           height: box.height,
           bgTop: bg ? bg.top - origin : Number.NaN,
           bgHeight: bg ? bg.height : Number.NaN,
+          text: row.textContent!.slice(0, 16),
         }
       })
-    const cursor = grid.querySelector<HTMLElement>('.term-grid-cursor')!
-    return { rows, cursorTop: cursor.getBoundingClientRect().top - origin }
-  }, LIVE)
+      const cursor = grid.querySelector<HTMLElement>('.term-grid-cursor')!
+      const twelfth = all[11]?.getBoundingClientRect()
+      return {
+        rows,
+        cursorTop: cursor.getBoundingClientRect().top - origin,
+        twelfthTop: twelfth ? twelfth.top - origin : Number.NaN,
+      }
+    },
+    { sel: LIVE, rowTexts },
+  )
 }
 
 // The cursor is a solid block in the theme's cursor colour that blinks while
