@@ -291,3 +291,31 @@ func TestBootstrapWindow_AnOverBoundLineSaysWhatItIs(t *testing.T) {
 		t.Errorf("error %q does not name the bound; the log cannot say how much arrived", got)
 	}
 }
+
+// THE CI SHAPE OF nocx-1ebrs.39 (run 39531371611, both ci-linux variants):
+// the bytes before the loader's token are a zsh line editor's own redraw and
+// partial-line echo - cursor-show, bracketed paste, CARRIAGE-RETURN line
+// endings, no newline anywhere - and the token sits right behind them. The
+// window must find the token there, because no newline will ever arrive to
+// make a positional parser advance, and the typed-ssh bootstrap starved on
+// exactly this buffer until its receiver deadline aborted a far side that
+// was announcing itself.
+func TestBootstrapWindow_FindsTheLoaderTokenBehindRendererBytesWithoutANewline(t *testing.T) {
+	w, feed, rendered := newWindowFixture(t)
+	defer func() { _ = w.Close() }()
+
+	feed("\x1b[K\x1b[?1h\x1b=\x1b[?2004h\x1b[Ks\rssh runner@127.0.0.1:44433")
+	feed("\x1b]1337;NOCX1 LOADER_READY\x07")
+	line, err := w.ReadLine(context.Background(), time.Second)
+	if err != nil {
+		t.Fatalf("ReadLine: %v", err)
+	}
+	if line != "\x1b]1337;NOCX1 LOADER_READY\x07" {
+		t.Fatalf("read %q, want the loader's token whole (the BEL is the line's content)", line)
+	}
+	// The renderer's own bytes are untouched by the window's drop: every
+	// byte still reached it, in order.
+	if got := rendered(); !strings.Contains(got, "ssh runner@127.0.0.1:44433") {
+		t.Fatalf("the renderer lost the pane's own bytes: %q", got)
+	}
+}

@@ -140,6 +140,13 @@ func (w *harnessWindow) ReadLine(ctx context.Context, timeout time.Duration) (st
 			w.mu.Unlock()
 			return line, nil
 		}
+		// The same stale-prefix trim the session window makes: a line
+		// editor's redraw and partial-line echo before a loader's token have
+		// CARRIAGE-RETURN endings and no newline, and a positional parser
+		// starves behind them (nocx-1ebrs.39, measured on CI).
+		if start, ok := bootstrapstream.NextLineStart(w.buf); ok && start > 0 {
+			w.buf = w.buf[start:]
+		}
 		closed := w.closed
 		w.mu.Unlock()
 		if closed {

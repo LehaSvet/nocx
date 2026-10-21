@@ -57,6 +57,37 @@ var ErrDeadline = errors.New("bootstrap: the deadline passed before a line arriv
 // read the stream, and a "bounded prefix" in a log file is reading it).
 var ErrLineTooLong = errors.New("bootstrap: a line exceeded the bound")
 
+// NextLineStart answers where the next line can begin in b, for a reader
+// whose LineEnd call just answered "not yet": the first OSC opening (ESC ]
+// in b), because with no complete line in b there is no newline either
+// (LineEnd would have found one), so a BEL-terminated line is the only kind
+// that can complete here, and it can only begin at its own opening.
+//
+// The intended caller is a reader whose buffer is a COPY of the stream - the
+// renderer has its own bytes and nothing is taken from it - which may drop
+// b[:start]: those bytes are the terminal program's own drawing and echo,
+// and a token arriving behind them is otherwise invisible forever, because
+// no newline will ever arrive to make the parser advance (measured,
+// nocx-1ebrs.39's typed-ssh fixture on CI: the loader's readiness token sat
+// behind a zsh line editor's redraw bytes and the bootstrap reader starved
+// to its deadline, then aborted a far side that was about to announce
+// itself).
+//
+// It answers 0/true for a buffer that begins with an unterminated OSC (its
+// BEL may still arrive - a prefix match, never dropped) and 0/false when b
+// holds no OSC opening at all and a future byte is what can still complete
+// a line. The caller is expected to have consumed every complete line first
+// (LineEnd answered "not yet"); on a buffer that still holds one, the first
+// OSC opening is answered and the consumption order is the caller's.
+func NextLineStart(b []byte) (start int, ok bool) {
+	for i := 0; i+1 < len(b); i++ {
+		if b[i] == 0x1b && b[i+1] == ']' {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
 // LineEnd reports whether b holds a complete line: content is the index one
 // past the line's own bytes (its line ending and any '\r' excluded), next is
 // the index the caller consumes up to, and ok says the line is complete.
