@@ -84,6 +84,21 @@ function asNode(target: EventTarget | null): Node | null {
   return target !== null && typeof (target as Node).nodeType === 'number' ? (target as Node) : null
 }
 
+/** How far a pressed pointer must travel before its motion is a drag, in
+ *  CSS pixels — the distance Qt calls startDragDistance and GTK a drag
+ *  threshold.
+ *
+ *  Measured defect nocx-zg3k3.14.19: roughly one click in five on the live
+ *  grid selected the characters under the pointer and rewrote the clipboard.
+ *  A cell is a handful of pixels wide, so hand tremor routinely carried a
+ *  click's release into the neighbouring column; the press and the release
+ *  then resolved to different cells, and different cells were read as a drag.
+ *  Cell equality alone cannot tell a click from a drag at sub-cell distances;
+ *  the MOTION can. 4 px sits above tremor and below half a cell, and the
+ *  same-cell rule stands above it: a release on the pressed cell is a click
+ *  at any distance. */
+const DRAG_SLOP_PX = 4
+
 export function installLiveSelectionGesture(
   opts: LiveSelectionGestureOptions,
 ): LiveSelectionGesture {
@@ -91,6 +106,10 @@ export function installLiveSelectionGesture(
   let pinnedMapping = opts.painter.mapping()
   let anchor: Endpoint | null = null
   let selection: LiveSelection | null = null
+  // The press's own pixels — the origin of the slop box below. Set in
+  // `down`, read by `move` and `up`, and meaningless without an anchor.
+  let pressX = 0
+  let pressY = 0
   const root = opts.gestureRoot ?? opts.surface
 
   const livePosition = (event: PointerEvent): Endpoint | null => {
@@ -230,6 +249,8 @@ export function installLiveSelectionGesture(
     // only - the anchor stays, `selection` starts null, and the first paint
     // happens in `move`, where a drag exists to paint.
     anchor = point
+    pressX = event.clientX
+    pressY = event.clientY
     selection = null
     opts.painter.setSelection(null)
     window.addEventListener('pointermove', move)
@@ -319,8 +340,19 @@ export function installLiveSelectionGesture(
     selected.addRange(range)
   }
 
+  /** Whether the pointer is still inside the press's slop box: the motion
+   *  a click carries, never a drag (nocx-zg3k3.14.19). */
+  const withinSlop = (event: PointerEvent): boolean =>
+    Math.max(Math.abs(event.clientX - pressX), Math.abs(event.clientY - pressY)) < DRAG_SLOP_PX
+
   const move = (event: PointerEvent) => {
     if (!anchor) return
+    // A DRAG IS A MOTION (nocx-zg3k3.14.19). Until the pointer has left the
+    // slop box around the press, nothing has been dragged, so nothing
+    // paints: a press with tremor on it is still a click being made, and
+    // painting on the first two-pixel move is the flash a person read as
+    // "my click selected a letter". The release decides a click the same way.
+    if (withinSlop(event)) return
     // During a drag, the browser may keep targeting the source block or a
     // gap between the card and live grid. Coordinates still use the painter's
     // mapping, so resolve a live endpoint there instead of losing the gesture.
@@ -335,14 +367,17 @@ export function installLiveSelectionGesture(
     if (!anchor) return
     const focus = endpoint(event) ?? (anchor.kind === 'card' ? livePosition(event) : null)
     if (
-      anchor.kind === 'live' &&
-      focus?.kind === 'live' &&
-      focus.position.row === anchor.position.row &&
-      focus.position.offset === anchor.position.offset
+      withinSlop(event) ||
+      (anchor.kind === 'live' &&
+        focus?.kind === 'live' &&
+        focus.position.row === anchor.position.row &&
+        focus.position.offset === anchor.position.offset)
     ) {
       // A press and release on one cell is a click — how a person gives the
       // terminal focus — not a one-cell selection. Copying it would replace
-      // the clipboard with whatever character sat under the pointer.
+      // the clipboard with whatever character sat under the pointer. So is a
+      // release that never left the press's slop box, whichever cell it landed
+      // in (nocx-zg3k3.14.19): tremor across a cell boundary is not a drag.
       clear()
     } else if (focus && (anchor.kind === 'live' || focus.kind === 'live')) {
       drawLive(focus)
