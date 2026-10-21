@@ -17,8 +17,9 @@ import (
 // It is the client-side counterpart of [Server] and it lives in the same
 // package for the reason the client does — one owner for one protocol. What
 // it adds over the client is the three decisions the protocol itself does
-// not make: whether to spawn, how long to wait, and what to do about a
-// daemon whose version is not this build's (design §4, D4).
+// not make: whether to spawn, how long to wait, and whether a running
+// daemon is one this build can use — a question the PROTOCOL answers, not
+// the build (design §4, D4; ADR-0099).
 
 const (
 	// DefaultReadyTimeout bounds the wait for a spawned daemon to answer
@@ -94,7 +95,9 @@ type Announcer interface {
 type LauncherConfig struct {
 	// Dir is the runtime directory — see [RuntimeDir]. Must be absolute.
 	Dir string
-	// Self is this build's identity: what the daemon's is compared against.
+	// Self is this build's identity. Its Protocol is the one field a
+	// running daemon's hello is judged by (ADR-0099); the Version and
+	// Commit travel for the record the log keeps of a kept coordinator.
 	Self ClientIdentity
 	// Client asks the discovery socket who is serving it.
 	Client Discoverer
@@ -217,24 +220,25 @@ func (l *Launcher) Launch(ctx context.Context) (Launch, error) {
 
 // incompatibility returns why the running daemon cannot be used, or "".
 //
-// BOTH halves are compared, because they fail differently and D4 needs
-// both: the protocol says whether the two can talk at all, and the build
-// says whether an update has swapped the bundle underneath a coordinator
-// that is still running the old code. An update leaves the protocol
-// unchanged more often than not, so a protocol-only check would certify
-// exactly the mixed pair D4 exists to prevent.
+// The PROTOCOL alone is compared (ADR-0099): it is the one compatibility
+// boundary between a window and a coordinator, covering the discovery
+// socket and the WS control plane its token opens. A build whose Version
+// or Commit differs is exactly what an update leaves behind — the daemon
+// keeps running the code it was started from while the bundle beside it
+// moved — and under ADR-0097's nightly scheme it is the ordinary case,
+// not the exception. Stopping such a coordinator killed every live
+// session on every nightly restart, which is the rule ADR-0099 retires;
+// the update health gate (update/pair.go) still asks its own question of
+// the pair and keeps the rollback armed when it must.
 //
-// The commit is part of the build identity, not decoration: two builds
-// numbered "dev" are the normal case on a developer's machine and are
-// routinely different code.
+// The build difference is observable, not actionable: the log line on the
+// found-running path carries version, commit and protocol, so a mixed
+// pair is a fact a person can read out of the log rather than one the
+// launcher acts on.
 func (l *Launcher) incompatibility(h Hello) string {
 	if h.Protocol != l.cfg.Self.Protocol {
 		return fmt.Sprintf("it speaks discovery protocol %d and this build speaks %d",
 			h.Protocol, l.cfg.Self.Protocol)
-	}
-	if h.Build.Version != l.cfg.Self.Version || h.Build.Commit != l.cfg.Self.Commit {
-		return fmt.Sprintf("it is nocx %s (commit %s) and this window is nocx %s (commit %s)",
-			h.Build.Version, h.Build.Commit, l.cfg.Self.Version, l.cfg.Self.Commit)
 	}
 	return ""
 }
@@ -277,10 +281,12 @@ func (l *Launcher) replace(ctx context.Context, sighting Sighting, why string) (
 	if err != nil {
 		return Launch{}, err
 	}
-	// The daemon that came up must be OURS. Without this check a
-	// replacement that lost a race — to another window, or to a stale
-	// binary on the path — would be accepted silently, which is the mixed
-	// pair again with an extra step.
+	// The daemon that came up must speak our protocol. Without this check
+	// a replacement that lost a race — to another window, to a stale
+	// binary on the path — would be accepted silently even though it
+	// cannot serve this window. Its BUILD is not asked: a protocol-
+	// compatible replacement of any commit is exactly what ADR-0099 says
+	// this window uses.
 	if incompat := l.incompatibility(hello); incompat != "" {
 		return Launch{}, NewLaunchFailure(
 			FailureIncompatible,

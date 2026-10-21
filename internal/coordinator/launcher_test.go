@@ -39,9 +39,6 @@ const (
 	// childRefuseEnv makes the child exit immediately with a status, so the
 	// "spawned and then died" path has something real to observe.
 	childRefuseEnv = "NOCX_COORD_CHILD_EXIT"
-	// childVersionEnv overrides the build version the child answers with,
-	// which is what makes an incompatible coordinator reproducible.
-	childVersionEnv = "NOCX_COORD_CHILD_VERSION"
 )
 
 func TestMain(m *testing.M) {
@@ -71,13 +68,9 @@ func runChildDaemon() int {
 		}
 		return 1
 	}
-	version := testVersion
-	if v := os.Getenv(childVersionEnv); v != "" {
-		version = v
-	}
 	s, err := coordinator.NewServer(coordinator.Config{
 		Dir:     os.Getenv(childDirEnv),
-		Build:   coordinator.Build{Version: version, Commit: testCommit},
+		Build:   coordinator.Build{Version: testVersion, Commit: testCommit},
 		Backend: fakeBackend{addr: testAddr, token: testToken},
 		Peers:   coordinator.SystemPeerCredentials{},
 		Owner:   coordinator.SystemPathOwner{},
@@ -417,80 +410,145 @@ func TestASpawnThatDiesBeforeAnsweringReportsItsExit(t *testing.T) {
 
 // --- 4 & 5. an incompatible coordinator is refused, replaced, and said ---
 
-func TestABuildVersionMismatchIsRefusedReplacedAndSurfaced(t *testing.T) {
+// TestABuildDifferenceAloneKeepsTheRunningCoordinator pins the accepted
+// update-coordinator compatibility rule (ADR-0099): a coordinator whose
+// protocol this build speaks is USED, whatever its Version or Commit. A
+// build difference is exactly what an update leaves behind — the daemon
+// kept running the old code while the bundle beside it moved — and under
+// ADR-0097's nightly scheme it is the ordinary case, not the exception.
+// Only a protocol difference replaces; that is the test after this one.
+func TestABuildDifferenceAloneKeepsTheRunningCoordinator(t *testing.T) {
+	for name, running := range map[string]coordinator.Build{
+		"a newer commit of the same version": {Version: testVersion, Commit: "0123456789abcdef"},
+		"an older version and commit":        {Version: "0.0.1", Commit: "0ldc0de"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := shortDir(t)
+			live := coordinator.Sighting{
+				PID: 777,
+				Hello: coordinator.Hello{
+					Build:     running,
+					Protocol:  coordinator.ProtocolVersion,
+					WSAddress: testAddr,
+					WSToken:   testToken,
+				},
+			}
+			// A spawner whose whole job is to fail: if the launcher
+			// decides this coordinator must be replaced, raising a
+			// second daemon beside a live one is the failure to
+			// report, not something to paper over with a spawn.
+			spawner := &countingSpawner{body: func() (coordinator.Spawned, error) {
+				return coordinator.Spawned{}, errors.New("a second daemon was raised over a compatible one")
+			}}
+			stopper := &recordingStopper{}
+			announcer := &recordingAnnouncer{}
+			l := newLauncher(t, coordinator.LauncherConfig{
+				Dir:       dir,
+				Client:    &scriptedDiscoverer{replies: []reply{{sighting: live}}},
+				Spawner:   spawner,
+				Stopper:   stopper,
+				Announcer: announcer,
+			})
+
+			got, err := l.Launch(context.Background())
+			if err != nil {
+				t.Fatalf("Launch: %v", err)
+			}
+			if got.Spawned {
+				t.Error("the launcher raised a daemon over a compatible one")
+			}
+			if got.Replaced {
+				t.Error("the launcher replaced a coordinator it can use")
+			}
+			if got.Hello.WSToken != testToken || got.Hello.Build != running {
+				t.Errorf("the launcher did not hand back the running coordinator: %+v", got.Hello)
+			}
+			if stopper.count() != 0 {
+				t.Errorf("the running coordinator was stopped %d times", stopper.count())
+			}
+			if spawner.spawns() != 0 {
+				t.Errorf("%d daemons raised beside a compatible one", spawner.spawns())
+			}
+			if notices := announcer.all(); len(notices) != 0 {
+				t.Errorf("sessions were reported lost although none were: %+v", notices)
+			}
+		})
+	}
+}
+
+// TestACommitOnlyUpdateKeepsTheLiveSessionAcrossARestart is the leaf's
+// acceptance, on real processes: the window before an update raises the
+// coordinator, the update moves the window's build to a newer commit, and
+// the restarted window must land on the SAME coordinator — same address,
+// same token, so the sessions it is running are the ones that survive.
+func TestACommitOnlyUpdateKeepsTheLiveSessionAcrossARestart(t *testing.T) {
 	dir := shortDir(t)
-	old := coordinator.Sighting{
-		PID: 777,
-		Hello: coordinator.Hello{
-			Build:     coordinator.Build{Version: "0.0.1", Commit: "0ldc0de"},
-			Protocol:  coordinator.ProtocolVersion,
-			WSAddress: "127.0.0.1:1",
-			WSToken:   "old-token",
-		},
+	spawner := realSpawner(t, dir)
+
+	before := newLauncher(t, coordinator.LauncherConfig{
+		Dir:     dir,
+		Client:  newRealClient(t, dir),
+		Spawner: spawner,
+		Stopper: &recordingStopper{},
+	})
+	first, err := before.Launch(context.Background())
+	if err != nil {
+		t.Fatalf("the window before the update: %v", err)
 	}
-	fresh := coordinator.Sighting{
-		PID: 888,
-		Hello: coordinator.Hello{
-			Build:     coordinator.Build{Version: testVersion, Commit: testCommit},
-			Protocol:  coordinator.ProtocolVersion,
-			WSAddress: testAddr,
-			WSToken:   testToken,
-		},
+	if !first.Spawned {
+		t.Fatal("the window before the update raised no coordinator")
 	}
-	client := &scriptedDiscoverer{replies: []reply{
-		{sighting: old},
-		{err: coordinator.ErrNoCoordinator},
-		{sighting: fresh},
-	}}
+
+	// The window after the update: same protocol, a newer commit. Its
+	// client states the new identity too — the daemon ignores it, but a
+	// fixture that lied about it would prove nothing about a restart.
+	newer := coordinator.ClientIdentity{
+		Version:  testVersion,
+		Commit:   "0123456789abcdef",
+		Protocol: coordinator.ProtocolVersion,
+	}
+	client, err := coordinator.NewClient(coordinator.ClientConfig{
+		Socket: coordinator.SocketPathIn(dir),
+		Self:   newer,
+		Dialer: coordinator.SystemDialer{},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
 	stopper := &recordingStopper{}
 	announcer := &recordingAnnouncer{}
-	spawner := &countingSpawner{}
-	l := newLauncher(t, coordinator.LauncherConfig{
-		Dir:          dir,
-		Client:       client,
-		Spawner:      spawner,
-		Stopper:      stopper,
-		Announcer:    announcer,
-		ReadyTimeout: 2 * time.Second,
-		PollInterval: 5 * time.Millisecond,
+	after := newLauncher(t, coordinator.LauncherConfig{
+		Dir:    dir,
+		Client: client,
+		Spawner: &countingSpawner{body: func() (coordinator.Spawned, error) {
+			return coordinator.Spawned{}, errors.New("a second daemon was raised over a compatible one")
+		}},
+		Stopper:   stopper,
+		Announcer: announcer,
+		Self:      newer,
 	})
 
-	got, err := l.Launch(context.Background())
+	second, err := after.Launch(context.Background())
 	if err != nil {
-		t.Fatalf("Launch: %v", err)
+		t.Fatalf("the restarted window: %v", err)
 	}
-	if !got.Replaced {
-		t.Error("Launch did not report that it replaced the coordinator")
+	if second.Spawned || second.Replaced {
+		t.Errorf("the restarted window spawned=%v replaced=%v; it must reuse the running coordinator",
+			second.Spawned, second.Replaced)
 	}
-	if got.Hello.WSToken != testToken {
-		t.Errorf("the launcher kept the old token %q", got.Hello.WSToken)
+	if second.Hello.WSToken != first.Hello.WSToken || second.Hello.WSAddress != first.Hello.WSAddress {
+		t.Errorf("the live session plane moved: before %s after %s",
+			first.Hello.WSAddress, second.Hello.WSAddress)
 	}
-	if stopper.count() != 1 {
-		t.Errorf("the old coordinator was stopped %d times, want 1", stopper.count())
+	if second.Hello.Build.Commit != testCommit {
+		t.Errorf("the restarted window did not land on the old coordinator: %+v", second.Hello.Build)
 	}
-	if spawner.spawns() != 1 {
-		t.Errorf("%d daemons raised, want 1", spawner.spawns())
+	if stopper.count() != 0 {
+		t.Errorf("the running coordinator was stopped %d times", stopper.count())
 	}
-
-	notices := announcer.all()
-	if len(notices) != 1 {
-		t.Fatalf("%d notices surfaced, want 1: %+v", len(notices), notices)
-	}
-	n := notices[0]
-	if n.Kind != coordinator.NoticeSessionsLost {
-		t.Errorf("notice kind = %q, want %q", n.Kind, coordinator.NoticeSessionsLost)
-	}
-	// The loss must be stated in words a person reads, not inferred from a
-	// version pair (D4: killing is correct here, being honest about it is
-	// not optional).
-	if !strings.Contains(strings.ToLower(n.Message), "session") {
-		t.Errorf("the notice does not mention the sessions: %q", n.Message)
-	}
-	if !strings.Contains(n.Message, "0.0.1") || !strings.Contains(n.Message, testVersion) {
-		t.Errorf("the notice does not name both versions: %q", n.Message)
-	}
-	if n.Running.Version != "0.0.1" || n.Expected.Version != testVersion {
-		t.Errorf("notice carries running %+v expected %+v", n.Running, n.Expected)
+	if notices := announcer.all(); len(notices) != 0 {
+		t.Errorf("sessions were reported lost although none were: %+v", notices)
 	}
 }
 
@@ -554,8 +612,8 @@ func TestAProtocolVersionMismatchIsRefusedReplacedAndSurfaced(t *testing.T) {
 func TestAStopThatFailsIsReportedAndRaisesNoSecondDaemon(t *testing.T) {
 	dir := shortDir(t)
 	old := coordinator.Sighting{PID: 777, Hello: coordinator.Hello{
-		Build:    coordinator.Build{Version: "0.0.1"},
-		Protocol: coordinator.ProtocolVersion,
+		Build:    coordinator.Build{Version: testVersion, Commit: testCommit},
+		Protocol: coordinator.ProtocolVersion + 1,
 	}}
 	spawner := &countingSpawner{}
 	l := newLauncher(t, coordinator.LauncherConfig{
@@ -582,13 +640,13 @@ func TestAStopThatFailsIsReportedAndRaisesNoSecondDaemon(t *testing.T) {
 func TestAReplacementThatComesUpIncompatibleIsRefused(t *testing.T) {
 	dir := shortDir(t)
 	mismatched := coordinator.Sighting{Hello: coordinator.Hello{
-		Build:    coordinator.Build{Version: "0.0.1"},
-		Protocol: coordinator.ProtocolVersion,
+		Build:    coordinator.Build{Version: testVersion, Commit: testCommit},
+		Protocol: coordinator.ProtocolVersion + 1,
 	}}
 	l := newLauncher(t, coordinator.LauncherConfig{
 		Dir: dir,
-		// Every answer is the wrong version: the replacement must be
-		// refused rather than replaced again, forever.
+		// Every answer speaks the wrong protocol: the replacement must
+		// be refused rather than replaced again, forever.
 		Client:       &scriptedDiscoverer{replies: []reply{{sighting: mismatched}}},
 		Spawner:      &countingSpawner{},
 		Stopper:      &recordingStopper{},
