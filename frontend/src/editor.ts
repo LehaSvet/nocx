@@ -44,6 +44,7 @@ import {
   updatePromptContext,
   type PromptContextFacts,
 } from './ui/prompt-context'
+import { SETTLE_EASING, SETTLE_MS, motionAllowed } from './motion'
 
 /**
  * The indent a pasted command arrives with, when it arrives at the very
@@ -254,6 +255,11 @@ export class CommandEditor {
   /** Input ownership is independent of layout: a submitted command leaves
    *  the empty composer's box reserved while the terminal owns keys. */
   private _inputActive = false
+  /** The box transition in flight (nocx-1ebrs.40), tagged with its
+   *  direction: hide() during a climb turns the climb around, and a second
+   *  hide() during a collapse lets it finish rather than restarting it. */
+  private _boxTransition: Animation | null = null
+  private _boxTransitionLeaves = false
   /** Optional keyboard arbiter: called (capture phase) BEFORE the editor's
    *  own key handling. Return true to consume the key. One arbiter chain,
    *  composed at the root (terminal-content.ts): recall first, completion
@@ -1142,9 +1148,25 @@ export class CommandEditor {
    * The composer rejoins the layout and takes its flex slot back, which moves
    * the scrollback by its own height — so the caller settles around this (see
    * `_syncLifecycleOwnership`), and holds the bottom while it does.
+   *
+   * The rejoin is a TRANSITION, not a pop (nocx-1ebrs.40): the box grows to
+   * its height over SETTLE_MS, from nothing after a display:none return, or
+   * from wherever a collapse still in flight had taken it — which is why a
+   * quick command's prompt, returning while its box is only mid-collapse,
+   * never vanishes at all. Ownership is not deferred by this: `_inputActive`
+   * is true and the view is focused the instant this runs.
    */
   show(): void {
     this._inputActive = true
+    const wasHidden = this.root.style.display === 'none'
+    // Where the box starts its growth: nothing after a display:none return,
+    // or the painted height of a collapse still in flight, read while its
+    // animation is live — the height the person is actually looking at.
+    let from: number | null = wasHidden ? 0 : null
+    if (from === null && this._boxTransition !== null && this._boxTransitionLeaves) {
+      from = this.root.getBoundingClientRect().height
+    }
+    this._cancelBoxTransition()
     this.root.style.display = ''
     this.root.removeAttribute('inert')
 
@@ -1160,7 +1182,48 @@ export class CommandEditor {
     // A view that was display:none can cache zero or stale geometry; ask CM6
     // to re-measure before it is painted and focused (spec W1 check 5).
     this.view.requestMeasure()
+    if (from !== null) this._growBox(from)
     this.view.focus()
+  }
+
+  /** Grow the box to its natural height over SETTLE_MS. `from` is the height
+   *  the box is painted at — zero after a display:none return, or wherever a
+   *  reversal caught a collapse. Motionless builds (jsdom, a reduced-motion
+   *  preference) leave the box at its natural height in the same frame. */
+  private _growBox(from: number): void {
+    this._clearBoxSizing()
+    const to = this.root.getBoundingClientRect().height
+    if (to < 1 || from >= to - 0.5 || !motionAllowed(this.root)) return
+    this.root.style.overflow = 'hidden'
+    this.root.style.height = `${from}px`
+    const anim = this.root.animate([{ height: `${from}px` }, { height: `${to}px` }], {
+      duration: SETTLE_MS,
+      easing: SETTLE_EASING,
+    })
+    this._boxTransition = anim
+    this._boxTransitionLeaves = false
+    void anim.finished.then(
+      () => {
+        if (this._boxTransition !== anim) return
+        this._boxTransition = null
+        this._clearBoxSizing()
+      },
+      () => {
+        /* cancelled — hide() owns the element now */
+      },
+    )
+  }
+
+  private _cancelBoxTransition(): void {
+    this._boxTransition?.cancel()
+    this._boxTransition = null
+  }
+
+  /** The box's own layout again: no frozen height, no clipping, no inert. */
+  private _clearBoxSizing(): void {
+    this.root.style.height = ''
+    this.root.style.overflow = ''
+    this.root.inert = false
   }
 
   /** The caret's x, in px relative to the editor root — the anchor for a
@@ -1300,7 +1363,55 @@ export class CommandEditor {
     this._inputActive = false
     this.view.contentDOM.blur()
     this.root.removeAttribute('inert')
-    this.root.style.display = 'none'
+    if (this._boxTransition !== null && !this._boxTransitionLeaves) {
+      // An expansion is still climbing: turn it around from wherever it has
+      // got to, rather than snapping it away or restarting the departure.
+      const from = this.root.getBoundingClientRect().height
+      this._cancelBoxTransition()
+      this._shrinkBox(from)
+      return
+    }
+    if (this._boxTransition !== null) return // already leaving; let it finish
+    this._shrinkBox(this.root.getBoundingClientRect().height)
+  }
+
+  /** Collapse the box to nothing over SETTLE_MS, then take it out of the
+   *  layout. `from` is the height the box is painted at. Motionless builds
+   *  (jsdom, a reduced-motion preference) keep the old one-frame removal.
+   *
+   *  Input ownership does not wait for the animation: `_inputActive` is
+   *  false, the contentDOM is blurred and the box is inert from the instant
+   *  this runs — the handoff's step 1 (ADR-0004 §2) is the routing, never
+   *  the routing's box. What is animated is only how the departure is
+   *  PAINTED, for the same reason the settle glide plays a block's
+   *  displacement back instead of letting it land as a jump. */
+  private _shrinkBox(from: number): void {
+    if (from < 1 || !motionAllowed(this.root)) {
+      this.root.style.display = 'none'
+      return
+    }
+    // Frozen height and clipping: the box shrinks through its OWN heights
+    // instead of reflowing the card inside it row by row.
+    this.root.style.overflow = 'hidden'
+    this.root.style.height = `${from}px`
+    this.root.inert = true
+    const anim = this.root.animate([{ height: `${from}px` }, { height: '0px' }], {
+      duration: SETTLE_MS,
+      easing: SETTLE_EASING,
+    })
+    this._boxTransition = anim
+    this._boxTransitionLeaves = true
+    void anim.finished.then(
+      () => {
+        if (this._boxTransition !== anim) return
+        this._boxTransition = null
+        this._clearBoxSizing()
+        this.root.style.display = 'none'
+      },
+      () => {
+        /* cancelled — show() owns the element now */
+      },
+    )
   }
 
   get isVisible(): boolean {
@@ -1328,6 +1439,7 @@ export class CommandEditor {
     // The arbiter outlives the overlay it points at otherwise; a closed tab
     // must not keep consuming keys through a dead closure.
     this.keyArbiter = null
+    this._cancelBoxTransition()
     this._onGrantChipClick = null
     this.root.removeEventListener('keydown', this.onKeydown, true)
     this.root.removeEventListener('focusin', this.onFocusIn)

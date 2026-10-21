@@ -1250,3 +1250,124 @@ describe('the grant chip (nocx-wcswn)', () => {
     expect(opened).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('the box transition (nocx-1ebrs.40)', () => {
+  // jsdom performs no layout and ships no Web Animations API, so the animated
+  // path needs both named by the test: `rect` stands in for the box's
+  // measured height, `animateWith` for Element.animate — a controllable
+  // stand-in that records the keyframes the editor asked for.
+  const rect = (ed: CommandEditor, height: number): void => {
+    vi.spyOn(ed.root, 'getBoundingClientRect').mockReturnValue({ height } as DOMRect)
+  }
+  const animateWith = (ed: CommandEditor) => {
+    const calls: { keyframes: Keyframe[]; options: number | KeyframeAnimationOptions }[] = []
+    const anims: {
+      finished: Promise<void>
+      resolve: () => void
+      cancel: ReturnType<typeof vi.fn>
+    }[] = []
+    ;(ed.root as unknown as { animate: unknown }).animate = (
+      keyframes: Keyframe[],
+      options: number | KeyframeAnimationOptions,
+    ) => {
+      calls.push({ keyframes, options })
+      let resolve!: () => void
+      const finished = new Promise<void>((r) => {
+        resolve = r
+      })
+      const cancel = vi.fn()
+      anims.push({ finished, resolve, cancel })
+      return { finished, cancel }
+    }
+    return { calls, anims }
+  }
+
+  it('without the Web Animations API the box leaves in one frame, as before', () => {
+    // jsdom is that build: no `animate` on the element, so hide() is the
+    // instant removal every existing test and every reduced-motion user gets.
+    const { ed } = setup()
+    ed.show()
+    ed.hide()
+    expect(ed.root.style.display).toBe('none')
+    expect(ed.isVisible).toBe(false)
+  })
+
+  it('hide() collapses the box as a transition, and only then removes it', async () => {
+    const { ed } = setup()
+    ed.show()
+    rect(ed, 130)
+    const { calls, anims } = animateWith(ed)
+    ed.hide()
+    // Input ownership has already moved — isVisible is false the instant
+    // hide() ran — but the box is still in the layout, shrinking.
+    expect(ed.isVisible).toBe(false)
+    expect(ed.root.style.display).toBe('')
+    expect(ed.root.style.height).toBe('130px')
+    expect(ed.root.style.overflow).toBe('hidden')
+    expect(ed.root.inert).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].keyframes).toEqual([{ height: '130px' }, { height: '0px' }])
+    anims[0].resolve()
+    await anims[0].finished
+    expect(ed.root.style.display).toBe('none')
+    expect(ed.root.style.height).toBe('')
+    expect(ed.root.style.overflow).toBe('')
+    expect(ed.root.inert).toBe(false)
+  })
+
+  it('show() mid-collapse turns the box around from where it was', () => {
+    const { ed } = setup()
+    ed.show()
+    rect(ed, 130)
+    const collapse = animateWith(ed)
+    ed.hide()
+    // The prompt returns while the collapse is mid-flight: the box is
+    // painted at 52px, and the return grows from THERE, not from nothing.
+    const spy = vi.spyOn(ed.root, 'getBoundingClientRect')
+    spy.mockReturnValueOnce({ height: 52 } as DOMRect)
+    spy.mockReturnValue({ height: 130 } as DOMRect)
+    const expand = animateWith(ed)
+    ed.show()
+    expect(collapse.anims[0].cancel).toHaveBeenCalled()
+    expect(expand.calls).toHaveLength(1)
+    expect(expand.calls[0].keyframes).toEqual([{ height: '52px' }, { height: '130px' }])
+    expect(ed.isVisible).toBe(true)
+  })
+
+  it('the hand-back grows the box from nothing to its height', async () => {
+    const { ed } = setup()
+    ed.show()
+    rect(ed, 130)
+    const collapse = animateWith(ed)
+    ed.hide()
+    collapse.anims[0].resolve()
+    await collapse.anims[0].finished
+    expect(ed.root.style.display).toBe('none')
+    const expand = animateWith(ed)
+    ed.show()
+    expect(expand.calls).toHaveLength(1)
+    expect(expand.calls[0].keyframes).toEqual([{ height: '0px' }, { height: '130px' }])
+    expect(ed.isVisible).toBe(true)
+    expand.anims[0].resolve()
+    await expand.anims[0].finished
+    expect(ed.root.style.height).toBe('')
+    expect(ed.root.style.display).not.toBe('none')
+  })
+
+  it('a reduced-motion preference keeps the old instant box', () => {
+    const { ed } = setup()
+    ed.show()
+    rect(ed, 130)
+    // jsdom defines no matchMedia at all; motion.ts reads it optionally, so
+    // the stub is the whole answer.
+    vi.stubGlobal('matchMedia', () => ({ matches: true }))
+    try {
+      const { calls } = animateWith(ed)
+      ed.hide()
+      expect(ed.root.style.display).toBe('none')
+      expect(calls).toHaveLength(0)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
