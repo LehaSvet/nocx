@@ -4,8 +4,10 @@
   2026-10-20 on `nocx-1ebrs.35`, and all eight choices it opened, recorded as
   decided in "The eight decisions" below)
 - **Date:** 2026-10-21
-- **Decided by:** the worker on `nocx-1ebrs.35`, from the measured cost of the two
-  v0.6.1 release runs and the 2026-10-19 dry run, and from the records named below.
+- **Decided by:** the owner, 2026-10-21 — the five-point shape approved 2026-10-20
+  and all eight choices it opened. Drafted for that decision by the worker on
+  `nocx-1ebrs.35`, from the measured cost of the two v0.6.1 release runs, the
+  2026-10-19 dry run, and the records named below.
 - **Related:** [ADR-0003](0003-distribution-without-a-developer-id.md) (integrity
   model), [ADR-0007](0007-cross-platform-auto-update.md) (the updater this record
   gives a channel to), [ADR-0052](0052-a-code-identity-without-a-publisher-identity.md)
