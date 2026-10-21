@@ -58,6 +58,7 @@ import { IconButton } from './ui/icon-button'
 import { BellIcon, CheckCircleIcon, PlugIcon, RefreshIcon, SettingsIcon } from './ui/icons'
 import { SettingsObserver } from './settings-observer'
 import { mountClientHost } from './client-host'
+import { mountWindowGeometry } from './window-geometry'
 import type { ApprovalFacts } from './client-host'
 import { mountRunCommandHandler } from './run-command'
 import { bootstrapTheme, reconcileThemeFromGo } from './renderers/theme-bootstrap'
@@ -644,6 +645,12 @@ function main(): void {
   // agent-tree question was answered by whichever mount was faster, and the
   // one that had to wait for a person never was.
   mountClientHost(dispatcher, undefined, undefined, requestAgentHostApproval)
+  // The window half of the UI-state document (ADR-0098): the shell owns the
+  // native window and the coordinator owns the document, and this renderer
+  // is the only road between them. Mounted unconditionally like the client
+  // host above — a client with no Wails runtime reads the saved geometry and
+  // stops there, because a browser window is not the window of record.
+  mountWindowGeometry(dispatcher)
   // A question refused for want of an endpoint: the toast names the
   // problem, this opens where it is fixed — Settings → Endpoints with the
   // editor already up on a blank one.
