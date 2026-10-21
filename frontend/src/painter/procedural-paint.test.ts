@@ -3,7 +3,11 @@
 // degrades back to the font glyph. The geometry itself is asserted in
 // cell-ink.test.ts; this file asserts the painted DOM that geometry lands in —
 // including the bead's regression, two vertically adjacent U+2502 rows whose
-// painted bands must cover the shared edge.
+// painted bands must cover the shared edge. Per the owner's decision the
+// characters STAY TEXT in the row — selection, copy, find and the
+// accessibility tree read exactly what the program painted — and only the
+// font glyph is invisible; the copy regressions below hold the exact string
+// on a live-painted row and on a frozen row.
 
 // @vitest-environment jsdom
 
@@ -13,6 +17,7 @@ import type { RunMetric } from '../scrollback/run-geometry'
 import { frameOf, snapshotOf, type CellSpec } from './fixtures'
 import { fitCandidatesOf, paintRow } from './paint-row'
 import { proceduralSvgOf } from './cell-ink'
+import { paintStoredRows } from '../scrollback/block-rows'
 
 const palette: TerminalSnapshot = DEFAULT_SNAPSHOT
 
@@ -46,10 +51,18 @@ describe('paintRow procedural ink (nocx-1ebrs.15)', () => {
     // text around it and the SVG stretches with it.
     expect(box.style.width).toBe('calc(var(--term-cell-width, 1ch) * 2)')
     expect(box.style.height).toBe('var(--term-cell-height, 1.2em)')
-    // The character stays reachable for assistive tech.
-    expect(box.getAttribute('aria-label')).toBe('││')
-    // No font glyph is composited: the run paints no text of its own.
-    expect(el.textContent).not.toContain('│')
+    // THE CHARACTER STAYS TEXT (owner decision, 2026-10-21): a text node in
+    // the row, so selection, copy, find and the accessibility tree read
+    // exactly what the program painted. No aria-label stands in for it.
+    expect(box.textContent).toBe('││')
+    expect(box.getAttribute('aria-label')).toBeNull()
+    // Only the font glyph is invisible, and it paints above the ink; the ink
+    // keeps the run's own colour through the box's currentColor.
+    const glyph = box.querySelector<HTMLElement>('.term-cell-glyph')
+    expect(glyph).not.toBeNull()
+    expect(glyph?.textContent).toBe('││')
+    expect(glyph?.style.color).toBe('transparent')
+    expect(box.style.color).not.toBe('transparent')
     const svg = box.querySelector('svg')
     expect(svg).not.toBeNull()
     expect(svg?.getAttribute('viewBox')).toBe('0 0 16 20')
@@ -98,7 +111,7 @@ describe('paintRow procedural ink (nocx-1ebrs.15)', () => {
     expect(proceduralCellsOf(el)).toHaveLength(1)
     expect(el.textContent).toContain('a')
     expect(el.textContent).toContain('b')
-    expect(el.textContent).not.toContain('│')
+    expect(el.textContent).toContain('│')
   })
 
   it('never candidates a procedural cell for font measurement', () => {
@@ -143,5 +156,65 @@ describe('proceduralSvgOf', () => {
   it('paints shapes with the run’s own colour via currentColor', () => {
     const svg = proceduralSvgOf('█', [1], 8, 20)
     expect(svg.querySelector('rect')?.getAttribute('fill')).toBe('currentColor')
+  })
+})
+
+/** The exact string the owner's copy regression holds, and the row that
+ *  spells it: │, painted spaces, ordinary letters, two procedural runs of
+ *  two cells each — the shapes a full-screen program actually draws. */
+const EXACT = '│ a ─┼ b ▀▄'
+const COPY_ROW: CellSpec[] = [
+  ['│', 1, true],
+  [' ', 1, true],
+  ['a', 1, true],
+  [' ', 1, true],
+  ['─', 1, true],
+  ['┼', 1, true],
+  [' ', 1, true],
+  ['b', 1, true],
+  [' ', 1, true],
+  ['▀', 1, true],
+  ['▄', 1, true],
+]
+
+/** What a copy of el carries: the DOM Selection's own text, the path the
+ *  product's copy-on-select (terminal-content.ts) and every native
+ *  selection, find and accessibility reader take. */
+function copiedText(el: HTMLElement): string {
+  const range = document.createRange()
+  range.selectNodeContents(el)
+  const sel = document.getSelection()
+  sel?.removeAllRanges()
+  sel?.addRange(range)
+  const text = sel?.toString() ?? ''
+  sel?.removeAllRanges()
+  return text
+}
+
+describe('the painted characters copy exactly (nocx-1ebrs.15)', () => {
+  it('a live-painted row copies as │ a ─┼ b ▀▄', () => {
+    const el = paintRow(rowOf(COPY_ROW), { metric, palette })
+    document.body.appendChild(el)
+    expect(copiedText(el)).toBe(EXACT)
+    el.remove()
+  })
+
+  it('a frozen row copies as │ a ─┼ b ▀▄', () => {
+    const block = document.createElement('div')
+    document.body.appendChild(block)
+    paintStoredRows(
+      block,
+      {
+        lines: [{ from: 0, row: { text: EXACT } }],
+        droppedRows: 0,
+        lostRows: 0,
+        truncated: null,
+      },
+      { metric, palette },
+    )
+    const row = block.querySelector<HTMLElement>('.term-grid-row')
+    expect(row).not.toBeNull()
+    expect(copiedText(row!)).toBe(EXACT)
+    block.remove()
   })
 })

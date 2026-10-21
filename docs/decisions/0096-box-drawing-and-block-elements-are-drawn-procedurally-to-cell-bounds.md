@@ -32,6 +32,15 @@ from the cell's own rectangle — `RunMetric.cellWidth` across, the published ro
 construction, a horizontal run meets every corner, and a block element's aspect is the cell's
 aspect, not the font's.
 
+**The character stays text in the model and the DOM.** The painted cell carries the program's
+characters as a text node in the row — no aria-label stands in for them — so selection, copy,
+find and the accessibility tree read exactly what the program painted. Only the font glyph is
+made invisible (`color: transparent` on the glyph wrapper, written beside the run's own ink
+colour, which the SVG must keep reading through `currentColor`), and the procedural ink paints
+to cell bounds behind it. A glyph nobody can see cannot tile wrongly; the geometry is the
+SVG's. The regression is exact: a row the program painted as `│ a ─┼ b ▀▄` copies as
+`│ a ─┼ b ▀▄`, live and frozen (painter/procedural-paint.test.ts).
+
 The boundaries this keeps:
 
 - **Measurement stays with cell-fit.** A procedural cell consumes no font advance, so it is
@@ -41,9 +50,10 @@ The boundaries this keeps:
 - **Run formation stays with run-geometry**, extended by an own-run predicate: a procedural
   cell merges with another procedural cell of equal attributes, never into an ordinary run —
   an atomic inline between tracked text takes the run's letter-spacing around itself and lands
-  off its column. An own run paints as ONE `.term-cell` with one SVG: a whole line of `─` is a
-  single coordinate space, so cell boundaries inside a run never meet a per-element
-  device-pixel snap.
+  off its column. An own run paints as ONE `.term-cell` with one SVG behind one text node: a
+  whole line of `─` is a single coordinate space, so cell boundaries inside a run never meet a
+  per-element device-pixel snap, and the characters of the whole run are the text the row
+  carries.
 - **Colour stays with style.ts.** Shapes paint with `currentColor`, so bold brightening,
   inverse, faint and the readability floor keep their single owner.
 - **Seams are answered in geometry.** A line that continues across a row edge overshoots that
@@ -59,7 +69,9 @@ _Tune the font or the line height until the glyphs join_ — impossible by const
 glyph's drawn height is the font's, the pitch is the renderer's, and no rule keeps them equal
 at every zoom and every device ratio. _Render the grid on canvas_ — replaces the DOM painter
 ADR-0072 and the design behind it chose, and takes selection, copy, IME and the accessibility
-tree with it, for a seam this module answers without any of that. _Draw only U+2502, the
+tree with it, for a seam this module answers without any of that — and without giving up the
+one thing this record now states outright: the characters stay text, so the row a program
+painted is the row a person can select, copy, find and hear. _Draw only U+2502, the
 character reported_ — a partial box-drawing answer is a second vocabulary for one concept, the
 exact defect AGENTS.md's one-owner rule exists to prevent; the two blocks are closed sets
 (160 codepoints) and are claimed whole, with a sweep test that fails the day any of them

@@ -681,7 +681,8 @@ const SVG_NS = 'http://www.w3.org/2000/svg'
  *  never meets a per-element device-pixel snap. Shapes paint with
  *  currentColor, so the run's resolved ink — bold brightening, inverse, the
  *  readability floor — stays style.ts's, and the character itself is nowhere
- *  in the SVG (the painted cell carries it in aria-label). */
+ *  in the SVG (the painted cell carries it as a text node; only the font
+ *  glyph is invisible — owner decision, 2026-10-21). */
 export function proceduralSvgOf(
   chars: string,
   spans: readonly number[],

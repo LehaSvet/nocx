@@ -54,12 +54,9 @@ for (const ratio of [1, 1.8]) {
         'plain row 6',
       ]
       for (const text of rowTexts) {
-        await expect
-          .poll(() => rowsSaying(page, text), {
-            timeout: 15_000,
-            message: `not exactly one row the program painted with "${text}"`,
-          })
-          .toHaveLength(1)
+        await expect(page.locator(`${LIVE} .term-grid-row`, { hasText: text })).toHaveCount(1, {
+          timeout: 15_000,
+        })
       }
       await expect
         .poll(() => cursorRow(page), { message: 'the cursor was never painted on row 12' })
@@ -107,36 +104,6 @@ for (const ratio of [1, 1.8]) {
   })
 }
 
-/** The ink a painted row carries, as the DOM carries it since nocx-1ebrs.15
- *  (ADR-0096): text nodes, plus — for box drawing and block elements, which
- *  the painter draws procedurally to cell bounds instead of compositing the
- *  font's glyph — the procedural cell's aria-label, spliced in document
- *  order. Every character the program painted is still reachable; the box
- *  characters just no longer live in textContent. The walk is spelled inside
- *  each evaluate because evaluate serializes its function; rowsSaying and
- *  measure run it against the same rows, so what the loop awaits and what
- *  measure finds can never disagree. */
-async function rowsSaying(page: Page, text: string): Promise<string[]> {
-  return page.evaluate(
-    ({ sel, want }) => {
-      const say = (node: Node): string => {
-        if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? ''
-        if (node instanceof Element) {
-          const label = node.getAttribute('aria-label')
-          if (label !== null) return label
-        }
-        return [...node.childNodes].map(say).join('')
-      }
-      const grid = document.querySelector<HTMLElement>(sel)
-      if (grid === null) return []
-      return [...grid.querySelectorAll<HTMLElement>('.term-grid-row')]
-        .map((row) => say(row))
-        .filter((said) => said.startsWith(want))
-    },
-    { sel: LIVE, want: text },
-  )
-}
-
 async function cursorRow(page: Page): Promise<number | null> {
   return page.evaluate((sel) => {
     const cursor = document.querySelector<HTMLElement>(`${sel} .term-grid-cursor`)
@@ -156,19 +123,11 @@ async function measure(
       const grid = document.querySelector<HTMLElement>(sel)!
       const origin = grid.getBoundingClientRect().top
       const all = [...grid.querySelectorAll<HTMLElement>('.term-grid-row')]
-      const say = (node: Node): string => {
-        if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? ''
-        if (node instanceof Element) {
-          const label = node.getAttribute('aria-label')
-          if (label !== null) return label
-        }
-        return [...node.childNodes].map(say).join('')
-      }
       // Each measured row is found BY ITS TEXT, and the text comes back with
       // the numbers: one snapshot carries both, so a number can never be
       // attributed to a row the program did not paint (nocx-zg3k3.21).
       const rows = rowTexts.map((want) => {
-        const row = all.find((r) => say(r).startsWith(want))
+        const row = all.find((r) => r.textContent!.startsWith(want))
         if (!row) {
           return {
             top: Number.NaN,
@@ -188,7 +147,7 @@ async function measure(
           height: box.height,
           bgTop: bg ? bg.top - origin : Number.NaN,
           bgHeight: bg ? bg.height : Number.NaN,
-          text: say(row).slice(0, 16),
+          text: row.textContent!.slice(0, 16),
         }
       })
       const cursor = grid.querySelector<HTMLElement>('.term-grid-cursor')!

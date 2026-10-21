@@ -109,10 +109,18 @@ function appendRun(
 
   // Box drawing and block elements drawn TO CELL BOUNDS (nocx-1ebrs.15):
   // the frozen path's .term-cell owns the advance, the ink is the metric's
-  // own geometry — cols × cellWidth across, the published pitch down — and
-  // the character stays in aria-label, since no text node carries it. One
+  // own geometry — cols × cellWidth across, the published pitch down. One
   // box per RUN: every cell of it shares one SVG coordinate space, so a
   // line across cells never meets a per-element device-pixel snap.
+  //
+  // THE CHARACTER STAYS TEXT (owner decision, 2026-10-21): the run's
+  // characters are a text node in the row, so selection, copy, find and the
+  // accessibility tree read exactly what the program painted — no
+  // aria-label stands in for them. Only the font glyph is made invisible
+  // (.term-cell-glyph is transparent); the ink keeps the run's own colour
+  // through the box's currentColor and paints behind the character (the
+  // glyph's positioned layer, style.css). A glyph nobody can see cannot
+  // tile wrongly; the geometry the bead is about is the SVG's.
   const metric = opts.metric
   if (
     metric !== null &&
@@ -125,7 +133,6 @@ function appendRun(
     cell.className = 'term-cell'
     cell.dataset.cols = String(run.cols)
     cell.dataset.procedural = ''
-    cell.setAttribute('aria-label', run.chars)
     if (ink.css) cell.style.cssText = ink.css
     // SIZED BY THE PUBLISHED VARS, not baked pixels: the frozen block's
     // re-pitch story (cell-metric.ts) is that old blocks adopt the current
@@ -144,6 +151,11 @@ function appendRun(
         pitch,
       ),
     )
+    const glyph = document.createElement('span')
+    glyph.className = 'term-cell-glyph'
+    glyph.style.color = 'transparent'
+    glyph.textContent = run.chars
+    cell.appendChild(glyph)
     row.appendChild(cell)
     return
   }

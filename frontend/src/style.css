@@ -1009,13 +1009,26 @@
    the rows is drawn outside it by design. */
 .term-cell[data-procedural] {
   vertical-align: top;
+  /* The ink is positioned to the cell's own rectangle, behind the
+     character: the glyph paints in the positioned layer above the SVG, in
+     DOM order. */
+  position: relative;
 }
 
 .term-cell[data-procedural] > svg {
-  display: block;
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   overflow: visible;
+}
+
+/* The font glyph of a procedurally drawn character is invisible (the
+   transparent colour is written by paint-row.ts beside the run's own ink
+   colour, which the SVG's currentColor must keep reading) and paints above
+   the ink only so selection and find land on it in document order. */
+.term-cell[data-procedural] > .term-cell-glyph {
+  position: relative;
 }
 
 /* THE LIVE CELL GRID (nocx-zg3k3.2.4) — the painter's surface and cursor.
