@@ -28,6 +28,7 @@ import { SecretsSection } from './secrets'
 import { EndpointsSection } from './endpoints-section'
 import { SnippetsSection } from './snippets/snippets-settings'
 import { SkillsSection } from './skills-section'
+import { UpdatesSection } from './updates-section'
 import type { SkillsStore } from './skills-store'
 import { reconcileRailPages, type SettingsPage } from './settings-rail-pages'
 import type { SnippetsStore } from './snippets/snippets-store'
@@ -130,6 +131,7 @@ const PETS_SECTION = 'Pets'
  *  whose control the sweep's degrade contradicts. */
 const WORKTREES_SECTION = 'Worktrees'
 const SKILLS_SECTION = 'Skills'
+const UPDATES_SECTION = 'Updates'
 
 /** The clipboard an embedding without one hands the About page. It refuses
  *  rather than resolving: a Copy button that reports success while nothing was
@@ -845,6 +847,24 @@ export function SettingsComponent(props: SettingsComponentProps) {
       ),
     }
 
+    // The Updates page OWNS its section: `update.channel` is declared in Go
+    // under section "Updates" (internal/settings), which would otherwise
+    // mint a rail row of its own holding one select — the same duplicate the
+    // Skills page refuses. Owning it puts the channel select above what the
+    // page adds on top: the Linux install-only fact the declaration cannot
+    // know (nocx-1ebrs.35.1).
+    const updatesPage: SettingsPage = {
+      kind: 'component',
+      id: 'updates',
+      title: 'Updates',
+      groupId: 'application',
+      scrollMode: 'page',
+      ownsSection: UPDATES_SECTION,
+      renderContent: () => (
+        <UpdatesSection load={props.aboutClient ? () => props.aboutClient!.load() : undefined} />
+      ),
+    }
+
     const aboutPage: SettingsPage = {
       kind: 'component',
       id: 'about',
@@ -872,6 +892,7 @@ export function SettingsComponent(props: SettingsComponentProps) {
     // defect this refuses rather than renders (nocx-fe7fe.2).
     return reconcileRailPages([
       connectionPage,
+      updatesPage,
       ...generated,
       backupPage,
       vaultPage,

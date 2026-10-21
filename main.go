@@ -333,6 +333,12 @@ type WailsApp struct {
 	// arguments — it applies the update that Check already verified.
 	updateInfo *update.UpdateInfo
 
+	// updateFetch is the manifest fetcher the updater was wired with, held
+	// so SetUpdateChannel can flip which channel's manifest the next check
+	// reads (ADR-0097). nil exactly when updater is: a window that cannot
+	// check for updates cannot switch its channel either.
+	updateFetch *update.GitHubManifestFetcher
+
 	// notifications is the v3 notifications service, started by hand rather
 	// than registered (see ServiceStartup), and torn down in
 	// ServiceShutdown. nil when it never started.
@@ -395,9 +401,11 @@ func (w *WailsApp) ServiceStartup(ctx context.Context, _ application.ServiceOpti
 	// attached below. Until it is attached it refuses to certify, which is
 	// the direction to fail in.
 	w.probe = coordinator.NewLaunchProbe()
+	fetch := update.NewGitHubManifestFetcher(nil)
+	w.updateFetch = fetch
 	w.updater = update.NewUpdater(update.UpdaterConfig{
 		Platform:       update.NewPlatform(),
-		Fetcher:        update.NewGitHubManifestFetcher(nil),
+		Fetcher:        fetch,
 		Keyring:        keyring,
 		CurrentVersion: version.Version,
 		InstallPath:    upgradeInstallPath(execPath),
@@ -1108,6 +1116,25 @@ func (w *WailsApp) CheckForUpdate() (*update.UpdateInfo, error) {
 	}
 	w.updateInfo = info
 	return info, nil
+}
+
+// SetUpdateChannel selects which signed manifest the next check fetches:
+// stable (the default) or nightly (ADR-0097). The renderer calls this with
+// the persisted update.channel setting — at startup and whenever the person
+// changes it — so the stored value, not a window-side guess, decides the
+// channel. An unknown channel is an error rather than a fallback: the two
+// there are were decided, and a third spelling is a bug to surface.
+func (w *WailsApp) SetUpdateChannel(channel string) error {
+	if w.updateFetch == nil {
+		return errors.New("the updater is not available in this window")
+	}
+	c, err := update.ParseChannel(channel)
+	if err != nil {
+		return err
+	}
+	w.updateFetch.SetChannel(c)
+	w.logger.Info("update channel selected", "channel", c.String())
+	return nil
 }
 
 // ApplyUpdate applies a previously checked update. No arguments —

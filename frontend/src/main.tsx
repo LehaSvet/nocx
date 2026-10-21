@@ -1,5 +1,5 @@
 import './style.css'
-import { ReportHealthy } from '../bindings/github.com/shady2k/nocx/wailsapp'
+import { ReportHealthy, SetUpdateChannel } from '../bindings/github.com/shady2k/nocx/wailsapp'
 import { render } from 'solid-js/web'
 import { Show, createSignal, untrack } from 'solid-js'
 import App from './App'
@@ -550,6 +550,10 @@ function main(): void {
   // stop working with nothing on screen to say why.
   const PLACEMENT_KEY = 'tab.placement'
   const THEME_KEY = 'ui.theme'
+  // The update channel is one more consumed setting (nocx-1ebrs.35.1): the
+  // same rule as PLACEMENT_KEY above — named here, deliberately, and only
+  // here, because a consumer names what it consumes.
+  const UPDATE_CHANNEL_KEY = 'update.channel'
 
   // The declared default, painted BEFORE the snapshot arrives: the first
   // frame must not show the opposite of what the backend is about to say.
@@ -1234,6 +1238,14 @@ function main(): void {
         }
         // Theme setting changed — reconcile against Go's value (ADR-0013 §8.1).
         reconcileThemeFromGo(snap.values[THEME_KEY] as string | undefined)
+        // The update channel changed — apply it to the window and look at
+        // the channel the person just chose, rather than making them wait
+        // up to 24 hours for the interval to notice (nocx-1ebrs.35.1).
+        const nextChannel = snap.values[UPDATE_CHANNEL_KEY]
+        if (typeof nextChannel === 'string' && nextChannel && nextChannel !== lastChannel) {
+          lastChannel = nextChannel
+          void updateCheck.run()
+        }
         // The wrap default is live: flipping it repaints every block nobody
         // has overridden, in place, with no restart and no reflow of the
         // blocks that carry their own answer.
@@ -1817,7 +1829,36 @@ function main(): void {
   // notice, a failure is kept with its cause — logged at warn and shown in
   // Settings > About — instead of vanishing in a silent catch the way
   // 0.6.0's did.
-  const updateCheck = createUpdateCheck(notice)
+  // The channel bridge (nocx-1ebrs.35.1): the setting is stored by the
+  // backend's settings store, the check runs in the window — the renderer
+  // hands the stored value across on every check, so no window-side copy of
+  // update.channel can drift from the one the person set. Resolved per run,
+  // never cached: the 24-hour interval and a switch in Settings both read
+  // the store's current truth through this one path.
+  const updateChannelBridge = {
+    resolve: async () => {
+      try {
+        const snap = await profileClient.getSnapshot()
+        const value = snap.values[UPDATE_CHANNEL_KEY]
+        const channel = typeof value === 'string' && value ? value : 'stable'
+        // Track what was applied so the observer re-checks only on a real
+        // change — a nightly-preset install would otherwise fire one
+        // spurious check on its first unrelated settings change.
+        lastChannel = channel
+        return channel
+      } catch {
+        // The store is unreachable: stay on stable rather than skipping the
+        // check entirely — a person whose backend is restarting still
+        // learns there is an update.
+        return 'stable'
+      }
+    },
+    apply: (channel: string) => SetUpdateChannel(channel),
+  }
+  // The channel the bridge last applied, so the observer only re-checks on a
+  // real change. Starts at the default; the first resolve corrects it.
+  let lastChannel = 'stable'
+  const updateCheck = createUpdateCheck(notice, updateChannelBridge)
   void updateCheck.run()
   const DAY_MS = 24 * 60 * 60 * 1000
   setInterval(() => void updateCheck.run(), DAY_MS)
