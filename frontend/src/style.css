@@ -1022,6 +1022,18 @@
   cursor: default;
 }
 
+/* THE ARMED LINK UNDER THE POINTER (nocx-1ebrs.48). The live grid has no
+   anchors for a :hover selector to meet, so the link tracker
+   (terminal-links/live-hover.ts) says when an armed link is under the
+   pointer, and the state becomes the hand — the exact promise ⌘+click
+   keeps, including over a program that reports the mouse, whose armed
+   click still opens rather than reports. One writer to the attribute, like
+   `data-pointer` above; placed after it because the two rules tie on
+   specificity and the hand must win over both of the pointer's states. */
+.term-grid[data-link-hover='true'] {
+  cursor: pointer;
+}
+
 .term-grid-row {
   white-space: pre;
 }
@@ -1043,6 +1055,20 @@
   position: absolute;
   pointer-events: none;
   background: color-mix(in srgb, var(--color-accent), transparent 68%);
+}
+
+/* The armed link's underline (nocx-1ebrs.48): one cell-tall box per
+   underlined span, its line DOTTED at the box's foot — the modifier-held
+   style the frozen scrollback's `.links-armed .term-link` declares too, so
+   one row reads the same as it scrolls from the live grid into a block.
+   The program's colour stays on the glyphs; the line under them is ours,
+   dimmed by the same mix the frozen rule uses. Placed by THE mapping in
+   painter.ts, never by a measurement here. */
+.term-grid-link {
+  position: absolute;
+  pointer-events: none;
+  box-sizing: border-box;
+  border-bottom: 1px dotted color-mix(in srgb, currentColor 55%, transparent);
 }
 
 .term-grid-cursor {
