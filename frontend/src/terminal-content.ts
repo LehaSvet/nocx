@@ -8312,6 +8312,9 @@ export class TerminalContent extends BasePaneContent {
     // between the press and the release.
     if (intent.kind === 'key' || intent.kind === 'text' || intent.kind === 'paste') {
       this._selectionGesture?.dismiss()
+      // The grid cursor holds still while input arrives (nocx-1ebrs.37),
+      // the phase rule the composer's caret already follows (nocx-1ebrs.31).
+      this._painter?.noteInput()
     }
     const held = this._heldRaw
     if (held !== null && !held.cancelled) {
