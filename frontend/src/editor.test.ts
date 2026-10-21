@@ -384,9 +384,9 @@ describe('CommandEditor', () => {
     const { ed, container } = setup()
     ed.show()
     ed.setCwd('/srv/nocx')
-    ed.setLocation('root@192.168.0.57')
+    ed.setLocation('root@192.0.2.57')
     const strong = context(container).querySelector('[data-emphasis="strong"]')
-    expect(strong?.textContent).toBe('root@192.168.0.57')
+    expect(strong?.textContent).toBe('root@192.0.2.57')
     expect(context(container).textContent).toContain('srv/nocx')
   })
 
@@ -775,7 +775,7 @@ describe('ssh key ownership: the completion dropdown owns the keys (nocx-fijh)',
       applicable: (c) => c.doc.trim() !== '',
       suggest: (ctx) =>
         Promise.resolve({
-          candidates: ['ssh pi@192.168.0.93', 'ssh pi@192.168.0.93 -p 22', 'ssh prod'].map(
+          candidates: ['ssh pi@192.0.2.93', 'ssh pi@192.0.2.93 -p 22', 'ssh prod'].map(
             (r): Candidate => ({
               id: `hist:${r}`,
               targetId: 'shell',
@@ -795,7 +795,7 @@ describe('ssh key ownership: the completion dropdown owns the keys (nocx-fijh)',
       // The host provider is wired too. At bare `ssh` the token sits in
       // COMMAND position, where the host provider is inapplicable — the
       // composition must surface HISTORY here, not hosts.
-      providers: [sshHostProvider(['root@192.168.0.57']), historyProvider],
+      providers: [sshHostProvider(['root@192.0.2.57']), historyProvider],
       dropdown,
       env: () => ({ isLocal: true, cwd: '/repo', host: '' }),
       latencyBudgetMs: 0,
@@ -823,9 +823,9 @@ describe('ssh key ownership: the completion dropdown owns the keys (nocx-fijh)',
       [...dropdown.root.querySelectorAll<HTMLElement>('.ui-floating-panel__row')].map(
         (r) => r.textContent ?? '',
       )
-    expect(rows().some((t) => t.includes('ssh pi@192.168.0.93'))).toBe(true)
+    expect(rows().some((t) => t.includes('ssh pi@192.0.2.93'))).toBe(true)
     // The host provider was not consulted: its row is nowhere on the list.
-    expect(rows().some((t) => t.includes('root@192.168.0.57'))).toBe(false)
+    expect(rows().some((t) => t.includes('root@192.0.2.57'))).toBe(false)
     expect(submit).not.toHaveBeenCalled()
   })
 })
