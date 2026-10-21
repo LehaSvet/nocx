@@ -48,19 +48,23 @@ export { recoveryAccount, uncoveredGapRanges }
 
 /** The clauses, one per owner of a part of the hole, in the order a person
  *  reads them: the bound first because it is the ordinary cause, then the
- *  stretch nothing kept, then whatever this build cannot name. Each carries
- *  its own byte count, so a reclaim that hit two causes is two answerable
- *  numbers rather than one that explains neither. */
+ *  stretch nothing kept, then whatever this build cannot name. Each is a
+ *  CLAUSE — subject, verb, its own byte count — because the description
+ *  concatenates them after a colon, and a number glued to a relative clause
+ *  ("1.0 MB the recording's size limit dropped") is not a sentence anybody
+ *  should have to parse (nocx-1ebrs.42). Each also states the BOUNDS of its
+ *  stretch: the cap evicts the recording's oldest bytes, so that clause says
+ *  "the oldest" rather than leaving the range to be guessed at. */
 function clauses(account: RecoveryAccount): string[] {
   const parts: string[] = []
   if (account.dropped > 0) {
-    parts.push(`${formatBytes(account.dropped)} the recording's size limit dropped`)
+    parts.push(`the recording's size limit dropped the oldest ${formatBytes(account.dropped)}`)
   }
   if (account.unrecorded > 0) {
-    parts.push(`${formatBytes(account.unrecorded)} that was never recorded`)
+    parts.push(`${formatBytes(account.unrecorded)} was never recorded`)
   }
   if (account.other > 0) {
-    parts.push(`${formatBytes(account.other)} missing as "${account.reasons.join('", "')}"`)
+    parts.push(`${formatBytes(account.other)} went missing as "${account.reasons.join('", "')}"`)
   }
   return parts
 }

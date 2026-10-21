@@ -89,6 +89,33 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
     expect(desc()).not.toContain('never recorded')
   })
 
+  // The clause the owner read on 0.6.1 (nocx-1ebrs.42) was "1.0 MB the
+  // recording's size limit dropped" — a number glued to a clause with no
+  // verb between them, which is not a sentence. The card states the bound
+  // and the BOUNDS of what it took: the cap evicts the recording's oldest
+  // bytes (internal/content's head-reserving eviction), so the honest
+  // stretch is "the oldest N".
+  it('states the retention bound as a sentence, with the bounds of what it took', () => {
+    mount(recovery({ gaps: [{ start: 0, end: 2_000_000, reason: 'cap' }] }))
+    expect(desc()).toBe(
+      "This tab was taken back after those bytes were gone: the recording's size limit dropped the oldest 2.0 MB.",
+    )
+  })
+
+  it('reads as one sentence when a reclaim hit both causes', () => {
+    mount(
+      recovery({
+        gaps: [
+          { start: 0, end: 1000, reason: 'cap' },
+          { start: 3000, end: 5000, reason: 'unrecorded' },
+        ],
+      }),
+    )
+    expect(desc()).toBe(
+      "This tab was taken back after those bytes were gone: the recording's size limit dropped the oldest 1.0 kB, and 2.0 kB was never recorded.",
+    )
+  })
+
   it('names the unrecorded stretch when nothing kept it', () => {
     mount(recovery({ gaps: [{ start: 0, end: 4000, reason: 'unrecorded' }] }))
     expect(title()).toContain('4.0 kB')
@@ -219,14 +246,14 @@ describe('recoveryAccount (nocx-fz4qa)', () => {
     })
     mount(historical, vi.fn(), live)
     expect(title()).toBe("3.9 MB of this session's output is missing")
-    expect(desc()).toContain("3.9 MB the recording's size limit dropped")
-    expect(desc()).toContain('718 B missing as "hostWindow"')
+    expect(desc()).toContain("the recording's size limit dropped the oldest 3.9 MB")
+    expect(desc()).toContain('718 B went missing as "hostWindow"')
   })
 
   it('keeps a historical host-window loss visible when no live notice arrives', () => {
     mount(recovery({ gaps: [{ start: 100, end: 200, reason: 'hostWindow' }] }))
     expect(title()).toBe("100 B of this session's output is missing")
-    expect(desc()).toContain('missing as "hostWindow"')
+    expect(desc()).toContain('went missing as "hostWindow"')
   })
 
   it('ignores a range that runs backwards rather than subtracting it', () => {

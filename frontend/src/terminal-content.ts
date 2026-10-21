@@ -5145,9 +5145,21 @@ export class TerminalContent extends BasePaneContent {
     const geometry = this._cellModel?.current()?.geometry
     if (!geometry) return null
     const dpr = displayDpr()
-    const rowHeight = this._painterSurface
-      ?.querySelector<HTMLElement>('.term-grid-row')
-      ?.getBoundingClientRect().height
+    // THE PAINTER'S OWN ROWS are the measurement of last resort (nocx-1ebrs
+    // .42): they exist in every mode — the fullscreen rule hides every direct
+    // child of the stack but the live container, and the rows are inside it —
+    // and a row is exactly `geometry.cols` cells wide, so the cell width is a
+    // division off a real box rather than a guess. Needed by the restored
+    // full-screen pane: its first accepted frame carries no pixel metrics
+    // (the session it came back from was detached and returned to the
+    // backend's default size, which is a grid and no pixels), and the probe
+    // the natural-advance path measures is one of the children the fullscreen
+    // rule has hidden — with both sources dead, every fit bailed on missing
+    // metrics and a reclaimed tab stayed at the size the backend had dropped
+    // it to, about half the pane it was restored into.
+    const firstRow = this._painterSurface?.querySelector<HTMLElement>('.term-grid-row')
+    const rowHeight = firstRow?.getBoundingClientRect().height
+    const rowWidth = firstRow?.getBoundingClientRect().width
     // Preserve the established accepted-frame path exactly. Only a frame
     // whose pixel dimensions are still zero needs a first client report.
     const measurementHost = this.scrollback?.scrollbackInner
@@ -5156,11 +5168,19 @@ export class TerminalContent extends BasePaneContent {
     // units without changing the accepted snapshot.
     const acceptedDpr = this._acceptedGeometryDpr ?? dpr
     const committedScale = dpr / acceptedDpr
+    const measuredAdvance =
+      measurementHost && geometry.cellWidthPx <= 0 ? measureNaturalAdvance(measurementHost) : 0
+    const naturalCellWidth =
+      measuredAdvance > 0
+        ? measuredAdvance
+        : rowWidth !== undefined && rowWidth > 0 && geometry.cols > 0
+          ? rowWidth / geometry.cols
+          : 0
     const deviceCellWidth =
       geometry.cellWidthPx > 0
         ? Math.ceil(geometry.cellWidthPx * committedScale)
-        : measurementHost
-          ? Math.ceil(measureNaturalAdvance(measurementHost) * dpr)
+        : naturalCellWidth > 0
+          ? Math.ceil(naturalCellWidth * dpr)
           : 0
     const deviceCellHeight =
       geometry.cellHeightPx > 0
@@ -5256,6 +5276,14 @@ export class TerminalContent extends BasePaneContent {
       this._pendingPaint = null
       if (pending === null || this._disposed) return
       this._painter?.apply(pending)
+      // A REPAINT CHANGES WHAT THE MEASUREMENT READS (nocx-1ebrs.42). The
+      // output-driven resize path runs its refit in a frame scheduled BEFORE
+      // this one, so a pane whose first accepted frame is also its first
+      // paint — the restored tab — was always measured against rows that did
+      // not exist yet. Re-measure once the rows are up: the fit's own guards
+      // make a rectangle that did not change a no-op, and the rAF dedupe
+      // makes the second schedule free.
+      this.scheduleLiveResize()
     })
   }
 
