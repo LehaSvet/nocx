@@ -52,6 +52,7 @@ import { apiSidebarAction, registerApiSurface } from './api'
 import { createApiWorkbenchServices, nativePickers } from './api/api-client'
 import { createUpdateCheck } from './update-check'
 import { mountUpdateNotice } from './update-notice'
+import { createUpdateToast } from './update-toast'
 import { mountConnectionOverlay, type ConnectionOverlayState } from './ui/connection-overlay'
 import { IconButton } from './ui/icon-button'
 import { BellIcon, CheckCircleIcon, PlugIcon, RefreshIcon, SettingsIcon } from './ui/icons'
@@ -719,6 +720,10 @@ function main(): void {
         (sessionId: string) => tm.sessionDisplayName(sessionId),
         checkoutsStatusStore,
         agentRecordsClient,
+        // About's Check for updates: the SAME owner the startup check and
+        // the interval run, so the button cannot check a different channel
+        // than they do (nocx-1ebrs.55).
+        () => updateCheck.run(),
       )
       content.onConnect = (profile) => {
         log.info('nocx: connect from Settings', { profileId: profile.id })
@@ -1858,7 +1863,22 @@ function main(): void {
   // The channel the bridge last applied, so the observer only re-checks on a
   // real change. Starts at the default; the first resolve corrects it.
   let lastChannel = 'stable'
-  const updateCheck = createUpdateCheck(notice, updateChannelBridge)
+  // The actionable announcement (nocx-1ebrs.54): the check's finding fans
+  // out to BOTH presenters at this one composition point — the strip stays
+  // as the quiet persistent marker a dismissed update remains findable in,
+  // and the toast is the announcement a person answers. `restart` is left
+  // unset until nocx-1ebrs.53 lands the coordinator-survival restart; the
+  // installed toast then gains its Restart now in the one line below.
+  const updateToast = createUpdateToast()
+  const updateCheck = createUpdateCheck(
+    {
+      showAvailable: (version, notesUrl) => {
+        notice.showAvailable(version, notesUrl)
+        updateToast.showAvailable(version, notesUrl)
+      },
+    },
+    updateChannelBridge,
+  )
   void updateCheck.run()
   const DAY_MS = 24 * 60 * 60 * 1000
   setInterval(() => void updateCheck.run(), DAY_MS)

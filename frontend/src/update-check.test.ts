@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createUpdateCheck } from './update-check'
 import type { UpdateNoticeController } from './update-notice'
 
+const NOTES_URL = 'https://example.com/releases/0.7.0'
 const checkForUpdate = vi.fn<() => Promise<unknown>>()
 const { logWarn } = vi.hoisted(() => ({ logWarn: vi.fn() }))
 
@@ -80,6 +81,78 @@ describe('createUpdateCheck', () => {
 
     expect(check.error()).toBeNull()
     expect(notice.showAvailable).not.toHaveBeenCalled()
+  })
+})
+
+// ── What the check found, for the surface a person asks (nocx-1ebrs.55) ────
+//
+// About's Check for updates needs an answer it can put on the page: what the
+// last check found, and which channel it asked. These live on the SAME owner
+// that runs the check, so the startup check, the interval and the button all
+// report through one truth rather than three that agree until they don't.
+describe('createUpdateCheck outcomes (nocx-1ebrs.55)', () => {
+  it('resolves up-to-date with the channel the check ran against', async () => {
+    checkForUpdate.mockResolvedValue(null)
+    const check = createUpdateCheck(fakeNotice(), {
+      resolve: () => Promise.resolve('nightly'),
+      apply: vi.fn().mockResolvedValue(undefined),
+    })
+
+    await expect(check.run()).resolves.toEqual({ kind: 'up-to-date', channel: 'nightly' })
+    expect(check.lastOutcome()).toEqual({ kind: 'up-to-date', channel: 'nightly' })
+    expect(check.channel()).toBe('nightly')
+  })
+
+  it('defaults the channel to stable where no bridge exists', async () => {
+    checkForUpdate.mockResolvedValue(null)
+    const check = createUpdateCheck(fakeNotice())
+
+    await check.run()
+
+    expect(check.channel()).toBe('stable')
+    expect(check.lastOutcome()).toEqual({ kind: 'up-to-date', channel: 'stable' })
+  })
+
+  it('resolves available with the version it found', async () => {
+    checkForUpdate.mockResolvedValue({ Version: '0.7.0', NotesURL: NOTES_URL })
+    const check = createUpdateCheck(fakeNotice())
+
+    await expect(check.run()).resolves.toEqual({
+      kind: 'available',
+      version: '0.7.0',
+      notesUrl: NOTES_URL,
+    })
+    expect(check.lastOutcome()).toEqual({
+      kind: 'available',
+      version: '0.7.0',
+      notesUrl: NOTES_URL,
+    })
+  })
+
+  it('resolves null on failure and leaves the previous outcome standing', async () => {
+    checkForUpdate.mockResolvedValue(null)
+    const check = createUpdateCheck(fakeNotice())
+    await check.run()
+    expect(check.lastOutcome()?.kind).toBe('up-to-date')
+
+    checkForUpdate.mockRejectedValue(new Error('offline'))
+    await expect(check.run()).resolves.toBeNull()
+    // The last thing that SUCCEEDED is still what the page says; the failure
+    // itself is the error accessor's to own, with its cause.
+    expect(check.lastOutcome()?.kind).toBe('up-to-date')
+    expect(check.error()).toBe('offline')
+  })
+
+  it('keeps the channel readable after the check that applied it', async () => {
+    checkForUpdate.mockResolvedValue(null)
+    const check = createUpdateCheck(fakeNotice(), {
+      resolve: () => Promise.resolve('nightly'),
+      apply: vi.fn().mockResolvedValue(undefined),
+    })
+    await check.run()
+    checkForUpdate.mockRejectedValue(new Error('offline'))
+    await check.run()
+    expect(check.channel()).toBe('nightly')
   })
 })
 

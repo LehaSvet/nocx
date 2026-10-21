@@ -30,13 +30,30 @@ export interface UpdateChannelBridge {
   apply: (channel: string) => Promise<void>
 }
 
+/** What the last SUCCESSFUL check found (nocx-1ebrs.55). A failure is the
+ *  error accessor's to own, with its cause, so an outcome here never doubles
+ *  as a quiet "nothing happened". */
+export type UpdateCheckOutcome =
+  { kind: 'up-to-date'; channel: string } | { kind: 'available'; version: string; notesUrl: string }
+
 export interface UpdateCheckController {
   /** Why the last check failed, or null when it succeeded or has not run.
    *  An accessor, so the About card is live: the 24-hour re-check that
    *  succeeds clears a stale failure without anybody re-rendering by hand. */
   error: Accessor<string | null>
-  /** Run one check. Safe to call repeatedly; the interval does exactly that. */
-  run: () => Promise<void>
+  /** What the last successful check found, or null before one succeeded.
+   *  The channel is the one that check ran against — the stored setting the
+   *  bridge resolved, not a window-side guess — so a page can say "channel
+   *  nightly" and mean the manifest that was actually fetched. */
+  lastOutcome: Accessor<UpdateCheckOutcome | null>
+  /** The channel the last check ran against; `stable` before any check and
+   *  where no bridge exists, which is that embedding's honest answer. */
+  channel: Accessor<string>
+  /** Run one check. Safe to call repeatedly; the interval does exactly that.
+   *  Resolves what the check found, or null when it failed — the same truth
+   *  the accessors hold, handed to a caller that awaits it (About's button,
+   *  nocx-1ebrs.55). */
+  run: () => Promise<UpdateCheckOutcome | null>
 }
 
 export function createUpdateCheck(
@@ -44,14 +61,21 @@ export function createUpdateCheck(
   channel?: UpdateChannelBridge,
 ): UpdateCheckController {
   const [error, setError] = createSignal<string | null>(null)
+  const [lastOutcome, setLastOutcome] = createSignal<UpdateCheckOutcome | null>(null)
+  const [appliedChannel, setAppliedChannel] = createSignal('stable')
 
-  const run = async (): Promise<void> => {
+  const run = async (): Promise<UpdateCheckOutcome | null> => {
     // The channel is resolved on EVERY run, not cached at startup: the
     // 24-hour interval and a person switching in Settings both read the
     // store's current truth through this one path.
     if (channel) {
       try {
-        await channel.apply(await channel.resolve())
+        const resolved = await channel.resolve()
+        await channel.apply(resolved)
+        // Recorded only once it was applied: the channel a check RAN against
+        // is what a page may quote, and a resolve whose apply failed never
+        // ran a check at all.
+        setAppliedChannel(resolved)
       } catch (err) {
         // A channel that could not be applied must not fall through to a
         // check against the wrong manifest: the whole point of the setting
@@ -61,19 +85,32 @@ export function createUpdateCheck(
         const reason = `update channel: ${err instanceof Error ? err.message : String(err)}`
         setError(reason)
         log.warn('update check failed', { reason })
-        return
+        return null
       }
     }
     try {
       const info = await CheckForUpdate()
       setError(null)
-      if (info) notice.showAvailable(info.Version, info.NotesURL)
+      if (info) {
+        notice.showAvailable(info.Version, info.NotesURL)
+        const found: UpdateCheckOutcome = {
+          kind: 'available',
+          version: info.Version,
+          notesUrl: info.NotesURL,
+        }
+        setLastOutcome(found)
+        return found
+      }
+      const current: UpdateCheckOutcome = { kind: 'up-to-date', channel: appliedChannel() }
+      setLastOutcome(current)
+      return current
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
       setError(reason)
       log.warn('update check failed', { reason })
+      return null
     }
   }
 
-  return { error, run }
+  return { error, lastOutcome, channel: appliedChannel, run }
 }

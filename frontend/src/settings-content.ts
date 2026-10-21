@@ -90,6 +90,12 @@ export class SettingsContent extends SolidPaneContent {
      *  governs nothing when the checkout record was never wired. */
     private readonly checkoutsStatus?: CheckoutsStatusStore,
     private readonly agentRecordsClient?: import('./agent-records-client').AgentRecordsClient,
+    /** Runs one update check through the shared controller, for the About
+     *  page's Check for updates action (nocx-1ebrs.55). The last positional
+     *  parameter: the constructor call in main.tsx passes these in order. */
+    private readonly checkForUpdates?: () => Promise<
+      import('./update-check').UpdateCheckOutcome | null
+    >,
   ) {
     super()
   }
@@ -121,6 +127,7 @@ export class SettingsContent extends SolidPaneContent {
           aboutClient: this.aboutClient,
           clipboard: this.clipboard,
           updateCheckError: this.updateCheckError,
+          checkForUpdates: this.checkForUpdates,
           observer: this.observer,
           onConnect: (profile: SSHProfile) => {
             this.onConnect?.(profile)
