@@ -343,12 +343,12 @@ produces no passport.
 
 ## 6. What the user sees
 
-| block                 | label              | contains                                                                                                                                   |
-| --------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ssh <user>@<lan-ip>` | local (`~`)        | the rewritten line's echo, host-key prompt, banner, `password:`, 2FA, MOTD — everything up to the passport. Freezes on entry, no exit code |
-| next                  | `pi@raspberrypi:~` | the remote shell's first command cycle                                                                                                     |
-| …                     | `pi@raspberrypi:~` | ordinary remote blocks                                                                                                                     |
-| `exit`                | `pi@raspberrypi:~` | `Connection … closed.` — closed by the **local** D                                                                                         |
+| block                 | label         | contains                                                                                                                                   |
+| --------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ssh <user>@<lan-ip>` | local (`~`)   | the rewritten line's echo, host-key prompt, banner, `password:`, 2FA, MOTD — everything up to the passport. Freezes on entry, no exit code |
+| next                  | `pi@host-2:~` | the remote shell's first command cycle                                                                                                     |
+| …                     | `pi@host-2:~` | ordinary remote blocks                                                                                                                     |
+| `exit`                | `pi@host-2:~` | `Connection … closed.` — closed by the **local** D                                                                                         |
 
 **Deliberate divergence from Warp:** the MOTD stays at the end of the `ssh` block rather
 than opening the remote block. Warp puts it in its own block because its server owns the
