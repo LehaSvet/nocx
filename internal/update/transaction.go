@@ -421,7 +421,7 @@ func (u *updater) ReportHealthy(ctx context.Context) error {
 	// being wrong is still recoverable.
 	if err := u.certifyPair(ctx, rec); err != nil {
 		if errors.Is(err, ErrPairHeld) {
-			// The held pair (ADR-0099): certifyPair has recorded the hold
+			// The held pair (ADR-0101): certifyPair has recorded the hold
 			// ON the record — writing is the caller's, like every other
 			// write here — and the journal must now carry it, so the next
 			// launches reconcile against a hold rather than a silence.
@@ -512,7 +512,7 @@ func (u *updater) certifyPair(ctx context.Context, rec *journalRecord) error {
 
 	if build.Version != rec.ToVersion {
 		if build.Compatible {
-			// The held pair (ADR-0099): the launcher kept this older
+			// The held pair (ADR-0101): the launcher kept this older
 			// coordinator on purpose, the UI reporting against it is
 			// healthy by the act of reporting, and the only thing the
 			// update waits for is the coordinator's turnover. Record the

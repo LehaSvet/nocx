@@ -72,7 +72,7 @@ type Updater interface {
 	// making the claim AND the coordinator answering it are both the
 	// version this update installed. A report against a protocol-
 	// compatible OLDER coordinator is the accepted held state
-	// (ADR-0099) — refused as a certification, recorded as a hold, and
+	// (ADR-0101) — refused as a certification, recorded as a hold, and
 	// the rollback stays suspended while reports keep arriving. Anything
 	// else returns an error and leaves the rollback journal intact
 	// (pair.go).
@@ -97,7 +97,7 @@ type UpdateState struct {
 	Version string
 	// HeldByOlderCoordinator: a healthy window has reported against a
 	// protocol-compatible OLDER coordinator this build's launcher kept
-	// (ADR-0099). The update finishes when that coordinator turns over —
+	// (ADR-0101). The update finishes when that coordinator turns over —
 	// a full restart finishes it now — and auto-rollback is suspended
 	// while reports keep arriving. This is the state the update surface
 	// must offer to finish, never force.

@@ -131,7 +131,7 @@ describe('UpdateNotice', () => {
     }
   })
 
-  // ── The held update (ADR-0099): copy, action, and honesty ────────────
+  // ── The held update (ADR-0101): copy, action, and honesty ────────────
 
   it('showHeldByCoordinator states the whole truth and offers the action', () => {
     ctrl.showHeldByCoordinator('0.2.0')

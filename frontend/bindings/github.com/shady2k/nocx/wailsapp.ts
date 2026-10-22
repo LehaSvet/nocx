@@ -61,7 +61,7 @@ export function FinishPendingUpdate(): $CancellablePromise<void> {
 /**
  * GetUpdateState returns what a person can be told about an update in
  * flight: nothing (the ordinary launch), a pending restart, or the held
- * state ADR-0099 defines — a protocol-compatible older coordinator is
+ * state ADR-0101 defines — a protocol-compatible older coordinator is
  * still serving a healthy window, and the update finishes when it turns
  * over.
  */

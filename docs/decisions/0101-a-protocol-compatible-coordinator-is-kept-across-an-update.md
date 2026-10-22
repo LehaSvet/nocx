@@ -1,4 +1,4 @@
-# ADR-0099 — A protocol-compatible coordinator is kept; the build difference is not a replacement reason
+# ADR-0101 — A protocol-compatible coordinator is kept; the build difference is not a replacement reason
 
 - **Status:** Accepted
 - **Date:** 2026-10-21

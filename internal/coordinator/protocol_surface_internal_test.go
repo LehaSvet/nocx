@@ -1,8 +1,8 @@
 package coordinator
 
-// The protocol-surface tripwire (ADR-0099).
+// The protocol-surface tripwire (ADR-0101).
 //
-// ADR-0099 says the discovery ProtocolVersion is the one compatibility
+// ADR-0101 says the discovery ProtocolVersion is the one compatibility
 // boundary between a window and a coordinator, and that any change to the
 // surface it covers must bump the constant. Said alone, that is a promise a
 // reviewer makes; this file is the mechanism that keeps it: a fingerprint of
@@ -197,7 +197,7 @@ func TestTheProtocolSurfaceGoldenMatchesTheCommittedSurface(t *testing.T) {
 		t.Fatalf("the window<->coordinator surface changed without a protocol bump.\n"+
 			"committed golden (%s): %s\n"+
 			"surface as it stands:    %s\n\n"+
-			"Something under contracts/, the registered method list (contracts/openrpc.json), or the discovery shapes in handshake.go moved. Either revert it, or this is a protocol change: bump ProtocolVersion in handshake.go, regenerate the golden with NOCX_PROTOCOL_SURFACE_UPDATE=1 go test ./internal/coordinator/ -run TestTheProtocolSurface, and commit both together (ADR-0099).",
+			"Something under contracts/, the registered method list (contracts/openrpc.json), or the discovery shapes in handshake.go moved. Either revert it, or this is a protocol change: bump ProtocolVersion in handshake.go, regenerate the golden with NOCX_PROTOCOL_SURFACE_UPDATE=1 go test ./internal/coordinator/ -run TestTheProtocolSurface, and commit both together (ADR-0101).",
 			golden, got, digest)
 	}
 }

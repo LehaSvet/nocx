@@ -22,7 +22,7 @@ export interface UpdateNoticeController {
   showAvailable: (version: string, notesUrl: string) => void
   showDownloading: () => void
   showPendingRestart: (version: string) => void
-  /** Shows the ADR-0099 held state: an update is installed and a
+  /** Shows the ADR-0101 held state: an update is installed and a
    *  protocol-compatible older coordinator is still serving it. The copy
    *  names the whole truth — finishing closes the open sessions — and the
    *  action is the person's to press, never forced. */

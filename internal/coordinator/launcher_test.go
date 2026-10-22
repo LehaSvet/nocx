@@ -411,7 +411,7 @@ func TestASpawnThatDiesBeforeAnsweringReportsItsExit(t *testing.T) {
 // --- 4 & 5. an incompatible coordinator is refused, replaced, and said ---
 
 // TestABuildDifferenceAloneKeepsTheRunningCoordinator pins the accepted
-// update-coordinator compatibility rule (ADR-0099): a coordinator whose
+// update-coordinator compatibility rule (ADR-0101): a coordinator whose
 // protocol this build speaks is USED, whatever its Version or Commit. A
 // build difference is exactly what an update leaves behind — the daemon
 // kept running the old code while the bundle beside it moved — and under

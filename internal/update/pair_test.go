@@ -87,7 +87,7 @@ func assertNotFinalised(t *testing.T, installPath, jp string) {
 // ---------------------------------------------------------------------------
 
 // TestReportHealthy_OldCompatibleCoordinator_HoldsTheUpdateWithoutRollback
-// is ADR-0099's held state, end to end. The bundle was swapped, the window
+// is ADR-0101's held state, end to end. The bundle was swapped, the window
 // restarted on the new version, and the coordinator that outlived the window
 // is an OLDER one this window's launcher deliberately kept — protocol
 // compatible, version different. Health is refused as a CERTIFICATION (the
@@ -188,7 +188,7 @@ func TestReportHealthy_NoHealthReport_RollsBackAfterThreeLaunches(t *testing.T) 
 }
 
 // TestReportHealthy_AnIncompatibleCoordinator_IsStillAMismatch: the held
-// state is for a coordinator this build's launcher would USE (ADR-0099). A
+// state is for a coordinator this build's launcher would USE (ADR-0101). A
 // coordinator the window itself would have refused — the probe says
 // incompatible — keeps the old refusal and the old fail-closed counter: that
 // pair cannot occur through the launcher, so if it occurs at all something

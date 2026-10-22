@@ -1230,7 +1230,7 @@ func (w *WailsApp) ReportHealthy() error {
 
 // GetUpdateState returns what a person can be told about an update in
 // flight: nothing (the ordinary launch), a pending restart, or the held
-// state ADR-0099 defines — a protocol-compatible OLDER coordinator is
+// state ADR-0101 defines — a protocol-compatible OLDER coordinator is
 // still serving a healthy window, the update waits for it to turn over,
 // and the surface offers to finish it with a full restart, never a force.
 //
@@ -1249,7 +1249,7 @@ func (w *WailsApp) GetUpdateState() update.UpdateState {
 // the button says — and quits, so the next start raises the new build's
 // coordinator and the health report certifies the pair.
 //
-// It REFUSES unless the updater holds exactly the ADR-0099 state: a
+// It REFUSES unless the updater holds exactly the ADR-0101 state: a
 // pending transaction held by an older compatible coordinator. A pending
 // update nothing is holding needs an ordinary restart, not a killer; and
 // an update in any other state has its own remedy. The refusal is the

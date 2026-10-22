@@ -199,7 +199,7 @@ function main(): void {
   // Update notice — renders inline in the tab bar, right-aligned.
   const notice = mountUpdateNotice(bar)
 
-  // A pending update held by an older coordinator (ADR-0099) is the one
+  // A pending update held by an older coordinator (ADR-0101) is the one
   // startup state the strip must say aloud with its action: the update is
   // installed, the kept coordinator is still serving it, and finishing
   // means a full restart that closes the open sessions. Anything less than
@@ -665,7 +665,7 @@ function main(): void {
   // agent-tree question was answered by whichever mount was faster, and the
   // one that had to wait for a person never was.
   mountClientHost(dispatcher, undefined, undefined, requestAgentHostApproval)
-  // The window half of the UI-state document (ADR-0099): the shell owns the
+  // The window half of the UI-state document (ADR-0101): the shell owns the
   // native window and the coordinator owns the document, and this renderer
   // is the only road between them. Mounted unconditionally like the client
   // host above — a client with no Wails runtime reads the saved geometry and

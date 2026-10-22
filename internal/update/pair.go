@@ -30,7 +30,7 @@ import (
 // against, and a check against a fact nobody recorded is theatre.
 //
 // Compatible is the launcher's own decision about the answering
-// coordinator (ADR-0099): true when that coordinator speaks this build's
+// coordinator (ADR-0101): true when that coordinator speaks this build's
 // protocol, whatever its version and commit. The probe reports it as a
 // FACT it was handed with the launch — the decision itself has one owner,
 // the launcher — and the transaction reads it to tell the two version
@@ -78,7 +78,7 @@ var (
 	// message needs to be told which of the two happened.
 	ErrPairMismatch = errors.New("update: the coordinator answering is not the version this update installed")
 
-	// ErrPairHeld reports the accepted ADR-0099 state, not a defect: the
+	// ErrPairHeld reports the accepted ADR-0101 state, not a defect: the
 	// reporting build is healthy, and the coordinator answering it is an
 	// OLDER one this window's launcher deliberately kept because it speaks
 	// the same protocol. The update cannot finalise yet — its server has

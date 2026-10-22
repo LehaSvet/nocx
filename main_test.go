@@ -641,7 +641,7 @@ func TestUpdateChannelSettingValuesAreChannelsTheWindowAccepts(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// The held update's window surface (ADR-0099)
+// The held update's window surface (ADR-0101)
 // ---------------------------------------------------------------------------
 
 // stubUpdater stands in for [update.Updater] where the binding's own
@@ -697,7 +697,7 @@ func startWindowTestCoordinator(t *testing.T, versionText, commit string) string
 
 // TestGetUpdateStateReportsTheHeldUpdate: the binding is the strip's one
 // source of truth, and the held state is the one it must never blur —
-// an update is waiting, and a full restart finishes it (ADR-0099).
+// an update is waiting, and a full restart finishes it (ADR-0101).
 func TestGetUpdateStateReportsTheHeldUpdate(t *testing.T) {
 	held := update.UpdateState{Pending: true, Version: "0.2.0", HeldByOlderCoordinator: true}
 	w := &WailsApp{updater: &stubUpdater{state: held}, logger: logtest.Slog(t)}

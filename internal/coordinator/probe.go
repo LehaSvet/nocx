@@ -75,7 +75,7 @@ func (p *LaunchProbe) AnsweringCoordinator(context.Context) (update.CoordinatorB
 			"coordinator: this window has not attached to a coordinator, so there is no backend build to report")
 	}
 	// Compatible goes through the same decision the launcher made when it
-	// accepted this coordinator (ADR-0099): the probe reports the
+	// accepted this coordinator (ADR-0101): the probe reports the
 	// decision's outcome as a fact of the launch, and the updater's pair
 	// policy — held or mismatched — is the updater's alone.
 	compatible := incompatibilityWith(ProtocolVersion, Hello{Protocol: p.protocol}) == ""

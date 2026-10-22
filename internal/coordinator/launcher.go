@@ -19,7 +19,7 @@ import (
 // it adds over the client is the three decisions the protocol itself does
 // not make: whether to spawn, how long to wait, and whether a running
 // daemon is one this build can use — a question the PROTOCOL answers, not
-// the build (design §4, D4; ADR-0099).
+// the build (design §4, D4; ADR-0101).
 
 const (
 	// DefaultReadyTimeout bounds the wait for a spawned daemon to answer
@@ -96,7 +96,7 @@ type LauncherConfig struct {
 	// Dir is the runtime directory — see [RuntimeDir]. Must be absolute.
 	Dir string
 	// Self is this build's identity. Its Protocol is the one field a
-	// running daemon's hello is judged by (ADR-0099); the Version and
+	// running daemon's hello is judged by (ADR-0101); the Version and
 	// Commit travel for the record the log keeps of a kept coordinator.
 	Self ClientIdentity
 	// Client asks the discovery socket who is serving it.
@@ -220,14 +220,14 @@ func (l *Launcher) Launch(ctx context.Context) (Launch, error) {
 
 // incompatibility returns why the running daemon cannot be used, or "".
 //
-// The PROTOCOL alone is compared (ADR-0099): it is the one compatibility
+// The PROTOCOL alone is compared (ADR-0101): it is the one compatibility
 // boundary between a window and a coordinator, covering the discovery
 // socket and the WS control plane its token opens. A build whose Version
 // or Commit differs is exactly what an update leaves behind — the daemon
 // keeps running the code it was started from while the bundle beside it
 // moved — and under ADR-0097's nightly scheme it is the ordinary case,
 // not the exception. Stopping such a coordinator killed every live
-// session on every nightly restart, which is the rule ADR-0099 retires;
+// session on every nightly restart, which is the rule ADR-0101 retires;
 // the update health gate (update/pair.go) still asks its own question of
 // the pair and keeps the rollback armed when it must.
 //
@@ -242,7 +242,7 @@ func (l *Launcher) incompatibility(h Hello) string {
 // incompatibilityWith is the one compatibility decision, stated once for
 // every asker in this package: the launcher's replacement path and the
 // probe the updater's health gate reads both go through it, so the two can
-// never disagree about one coordinator (ADR-0099).
+// never disagree about one coordinator (ADR-0101).
 func incompatibilityWith(selfProtocol int, h Hello) string {
 	if h.Protocol != selfProtocol {
 		return fmt.Sprintf("it speaks discovery protocol %d and this build speaks %d",
@@ -293,7 +293,7 @@ func (l *Launcher) replace(ctx context.Context, sighting Sighting, why string) (
 	// a replacement that lost a race — to another window, to a stale
 	// binary on the path — would be accepted silently even though it
 	// cannot serve this window. Its BUILD is not asked: a protocol-
-	// compatible replacement of any commit is exactly what ADR-0099 says
+	// compatible replacement of any commit is exactly what ADR-0101 says
 	// this window uses.
 	if incompat := l.incompatibility(hello); incompat != "" {
 		return Launch{}, NewLaunchFailure(
