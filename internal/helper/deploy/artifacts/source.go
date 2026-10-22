@@ -63,7 +63,9 @@ func (embeddedSource) Artifact(p deploy.Platform) (data []byte, contentHash stri
 // platform is what the local install reports, because a build without this
 // variant has no helper to install at all (nocx-50w7p.7).
 func (embeddedSource) LocalArtifact(p deploy.Platform) (data []byte, contentHash string, err error) {
-	return localSource{}.Artifact(p)
+	// The e2e build is the only one whose local helper honors the explicit
+	// test shell selection. The default build embeds the normal local helper.
+	return localArtifactSource().Artifact(p)
 }
 
 // DefaultSource is the artifact source production installs from. It is a

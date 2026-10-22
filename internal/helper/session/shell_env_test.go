@@ -1,3 +1,5 @@
+//go:build nocx_e2e_shell_override
+
 package session
 
 import "testing"
