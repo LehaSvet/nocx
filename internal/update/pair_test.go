@@ -160,13 +160,14 @@ func TestReportHealthy_NoHealthReport_RollsBackAfterThreeLaunches(t *testing.T) 
 		Coordinator: &stubProbe{build: CoordinatorBuild{Version: "0.2.0"}},
 	})
 
-	for launch := 1; launch <= 2; launch++ {
-		if rerr := u.Reconcile(ctx); rerr != nil {
-			t.Fatalf("Reconcile %d: %v", launch, rerr)
-		}
-		if _, serr := os.Stat(jp); serr != nil {
-			t.Fatalf("launch %d rolled back early: %v", launch, serr)
-		}
+	// pendingUpdate starts at LaunchAttempts=1. The next launch reaches
+	// attempt two and survives; the following one reaches three and rolls
+	// back. No health report occurs between them.
+	if rerr := u.Reconcile(ctx); rerr != nil {
+		t.Fatalf("second Reconcile: %v", rerr)
+	}
+	if _, serr := os.Stat(jp); serr != nil {
+		t.Fatalf("second launch rolled back early: %v", serr)
 	}
 	if rerr := u.Reconcile(ctx); rerr != nil {
 		t.Fatalf("third Reconcile: %v", rerr)
@@ -214,11 +215,15 @@ func TestReportHealthy_AnIncompatibleCoordinator_IsStillAMismatch(t *testing.T) 
 	assertNotFinalised(t, installPath, jp)
 
 	// And the counter is not reset by it: three launches still roll back.
-	for i := 0; i < 2; i++ {
-		if rerr := u.Reconcile(ctx); rerr != nil {
-			t.Fatalf("Reconcile %d: %v", i, rerr)
-		}
-		_ = u.ReportHealthy(ctx)
+	// The pending fixture starts at attempt one. A mismatch does not
+	// reset the counter, so the next launch survives at two and the
+	// following launch reaches three and rolls back.
+	if rerr := u.Reconcile(ctx); rerr != nil {
+		t.Fatalf("second Reconcile: %v", rerr)
+	}
+	_ = u.ReportHealthy(ctx)
+	if _, serr := os.Stat(jp); serr != nil {
+		t.Fatalf("an incompatible report must not suspend rollback before attempt three: %v", serr)
 	}
 	if rerr := u.Reconcile(ctx); rerr != nil {
 		t.Fatalf("third Reconcile: %v", rerr)
