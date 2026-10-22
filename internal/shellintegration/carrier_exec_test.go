@@ -237,10 +237,12 @@ func loaderPath(t *testing.T, tools ...string) string {
 	return dir
 }
 
-// loaderBaseTools is what the loader itself needs on PATH, hashers aside.
-// `ls` is not the loader's — the fake stage-1 uses it to report whether the
-// temp name survived the unlink.
-var loaderBaseTools = []string{"stty", "mktemp", "dd", "wc", "rm", "ls"}
+// loaderBaseTools is the controlled host PATH for the loader refusal tests.
+// `id` is not a loader dependency: a native login shell can run the host
+// profile, which may call it (for example, to choose a user-specific path).
+// `ls` is also not a loader dependency; fake stage-1 uses it to report whether
+// the temp name survived the unlink.
+var loaderBaseTools = []string{"stty", "mktemp", "dd", "wc", "rm", "ls", "id"}
 
 // loaderEnv assembles the child's environment: the fixture home, the
 // controlled PATH, a private TMPDIR, and SHELL naming the shell the refusal
