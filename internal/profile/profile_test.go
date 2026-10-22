@@ -644,6 +644,9 @@ func TestJSONStoreFileNotExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadProfiles on missing file should not error: %v", err)
 	}
+	if profs == nil {
+		t.Fatal("LoadProfiles on missing file returned nil, want an empty list")
+	}
 	if len(profs) != 0 {
 		t.Errorf("expected 0 profiles from missing file, got %d", len(profs))
 	}

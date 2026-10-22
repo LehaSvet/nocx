@@ -142,6 +142,12 @@ func (s *JSONStore) LoadProfiles() ([]SSHProfile, error) {
 			d.Profiles[i].BehaviorOnSessionEnd = *d.Profiles[i].Options.BehaviorOnSessionEnd
 		}
 	}
+	// An absent profile document means there are no profiles. Return the
+	// collection shape the RPC contract expects, not nil (which JSON encodes
+	// as null and breaks renderer consumers that map over the list).
+	if d.Profiles == nil {
+		d.Profiles = []SSHProfile{}
+	}
 	return d.Profiles, nil
 }
 

@@ -30,13 +30,13 @@ func TestProfilesRPC_ListEmpty(t *testing.T) {
 
 	resp := jsonrpcCall(t, conn, "profiles.list", map[string]any{})
 	var result struct {
-		Result []any `json:"result"`
+		Result json.RawMessage `json:"result"`
 	}
 	if err := json.Unmarshal(resp, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Result) != 0 {
-		t.Errorf("expected empty list, got %d items", len(result.Result))
+	if string(result.Result) != "[]" {
+		t.Errorf("profiles.list result = %s, want an empty JSON array", result.Result)
 	}
 }
 
