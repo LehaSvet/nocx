@@ -38,11 +38,15 @@ async function main() {
   const summary = createGoTestSummary()
   const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity })
   for await (const line of lines) {
-    process.stdout.write(`${line}\n`)
     try {
-      summary.add(JSON.parse(line))
+      const event = JSON.parse(line)
+      summary.add(event)
+      if (event.Action === 'output' && typeof event.Output === 'string') {
+        process.stdout.write(event.Output)
+      }
     } catch {
-      // Keep malformed or non-JSON diagnostic lines visible; they cannot contribute a test.
+      // Keep malformed or non-JSON diagnostics visible; they cannot contribute a test.
+      process.stdout.write(`${line}\n`)
     }
   }
   for (const { package: pkg, tests } of summary.result()) {

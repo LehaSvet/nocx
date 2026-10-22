@@ -44,7 +44,7 @@ test('ignores package-only results and orders ties by test name', () => {
   )
 })
 
-test('workflow pipeline echoes JSON and returns go test exit statuses, including signal-style', async () => {
+test('workflow pipeline prints Go output verbatim and preserves go test exit statuses, including signal-style', async () => {
   const { mkdtemp, writeFile, chmod, rm } = await import('node:fs/promises')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
@@ -56,7 +56,7 @@ test('workflow pipeline echoes JSON and returns go test exit statuses, including
       fakeGo,
       `#!/bin/sh
 printf '%s\\n' '{"Action":"pass","Package":"example/app","Test":"TestFailurePath","Elapsed":9}'
-printf '%s\\n' '{"Action":"output","Package":"example/app","Test":"TestFailurePath","Output":"FAIL diagnostic\\n"}'
+printf '%s\\n' '{"Action":"output","Package":"example/app","Test":"TestFailurePath","Output":"FAIL diagnostic\\npanic: test timed out\\n goroutine 1 [running]:\\n"}'
 exit "${'${FAKE_GO_STATUS:-23}'}"
 `,
     )
@@ -76,8 +76,11 @@ exit "${'${pipeline_status[0]}'}"`
         encoding: 'utf8',
       })
       assert.equal(result.status, exitStatus)
-      assert.match(result.stdout, /"Test":"TestFailurePath"/)
-      assert.match(result.stdout, /FAIL diagnostic/)
+      assert.match(
+        result.stdout,
+        /FAIL diagnostic\npanic: test timed out\n goroutine 1 \[running\]:\n/,
+      )
+      assert.doesNotMatch(result.stdout, /"Action":"output"/)
       assert.match(result.stderr, /Slowest tests in example\/app/)
     }
   } finally {
