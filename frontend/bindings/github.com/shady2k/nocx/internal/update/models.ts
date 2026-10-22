@@ -46,3 +46,37 @@ export class UpdateInfo {
         return new UpdateInfo($$parsedSource as Partial<UpdateInfo>);
     }
 }
+
+/**
+ * UpdateState is what a window can say out loud about an update
+ * transaction. It carries no remedy and takes no action: the words and the
+ * button are the update surface's; these are the facts underneath them.
+ */
+export class UpdateState {
+    "Pending": boolean;
+    "Version": string;
+    "HeldByOlderCoordinator": boolean;
+
+    /** Creates a new UpdateState instance. */
+    constructor($$source: Partial<UpdateState> = {}) {
+        if (!("Pending" in $$source)) {
+            this["Pending"] = false;
+        }
+        if (!("Version" in $$source)) {
+            this["Version"] = "";
+        }
+        if (!("HeldByOlderCoordinator" in $$source)) {
+            this["HeldByOlderCoordinator"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UpdateState instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UpdateState {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UpdateState($$parsedSource as Partial<UpdateState>);
+    }
+}

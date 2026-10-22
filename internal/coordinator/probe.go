@@ -39,6 +39,7 @@ import (
 type LaunchProbe struct {
 	mu       sync.RWMutex
 	build    Build
+	protocol int
 	attached bool
 }
 
@@ -54,6 +55,7 @@ func (p *LaunchProbe) Attach(l Launch) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.build = l.Hello.Build
+	p.protocol = l.Hello.Protocol
 	p.attached = true
 }
 
@@ -72,5 +74,14 @@ func (p *LaunchProbe) AnsweringCoordinator(context.Context) (update.CoordinatorB
 		return update.CoordinatorBuild{}, errors.New(
 			"coordinator: this window has not attached to a coordinator, so there is no backend build to report")
 	}
-	return update.CoordinatorBuild{Version: p.build.Version, Commit: p.build.Commit}, nil
+	// Compatible goes through the same decision the launcher made when it
+	// accepted this coordinator (ADR-0101): the probe reports the
+	// decision's outcome as a fact of the launch, and the updater's pair
+	// policy — held or mismatched — is the updater's alone.
+	compatible := incompatibilityWith(ProtocolVersion, Hello{Protocol: p.protocol}) == ""
+	return update.CoordinatorBuild{
+		Version:    p.build.Version,
+		Commit:     p.build.Commit,
+		Compatible: compatible,
+	}, nil
 }

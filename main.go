@@ -70,6 +70,7 @@ func main() {
 	// decision, and the chord is claimed by the window rather than inherited
 	// from a menu nobody here wrote.
 	quit := &quitSeam{logger: logger}
+	wailsApp.quit = quit
 
 	// The Wails v3 shell. The window is created before Run; on Linux the
 	// platform defers actually loading the webview until activation inside
@@ -369,6 +370,18 @@ type WailsApp struct {
 	// read it from the coordinator, and sampling the live window for the
 	// renderer to relay back. nil until main has created the window.
 	geometry *windowGeometry
+
+	// quit is the one place a quit is decided (ADR-0093): the chord, the
+	// menu item and FinishPendingUpdate all end in [quitSeam.request]. nil
+	// until main wires it, and a FinishPendingUpdate on a window without
+	// one refuses rather than stopping sessions it cannot then leave.
+	quit *quitSeam
+
+	// finishStopKeptCoordinatorFn is the seam FinishPendingUpdate stops a
+	// kept coordinator through. The production value is nil, which selects
+	// stopKeptCoordinator; tests stand on the decision without signalling
+	// a real process.
+	finishStopKeptCoordinatorFn func(ctx context.Context) (bool, error)
 }
 
 // Log logs a message from the frontend.
@@ -928,6 +941,10 @@ type quitCause string
 const (
 	quitFromMenu  quitCause = "menu"
 	quitFromChord quitCause = "chord"
+	// quitFromUpdateFinish is the update surface's Restart now: the same
+	// decision as the two keys, reached from a button a person pressed
+	// knowing it closes their sessions.
+	quitFromUpdateFinish quitCause = "update-finish"
 )
 
 // quitSeam is the one place a quit is decided.
@@ -1211,18 +1228,108 @@ func (w *WailsApp) ReportHealthy() error {
 	return w.updater.ReportHealthy(context.Background())
 }
 
-// GetUpdateState returns the updater state for the UI notice.
-// "pending" means an update was applied and is waiting for a restart;
-// empty string means nothing in flight.
-func (w *WailsApp) GetUpdateState() string {
+// GetUpdateState returns what a person can be told about an update in
+// flight: nothing (the ordinary launch), a pending restart, or the held
+// state ADR-0101 defines — a protocol-compatible OLDER coordinator is
+// still serving a healthy window, the update waits for it to turn over,
+// and the surface offers to finish it with a full restart, never a force.
+//
+// Reconcile runs first so a journal that the launch is about to settle is
+// not read as pending work.
+func (w *WailsApp) GetUpdateState() update.UpdateState {
 	if w.updater == nil {
-		return ""
+		return update.UpdateState{}
 	}
-	// Reconcile at startup to settle any in-flight transaction.
 	_ = w.updater.Reconcile(context.Background())
-	// For now, return empty — the actual state detection will be
-	// refined once Reconcile returns a richer status.
-	return ""
+	return w.updater.State(context.Background())
+}
+
+// FinishPendingUpdate finishes a held update on the person's word: it stops
+// the kept coordinator — every session it is running ends, which is what
+// the button says — and quits, so the next start raises the new build's
+// coordinator and the health report certifies the pair.
+//
+// It REFUSES unless the updater holds exactly the ADR-0101 state: a
+// pending transaction held by an older compatible coordinator. A pending
+// update nothing is holding needs an ordinary restart, not a killer; and
+// an update in any other state has its own remedy. The refusal is the
+// never-force half of the decision — the only path to a stop is a person
+// pressing the button this method exists behind.
+func (w *WailsApp) FinishPendingUpdate() error {
+	if w.updater == nil {
+		return errors.New("the updater is not available in this window")
+	}
+	if w.quit == nil {
+		return errors.New("this window cannot quit the application")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), launchTimeout)
+	defer cancel()
+
+	state := w.updater.State(ctx)
+	if !state.Pending || !state.HeldByOlderCoordinator {
+		return fmt.Errorf("no update is waiting for a coordinator restart — the update state is %+v", state)
+	}
+
+	stop := w.finishStopKeptCoordinatorFn
+	if stop == nil {
+		stop = w.stopKeptCoordinator
+	}
+	stopped, err := stop(ctx)
+	if err != nil {
+		return fmt.Errorf("stopping the kept coordinator: %w", err)
+	}
+	w.logger.Info("finishing a held update",
+		"version", state.Version,
+		"stoppedCoordinator", stopped,
+	)
+	// The quit is the same decision the chord and the menu item reach
+	// (ADR-0093), named as its own cause: a person reading the log can
+	// tell an update-finish from a key press.
+	w.quit.request(quitFromUpdateFinish)
+	return nil
+}
+
+// stopKeptCoordinator stops the older coordinator a held update is waiting
+// on — and nothing else. A sighting that already answers THIS build's
+// version has turned over on its own (a stop, a reboot): stopping it would
+// end fresh sessions for nothing, and the next ordinary start certifies
+// the update without this window doing anything. No coordinator at all is
+// the same case one step further on.
+func (w *WailsApp) stopKeptCoordinator(ctx context.Context) (bool, error) {
+	paths, err := storage.NewAppPaths()
+	if err != nil {
+		return false, fmt.Errorf("resolving the profile directories: %w", err)
+	}
+	dir := coordinator.RuntimeDir(paths)
+	client, err := coordinator.NewClient(coordinator.ClientConfig{
+		Socket: coordinator.SocketPathIn(dir),
+		Self: coordinator.ClientIdentity{
+			Version:  version.Version,
+			Commit:   version.Commit,
+			Protocol: coordinator.ProtocolVersion,
+		},
+		Dialer: coordinator.SystemDialer{},
+		Logger: w.logger,
+	})
+	if err != nil {
+		return false, err
+	}
+	sighting, err := client.Hello(ctx)
+	switch {
+	case errors.Is(err, coordinator.ErrNoCoordinator):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("asking the discovery socket who is serving: %w", err)
+	}
+	if sighting.Hello.Build.Version == version.Version {
+		w.logger.Info("the held update's coordinator has already turned over; nothing to stop",
+			"pid", sighting.PID, "version", sighting.Hello.Build.Version)
+		return false, nil
+	}
+	if err := coordinator.NewSignalStopper(coordinator.SignalStopperConfig{Logger: w.logger}).Stop(ctx, sighting); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // upgradeInstallPath derives the path to the installed bundle from the

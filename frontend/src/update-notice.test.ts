@@ -4,18 +4,19 @@ import { mountUpdateNotice, type UpdateNoticeController } from './update-notice'
 
 vi.mock('../bindings/github.com/shady2k/nocx/wailsapp', () => ({
   ApplyUpdate: vi.fn<() => Promise<void>>(),
+  FinishPendingUpdate: vi.fn<() => Promise<void>>(),
   CheckForUpdate: vi.fn(),
   ReportHealthy: vi.fn(),
 }))
 
-import { ApplyUpdate } from '../bindings/github.com/shady2k/nocx/wailsapp'
+import { ApplyUpdate, FinishPendingUpdate } from '../bindings/github.com/shady2k/nocx/wailsapp'
 
 function stateClass(kind: string): string {
   if (kind === 'hidden' || kind === 'available') return 'update-notice'
   return `update-notice ${kind}`
 }
 
-const ALL_STATES = ['hidden', 'available', 'downloading', 'pending', 'error'] as const
+const ALL_STATES = ['hidden', 'available', 'downloading', 'pending', 'held', 'error'] as const
 
 // Every directed pair (from → to, from ≠ to) = 16 transitions (hidden excluded as target).
 const ALL_PAIRS: [string, string][] = ALL_STATES.flatMap((from) =>
@@ -38,6 +39,9 @@ function setState(kind: string, ctrl: UpdateNoticeController): void {
     case 'pending':
       ctrl.showPendingRestart('1.0.0')
       break
+    case 'held':
+      ctrl.showHeldByCoordinator('1.0.0')
+      break
     case 'error':
       ctrl.showError('test error')
       break
@@ -54,6 +58,8 @@ describe('UpdateNotice', () => {
     ctrl = mountUpdateNotice(bar)
     vi.mocked(ApplyUpdate).mockReset()
     vi.mocked(ApplyUpdate).mockResolvedValue(undefined)
+    vi.mocked(FinishPendingUpdate).mockReset()
+    vi.mocked(FinishPendingUpdate).mockResolvedValue(undefined)
   })
 
   afterEach(() => {
@@ -123,6 +129,58 @@ describe('UpdateNotice', () => {
     } else {
       expect(el.hasAttribute('hidden')).toBe(false)
     }
+  })
+
+  // ── The held update (ADR-0101): copy, action, and honesty ────────────
+
+  it('showHeldByCoordinator states the whole truth and offers the action', () => {
+    ctrl.showHeldByCoordinator('0.2.0')
+
+    const el = bar.querySelector('.update-notice') as HTMLElement
+    expect(el.className).toBe('update-notice held')
+    expect(el.textContent).toContain('0.2.0 installed')
+    expect(el.textContent).toContain('finish the update: restart nocx fully (closes open sessions)')
+    const btn = el.querySelector('.ui-button') as HTMLButtonElement
+    expect(btn).not.toBeNull()
+    expect(btn.textContent).toContain('Restart now')
+  })
+
+  it('Restart now finishes through the window binding', async () => {
+    vi.mocked(FinishPendingUpdate).mockResolvedValue(undefined)
+    ctrl.showHeldByCoordinator('0.2.0')
+
+    const btn = bar.querySelector('.ui-button') as HTMLButtonElement
+    btn.click()
+
+    await vi.waitFor(() => {
+      expect(FinishPendingUpdate).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('an injected finish runs instead of the binding', async () => {
+    const finish = vi.fn<() => Promise<void>>()
+    const injected = mountUpdateNotice(bar, { finish })
+    injected.showHeldByCoordinator('0.2.0')
+
+    ;(bar.querySelector('.ui-button') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => {
+      expect(finish).toHaveBeenCalledTimes(1)
+    })
+    expect(FinishPendingUpdate).not.toHaveBeenCalled()
+  })
+
+  it('a finish that fails says so instead of going quiet', async () => {
+    vi.mocked(FinishPendingUpdate).mockRejectedValue(new Error('stop failed'))
+    ctrl.showHeldByCoordinator('0.2.0')
+
+    ;(bar.querySelector('.ui-button') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => {
+      const el = bar.querySelector('.update-notice') as HTMLElement
+      expect(el.className).toBe('update-notice error')
+      expect(el.textContent).toContain('stop failed')
+    })
   })
 
   // ── Apply path: successful update ─────────────────────────────────────
