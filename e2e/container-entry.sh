@@ -20,11 +20,6 @@ set -euo pipefail
 # different from everywhere else.
 git config --global --add safe.directory /work
 
-# The local helper resolves the shell from the OS account database before
-# considering SHELL. Make this disposable container's test account use zsh so
-# the first-command regression measures the intended login shell.
-usermod -s /usr/bin/zsh "$(id -un)"
-
 echo "=== npm ci (root + frontend) ==="
 # NOT --silent: it hides the reason the install died, and the install is where
 # this script fails when it fails. A registry timeout used to reach the reader

@@ -50,6 +50,11 @@ if (wanted?.length && projects.length === 0) {
 export default defineConfig({
   testDir: './e2e',
 
+  // The first-command regression is specific to macOS zsh. Linux e2e runs as
+  // bash, so it cannot exercise that failure; keep the spec in the collected
+  // set only on macOS, where its missing-zsh/plugin guards remain active.
+  ...(process.platform === 'linux' ? { testIgnore: ['**/first-command-completes.spec.ts'] } : {}),
+
   // A HUNG TEST IS CUT OFF IN HALF A MINUTE, not a whole one. Nothing in this
   // suite legitimately takes 30 seconds: the slowest honest spec is about seven,
   // and a run of 338 cases pays this ceiling only for tests that are already

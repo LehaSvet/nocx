@@ -1,5 +1,7 @@
-// nocx-ruf5o: the FIRST command in a fresh pane completes when the prompt
-// returns — it never stays Running with the new prompt inside it.
+// macOS zsh regression (nocx-ruf5o): the FIRST command in a fresh pane
+// completes when the prompt returns; it never stays Running with the new prompt
+// inside the block. Linux e2e keeps its account shell as bash, so this spec is
+// collected only on macOS, where missing zsh/plugins still fail the test.
 //
 // The observation this guards (owner, 2026-10-21, nocx 0.6.1 on macOS): in a
 // fresh tab the first command's block never settled — "Running 8.9s" while the
