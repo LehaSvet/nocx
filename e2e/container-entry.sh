@@ -61,6 +61,18 @@ handback() {
 }
 trap handback EXIT
 
+# THE PINNED WIDGET-WRAPPING ZSH PLUGINS (nocx-ruf5o), for the e2e variant
+# that measures a zsh wrapped by them (e2e/first-command-completes.spec.ts).
+# Provisioned here rather than baked into the image for the same reason the
+# Go-test container provisions its own (.githooks/containerized-tests.sh): the
+# pins have ONE owner (scripts/install-zsh-zle-plugins.sh), a pin change must
+# not wait for an image rebuild, and the cost is a few seconds of shallow
+# clone per run. The spec FAILS, never skips, without them — so this is
+# provisioning, not decoration. Exported rather than written to $GITHUB_ENV:
+# inside this container the Playwright process is a child of this shell.
+bash ./scripts/install-zsh-zle-plugins.sh /tmp/nocx-zsh-plugins
+export NOCX_ZSH_PLUGINS=/tmp/nocx-zsh-plugins
+
 # A Secret Service for the one spec that needs one.
 #
 # e2e/vault.spec.ts case 3 is about a machine WITH a working OS keystore: that

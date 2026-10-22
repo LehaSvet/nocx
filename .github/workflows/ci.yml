@@ -311,6 +311,66 @@ jobs:
       - name: Test (release build tag)
         run: go test -race -count=1 -tags release ./internal/storage/...
 
+      # THE FIRST COMMAND'S BLOCK, ON THE OS IT FAILED ON (nocx-ruf5o). A
+      # 0.6.1 build on macOS never settled a fresh tab's first command — the
+      # block stayed Running with the prompt already printed inside it, and no
+      # lifecycle complete fact was ever minted. Both fixes in that family
+      # (#433, nocx-1ebrs.39; #447, nocx-1ebrs.50) predate this step: it holds
+      # the CURRENT tree to the behaviour they bought, in the two shapes the
+      # owner measured — an empty ZDOTDIR and the widget-wrapping plugin stack.
+      #
+      # WHY THIS JOB. The helper resolves the login shell from the OS account
+      # record before SHELL. The runner account is set to zsh immediately before
+      # this step, so this proves the target's own zsh. ci-e2e runs the same
+      # variants against the Linux image, whose container entry sets its test
+      # account to zsh and provisions the pinned plugins.
+      #
+      # NO SECOND PROVISIONING. The plugin-stack variant reuses the pinned
+      # widget-wrapping plugins the Go composition test installed above: that
+      # step already wrote NOCX_ZSH_PLUGINS to $GITHUB_ENV, so the spec reads
+      # the same pinned checkouts rather than a bottle that moves.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      # THE PINNED ZIG, the same argument the e2e image makes (e2e/Dockerfile):
+      # the stand builds the helper artifacts with `make helpers-this-machine`
+      # on its way up, and that target compiles through Zig's cc — `vtfetch cc`
+      # refuses any Zig but the version third_party/libghostty-vt/MANIFEST.json
+      # pins. The runner has none, and the first run of the step below measured
+      # it: `vtfetch: zig: executable file not found in $PATH`. The sha256
+      # values are ziglang.org's own, from its download index, checked here
+      # exactly as the image checks its Linux pair.
+      - name: Install the pinned Zig (the stand's helper build needs it)
+        run: |
+          set -eux
+          case "$(uname -m)" in
+            arm64)  zig_arch=aarch64; zig_sha=b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489 ;;
+            x86_64) zig_arch=x86_64;  zig_sha=0387557ed1877bc6a2e1802c8391953baddba76081876301c522f52977b52ba7 ;;
+            *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;;
+          esac
+          url="https://ziglang.org/download/0.16.0/zig-${zig_arch}-macos-0.16.0.tar.xz"
+          curl -fsSL "$url" -o /tmp/zig.tar.xz
+          echo "${zig_sha}  /tmp/zig.tar.xz" | shasum -a 256 -c -
+          tar -xJf /tmp/zig.tar.xz -C "$RUNNER_TEMP"
+          printf 'ZIG=%s\n' "$RUNNER_TEMP/zig-${zig_arch}-macos-0.16.0/zig" >> "$GITHUB_ENV"
+
+      # The helper resolves login shell from the account record before $SHELL.
+      # Set this runner account to macOS's zsh so the pane test exercises zsh.
+      - name: Set the macOS runner login shell for e2e
+        run: sudo chsh -s /bin/zsh "$USER"
+
+      - name: e2e (macOS, the first command completes)
+        run: |
+          npm ci --prefer-offline --no-audit --no-fund
+          (cd frontend && npm ci --prefer-offline --no-audit --no-fund)
+          npx playwright install chromium
+          PW_PROJECTS=chromium e2e/run-headless-macos.sh e2e/first-command-completes.spec.ts
+
   # ci-backend — the PORTABLE half of the Go suite on Linux, with and without a
   # Secret Service. Its OS-specific half is ci-linux, immediately below.
   #

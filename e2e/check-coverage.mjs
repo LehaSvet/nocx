@@ -33,6 +33,13 @@ const repoRoot = join(e2eDir, '..')
  *  failure, because it would silently run nothing. */
 const PROJECT_DIRS = ['wails']
 
+// This regression is only observable with macOS zsh. Linux e2e intentionally
+// leaves the container account on bash, so Playwright's Linux config excludes
+// this one file. It remains a normal collected spec on macOS, where this set is
+// empty and the missing-file check below requires it to be present.
+const PLATFORM_EXCLUDED_SPECS =
+  process.platform === 'linux' ? new Set(['e2e/first-command-completes.spec.ts']) : new Set()
+
 function specFiles(dir) {
   const out = []
   for (const entry of readdirSync(dir)) {
@@ -69,6 +76,7 @@ walk(report.suites)
 
 const missing = onDisk.filter(
   (f) =>
+    !PLATFORM_EXCLUDED_SPECS.has(f) &&
     !collected.has(relative(join(repoRoot, 'e2e'), join(repoRoot, f))) &&
     !collected.has(f) &&
     !collected.has(f.split(sep).slice(1).join('/')),
