@@ -5167,6 +5167,9 @@ export class TerminalContent extends BasePaneContent {
     // Accepted pixels remain authoritative. Before the first frame, measure
     // the same font probe the painter uses, not a default grid that would
     // resize the shell after its startup output has already been printed.
+    // A restored full-screen pane's first frame can lack pixel metrics
+    // (nocx-1ebrs.42). Retain the painter's row boxes for that fallback;
+    // row width is the last resort after the shared font probe.
     const firstRow = this._painterSurface?.querySelector<HTMLElement>('.term-grid-row')
     const rowHeight = firstRow?.getBoundingClientRect().height
     const rowWidth = firstRow?.getBoundingClientRect().width
