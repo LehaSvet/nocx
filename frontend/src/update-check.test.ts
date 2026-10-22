@@ -30,6 +30,7 @@ function fakeNotice() {
     showAvailable: vi.fn(),
     showDownloading: vi.fn(),
     showPendingRestart: vi.fn(),
+    showHeldByCoordinator: vi.fn(),
     showError: vi.fn(),
   } satisfies UpdateNoticeController
 }

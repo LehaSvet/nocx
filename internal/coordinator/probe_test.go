@@ -204,7 +204,12 @@ func TestReportHealthy_MixedPair_CannotCertify(t *testing.T) {
 
 	// The launcher found a running coordinator and this window attached
 	// to it. It is the old one.
-	stale := attachedTo("0.1.0", "oldsha")
+	stale := coordinator.NewLaunchProbe()
+	stale.Attach(coordinator.Launch{Hello: coordinator.Hello{
+		Build:     coordinator.Build{Version: "0.1.0", Commit: "oldsha"},
+		Protocol:  coordinator.ProtocolVersion - 1,
+		WSAddress: "127.0.0.1:0",
+	}})
 	w := restartedWindow(installPath, "0.2.0", stale)
 
 	err := w.ReportHealthy(context.Background())
@@ -287,5 +292,39 @@ func TestLaunchProbe_ReportsTheLaunchItWasAttachedTo(t *testing.T) {
 	}
 	if got.Version != "0.2.0" || got.Commit != "new" {
 		t.Errorf("got %+v, want the coordinator this window ended up on", got)
+	}
+}
+
+// The probe's answer carries the launcher's own compatibility decision
+// (ADR-0099): Compatible is computed from the SAME predicate the launcher
+// uses, so the updater's held state and the launcher's keep decision can
+// never disagree about one coordinator.
+func TestLaunchProbeAnswersCompatibilityWithTheLaunchersPredicate(t *testing.T) {
+	compatible := coordinator.NewLaunchProbe()
+	compatible.Attach(coordinator.Launch{Hello: coordinator.Hello{
+		Build:     coordinator.Build{Version: "0.1.0", Commit: "older"},
+		Protocol:  coordinator.ProtocolVersion,
+		WSAddress: "127.0.0.1:0",
+	}})
+	got, err := compatible.AnsweringCoordinator(context.Background())
+	if err != nil {
+		t.Fatalf("an attached probe cannot fail: %v", err)
+	}
+	if !got.Compatible {
+		t.Errorf("a launch on protocol %d must answer compatible: %+v", coordinator.ProtocolVersion, got)
+	}
+
+	incompatible := coordinator.NewLaunchProbe()
+	incompatible.Attach(coordinator.Launch{Hello: coordinator.Hello{
+		Build:     coordinator.Build{Version: "0.1.0", Commit: "older"},
+		Protocol:  coordinator.ProtocolVersion + 1,
+		WSAddress: "127.0.0.1:0",
+	}})
+	got, err = incompatible.AnsweringCoordinator(context.Background())
+	if err != nil {
+		t.Fatalf("an attached probe cannot fail: %v", err)
+	}
+	if got.Compatible {
+		t.Errorf("a launch on protocol %d must answer incompatible: %+v", coordinator.ProtocolVersion+1, got)
 	}
 }

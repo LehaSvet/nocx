@@ -28,9 +28,19 @@ import (
 // needs it. It is deliberately NOT compared: the release manifest names a
 // version and no commit, so the journal has no expected commit to compare
 // against, and a check against a fact nobody recorded is theatre.
+//
+// Compatible is the launcher's own decision about the answering
+// coordinator (ADR-0099): true when that coordinator speaks this build's
+// protocol, whatever its version and commit. The probe reports it as a
+// FACT it was handed with the launch — the decision itself has one owner,
+// the launcher — and the transaction reads it to tell the two version
+// mismatches apart: a compatible older coordinator is a held pair waiting
+// for turnover, an incompatible one is the mixed pair this file has always
+// refused.
 type CoordinatorBuild struct {
-	Version string
-	Commit  string
+	Version    string
+	Commit     string
+	Compatible bool
 }
 
 // CoordinatorProbe answers one question: which build is the coordinator
@@ -67,4 +77,14 @@ var (
 	// pair. Same consequence, different cause, and a user reading the
 	// message needs to be told which of the two happened.
 	ErrPairMismatch = errors.New("update: the coordinator answering is not the version this update installed")
+
+	// ErrPairHeld reports the accepted ADR-0099 state, not a defect: the
+	// reporting build is healthy, and the coordinator answering it is an
+	// OLDER one this window's launcher deliberately kept because it speaks
+	// the same protocol. The update cannot finalise yet — its server has
+	// not run — so the journal stays; but the pair is held, not wrong, and
+	// the auto-rollback is suspended while health reports keep arriving.
+	// The finish is a full restart, which the update surface offers as an
+	// action, never a force.
+	ErrPairHeld = errors.New("update: a compatible older coordinator is still serving — restart fully to finish this update")
 )

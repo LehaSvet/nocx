@@ -2,9 +2,11 @@ package update
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -320,6 +322,31 @@ func (u *updater) reconcileLocked(ctx context.Context) error {
 	}
 }
 
+// State implements [Updater.State]: what a window can tell a person about
+// the transaction in flight. Read-only by construction — it opens the
+// journal, derives, closes.
+//
+// The derivation is deliberately the same one reconcileLocked makes: a
+// journal exists AND the install path holds the bundle the transaction
+// staged. A journal whose exchange never happened is debris Reconcile is
+// about to clean, not pending work a person should be told about.
+func (u *updater) State(ctx context.Context) UpdateState {
+	jp := journalPath(u.installPath)
+	rec, err := readJournal(jp)
+	if err != nil || rec == nil {
+		return UpdateState{}
+	}
+	currentID, err := statBundleID(u.installPath)
+	if err != nil || !currentID.equal(rec.NewBundleID) {
+		return UpdateState{}
+	}
+	return UpdateState{
+		Pending:                true,
+		Version:                rec.ToVersion,
+		HeldByOlderCoordinator: rec.HeldByCoordinator != "",
+	}
+}
+
 // rollback exchanges the swap bundle back into the install path,
 // deleting the journal afterward.
 func (u *updater) rollback(jp string, rec *journalRecord) error {
@@ -393,6 +420,15 @@ func (u *updater) ReportHealthy(ctx context.Context) error {
 	// automatic rollback disarmed, so this is the last moment at which
 	// being wrong is still recoverable.
 	if err := u.certifyPair(ctx, rec); err != nil {
+		if errors.Is(err, ErrPairHeld) {
+			// The held pair (ADR-0099): certifyPair has recorded the hold
+			// ON the record — writing is the caller's, like every other
+			// write here — and the journal must now carry it, so the next
+			// launches reconcile against a hold rather than a silence.
+			if wErr := writeJournal(jp, rec); wErr != nil {
+				return fmt.Errorf("report healthy: recording the held pair: %w", wErr)
+			}
+		}
 		return err
 	}
 
@@ -475,6 +511,28 @@ func (u *updater) certifyPair(ctx context.Context, rec *journalRecord) error {
 	}
 
 	if build.Version != rec.ToVersion {
+		if build.Compatible {
+			// The held pair (ADR-0099): the launcher kept this older
+			// coordinator on purpose, the UI reporting against it is
+			// healthy by the act of reporting, and the only thing the
+			// update waits for is the coordinator's turnover. Record the
+			// hold ON the record and reset the launch counter — the
+			// counter exists to catch a build that cannot get healthy
+			// enough to report, and this one just did. Writing the record
+			// is the caller's, like every write here; certification is
+			// still refused, because the new server has not run.
+			rec.HeldByCoordinator = build.Version
+			rec.HeldAt = time.Now()
+			rec.LaunchAttempts = 0
+			u.log.Info("report healthy: the update is held by a kept coordinator",
+				"coordinator", build.Version, "coordinatorCommit", build.Commit,
+				"installed", rec.ToVersion)
+			return fmt.Errorf(
+				"report healthy: %w: the coordinator answering is nocx %s and this update installed %s — "+
+					"the pair is compatible and the update finishes when the coordinator turns over; "+
+					"restart nocx fully to finish it now, or keep working",
+				ErrPairHeld, build.Version, rec.ToVersion)
+		}
 		u.log.Warn("report healthy: refused — a mixed pair answered",
 			"coordinator", build.Version, "coordinatorCommit", build.Commit,
 			"installed", rec.ToVersion)

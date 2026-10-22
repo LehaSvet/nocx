@@ -1,5 +1,9 @@
 import './style.css'
-import { ReportHealthy, SetUpdateChannel } from '../bindings/github.com/shady2k/nocx/wailsapp'
+import {
+  GetUpdateState,
+  ReportHealthy,
+  SetUpdateChannel,
+} from '../bindings/github.com/shady2k/nocx/wailsapp'
 import { render } from 'solid-js/web'
 import { Show, createSignal, untrack } from 'solid-js'
 import App from './App'
@@ -194,6 +198,22 @@ function main(): void {
 
   // Update notice — renders inline in the tab bar, right-aligned.
   const notice = mountUpdateNotice(bar)
+
+  // A pending update held by an older coordinator (ADR-0099) is the one
+  // startup state the strip must say aloud with its action: the update is
+  // installed, the kept coordinator is still serving it, and finishing
+  // means a full restart that closes the open sessions. Anything less than
+  // held stays quiet here — an ordinary pending restart has not yet had
+  // this run's health report, and a strip that guesses early would tell a
+  // healthy restart to restart again.
+  void GetUpdateState()
+    .then((state) => {
+      if (state.HeldByOlderCoordinator) notice.showHeldByCoordinator(state.Version)
+    })
+    .catch(() => {
+      // The strip is not load-bearing: a failed read leaves it hidden,
+      // and the state is re-read on the next launch.
+    })
 
   const clipboard = createClipboardAccess()
   const gate = new ClipboardGate()
@@ -645,7 +665,7 @@ function main(): void {
   // agent-tree question was answered by whichever mount was faster, and the
   // one that had to wait for a person never was.
   mountClientHost(dispatcher, undefined, undefined, requestAgentHostApproval)
-  // The window half of the UI-state document (ADR-0098): the shell owns the
+  // The window half of the UI-state document (ADR-0099): the shell owns the
   // native window and the coordinator owns the document, and this renderer
   // is the only road between them. Mounted unconditionally like the client
   // host above — a client with no Wails runtime reads the saved geometry and

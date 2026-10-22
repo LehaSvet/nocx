@@ -236,9 +236,17 @@ func (l *Launcher) Launch(ctx context.Context) (Launch, error) {
 // pair is a fact a person can read out of the log rather than one the
 // launcher acts on.
 func (l *Launcher) incompatibility(h Hello) string {
-	if h.Protocol != l.cfg.Self.Protocol {
+	return incompatibilityWith(l.cfg.Self.Protocol, h)
+}
+
+// incompatibilityWith is the one compatibility decision, stated once for
+// every asker in this package: the launcher's replacement path and the
+// probe the updater's health gate reads both go through it, so the two can
+// never disagree about one coordinator (ADR-0099).
+func incompatibilityWith(selfProtocol int, h Hello) string {
+	if h.Protocol != selfProtocol {
 		return fmt.Sprintf("it speaks discovery protocol %d and this build speaks %d",
-			h.Protocol, l.cfg.Self.Protocol)
+			h.Protocol, selfProtocol)
 	}
 	return ""
 }

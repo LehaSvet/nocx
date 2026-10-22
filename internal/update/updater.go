@@ -70,11 +70,38 @@ type Updater interface {
 	//
 	// Health is a claim about a PAIR: it finalises only when the UI
 	// making the claim AND the coordinator answering it are both the
-	// version this update installed. Anything else — a surviving old
-	// daemon, a report from the pre-restart process, an unanswerable
-	// probe — returns an error and leaves the rollback journal intact
+	// version this update installed. A report against a protocol-
+	// compatible OLDER coordinator is the accepted held state
+	// (ADR-0099) — refused as a certification, recorded as a hold, and
+	// the rollback stays suspended while reports keep arriving. Anything
+	// else returns an error and leaves the rollback journal intact
 	// (pair.go).
 	ReportHealthy(ctx context.Context) error
+
+	// State reports what is in flight for a window to tell a person
+	// about. Read-only; call after [Updater.Reconcile] has settled the
+	// launch, so a journal that reconciliation is about to clean up is
+	// not read as pending work.
+	State(ctx context.Context) UpdateState
+}
+
+// UpdateState is what a window can say out loud about an update
+// transaction. It carries no remedy and takes no action: the words and the
+// button are the update surface's; these are the facts underneath them.
+type UpdateState struct {
+	// Pending: a transaction is in flight — the exchange happened and
+	// nothing has certified or rolled it back yet.
+	Pending bool
+	// Version is the version the pending update installs. "" when not
+	// pending.
+	Version string
+	// HeldByOlderCoordinator: a healthy window has reported against a
+	// protocol-compatible OLDER coordinator this build's launcher kept
+	// (ADR-0099). The update finishes when that coordinator turns over —
+	// a full restart finishes it now — and auto-rollback is suspended
+	// while reports keep arriving. This is the state the update surface
+	// must offer to finish, never force.
+	HeldByOlderCoordinator bool
 }
 
 // ---------------------------------------------------------------------------

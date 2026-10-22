@@ -86,56 +86,93 @@ func assertNotFinalised(t *testing.T, installPath, jp string) {
 // Acceptance 1 — the sequence, end to end
 // ---------------------------------------------------------------------------
 
-// TestReportHealthy_OldCoordinatorAnswers_RollbackStaysArmed drives the
-// defect: the bundle is swapped, the OLD coordinator survives it, and the
-// new UI connects and tries to certify the update. The journal must
-// survive and finalisation must not happen — and because it does, the
-// launch counter goes on running and the third unhealthy launch rolls
-// back, which is the behaviour the mixed pair used to disarm.
-func TestReportHealthy_OldCoordinatorAnswers_RollbackStaysArmed(t *testing.T) {
+// TestReportHealthy_OldCompatibleCoordinator_HoldsTheUpdateWithoutRollback
+// is ADR-0099's held state, end to end. The bundle was swapped, the window
+// restarted on the new version, and the coordinator that outlived the window
+// is an OLDER one this window's launcher deliberately kept — protocol
+// compatible, version different. Health is refused as a CERTIFICATION (the
+// new server has not run), but the pair is held, not wrong: the journal
+// records the hold, the launch counter resets, and no number of further
+// launches rolls a build whose UI keeps proving itself healthy against a
+// coordinator the accepted decision told it to keep.
+func TestReportHealthy_OldCompatibleCoordinator_HoldsTheUpdateWithoutRollback(t *testing.T) {
 	ctx := context.Background()
 	installPath, jp := pendingUpdate(t, "0.1.0", "0.2.0")
-	newID, err := statBundleID(installPath)
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	// The restarted app IS 0.2.0 — the UI half of the pair is correct.
-	// The coordinator that survived the swap is still 0.1.0.
-	oldDaemon := &stubProbe{build: CoordinatorBuild{Version: "0.1.0", Commit: "oldsha"}}
+	kept := &stubProbe{build: CoordinatorBuild{Version: "0.1.0", Commit: "oldsha", Compatible: true}}
 	u := NewUpdater(UpdaterConfig{
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
 		CurrentVersion: "0.2.0",
 		InstallPath:    installPath,
-		Coordinator:    oldDaemon,
+		Coordinator:    kept,
 	})
 
-	err = u.ReportHealthy(ctx)
-	if err == nil {
-		t.Fatal("ReportHealthy certified a mixed pair — 0.2.0 UI against a 0.1.0 coordinator")
+	for launch := 1; launch <= 5; launch++ {
+		if rerr := u.Reconcile(ctx); rerr != nil {
+			t.Fatalf("Reconcile %d: %v", launch, rerr)
+		}
+		err := u.ReportHealthy(ctx)
+		if !errors.Is(err, ErrPairHeld) {
+			t.Fatalf("launch %d: a healthy window on a kept older coordinator must report the pair as held, got: %v", launch, err)
+		}
+		if _, serr := os.Stat(jp); serr != nil {
+			t.Fatalf("launch %d: the pending journal vanished without the update finishing: %v", launch, serr)
+		}
 	}
-	if !errors.Is(err, ErrPairMismatch) {
-		t.Errorf("error must identify the mismatch, got: %v", err)
-	}
-	if oldDaemon.calls != 1 {
-		t.Errorf("the coordinator was asked %d times, want exactly 1", oldDaemon.calls)
-	}
-	assertNotFinalised(t, installPath, jp)
 
-	// Rollback is still armed: two more launches with no health report
-	// and reconciliation reverts to the old bundle.
+	// The hold is a fact the window can tell a person about, and it names
+	// the coordinator that holds it.
+	state := u.State(ctx)
+	if !state.Pending || !state.HeldByOlderCoordinator {
+		t.Fatalf("State = %+v, want a pending update held by an older coordinator", state)
+	}
+	if state.Version != "0.2.0" {
+		t.Errorf("State.Version = %q, want 0.2.0", state.Version)
+	}
+
+	// And nothing was finalised: the swap peer still holds the rollback copy.
+	if _, err := os.Stat(swapPath(installPath)); err != nil {
+		t.Errorf("the swap peer holds the rollback copy and must survive a held pair: %v", err)
+	}
+}
+
+// TestReportHealthy_NoHealthReport_RollsBackAfterThreeLaunches keeps the
+// other half of the policy: the held state suspends rollback because the
+// reporting UI proved itself healthy. A build whose renderer cannot report
+// at all — the genuinely unhealthy new build this gate exists for — still
+// rolls back on the third launch, held record or none.
+func TestReportHealthy_NoHealthReport_RollsBackAfterThreeLaunches(t *testing.T) {
+	ctx := context.Background()
+	installPath, jp := pendingUpdate(t, "0.1.0", "0.2.0")
 	swapID, err := statBundleID(swapPath(installPath))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 2; i++ {
+
+	u := NewUpdater(UpdaterConfig{
+		Platform:       newFakePlatform(),
+		Fetcher:        &mockFetcher{},
+		CurrentVersion: "0.2.0",
+		InstallPath:    installPath,
+		// A coordinator probe exists and would answer; the build never
+		// gets far enough to report health through it.
+		Coordinator: &stubProbe{build: CoordinatorBuild{Version: "0.2.0"}},
+	})
+
+	for launch := 1; launch <= 2; launch++ {
 		if rerr := u.Reconcile(ctx); rerr != nil {
-			t.Fatalf("Reconcile %d: %v", i, rerr)
+			t.Fatalf("Reconcile %d: %v", launch, rerr)
+		}
+		if _, serr := os.Stat(jp); serr != nil {
+			t.Fatalf("launch %d rolled back early: %v", launch, serr)
 		}
 	}
+	if rerr := u.Reconcile(ctx); rerr != nil {
+		t.Fatalf("third Reconcile: %v", rerr)
+	}
 	if _, serr := os.Stat(jp); !os.IsNotExist(serr) {
-		t.Error("journal survives after auto-rollback completed")
+		t.Fatal("the third launch without a health report did not roll the update back")
 	}
 	rolledBack, err := statBundleID(installPath)
 	if err != nil {
@@ -144,8 +181,69 @@ func TestReportHealthy_OldCoordinatorAnswers_RollbackStaysArmed(t *testing.T) {
 	if !rolledBack.equal(swapID) {
 		t.Errorf("auto-rollback did not restore the old bundle: install=%v, want %v", rolledBack, swapID)
 	}
-	if rolledBack.equal(newID) {
-		t.Error("install still holds the uncertified new bundle")
+	if state := u.State(ctx); state.Pending {
+		t.Errorf("State after rollback = %+v, want nothing in flight", state)
+	}
+}
+
+// TestReportHealthy_AnIncompatibleCoordinator_IsStillAMismatch: the held
+// state is for a coordinator this build's launcher would USE (ADR-0099). A
+// coordinator the window itself would have refused — the probe says
+// incompatible — keeps the old refusal and the old fail-closed counter: that
+// pair cannot occur through the launcher, so if it occurs at all something
+// is wrong, and the rollback stays armed.
+func TestReportHealthy_AnIncompatibleCoordinator_IsStillAMismatch(t *testing.T) {
+	ctx := context.Background()
+	installPath, jp := pendingUpdate(t, "0.1.0", "0.2.0")
+
+	u := NewUpdater(UpdaterConfig{
+		Platform:       newFakePlatform(),
+		Fetcher:        &mockFetcher{},
+		CurrentVersion: "0.2.0",
+		InstallPath:    installPath,
+		Coordinator:    &stubProbe{build: CoordinatorBuild{Version: "0.1.0", Compatible: false}},
+	})
+
+	err := u.ReportHealthy(ctx)
+	if !errors.Is(err, ErrPairMismatch) {
+		t.Fatalf("an incompatible coordinator answering must stay a mismatch, got: %v", err)
+	}
+	if errors.Is(err, ErrPairHeld) {
+		t.Error("a mismatch must not double as a held pair")
+	}
+	assertNotFinalised(t, installPath, jp)
+
+	// And the counter is not reset by it: three launches still roll back.
+	for i := 0; i < 2; i++ {
+		if rerr := u.Reconcile(ctx); rerr != nil {
+			t.Fatalf("Reconcile %d: %v", i, rerr)
+		}
+		_ = u.ReportHealthy(ctx)
+	}
+	if rerr := u.Reconcile(ctx); rerr != nil {
+		t.Fatalf("third Reconcile: %v", rerr)
+	}
+	if _, serr := os.Stat(jp); !os.IsNotExist(serr) {
+		t.Error("an incompatible pair must not suspend the rollback")
+	}
+}
+
+// TestStateWithNothingInFlight: the ordinary launch — no journal, no
+// transaction — must answer an empty state, not a guess.
+func TestStateWithNothingInFlight(t *testing.T) {
+	dir := t.TempDir()
+	installPath := filepath.Join(dir, "nocx.AppImage")
+	makeMinimalAppImage(t, installPath)
+
+	u := NewUpdater(UpdaterConfig{
+		Platform:       newFakePlatform(),
+		Fetcher:        &mockFetcher{},
+		CurrentVersion: "0.2.0",
+		InstallPath:    installPath,
+	})
+
+	if state := u.State(context.Background()); state.Pending {
+		t.Fatalf("State with no transaction = %+v, want nothing in flight", state)
 	}
 }
 

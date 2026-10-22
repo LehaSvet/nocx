@@ -24,7 +24,10 @@ import (
 	"github.com/shady2k/nocx/internal/log"
 	"github.com/shady2k/nocx/internal/log/logtest"
 	"github.com/shady2k/nocx/internal/settings"
+	"github.com/shady2k/nocx/internal/storage"
+	"github.com/shady2k/nocx/internal/storage/storagetest"
 	"github.com/shady2k/nocx/internal/update"
+	"github.com/shady2k/nocx/internal/version"
 )
 
 func TestResolveBackendReportsSuccessAndFailure(t *testing.T) {
@@ -635,4 +638,183 @@ func TestUpdateChannelSettingValuesAreChannelsTheWindowAccepts(t *testing.T) {
 	}
 	// The default is one of the options (asserted in internal/settings),
 	// so the loop above already covers it.
+}
+
+// ---------------------------------------------------------------------------
+// The held update's window surface (ADR-0099)
+// ---------------------------------------------------------------------------
+
+// stubUpdater stands in for [update.Updater] where the binding's own
+// behaviour is the subject: the state it is handed is the fact the window
+// surface maps onto words and buttons. The updater's real semantics are
+// tested in internal/update against real journals.
+type stubUpdater struct {
+	state update.UpdateState
+	err   error
+}
+
+func (s *stubUpdater) Check(context.Context) (*update.UpdateInfo, error) { return nil, nil }
+func (s *stubUpdater) Apply(context.Context, *update.UpdateInfo) error   { return nil }
+func (s *stubUpdater) Reconcile(context.Context) error                   { return s.err }
+func (s *stubUpdater) ReportHealthy(context.Context) error               { return nil }
+func (s *stubUpdater) State(context.Context) update.UpdateState          { return s.state }
+
+// windowTestBackend answers the discovery socket with a fixed address and
+// token; the WS server it stands for is not this test's subject.
+type windowTestBackend struct{}
+
+func (windowTestBackend) WSAddress() string { return "127.0.0.1:1" }
+func (windowTestBackend) WSToken() string   { return "test-token" }
+
+// startWindowTestCoordinator serves the discovery socket for the isolated
+// profile this test owns, answering as the named build.
+func startWindowTestCoordinator(t *testing.T, versionText, commit string) string {
+	t.Helper()
+	storagetest.Isolate(t)
+	paths, err := storage.NewAppPaths()
+	if err != nil {
+		t.Fatalf("NewAppPaths: %v", err)
+	}
+	dir := coordinator.RuntimeDir(paths)
+	s, err := coordinator.NewServer(coordinator.Config{
+		Dir:     dir,
+		Build:   coordinator.Build{Version: versionText, Commit: commit},
+		Backend: windowTestBackend{},
+		Peers:   coordinator.SystemPeerCredentials{},
+		Owner:   coordinator.SystemPathOwner{},
+		SelfUID: coordinator.SelfUID(),
+		Logger:  logtest.Slog(t),
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return dir
+}
+
+// TestGetUpdateStateReportsTheHeldUpdate: the binding is the strip's one
+// source of truth, and the held state is the one it must never blur —
+// an update is waiting, and a full restart finishes it (ADR-0099).
+func TestGetUpdateStateReportsTheHeldUpdate(t *testing.T) {
+	held := update.UpdateState{Pending: true, Version: "0.2.0", HeldByOlderCoordinator: true}
+	w := &WailsApp{updater: &stubUpdater{state: held}, logger: logtest.Slog(t)}
+
+	got := w.GetUpdateState()
+	if !got.Pending || !got.HeldByOlderCoordinator || got.Version != "0.2.0" {
+		t.Fatalf("GetUpdateState = %+v, want the held 0.2.0 update", got)
+	}
+
+	quiet := &WailsApp{updater: &stubUpdater{}, logger: logtest.Slog(t)}
+	if state := quiet.GetUpdateState(); state.Pending || state.HeldByOlderCoordinator {
+		t.Fatalf("GetUpdateState with nothing in flight = %+v, want silence", state)
+	}
+}
+
+// TestFinishPendingUpdateStopsTheKeptCoordinatorAndQuits is the action the
+// copy names: on a held update it stops exactly the kept coordinator and
+// then quits, through the one seam every quit goes through.
+func TestFinishPendingUpdateStopsTheKeptCoordinatorAndQuits(t *testing.T) {
+	held := update.UpdateState{Pending: true, Version: "0.2.0", HeldByOlderCoordinator: true}
+	var order []string
+	quit := &quitSeam{logger: logtest.Slog(t)}
+	quit.quit = func() { order = append(order, "quit") }
+	w := &WailsApp{
+		updater: &stubUpdater{state: held},
+		logger:  logtest.Slog(t),
+		quit:    quit,
+		finishStopKeptCoordinatorFn: func(context.Context) (bool, error) {
+			order = append(order, "stop")
+			return true, nil
+		},
+	}
+
+	if err := w.FinishPendingUpdate(); err != nil {
+		t.Fatalf("FinishPendingUpdate: %v", err)
+	}
+	if len(order) != 2 || order[0] != "stop" || order[1] != "quit" {
+		t.Fatalf("the action must stop the coordinator and then quit, in that order; recorded %v", order)
+	}
+}
+
+// TestFinishPendingUpdateRefusesWhenNothingIsHeld is the never-force half:
+// an ordinary pending restart, or nothing at all, answers an error, stops
+// nothing and quits nothing.
+func TestFinishPendingUpdateRefusesWhenNothingIsHeld(t *testing.T) {
+	pendingOnly := update.UpdateState{Pending: true, Version: "0.2.0"}
+	quit := &quitSeam{logger: logtest.Slog(t)}
+	var acts int
+	quit.quit = func() { acts++ }
+	w := &WailsApp{
+		logger: logtest.Slog(t),
+		quit:   quit,
+		finishStopKeptCoordinatorFn: func(context.Context) (bool, error) {
+			acts++
+			return true, nil
+		},
+	}
+
+	for name, state := range map[string]update.UpdateState{
+		"nothing in flight":                      {},
+		"a pending restart no coordinator holds": pendingOnly,
+	} {
+		w.updater = &stubUpdater{state: state}
+		if err := w.FinishPendingUpdate(); err == nil {
+			t.Errorf("%s: FinishPendingUpdate succeeded although nothing is held", name)
+		}
+	}
+	if acts != 0 {
+		t.Fatalf("a refused finish acted %d times", acts)
+	}
+}
+
+// TestStopKeptCoordinatorSparesOneThatAlreadyTurnedOver: the stop decision
+// reads the sighting, and a coordinator already answering THIS build's
+// version is the turnover the update was waiting for — stopping it would
+// end fresh sessions for nothing, and the next ordinary start certifies.
+func TestStopKeptCoordinatorSparesOneThatAlreadyTurnedOver(t *testing.T) {
+	dir := startWindowTestCoordinator(t, version.Version, version.Commit)
+	w := &WailsApp{logger: logtest.Slog(t)}
+
+	stopped, err := w.stopKeptCoordinator(context.Background())
+	if err != nil {
+		t.Fatalf("stopKeptCoordinator: %v", err)
+	}
+	if stopped {
+		t.Error("a coordinator already answering this build's version was stopped")
+	}
+	client, err := coordinator.NewClient(coordinator.ClientConfig{
+		Socket: coordinator.SocketPathIn(dir),
+		Self: coordinator.ClientIdentity{
+			Version:  version.Version,
+			Commit:   version.Commit,
+			Protocol: coordinator.ProtocolVersion,
+		},
+		Dialer: coordinator.SystemDialer{},
+		Logger: logtest.Slog(t),
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := client.Hello(context.Background()); err != nil {
+		t.Errorf("the turned-over coordinator stopped serving: %v", err)
+	}
+}
+
+// TestStopKeptCoordinatorWithNoCoordinatorRunning is turnover one step
+// further on: nothing to stop, nothing to report — the next start raises
+// the new build's coordinator and certifies on its own.
+func TestStopKeptCoordinatorWithNoCoordinatorRunning(t *testing.T) {
+	storagetest.Isolate(t)
+	w := &WailsApp{logger: logtest.Slog(t)}
+
+	stopped, err := w.stopKeptCoordinator(context.Background())
+	if err != nil {
+		t.Fatalf("stopKeptCoordinator: %v", err)
+	}
+	if stopped {
+		t.Error("nothing was running, yet a stop was reported")
+	}
 }

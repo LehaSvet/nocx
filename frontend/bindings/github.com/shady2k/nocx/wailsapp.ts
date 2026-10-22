@@ -49,11 +49,23 @@ export function CheckForUpdate(): $CancellablePromise<update$0.UpdateInfo | null
 }
 
 /**
- * GetUpdateState returns the updater state for the UI notice.
- * "pending" means an update was applied and is waiting for a restart;
- * empty string means nothing in flight.
+ * FinishPendingUpdate finishes a held update on the person's word: it
+ * stops the kept coordinator — every session it is running ends — and
+ * quits, so the next start raises the new build's coordinator and the
+ * health report certifies the pair. It refuses unless an update is
+ * exactly in the held state: the finish is offered, never forced.
  */
-export function GetUpdateState(): $CancellablePromise<string> {
+export function FinishPendingUpdate(): $CancellablePromise<void> {
+    return $Call.ByName("main.WailsApp.FinishPendingUpdate");
+}
+/**
+ * GetUpdateState returns what a person can be told about an update in
+ * flight: nothing (the ordinary launch), a pending restart, or the held
+ * state ADR-0099 defines — a protocol-compatible older coordinator is
+ * still serving a healthy window, and the update finishes when it turns
+ * over.
+ */
+export function GetUpdateState(): $CancellablePromise<update$0.UpdateState> {
     return $Call.ByName("main.WailsApp.GetUpdateState");
 }
 

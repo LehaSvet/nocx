@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -65,6 +66,16 @@ type journalRecord struct {
 	ToVersion      string   `json:"toVersion"`
 	ArtifactSHA256 string   `json:"artifactSHA256"`
 	LaunchAttempts int      `json:"launchAttempts"`
+
+	// HeldByCoordinator records that a healthy window reported against a
+	// protocol-compatible OLDER coordinator the launcher kept (ADR-0099),
+	// and names that coordinator's version. HeldAt is when the report
+	// arrived; every such report also resets LaunchAttempts, because the
+	// one thing the counter measures — a build that cannot get healthy
+	// enough to report — is disproven each time. Zero values mean no hold
+	// has been recorded (older journals unmarshal to exactly that).
+	HeldByCoordinator string    `json:"heldByCoordinator,omitempty"`
+	HeldAt            time.Time `json:"heldAt,omitempty"`
 }
 
 const journalSchemaVersion = 1
