@@ -35,6 +35,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -452,13 +453,68 @@ func TestReconcileSessions_APollOfShortAttemptsCatchesARawUnsealASuspendedOneMis
 		t.Fatalf("vault state after the raw unseal = %v, want unsealed", got)
 	}
 
-	// ATTEMPT TWO is a fresh EnsureUnsealed call against a vault that is now
-	// open: State is read before any requester is touched, so this needs
-	// nobody's answer — it needs the poll to run at all, which is what the
-	// product does after Transport.Start.
+	// Run the production post-Transport.Start retry pass end to end. It
+	// stages remote helpers, reconciles, and discards any unconsumed stage.
+	lanesBeforePoll := provider.laneCount()
 	secondAttempt := &recordingReconciler{pending: pending}
-	reconcileSessions(context.Background(), secondAttempt, second.reg.inventories(), pass, time.Hour, quietLogger(t))
+	if !retryVaultSealedPass(context.Background(), secondAttempt, map[string]struct{}{binding.SessionID: {}}, second.reg, pass, time.Hour, quietLogger(t)) {
+		t.Fatal("production retry pass was canceled")
+	}
+	if got := provider.laneCount(); got != lanesBeforePoll+1 {
+		t.Fatalf("production retry opened %d helper lanes; want exactly one staged lane reused by Readopt", got-lanesBeforePoll)
+	}
+	if got := len(second.reg.inventories()); got != 1 {
+		t.Fatalf("after actual Readopt, inventories = %d, want one adopted helper", got)
+	}
+	second.reg.mu.Lock()
+	pendingReadopts := len(second.reg.pendingReadopts)
+	second.reg.mu.Unlock()
+	if pendingReadopts != 0 {
+		t.Fatalf("production retry left %d unconsumed staged helpers", pendingReadopts)
+	}
+	if got, ok := second.reg.hostFor(session.ID(binding.SessionID)); !ok || got.client == nil {
+		t.Fatalf("Readopt did not register a connected helper: got=%p", got)
+	}
 	if len(secondAttempt.applied) != 1 || secondAttempt.applied[0].Verdict != content.VerdictLive {
 		t.Fatalf("attempt two = %+v, want exactly one live verdict — the poll never caught the raw unseal", secondAttempt.applied)
+	}
+	if _, err := second.sess.Get(session.ID(binding.SessionID)); err != nil {
+		t.Fatalf("poll readopt did not adopt the live session: %v", err)
+	}
+}
+
+func TestCanceledReadoptReadinessDoesNotLeaveAStagedHelper(t *testing.T) {
+	second := newCoordinator(t, &fakeLaneProvider{})
+	pass := &readoptPass{registry: second.reg, routes: &stubRoutes{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	pending := []content.PendingSession{{SessionID: "session", Host: "host", ProfileID: "profile", Generation: "generation", HelperCommand: "/helper"}}
+	if stagePendingReadoptHelpers(ctx, pass, pending, quietLogger(t)) {
+		t.Fatal("canceled readiness staging reported success")
+	}
+	second.reg.mu.Lock()
+	got := len(second.reg.pendingReadopts)
+	second.reg.mu.Unlock()
+	if got != 0 {
+		t.Fatalf("canceled readiness left %d staged helpers", got)
+	}
+}
+
+func TestFailedReadoptDiscardsAnUnconsumedStagedHelper(t *testing.T) {
+	second := newCoordinator(t, &fakeLaneProvider{})
+	sid := session.ID("session")
+	second.reg.mu.Lock()
+	second.reg.pendingReadopts[sid] = &hostHelper{f: &sessionFactory{reg: second.reg, sid: sid}, lanes: second.reg.lanes, log: second.reg.log}
+	second.reg.mu.Unlock()
+	pass := &readoptPass{registry: second.reg, routes: &stubRoutes{err: errors.New("route lookup failed")}, adopter: &stubAdopter{}}
+	binding := content.PendingSession{SessionID: string(sid), Host: "host", Account: "account", ProfileID: "profile", Generation: "generation", HelperCommand: "/helper", PaneID: "pane"}
+	if _, err := pass.Readopt(context.Background(), binding); err == nil {
+		t.Fatal("incomplete binding unexpectedly readopted")
+	}
+	second.reg.mu.Lock()
+	_, stillStaged := second.reg.pendingReadopts[sid]
+	second.reg.mu.Unlock()
+	if stillStaged {
+		t.Fatal("failed Readopt left its staged helper in the registry")
 	}
 }

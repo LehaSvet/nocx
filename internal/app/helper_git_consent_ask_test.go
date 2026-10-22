@@ -78,14 +78,15 @@ func remoteConfigFor(mode profile.DesiredMode) session.Config {
 func newTestRegistry(t *testing.T, provider *fakeLaneProvider, store *consent.Store) *helperRegistry {
 	t.Helper()
 	return &helperRegistry{
-		lanes:    provider,
-		install:  provider,
-		source:   stubArtifacts(t),
-		log:      discardLogger(t),
-		consent:  store,
-		registry: session.New(log.NewSlogAdapter(discardLogger(t)), &reachPTYFactory{stub: pty.NewStub(log.NewSlogAdapter(discardLogger(t)))}),
-		hosts:    make(map[session.ID]*hostHelper),
-		closing:  make(map[string]struct{}),
+		lanes:           provider,
+		install:         provider,
+		source:          stubArtifacts(t),
+		log:             discardLogger(t),
+		consent:         store,
+		registry:        session.New(log.NewSlogAdapter(discardLogger(t)), &reachPTYFactory{stub: pty.NewStub(log.NewSlogAdapter(discardLogger(t)))}),
+		hosts:           make(map[session.ID]*hostHelper),
+		pendingReadopts: make(map[session.ID]*hostHelper),
+		closing:         make(map[string]struct{}),
 	}
 }
 

@@ -115,8 +115,9 @@ func accountFromOptions(opts []ssh.ConnectOption) string {
 func helperGitFactory(lanes helperInstallProvider, source deploy.ArtifactSource, store *consent.Store, installs *consent.InstallStore, log *slog.Logger) (transport.GitFactoryFor, *helperRegistry) {
 	reg := &helperRegistry{
 		lanes: lanes, install: lanes, source: source, log: log, consent: store,
-		hosts:   make(map[session.ID]*hostHelper),
-		closing: make(map[string]struct{}),
+		hosts:           make(map[session.ID]*hostHelper),
+		pendingReadopts: make(map[session.ID]*hostHelper),
+		closing:         make(map[string]struct{}),
 		// farTools is made by its first holder rather than here, so a registry
 		// nothing opens a far tool socket on holds no map at all.
 
@@ -590,6 +591,7 @@ type helperRegistry struct {
 	lifecycleStopping *atomic.Bool
 	mu                sync.Mutex
 	hosts             map[session.ID]*hostHelper
+	pendingReadopts   map[session.ID]*hostHelper
 	closing           map[string]struct{}
 	// farTools are the far-side tool sockets this registry opened, keyed by the
 	// session each belongs to (nocx-e2bws). They are held HERE rather than by
@@ -1452,6 +1454,105 @@ func (r *helperRegistry) isClosing(fp string) bool {
 	_, ok := r.closing[fp]
 	r.mu.Unlock()
 	return ok
+}
+
+// stageReadoptHelper brings up a helper for a carried-over session without
+// making it an inventory or adopting the session. A successful return is the
+// helper client's completed handshake; Readopt consumes the same client.
+func (r *helperRegistry) stageReadoptHelper(ctx context.Context, f *sessionFactory) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	h := &hostHelper{f: f, lanes: r.lanes, log: r.log}
+	h.mu.Lock()
+	_, outcome, err := h.connectLocked(ctx)
+	if err == nil && ctx.Err() != nil {
+		err = ctx.Err()
+	}
+	if err != nil || outcome.State != "" {
+		closeStagedReadoptHelper(h)
+	}
+	h.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if outcome.State != "" {
+		return errors.New(outcome.Message)
+	}
+	r.mu.Lock()
+	if r.lifecycleStopping != nil && r.lifecycleStopping.Load() {
+		r.mu.Unlock()
+		h.mu.Lock()
+		closeStagedReadoptHelper(h)
+		h.mu.Unlock()
+		return errors.New("application is shutting down")
+	}
+	if err := ctx.Err(); err != nil {
+		r.mu.Unlock()
+		h.mu.Lock()
+		closeStagedReadoptHelper(h)
+		h.mu.Unlock()
+		return err
+	}
+	if r.pendingReadopts == nil {
+		r.pendingReadopts = make(map[session.ID]*hostHelper)
+	}
+	if r.pendingReadopts[f.sid] != nil || r.hosts[f.sid] != nil {
+		r.mu.Unlock()
+		h.mu.Lock()
+		closeStagedReadoptHelper(h)
+		h.mu.Unlock()
+		return fmt.Errorf("helper already held for readopt session %s", f.sid)
+	}
+	r.pendingReadopts[f.sid] = h
+	r.mu.Unlock()
+	return nil
+}
+
+// closeStagedReadoptHelper closes a pending channel without touching hosts:
+// pending helpers are not registered there, and closeLocked's forget could
+// otherwise remove a concurrently registered live host for the same session.
+func closeStagedReadoptHelper(h *hostHelper) {
+	if h.client != nil {
+		_ = h.client.Close()
+	}
+	h.client = nil
+	h.factory = nil
+	h.dead = true
+}
+
+// discardReadoptHelper closes a prepared helper that will not reach Readopt.
+func (r *helperRegistry) discardReadoptHelper(sid session.ID) {
+	h := r.takeReadoptHelper(sid)
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	closeStagedReadoptHelper(h)
+	h.mu.Unlock()
+}
+
+// discardAllReadoptHelpers closes every staged channel when the app shuts down.
+func (r *helperRegistry) discardAllReadoptHelpers() {
+	r.mu.Lock()
+	pending := r.pendingReadopts
+	r.pendingReadopts = make(map[session.ID]*hostHelper)
+	r.mu.Unlock()
+	for _, h := range pending {
+		h.mu.Lock()
+		closeStagedReadoptHelper(h)
+		h.mu.Unlock()
+	}
+}
+
+// takeReadoptHelper transfers the staged helper into one Readopt attempt.
+// It is not in hosts until that attempt has an answer and performs adoption.
+func (r *helperRegistry) takeReadoptHelper(sid session.ID) *hostHelper {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	h := r.pendingReadopts[sid]
+	delete(r.pendingReadopts, sid)
+	return h
 }
 
 // inventories returns one reconciliation inventory per helper generation
