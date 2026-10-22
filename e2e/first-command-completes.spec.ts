@@ -31,20 +31,32 @@
 // command's block carries its `data-outcome` — the same settled vocabulary
 // block-outcome.spec.ts reads — and the editor has the prompt back.
 //
-// WHERE EACH VARIANT RUNS, AND WHERE IT SKIPS — SAID OUT LOUD. A local pane
-// runs the account's own login shell — nothing in panes.create chooses one —
-// so the no-rc variant runs on every host (zsh on a stock macOS runner, bash
-// in the Linux e2e image) and the plugin-stack variant runs exactly where both
-// of its preconditions hold: the pinned plugins are installed
-// (scripts/install-zsh-zle-plugins.sh, the same provisioning the Go
-// composition test uses, which exports NOCX_ZSH_PLUGINS to the whole CI job)
-// AND the login shell is zsh, read from the backend's own launch decision.
-// Anywhere else it SKIPS, and the skip reason names which precondition
-// failed: without the plugins there is no stack to wrap with, and a zsh
-// plugin composition measured through bash is not evidence of anything. The
-// shell-kind precondition is why this variant brings its app up before it can
-// decide — the decision it reads is a pane launch the backend already made,
-// not a guess from $SHELL, which the harness strips on purpose.
+// THE SHELL IS NAMED, NOT INHERITED — on every OS this spec runs on. A local
+// pane normally runs the account's own login shell (nothing in panes.create
+// chooses one), and the account shell of every CI host this suite runs on is
+// BASH: measured on ci-mac, where the helper logged shell_kind=bash and the
+// no-rc variant of the first round silently measured the wrong shell while
+// the plugin variant skipped — the one host whose zsh coverage this spec
+// exists to carry (run 39686224399, the owner's rejection). So both variants
+// NAME /bin/zsh in the backend's SHELL environment. The helper daemon inherits
+// that environment, but the product's resolver correctly prioritizes the OS
+// account record over SHELL. The test-only NOCX_HELPER_SHELL override selects
+// the named test shell without changing that production ordering or the wire. Nothing is skipped anymore — /bin/zsh absent or
+// the pinned plugins unprovisioned FAILS this spec, naming the fix, because
+// a zsh-shaped regression that quietly measured bash is exactly what the
+// first CI round shipped.
+//
+// THE EMPTY-ZDOTDIR SHAPE, MADE RATHER THAN HOPED FOR. The pane's zsh is
+// launched through nocx's transient ZDOTDIR, which replays the USER's file
+// of each phase from the ZDOTDIR the daemon itself saw — and the e2e home
+// boundary strips ZDOTDIR from every backend it launches
+// (e2e/home-isolation.ts), so the daemon has none and the user's files are
+// replayed from the variant's own disposable HOME. The no-rc variant holds
+// no rc files there at all (deleted below): the zsh nocx starts reads no
+// user startup file, the owner's measured shape, identically on macOS and
+// in the Linux image. The plugin variant's HOME holds exactly one .zshrc —
+// the plugins — which the launcher replays after its own phases, the order
+// everyone who sources plugins the usual way gets.
 //
 // THE SHELL KIND COMES FROM THE HELPER DAEMON'S OWN LOG, not the backend's.
 // The "pane launch decided" line is logged by the process that actually
@@ -53,12 +65,10 @@
 // (cmd/nocx-helper/servelog.go), never the backend's own log. Both earlier
 // shapes of this read looked in the stand's backend.log (once as a 2 MB tail,
 // once as a whole-file read of a path that does not exist), so EVERY host
-// printed shell=unknown in the timing line — and the plugin variant, whose
-// skip decision read the same function, skipped on ci-mac, the one host whose
-// zsh coverage this spec exists to carry. VaultBackend.helperLogFile is the
-// public accessor for exactly that path, and the app's own first pane — the
-// one it opens on connect — is the launch whose kind is read before this
-// spec's pane exists.
+// printed shell=unknown in the timing line. VaultBackend.helperLogFile is
+// the public accessor for exactly that path, and the line is now an
+// ASSERTION: it must say zsh, which is the proof the named shell reached the
+// daemon the pane actually ran.
 
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -103,6 +113,11 @@ const CHECKING = 'Checking this shell…'
  *  this test owns instead of the shared stand's. */
 const USER_RC_FILES = ['.bashrc', '.zshrc', '.zprofile', '.zshenv', '.zlogin']
 
+/** The shell both variants measure. SHELL documents the backend environment;
+ *  NOCX_HELPER_SHELL explicitly selects it because the helper's login-shell
+ *  resolver correctly prioritizes the OS account record over SHELL. */
+const ZSH = '/bin/zsh'
+
 /** The plugin entries, pinned by nocx-1ebrs.27's commit pins; the entry file
  *  sits at each checkout's root. Mirrors the Go fixture
  *  (zsh_parent_block_close_test.go) so the wrapping measured here is the
@@ -120,8 +135,9 @@ const PLUGIN_ENTRIES = [
  * guess from an environment the harness deliberately strips.
  *
  * '' (not 'unknown') while no launch has been logged yet: the file may not
- * exist before the first pane. 'unknown' is a REAL answer — the account's
- * login shell is neither bash nor zsh — and is reported as itself.
+ * exist before the first pane. 'unknown' is a REAL answer — the shell the
+ * daemon was told to start is neither bash nor zsh — and is reported as
+ * itself.
  */
 function lastPaneShellKind(backend: VaultBackend): string {
   try {
@@ -132,22 +148,6 @@ function lastPaneShellKind(backend: VaultBackend): string {
   } catch {
     return ''
   }
-}
-
-/**
- * The account's login shell as THIS backend decided it, from its own first
- * pane — the one the app opens on connect. Waits for that launch to be logged
- * rather than assuming a moment: the pane exists when it exists, and the
- * observable is the helper's own line, never a duration.
- */
-async function loginShellKind(backend: VaultBackend): Promise<string> {
-  await expect
-    .poll(() => lastPaneShellKind(backend), {
-      timeout: 15_000,
-      message: `a pane launch decided line in this backend's helper log (${backend.helperLogFile})`,
-    })
-    .not.toBe('')
-  return lastPaneShellKind(backend)
 }
 
 /** Point the page at this test's backend and bring the app up on it. */
@@ -161,8 +161,9 @@ async function reachApp(
 }
 
 async function openFreshPane(page: import('@playwright/test').Page): Promise<string> {
-  // The app's own first pane is up — it is the login-shell oracle, and it is
-  // what makes the pane this spec opens the second one in the tab.
+  // The app's own first pane is up — its launch line is the shell oracle the
+  // assertion at the end reads — and it is what makes the pane this spec
+  // opens the second one in the tab.
   await expect(page.locator('.pane')).toHaveCount(1, { timeout: 15_000 })
   const t0 = Date.now()
   await page.keyboard.press('Control+Shift+P')
@@ -216,12 +217,13 @@ async function firstCommandCompletes(
   })
   // And the prompt is back for the next command.
   await promptReady(page)
-  // The timing line names the shell the pane really ran. It is ASSERTED, not
-  // logged blind: a line that prints nothing where the shell belongs once
-  // read as a formatting nit while the plugin variant skipped on the truth of
-  // it.
+  // The timing line names the shell the pane really ran. It is ASSERTED, and
+  // asserted to be zsh: this backend gives its helper SHELL=/bin/zsh plus the
+  // test-only explicit override, so a line that says bash — or nothing, which once read as a
+  // formatting nit while the plugin variant skipped on the truth of it — is
+  // the declaration not having reached the daemon the pane actually ran.
   const kind = lastPaneShellKind(backend)
-  expect(kind, `a pane launch decided line in ${backend.helperLogFile}`).not.toBe('')
+  expect(kind, `the pane launch decided line in ${backend.helperLogFile} must say zsh`).toBe('zsh')
   console.log(
     `[ruf5o-complete][${label}] shell=${kind} ${openMs} ` +
       `tab-open->output:${tOutput - tOpen}ms output->settled:${Date.now() - tOutput}ms`,
@@ -255,10 +257,17 @@ test.describe('a fresh pane completes its first command (nocx-ruf5o)', () => {
   test('a fresh pane completes its first command when the prompt returns (no user rc)', async ({
     page,
   }) => {
-    // The owner's decisive shape: a home with no user rc at all — the block
+    // The owner's decisive shape: zsh reading no user rc at all — the block
     // still never settled on 0.6.1, so the fastest regression is the one with
-    // nothing in front of the integration.
-    const endpoint = await backend.start()
+    // nothing in front of the integration. This backend receives both
+    // SHELL=/bin/zsh and the test-only explicit shell declaration (see header):
+    // a missing /bin/zsh fails rather than letting the
+    // account's bash answer a question about zsh.
+    expect(
+      existsSync(ZSH),
+      `${ZSH} is absent — this variant measures zsh; macOS ships it there and the e2e image installs it (e2e/Dockerfile)`,
+    ).toBe(true)
+    const endpoint = await backend.start({ SHELL: ZSH, NOCX_HELPER_SHELL: ZSH })
     // EnsureInstalled wrote nocx's own gate lines into this home's .zshrc and
     // .bashrc on the way up; the shape under test has no user rc in front of
     // the hooks at all, so they go — from THIS test's home, which is the
@@ -279,23 +288,34 @@ test.describe('a fresh pane completes its first command (nocx-ruf5o)', () => {
     // the user's own .zshrc before nocx's hooks — the order the launcher
     // produces for everyone who sources plugins the usual way.
     //
-    // The plugins precondition is checked BEFORE a backend is started,
-    // because it needs no backend: on the containers, where NOCX_ZSH_PLUGINS
-    // is never set, this is the whole cost of the skip. The shell-kind
-    // precondition is checked after the app is up — see loginShellKind.
+    // NOTHING HERE SKIPS, EVER AGAIN. The first ci-mac round skipped this
+    // variant at a shell-kind precondition (the account logged in with bash)
+    // and the owner rejected the run: a variant that skips on the one host
+    // whose zsh coverage it exists to carry is a variant that proves nothing.
+    // The plugins precondition FAILS naming the provisioning — ci-mac
+    // installs them in this job and the e2e container's entry script does,
+    // both from the one script that owns the pins — and the shell is NAMED
+    // through this backend's SHELL and explicit test-shell environment, as in the no-rc variant.
     const plugins = process.env.NOCX_ZSH_PLUGINS ?? ''
-    test.skip(
-      !plugins || !existsSync(plugins),
-      `the pinned zsh plugins are not installed (NOCX_ZSH_PLUGINS unset); ` +
-        `provision them with scripts/install-zsh-zle-plugins.sh`,
-    )
-    const sources = PLUGIN_ENTRIES.map((entry) => join(plugins, entry)).filter((p) => existsSync(p))
-    test.skip(
-      sources.length !== PLUGIN_ENTRIES.length,
-      `expected all three pinned plugins under ${plugins}, found ${sources.length}`,
-    )
+    expect(
+      plugins && existsSync(plugins),
+      `the pinned zsh plugins are not provisioned — run ` +
+        `scripts/install-zsh-zle-plugins.sh <dir> and point NOCX_ZSH_PLUGINS at it ` +
+        `(ci-mac's "Install the pinned widget-wrapping zsh plugins" step and ` +
+        `e2e/container-entry.sh both do this)`,
+    ).toBeTruthy()
+    const sources = PLUGIN_ENTRIES.map((entry) => join(plugins, entry))
+    const present = sources.filter((p) => existsSync(p))
+    expect(
+      present.length,
+      `expected all three pinned plugins under ${plugins}, found ${present.length}: ${sources.join(', ')}`,
+    ).toBe(PLUGIN_ENTRIES.length)
 
-    const endpoint = await backend.start()
+    expect(
+      existsSync(ZSH),
+      `${ZSH} is absent — this variant measures zsh; macOS ships it there and the e2e image installs it (e2e/Dockerfile)`,
+    ).toBe(true)
+    const endpoint = await backend.start({ SHELL: ZSH, NOCX_HELPER_SHELL: ZSH })
     // THIS home's .zshrc is the user rc the pane's zsh replays: the plugins,
     // and nothing else. Overwriting the gate line EnsureInstalled wrote is
     // the measured shape — the hooks arrive through the launcher's own
@@ -309,14 +329,10 @@ test.describe('a fresh pane completes its first command (nocx-ruf5o)', () => {
       ].join('\n'),
     )
     await reachApp(page, endpoint)
-    const shellKind = await loginShellKind(backend)
-    test.skip(
-      shellKind !== 'zsh',
-      `this host's login shell is ${shellKind}, and a zsh plugin composition ` +
-        `cannot be measured through it`,
-    )
     // The app is already up and pane 1 already launched — against the plugins
-    // rc, which is the stack. The measured pane is the fresh one.
+    // rc, which is the stack. The measured pane is the fresh one; the shell
+    // kind the pane really ran is asserted inside firstCommandCompletes, from
+    // the helper's own launch line.
     await firstCommandCompletes(page, 'plugins', backend)
   })
 

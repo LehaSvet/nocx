@@ -664,7 +664,7 @@ function uuidv7(): string {
 //   // … test …
 //   const { port: p2, token: t2 } = await backend.restart()
 
-import { spawn, execSync, execFileSync, type ChildProcess } from 'node:child_process'
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, openSync, mkdirSync, copyFileSync } from 'node:fs'
 import { resolve, basename, join } from 'node:path'
 
@@ -1322,7 +1322,7 @@ export class VaultBackend {
    * with no backend at all, surfacing as "no tab ever appeared" somewhere
    * else entirely.
    */
-  async start(): Promise<BackendEndpoint> {
+  async start(overrideEnv: NodeJS.ProcessEnv = {}): Promise<BackendEndpoint> {
     if (this.proc) throw new Error('backend already running; call stop() first')
     this.starts++
     this.goroutineDump = ''
@@ -1334,9 +1334,13 @@ export class VaultBackend {
     // The same boundary the shared stand gets from e2e/stand.ts. Built per
     // start() rather than per instance so a restart re-derives it: if the
     // root were ever swapped underneath, the refusals fire again rather than a
-    // stale environment being replayed.
+    // stale environment being replayed. overrideEnv goes THROUGH the boundary,
+    // which refuses any key that could move the home or reach back into the
+    // real one — a caller may declare (a shell to measure, a stance a spec
+    // is about), never relocate.
     this.isolation = createHomeIsolation({
       inheritedEnv: process.env,
+      overrideEnv,
       root: this.disposable.root,
     })
     const env = this.isolation.env as Record<string, string>
@@ -1555,10 +1559,22 @@ export class VaultBackend {
       /* already dead */
     }
     // Give it 2 s to shut down gracefully, then SIGKILL.
+    //
+    // A POSIX sh loop bounded by a counter, NOT GNU `timeout`: /bin/sh on
+    // macOS has no `timeout`, so the first ci-mac run of a spec that stops
+    // its own backend printed `/bin/sh: timeout: command not found` twice
+    // and degraded every stop to an immediate SIGKILL (run 39686224399).
+    // The counter is the bound `timeout 2` used to be — twenty sleeps of
+    // 0.1 s, fractional sleep being BSD's as much as GNU's — and the loop
+    // still ends the moment `kill -0` stops seeing the pid, so a graceful
+    // exit costs only as long as it takes.
     try {
-      execSync(`timeout 2 sh -c 'while kill -0 ${p.pid} 2>/dev/null; do sleep 0.1; done'`)
+      execFileSync('sh', [
+        '-c',
+        `i=0; while kill -0 ${p.pid} 2>/dev/null; do i=$((i+1)); [ "$i" -ge 20 ] && break; sleep 0.1; done`,
+      ])
     } catch {
-      /* the wait timed out — fall through to SIGKILL */
+      /* the wait was cut short — fall through to SIGKILL */
     }
     try {
       p.kill('SIGKILL')

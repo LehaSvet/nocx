@@ -248,11 +248,16 @@ func serve(ctx context.Context, log *slog.Logger, dir string, generation proto.G
 
 	daemonCtx, stopDaemon := context.WithCancel(ctx)
 	defer stopDaemon()
+	// NOCX_HELPER_SHELL is a test-only declaration for harnesses that must
+	// measure a specific shell. SHELL alone cannot do that: loginshell gives
+	// the OS account record precedence, and CI's account is bash while the
+	// zsh regression must execute on the macOS runner's real zsh. Unset in
+	// production, so ordinary panes keep the normal account-shell decision.
 	sessions := session.New(session.Options{
 		Generation:   generation,
 		StartupGrace: session.MeasuredStartupGrace,
 		OnDrained:    stopDaemon,
-		Spawner:      session.NewLocalSpawner(log, session.Shell{}, agentHelperPath),
+		Spawner:      session.NewLocalSpawner(log, session.ShellFromEnv(os.Getenv), agentHelperPath),
 		SSHSpawner:   sshCap.sessionSpawner,
 		Inspector:    session.NewInspector(),
 		Log:          log,

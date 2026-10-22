@@ -95,11 +95,18 @@ async function standingModals(page: Page): Promise<string[]> {
  * Name the modals standing over a test that has just failed.
  *
  * Silent on a passing test — see the header for the run that measured why —
- * and silent when nothing is standing, so the only time this speaks is the
- * time its sentence is the answer.
+ * and silent on a SKIPPED one, because a skip is not a failure and a skip's
+ * own teardown can raise a modal that is nobody's defect: a spec that
+ * brought its own backend stops it in afterEach while its page is still
+ * open, and the app's transport-recovery surface (ConnectionOverlay) honestly
+ * rises over the dropped connection. That exact sequence fired this report
+ * off a skipped variant on ci-mac (run 39686224399), reading as a product
+ * defect when the product was doing its job. Silent too when nothing is
+ * standing, so the only time this speaks is the time its sentence is the
+ * answer.
  */
 export async function reportStandingModals(page: Page, info: TestInfo): Promise<void> {
-  if (info.status === 'passed') return
+  if (info.status === 'passed' || info.status === 'skipped') return
   const modals = await standingModals(page)
   if (modals.length === 0) return
   process.stderr.write(

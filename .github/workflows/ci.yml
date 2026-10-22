@@ -319,12 +319,13 @@ jobs:
       # the CURRENT tree to the behaviour they bought, in the two shapes the
       # owner measured — an empty ZDOTDIR and the widget-wrapping plugin stack.
       #
-      # WHY THIS JOB. A local pane runs the account's own login shell —
-      # panes.create chooses no shell — so a stock macOS runner, whose account
-      # logs in with zsh, is the only CI place the zsh shapes run end to end;
-      # the empty-ZDOTDIR variant also runs against bash in ci-e2e's
-      # containers, which is why this step runs one spec file and nothing more
-      # on the scarcest runner in this workflow.
+      # WHY THIS JOB. The spec gives each backend SHELL=/bin/zsh AND
+      # NOCX_HELPER_SHELL=/bin/zsh:
+      # internal/loginshell correctly prioritizes the OS account record over
+      # SHELL, so the test-only explicit choice is required on a bash-account
+      # runner. This macOS job proves the target's own zsh; ci-e2e runs the same
+      # variants against the Linux image, which installs zsh in its Dockerfile
+      # and provisions the same pinned plugins in its container entry.
       #
       # NO SECOND PROVISIONING. The plugin-stack variant reuses the pinned
       # widget-wrapping plugins the Go composition test installed above: that
