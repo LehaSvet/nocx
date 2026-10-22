@@ -31,20 +31,13 @@
 // command's block carries its `data-outcome` — the same settled vocabulary
 // block-outcome.spec.ts reads — and the editor has the prompt back.
 //
-// THE SHELL IS NAMED, NOT INHERITED — on every OS this spec runs on. A local
-// pane normally runs the account's own login shell (nothing in panes.create
-// chooses one), and the account shell of every CI host this suite runs on is
-// BASH: measured on ci-mac, where the helper logged shell_kind=bash and the
-// no-rc variant of the first round silently measured the wrong shell while
-// the plugin variant skipped — the one host whose zsh coverage this spec
-// exists to carry (run 39686224399, the owner's rejection). So both variants
-// NAME /bin/zsh in the backend's SHELL environment. The helper daemon inherits
-// that environment, but the product's resolver correctly prioritizes the OS
-// account record over SHELL. The test-only NOCX_HELPER_SHELL override selects
-// the named test shell without changing that production ordering or the wire. Nothing is skipped anymore — /bin/zsh absent or
-// the pinned plugins unprovisioned FAILS this spec, naming the fix, because
-// a zsh-shaped regression that quietly measured bash is exactly what the
-// first CI round shipped.
+// THE SHELL IS THE TEST ACCOUNT'S LOGIN SHELL. A local pane normally runs
+// the account's own login shell (nothing in panes.create chooses one), and the
+// resolver correctly asks the OS account record before SHELL. The macOS CI
+// step and Linux container entry set that account shell to zsh before the
+// backend/helper starts. The helper log assertion below proves the actual pane
+// shell is zsh; missing zsh or plugins fails rather than silently measuring a
+// different shell.
 //
 // THE EMPTY-ZDOTDIR SHAPE, MADE RATHER THAN HOPED FOR. The pane's zsh is
 // launched through nocx's transient ZDOTDIR, which replays the USER's file
@@ -113,9 +106,8 @@ const CHECKING = 'Checking this shell…'
  *  this test owns instead of the shared stand's. */
 const USER_RC_FILES = ['.bashrc', '.zshrc', '.zprofile', '.zshenv', '.zlogin']
 
-/** The shell both variants measure. SHELL documents the backend environment;
- *  NOCX_HELPER_SHELL explicitly selects it because the helper's login-shell
- *  resolver correctly prioritizes the OS account record over SHELL. */
+/** The shell both variants measure. CI and container setup set the account
+ *  login shell to zsh; SHELL is set on the backend as documentation. */
 const ZSH = '/bin/zsh'
 
 /** The plugin entries, pinned by nocx-1ebrs.27's commit pins; the entry file
@@ -217,11 +209,9 @@ async function firstCommandCompletes(
   })
   // And the prompt is back for the next command.
   await promptReady(page)
-  // The timing line names the shell the pane really ran. It is ASSERTED, and
-  // asserted to be zsh: this backend gives its helper SHELL=/bin/zsh plus the
-  // test-only explicit override, so a line that says bash — or nothing, which once read as a
-  // formatting nit while the plugin variant skipped on the truth of it — is
-  // the declaration not having reached the daemon the pane actually ran.
+  // The helper log is the shell the pane really ran, and the assertion is
+  // explicit: a line that says bash, or no line at all, is a regression in the
+  // launch environment this spec is intended to prove.
   const kind = lastPaneShellKind(backend)
   expect(kind, `the pane launch decided line in ${backend.helperLogFile} must say zsh`).toBe('zsh')
   console.log(
@@ -259,15 +249,15 @@ test.describe('a fresh pane completes its first command (nocx-ruf5o)', () => {
   }) => {
     // The owner's decisive shape: zsh reading no user rc at all — the block
     // still never settled on 0.6.1, so the fastest regression is the one with
-    // nothing in front of the integration. This backend receives both
-    // SHELL=/bin/zsh and the test-only explicit shell declaration (see header):
-    // a missing /bin/zsh fails rather than letting the
-    // account's bash answer a question about zsh.
+    // nothing in front of the integration. This backend receives SHELL=/bin/zsh;
+    // the account resolver also names zsh because CI/container setup changes it.
+    // A missing /bin/zsh fails rather than letting another shell answer a
+    // question about zsh. The helper log below proves which shell actually ran.
     expect(
       existsSync(ZSH),
       `${ZSH} is absent — this variant measures zsh; macOS ships it there and the e2e image installs it (e2e/Dockerfile)`,
     ).toBe(true)
-    const endpoint = await backend.start({ SHELL: ZSH, NOCX_HELPER_SHELL: ZSH })
+    const endpoint = await backend.start({ SHELL: ZSH })
     // EnsureInstalled wrote nocx's own gate lines into this home's .zshrc and
     // .bashrc on the way up; the shape under test has no user rc in front of
     // the hooks at all, so they go — from THIS test's home, which is the
@@ -295,7 +285,8 @@ test.describe('a fresh pane completes its first command (nocx-ruf5o)', () => {
     // The plugins precondition FAILS naming the provisioning — ci-mac
     // installs them in this job and the e2e container's entry script does,
     // both from the one script that owns the pins — and the shell is NAMED
-    // through this backend's SHELL and explicit test-shell environment, as in the no-rc variant.
+    // through this backend's SHELL and the account's zsh login shell, as in
+    // the no-rc variant.
     const plugins = process.env.NOCX_ZSH_PLUGINS ?? ''
     expect(
       plugins && existsSync(plugins),
@@ -315,7 +306,7 @@ test.describe('a fresh pane completes its first command (nocx-ruf5o)', () => {
       existsSync(ZSH),
       `${ZSH} is absent — this variant measures zsh; macOS ships it there and the e2e image installs it (e2e/Dockerfile)`,
     ).toBe(true)
-    const endpoint = await backend.start({ SHELL: ZSH, NOCX_HELPER_SHELL: ZSH })
+    const endpoint = await backend.start({ SHELL: ZSH })
     // THIS home's .zshrc is the user rc the pane's zsh replays: the plugins,
     // and nothing else. Overwriting the gate line EnsureInstalled wrote is
     // the measured shape — the hooks arrive through the launcher's own

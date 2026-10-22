@@ -1,7 +1,7 @@
 .PHONY: all init build build-server dev dev-web lint format test clean connect ci ci-full \
         ci-backend ci-linux ci-mac ci-os-split ci-local-ssh-split ci-frontend ci-e2e \
-        helpers helper-local helper-local-e2e helpers-this-machine helpers-this-machine-e2e \
-        require-local-helper require-local-helper-e2e \
+        helpers helper-local helpers-this-machine \
+        require-local-helper \
         print-os-pkgs print-portable-pkgs print-local-ssh-pkgs \
         print-os-local-ssh-pkgs print-portable-local-ssh-pkgs \
         lint-ci test-ci build-ci root-ci frontend-ci test-alloc-budgets print-alloc-budget-pkgs
@@ -131,8 +131,6 @@ HELPER_ARTIFACT_DIR := internal/helper/deploy/artifacts/bin
 # variants of one platform cannot live side by side under one directory.
 HELPER_LOCAL_DIR := $(HELPER_ARTIFACT_DIR)/local
 HELPER_LOCAL_TAGS := nocx_local_ssh
-HELPER_LOCAL_E2E_DIR := $(HELPER_ARTIFACT_DIR)/local-e2e
-HELPER_LOCAL_E2E_TAGS := nocx_local_ssh,nocx_e2e_shell_override
 HELPER_LOCAL_PLATFORM := $(HOST_GOOS)/$(shell $(GO) env GOARCH)
 
 # WHAT `make helper-local` BUILDS, and it is a LIST because one app can run on
@@ -296,15 +294,6 @@ helper-local: vt-archives
 	  echo "local helper artifact: $(HELPER_LOCAL_DIR)/nocx-helper-$${t%/*}-$${t#*/}.gz"; \
 	done
 
-# E2E-only local helper. It keeps the production local artifact above unchanged,
-# and adds the test-only shell override tag only in this separate embed tree.
-helper-local-e2e: vt-archives
-	@mkdir -p $(HELPER_LOCAL_E2E_DIR)
-	@$(call build_helper_artifacts,$(HELPER_LOCAL_TARGETS),$(HELPER_LOCAL_E2E_DIR),$(HELPER_LOCAL_E2E_TAGS))
-	@for t in $(HELPER_LOCAL_TARGETS); do \
-	  echo "e2e local helper artifact: $(HELPER_LOCAL_E2E_DIR)/nocx-helper-$${t%/*}-$${t#*/}.gz"; \
-	done
-
 # THE BUILD-TIME GATE, and the reason a target that ships or runs the app
 # depends on THIS rather than on helper-local: the local variant for every
 # platform the build can run on must be IN THE EMBED, not merely built. The
@@ -345,14 +334,6 @@ require-local-helper: helper-local
 # passes on the command line for HELPER_LOCAL_TARGETS.
 helpers-this-machine: HELPER_TARGETS := $(HELPER_LOCAL_PLATFORM)
 helpers-this-machine: helpers require-local-helper
-
-# The e2e stand embeds the opt-in local helper, never the production artifact.
-require-local-helper-e2e: helper-local-e2e
-	@NOCX_REQUIRE_E2E_LOCAL_ARTIFACT="$(HELPER_LOCAL_PLATFORM)" \
-	  $(GO) test -tags nocx_e2e_shell_override ./internal/helper/deploy/artifacts -run '^TestE2EHelperArtifactIsEmbedded$$' -count=1
-
-helpers-this-machine-e2e: HELPER_TARGETS := $(HELPER_LOCAL_PLATFORM)
-helpers-this-machine-e2e: helpers require-local-helper-e2e
 
 all: lint test build
 

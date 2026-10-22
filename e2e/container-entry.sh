@@ -20,6 +20,11 @@ set -euo pipefail
 # different from everywhere else.
 git config --global --add safe.directory /work
 
+# The local helper resolves the shell from the OS account database before
+# considering SHELL. Make this disposable container's test account use zsh so
+# the first-command regression measures the intended login shell.
+usermod -s /usr/bin/zsh "$(id -un)"
+
 echo "=== npm ci (root + frontend) ==="
 # NOT --silent: it hides the reason the install died, and the install is where
 # this script fails when it fails. A registry timeout used to reach the reader
@@ -70,7 +75,7 @@ trap handback EXIT
 # clone per run. The spec FAILS, never skips, without them — so this is
 # provisioning, not decoration. Exported rather than written to $GITHUB_ENV:
 # inside this container the Playwright process is a child of this shell.
-sh ./scripts/install-zsh-zle-plugins.sh /tmp/nocx-zsh-plugins
+bash ./scripts/install-zsh-zle-plugins.sh /tmp/nocx-zsh-plugins
 export NOCX_ZSH_PLUGINS=/tmp/nocx-zsh-plugins
 
 # A Secret Service for the one spec that needs one.

@@ -319,13 +319,11 @@ jobs:
       # the CURRENT tree to the behaviour they bought, in the two shapes the
       # owner measured — an empty ZDOTDIR and the widget-wrapping plugin stack.
       #
-      # WHY THIS JOB. The spec gives each backend SHELL=/bin/zsh AND
-      # NOCX_HELPER_SHELL=/bin/zsh:
-      # internal/loginshell correctly prioritizes the OS account record over
-      # SHELL, so the test-only explicit choice is required on a bash-account
-      # runner. This macOS job proves the target's own zsh; ci-e2e runs the same
-      # variants against the Linux image, which installs zsh in its Dockerfile
-      # and provisions the same pinned plugins in its container entry.
+      # WHY THIS JOB. The helper resolves the login shell from the OS account
+      # record before SHELL. The runner account is set to zsh immediately before
+      # this step, so this proves the target's own zsh. ci-e2e runs the same
+      # variants against the Linux image, whose container entry sets its test
+      # account to zsh and provisions the pinned plugins.
       #
       # NO SECOND PROVISIONING. The plugin-stack variant reuses the pinned
       # widget-wrapping plugins the Go composition test installed above: that
@@ -360,6 +358,11 @@ jobs:
           echo "${zig_sha}  /tmp/zig.tar.xz" | shasum -a 256 -c -
           tar -xJf /tmp/zig.tar.xz -C "$RUNNER_TEMP"
           printf 'ZIG=%s\n' "$RUNNER_TEMP/zig-${zig_arch}-macos-0.16.0/zig" >> "$GITHUB_ENV"
+
+      # The helper resolves login shell from the account record before $SHELL.
+      # Set this runner account to macOS's zsh so the pane test exercises zsh.
+      - name: Set the macOS runner login shell for e2e
+        run: sudo chsh -s /bin/zsh "$USER"
 
       - name: e2e (macOS, the first command completes)
         run: |

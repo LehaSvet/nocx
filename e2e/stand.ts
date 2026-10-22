@@ -330,7 +330,7 @@ export async function startStand(): Promise<StandManifest> {
   // then asserts the embed really carries it, which a bare `make helper-local`
   // does not — the failure it catches is an artifact written where //go:embed
   // does not read it. That target runs both halves, both for this host.
-  execFileSync('make', ['helpers-this-machine-e2e'], {
+  execFileSync('make', ['helpers-this-machine'], {
     cwd: repoRoot,
     stdio: 'inherit',
   })
@@ -347,25 +347,14 @@ export async function startStand(): Promise<StandManifest> {
   // that happens in a spec is a build CI does not do until that spec runs, and
   // the failure then lands in whichever file drew the short straw.
   const server = path.join(root, 'nocx-server')
-  execFileSync(
-    'go',
-    ['build', '-tags', 'nocx_e2e_shell_override', '-o', server, './cmd/nocx-server'],
-    {
-      cwd: repoRoot,
-      stdio: 'inherit',
-    },
-  )
+  execFileSync('go', ['build', '-o', server, './cmd/nocx-server'], {
+    cwd: repoRoot,
+    stdio: 'inherit',
+  })
   const serverLoginSession = path.join(root, 'nocx-server-login-session')
   execFileSync(
     'go',
-    [
-      'build',
-      '-tags',
-      'nocx_login_session,nocx_e2e_shell_override',
-      '-o',
-      serverLoginSession,
-      './cmd/nocx-server',
-    ],
+    ['build', '-tags', 'nocx_login_session', '-o', serverLoginSession, './cmd/nocx-server'],
     { cwd: repoRoot, stdio: 'inherit' },
   )
 
