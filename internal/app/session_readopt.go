@@ -230,6 +230,38 @@ func pipeOpenedAt(mine *client.SessionEntry, fallback time.Time) time.Time {
 const readoptAttemptTimeout = 15 * time.Second
 
 // Readopt is one attempt for one carried-over session.
+// stageReadopt prepares the registry-owned remote helper channel for one pending
+// session after the vault readiness poll can reach its credentials. Readopt
+// consumes this exact helper; errors leave no staged channel behind.
+func (rp *readoptPass) stageReadopt(ctx context.Context, p content.PendingSession) error {
+	if rp == nil || rp.registry == nil || rp.routes == nil || p.SessionID == "" || p.Generation == "" || p.Host == "" || p.ProfileID == "" || p.HelperCommand == "" {
+		return errors.New("incomplete remote readopt binding")
+	}
+	host, cfg, err := rp.routes.Resolve(p.ProfileID)
+	if err != nil {
+		return fmt.Errorf("resolve the connection this session was opened on: %w", err)
+	}
+	if cfg == nil {
+		return errors.New("the connection this session was opened on resolved to nothing")
+	}
+	opts := session.SSHOptionsFromConfig(cfg)
+	if account := accountFromOptions(opts); host != p.Host || account != p.Account {
+		return fmt.Errorf("the saved connection no longer resolves to the host and account holding this session")
+	}
+	if rp.registry.consent != nil && p.Fingerprint != "" {
+		resolver := newResolver(withStore(rp.registry.consent), withHelperArtifactAvailable(true))
+		if resolver.Resolve(Machine{Fingerprint: p.Fingerprint, Mode: profile.DesiredMode(cfg.DesiredMode)}) != DesiredHelper {
+			return fmt.Errorf("this machine no longer consents to the nocx helper")
+		}
+	}
+	f := &sessionFactory{
+		reg: rp.registry, sid: session.ID(p.SessionID), host: p.Host, account: p.Account,
+		opts:    opts,
+		install: installedHelper{dir: path.Dir(p.HelperCommand), generation: p.Generation, command: p.HelperCommand},
+	}
+	return rp.registry.stageReadoptHelper(ctx, f)
+}
+
 func (rp *readoptPass) Readopt(ctx context.Context, p content.PendingSession) (sessionInventory, error) {
 	if rp == nil {
 		return nil, nil
@@ -256,6 +288,11 @@ func (rp *readoptPass) Readopt(ctx context.Context, p content.PendingSession) (s
 	}
 	ctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
+	defer func() {
+		if rp.registry != nil && p.SessionID != "" {
+			rp.registry.discardReadoptHelper(session.ID(p.SessionID))
+		}
+	}()
 	// THE ROUTE IS REQUIRED IN FULL, and a partial one is refused rather than
 	// completed by inference. Deriving a host from a session id, or a
 	// generation from a host, is exactly what nocx-k6p18.15's ordering exists
@@ -325,7 +362,19 @@ func (rp *readoptPass) Readopt(ctx context.Context, p content.PendingSession) (s
 			command:    p.HelperCommand,
 		},
 	}
-	h := &hostHelper{f: f, lanes: rp.registry.lanes, log: rp.registry.log}
+	h := rp.registry.takeReadoptHelper(session.ID(p.SessionID))
+	if h == nil {
+		// The readiness poll reaches this production seam only after the
+		// vault route resolves. Stage the handshake in the registry, then
+		// transfer that exact client into this readopt attempt.
+		if stageErr := rp.registry.stageReadoptHelper(ctx, f); stageErr != nil {
+			return nil, fmt.Errorf("stage helper for readopt: %w", stageErr)
+		}
+		h = rp.registry.takeReadoptHelper(session.ID(p.SessionID))
+		if h == nil {
+			return nil, errors.New("staged helper disappeared before readopt")
+		}
+	}
 	h.mu.Lock()
 	c, outcome, connectErr := h.connectLocked(ctx)
 	h.mu.Unlock()
@@ -339,6 +388,9 @@ func (rp *readoptPass) Readopt(ctx context.Context, p content.PendingSession) (s
 		// coordinator just failed to reach it.
 		rp.registry.log.Warn("re-adopting a session across a restart: could not reach its helper",
 			"session_id", p.SessionID, "generation", p.Generation, "host", p.Host, "error", connectErr)
+		h.mu.Lock()
+		h.closeLocked()
+		h.mu.Unlock()
 		return nil, fmt.Errorf("connect the helper holding this session: %w", connectErr)
 	}
 	if outcome.State != "" {

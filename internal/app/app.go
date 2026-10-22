@@ -3263,6 +3263,51 @@ const vaultSealedRetryBudget = 2 * time.Minute
 // for as long as it stays in retryReconciler's set, so removing it once
 // owned is what lets the loop stop before vaultSealedRetryBudget elapses
 // rather than spending the whole budget after everything already succeeded.
+func stagePendingReadoptHelpers(ctx context.Context, pass *readoptPass, pending []content.PendingSession, logger *slog.Logger) bool {
+	for _, p := range pending {
+		if err := ctx.Err(); err != nil {
+			return false
+		}
+		if isLocalBinding(p) {
+			continue
+		}
+		if err := pass.stageReadopt(ctx, p); err != nil {
+			log.From(ctx).Debug("could not stage helper for pending readopt", "session_id", p.SessionID, "error", err)
+		}
+	}
+	return ctx.Err() == nil
+}
+
+// retryVaultSealedPass is one production poll attempt: observe current
+// pending bindings, stage their remote helpers, then reconcile through those
+// exact registry-owned clients. Staged channels are discarded on every exit
+// unless Readopt adopted them into the normal host registry.
+func retryVaultSealedPass(
+	ctx context.Context,
+	rec content.SessionReconciler,
+	ids map[string]struct{},
+	registry *helperRegistry,
+	pass *readoptPass,
+	retention time.Duration,
+	logger *slog.Logger,
+) bool {
+	defer registry.discardAllReadoptHelpers()
+	filtered := retryReconciler{rec, ids}
+	pending, err := filtered.Pending(ctx)
+	if err != nil {
+		log.From(ctx).Warn("could not list sessions for readopt helper staging", "error", err)
+		return ctx.Err() == nil
+	}
+	stageCtx, cancelStage := context.WithTimeout(ctx, vaultSealedRetryAttempt)
+	staged := stagePendingReadoptHelpers(stageCtx, pass, pending, logger)
+	cancelStage()
+	if !staged {
+		return false
+	}
+	reconcileSessions(ctx, filtered, registry.inventories(), pass, retention, logger)
+	return ctx.Err() == nil
+}
+
 func (a *App) retryVaultSealedSessions(ctx context.Context, ids map[string]struct{}) {
 	remaining := make(map[string]struct{}, len(ids))
 	for id := range ids {
@@ -3275,15 +3320,17 @@ func (a *App) retryVaultSealedSessions(ctx context.Context, ids map[string]struc
 			return
 		default:
 		}
-		reconcileSessions(ctx, retryReconciler{a.sessionReconciler, remaining}, a.helperRegistry.inventories(),
-			&readoptPass{
-				registry: a.helperRegistry, routes: a.sessionRoutes, adopter: a.Transport,
-				local: a.localHelper, timeout: vaultSealedRetryAttempt,
-				publishScreen: a.Transport.PublishScreenFrame,
-				publishEffect: a.Transport.PublishSessionEffect,
-				blockRows:     a.Transport,
-			},
-			content.DefaultUnreconciledRetention, a.slogger)
+		pass := &readoptPass{
+			registry: a.helperRegistry, routes: a.sessionRoutes, adopter: a.Transport,
+			local: a.localHelper, timeout: vaultSealedRetryAttempt,
+			publishScreen: a.Transport.PublishScreenFrame,
+			publishEffect: a.Transport.PublishSessionEffect,
+			blockRows:     a.Transport,
+		}
+		if !retryVaultSealedPass(ctx, a.sessionReconciler, remaining, a.helperRegistry, pass,
+			content.DefaultUnreconciledRetention, a.slogger) {
+			return
+		}
 		for _, inv := range a.helperRegistry.inventories() {
 			for id := range remaining {
 				if inv.Owns(id) {
@@ -3391,6 +3438,9 @@ func (a *App) Shutdown(ctx context.Context) {
 	// from here on (lifecycleCursor.applyFrame).
 	if a.lifecycleStopping != nil {
 		a.lifecycleStopping.Store(true)
+	}
+	if a.helperRegistry != nil {
+		a.helperRegistry.discardAllReadoptHelpers()
 	}
 	if err := a.Transport.Stop(ctx); err != nil {
 		a.Logger.Error("transport shutdown error", "error", err)
