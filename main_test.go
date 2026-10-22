@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -670,7 +671,16 @@ func (windowTestBackend) WSToken() string   { return "test-token" }
 // profile this test owns, answering as the named build.
 func startWindowTestCoordinator(t *testing.T, versionText, commit string) string {
 	t.Helper()
-	storagetest.Isolate(t)
+	root, err := os.MkdirTemp("", "nx")
+	if err != nil {
+		t.Fatalf("create short coordinator profile root: %v", err)
+	}
+	t.Cleanup(func() {
+		if cleanupErr := os.RemoveAll(root); cleanupErr != nil {
+			t.Errorf("remove coordinator profile root: %v", cleanupErr)
+		}
+	})
+	t.Setenv(storage.TestAppDirEnv, root)
 	paths, err := storage.NewAppPaths()
 	if err != nil {
 		t.Fatalf("NewAppPaths: %v", err)
