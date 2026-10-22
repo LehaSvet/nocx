@@ -76,6 +76,7 @@ test.describe('the environments rail keeps a choice made beside the form', () =>
   /** The workbench with the collection open, its request row on screen. */
   async function openWorkbench(
     page: import('@playwright/test').Page,
+    pageErrors: string[],
   ): Promise<import('@playwright/test').Locator> {
     await page.goto('/')
     await expect(page.locator('.nocx-tab-title').first()).not.toHaveText('', { timeout: 15_000 })
@@ -89,6 +90,12 @@ test.describe('the environments rail keeps a choice made beside the form', () =>
     await expect(folderAsk).toBeVisible()
     await page.locator('#api-collection-path').fill(collectionRoot)
     await folderAsk.getByRole('button', { name: 'Open', exact: true }).click()
+    // The successful open must close its ask even when the independent
+    // profile-list request is still resolving. That request must not leave a
+    // stale error in the shared store and turn success into a refusal.
+    await expect(folderAsk).toBeHidden()
+    await expect(folderAsk.getByRole('alert')).toHaveCount(0)
+    expect(pageErrors.filter((message) => message.includes('profiles.map'))).toEqual([])
     const row = workbench.locator('.api-tree__row').filter({ hasText: REQUEST })
     await expect(row).toBeVisible({ timeout: 10_000 })
     return workbench
@@ -97,7 +104,9 @@ test.describe('the environments rail keeps a choice made beside the form', () =>
   test('a No-environment click made before the request opened still owns the rail (nocx-1ebrs.46)', async ({
     page,
   }) => {
-    const workbench = await openWorkbench(page)
+    const pageErrors: string[] = []
+    page.on('pageerror', (error) => pageErrors.push(error.message))
+    const workbench = await openWorkbench(page, pageErrors)
     const rail = workbench.locator('.api-environments-rail')
     const noEnvironment = rail.getByRole('button', { name: 'No environment', exact: true })
     await expect(noEnvironment).toBeVisible()
@@ -120,7 +129,9 @@ test.describe('the environments rail keeps a choice made beside the form', () =>
   test('the click after the open still owns the rail, and a remembered file keeps its own', async ({
     page,
   }) => {
-    const workbench = await openWorkbench(page)
+    const pageErrors: string[] = []
+    page.on('pageerror', (error) => pageErrors.push(error.message))
+    const workbench = await openWorkbench(page, pageErrors)
     const rail = workbench.locator('.api-environments-rail')
     const noEnvironment = rail.getByRole('button', { name: 'No environment', exact: true })
     await expect(noEnvironment).toBeVisible()
