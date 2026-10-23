@@ -90,6 +90,11 @@ func main() {
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: true,
 		},
+		Linux: application.LinuxOptions{
+			// GTK uses the stable program name for the X11 window class.
+			// The AppImage launcher name is not the application's identity.
+			ProgramName: appName,
+		},
 		OnShutdown: wailsApp.shutdown,
 	})
 
