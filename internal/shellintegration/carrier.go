@@ -611,21 +611,20 @@ var stageDigestRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 const carrierLoaderTemplate = `R(){ stty "$T";exec 2>&1 @FD@<&-;rm -f "$F";printf "\033]1337;@OUTPFX@%s\a" "$1";exec "${SHELL:-/bin/sh}" -l;}
 exec 2>/dev/null
 T=$(stty -g)
-trap "R @INTERRUPTED@" HUP INT QUIT TERM
-[ -n "$T" ]&&stty raw -echo||R @TERMIOS@
+trap "R @INTERRUPTED@" 1 2 3 15
+[ "$T" ]&&stty raw -echo||R @TERMIOS@
 F=$(mktemp "${TMPDIR:-/tmp}/nocx.XXXXXX")||R @NOTEMP@
 printf "\033]1337;@READY@\a"
-X=$(dd bs=1 count=@HDRLEN@;printf .)
-X=${X%.}
-[ "${#X}" -eq @HDRLEN@ ]||R @INTERRUPTED@
+X=$(dd bs=1 count=@HDRLEN@;echo .)
+[ ${#X} -eq @HDRLENPLUS1@ ]||R @INTERRUPTED@
 X=${X%?}
 [ "${X#@MAGIC@ @SEQ@ }" != "$X" ]||R @PROTOCOL@
 L=${X##* }
 [ "$L" -gt 0 ]||R @PROTOCOL@
 [ "$L" -le @MAX@ ]||R @TOOLARGE@
-dd bs=1 count=$L >"$F"
+dd bs=1 count=$L>"$F"
 [ $(wc -c<"$F") -eq $L ]||R @INTERRUPTED@
-H=$(sha256sum "$F")||H=$(shasum -a 256 "$F")||R @NODIGEST@
+H=$(sha256sum "$F"||shasum -a 256 "$F")||R @NODIGEST@
 [ "${H%% *}" = "$@DIGARG@" ]||R @MISMATCH@
 exec @FD@<"$F"&&[ -r /dev/fd/@FD@ ]||R @NOFD@
 rm -f "$F";F=
@@ -649,6 +648,7 @@ func carrierLoader() string {
 		"@MAGIC@", FrameMagic,
 		"@SEQ@", strconv.Itoa(FrameStageSeq),
 		"@HDRLEN@", strconv.Itoa(FrameHeaderLen),
+		"@HDRLENPLUS1@", strconv.Itoa(FrameHeaderLen+1),
 		"@MAX@", strconv.Itoa(MaxStageFrameLen),
 		"@DIGARG@", strconv.Itoa(carrierArgCount),
 		"@TERMIOS@", OutcomeToken(OutcomeLoaderTermiosUnavailable),

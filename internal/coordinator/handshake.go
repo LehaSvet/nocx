@@ -23,7 +23,7 @@ package coordinator
 // to do about a mismatch. That comparison is not here — this package makes
 // the fact available and states nothing about what a client should conclude
 // from it.
-const ProtocolVersion = 2
+const ProtocolVersion = 3
 
 // RequestHello is the one request this socket answers today. Naming it
 // rather than serving whatever arrives is what lets an unknown request be
