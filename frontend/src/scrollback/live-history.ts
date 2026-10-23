@@ -297,6 +297,18 @@ export class LiveHistorySurface {
     if (active) this._sync()
   }
 
+  /** Font metrics changed; keep page identity and scroll position, replacing
+   * only ink laid out against the old face. No history read is needed. */
+  fontMetricsChanged(): void {
+    const metric = this._metric()
+    for (const page of this._pages) {
+      this._warm?.(fitCandidatesOf(page.rows))
+      page.el.replaceChildren(
+        ...page.rows.map((row) => paintRow(row, { metric, palette: page.palette })),
+      )
+    }
+  }
+
   /** Output arrived. What the emulator holds has moved under the reader:
    *  the painted past may no longer reach the head, so the reader's next
    *  return to the live end drops it, and an exhausted surface can ask

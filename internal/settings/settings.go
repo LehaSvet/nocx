@@ -1164,6 +1164,20 @@ var TerminalScrollbackLines = MustRegisterNumber(NumberSpec{
 	ZeroLabel:   "No scrollback — only the current screen",
 })
 
+// TerminalFontFamily selects a bundled face without requiring an OS install.
+var TerminalFontFamily = MustRegisterSelect(SelectSpec{
+	Key:         "terminal.fontFamily",
+	Section:     "Terminal",
+	Label:       "Font family",
+	Description: "The monospace font for terminal output and the command editor. Nordwand Mono is bundled and works offline; System default uses the theme's original font stack.",
+	DataClass:   PublicConfig,
+	Default:     "system",
+	Options: []SelectOption{
+		{Value: "system", Label: "System default"},
+		{Value: "nordwand-mono", Label: "Nordwand Mono"},
+	},
+})
+
 // ── Declared groups ────────────────────────────────────────────────────
 // The settings rail's group catalogue (nocx-dgsp): declared here, shipped
 // beside the declarations in settings.describe, rendered by the frontend

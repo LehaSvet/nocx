@@ -1,0 +1,39 @@
+/* Unmodified Nordwand Mono 1.3.4, SIL OFL 1.1.
+   Source and license: public/fonts/nordwand-mono/LICENSE-FONT.txt. */
+@font-face {
+  font-family: 'Nordwand Mono';
+  src: url('/fonts/nordwand-mono/NordwandMono-Regular.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Nordwand Mono';
+  src: url('/fonts/nordwand-mono/NordwandMono-Italic.woff2') format('woff2');
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Nordwand Mono';
+  src: url('/fonts/nordwand-mono/NordwandMono-Bold.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Nordwand Mono';
+  src: url('/fonts/nordwand-mono/NordwandMono-BoldItalic.woff2') format('woff2');
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+}
+
+/* Loaded after themes so an explicit choice overrides their default stack.
+   Removing the attribute restores that stack without copying it here. */
+:root[data-terminal-font='nordwand-mono'] {
+  --font-family-mono: 'Nordwand Mono', 'Apple Color Emoji', 'Apple Symbols', monospace;
+}

@@ -150,12 +150,13 @@ import {
   toolResultForEntry,
 } from './restore-client'
 import { restoredBlock, restoredTurn } from './scrollback/restored-block'
-import { blockColumnsOf, paintStoredRows } from './scrollback/block-rows'
+import { blockColumnsOf, paintStoredRows, repaintStoredRows } from './scrollback/block-rows'
 import { recordStoredBlock } from './scrollback/cell-drift'
 import { toolCallTitle } from './scrollback/tool-call-title'
 import { TailFollow } from './scrollback/tail-follow'
 import { fromITheme, type TerminalSnapshot } from './scrollback/serializer'
 import { getCurrentTheme, subscribeThemeChanges } from './renderers/theme-adapter'
+import { subscribeTerminalFontChanges } from './terminal-font'
 import { log, logDecision, isDecisionTracing } from './log'
 import type { BlockClosed } from './generated/block.closed'
 import type { WSClient, SessionHandle, OpenAnchor, SessionSize } from './ipc'
@@ -1018,6 +1019,9 @@ export class TerminalContent extends BasePaneContent {
   private _summonStackObserver: ResizeObserver | null = null
   /** Watches the scroller's own content width (nocx-zg3k3.30). */
   private _scrollerWidthObserver: ResizeObserver | null = null
+  private _fontMetricObserver: ResizeObserver | null = null
+  private _fontUnsub: (() => void) | null = null
+  private _fontRefreshFrame = 0
   /** The scroller's width moved while a program held the pane; the refit
    *  waits for the next prompt (nocx-zg3k3.30). */
   private _scrollerRefitOwed = false
@@ -2768,6 +2772,38 @@ export class TerminalContent extends BasePaneContent {
         const current = this._cellModel?.current()
         if (current) this._paintFrame(current)
       })
+
+      // Font identity changes can keep the same probe size. Both the explicit
+      // choice and late metric changes invalidate ink through one batched path.
+      const inner = this.scrollback.scrollbackInner
+      const refreshFontMetrics = (): void => {
+        if (this._disposed || this._fontRefreshFrame !== 0) return
+        this._fontRefreshFrame = requestAnimationFrame(() => {
+          this._fontRefreshFrame = 0
+          if (this._disposed) return
+          this.scrollback?.cellMetricsChanged()
+          const fit = this._cellFit
+          if (fit?.begin()) {
+            repaintStoredRows(inner, {
+              metric: metricOf(fit),
+              palette: fromITheme(getCurrentTheme()),
+              warm: (candidates) => fit.warm(candidates),
+            })
+          }
+          this._liveHistory?.fontMetricsChanged()
+          const current = this._cellModel?.current()
+          if (current) this._paintFrame(current)
+        })
+      }
+      this._fontUnsub = subscribeTerminalFontChanges(refreshFontMetrics)
+      if (typeof ResizeObserver !== 'undefined') {
+        measureNaturalAdvance(inner)
+        const probe = inner.querySelector<HTMLElement>('.cell-metric-probe')
+        if (probe) {
+          this._fontMetricObserver = new ResizeObserver(refreshFontMetrics)
+          this._fontMetricObserver.observe(probe)
+        }
+      }
 
       // ── THE LIVE TIER'S SCROLLBACK SURFACE (nocx-zg3k3.10.4) ───────────
       // The rows above the live rectangle when no shell integration has
@@ -8717,6 +8753,12 @@ export class TerminalContent extends BasePaneContent {
     this._homeUnsub?.()
     this._scrollerWidthObserver?.disconnect()
     this._scrollerWidthObserver = null
+    this._fontMetricObserver?.disconnect()
+    this._fontMetricObserver = null
+    this._fontUnsub?.()
+    this._fontUnsub = null
+    if (this._fontRefreshFrame !== 0) cancelAnimationFrame(this._fontRefreshFrame)
+    this._fontRefreshFrame = 0
     this._themeUnsub?.()
     this._themeUnsub = null
     this._historyRecordedUnsub?.()

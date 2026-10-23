@@ -20,6 +20,7 @@
 @import './styles/themes/rose-pine.css';
 @import './styles/themes/solarized-dark.css';
 @import './styles/themes/solarized-light.css';
+@import './styles/fonts.css';
 @import './styles/base.css';
 /* One file per component (ADR-0013 §1). `kit.css` was a 515-line aggregate that
    re-blurred every selector's owner; T1 (nocx-v0ai) split it. Import order within this

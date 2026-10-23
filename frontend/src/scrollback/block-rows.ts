@@ -1,6 +1,6 @@
 import type { SessionFrame } from '../generated/session.frame'
 import type { LedgerBlockRowsLine } from '../generated/ledger.blockRows'
-import { createCellModel, rowColumnsOf } from '../cell-model'
+import { createCellModel, rowColumnsOf, type ScreenSnapshot } from '../cell-model'
 import { fitCandidatesOf, paintRow } from '../painter/paint-row'
 import { decorateLinks } from '../terminal-links/decorate'
 import type { FitCandidate } from './cell-fit'
@@ -277,33 +277,7 @@ export function paintStoredRows(
     )
     .forEach((el) => el.remove())
   const snapshot = snapshotForRows(stored.lines)
-  if (snapshot !== null) {
-    opts.warm?.(fitCandidatesOf(snapshot.rows))
-    const output = document.createElement('div')
-    output.className = 'cmd-output'
-    for (let index = 0; index < snapshot.rows.length; index++) {
-      const painted = paintRow(snapshot.rows[index], opts)
-      const storedLine = stored.lines[index]
-      if (storedLine) {
-        painted.dataset.blockId = block.dataset.entryId ?? ''
-        if (stored.artifactVersion !== undefined) {
-          painted.dataset.artifactVersion = stored.artifactVersion
-        }
-        painted.dataset.logicalLine = String(storedLine.from)
-      }
-      output.appendChild(painted)
-    }
-    // Paths and urls become clickable HERE, once per paint, the same "one
-    // pass beats a pass per click" rule the retired outputHtml path used
-    // (nocx-2v80t.3.18): that call site died with the html string it
-    // decorated (block bodies come from stored rows now, blocks.ts
-    // freezeBlock's outputHtml is always ''), and nothing replaced it, so a
-    // stored block's URLs stopped being links. terminal-links/surface.ts
-    // still attaches the one click gesture per tab; this only puts the
-    // rows in its reach.
-    decorateLinks(output)
-    block.appendChild(output)
-  }
+  if (snapshot !== null) block.appendChild(paintOutput(block, stored, snapshot, opts))
   // The notice is the kit's own statement line (ui/README.md BlockNotice),
   // one per block by its data attribute, naming EACH cause the store sent —
   // two causes both named, with their counts where the store counted them.
@@ -324,6 +298,50 @@ export function paintStoredRows(
     empty.root.dataset.outputEmpty = 'true'
     empty.mount(block)
   }
+}
+
+/** Repaint already loaded artifacts without fetching or moving their block's
+ * live region and notices. Selection and paint read the same cached rows. */
+export function repaintStoredRows(container: HTMLElement, opts: StoredBlockPaintOptions): void {
+  for (const output of container.querySelectorAll<HTMLElement>('.cmd-output')) {
+    const row = output.querySelector<HTMLElement>('[data-artifact-version]')
+    const block = output.parentElement
+    const id = block?.dataset.entryId
+    const version = row?.dataset.artifactVersion
+    if (!block || !id || !version) continue
+    const stored = storedBlockRowsForSelection(id, version)
+    const snapshot = stored ? snapshotForRows(stored.lines) : null
+    if (stored && snapshot) {
+      const painted = paintOutput(block, stored, snapshot, opts)
+      const fragment = document.createDocumentFragment()
+      while (painted.firstChild) fragment.appendChild(painted.firstChild)
+      output.replaceChildren(fragment)
+    }
+  }
+}
+
+function paintOutput(
+  block: HTMLElement,
+  stored: StoredBlockRows,
+  snapshot: ScreenSnapshot,
+  opts: StoredBlockPaintOptions,
+): HTMLElement {
+  opts.warm?.(fitCandidatesOf(snapshot.rows))
+  const output = document.createElement('div')
+  output.className = 'cmd-output'
+  for (let index = 0; index < snapshot.rows.length; index++) {
+    const painted = paintRow(snapshot.rows[index], opts)
+    const storedLine = stored.lines[index]
+    if (storedLine) {
+      painted.dataset.blockId = block.dataset.entryId ?? ''
+      if (stored.artifactVersion !== undefined)
+        painted.dataset.artifactVersion = stored.artifactVersion
+      painted.dataset.logicalLine = String(storedLine.from)
+    }
+    output.appendChild(painted)
+  }
+  decorateLinks(output)
+  return output
 }
 
 /** Say, on the block, that its stored rows could not be read

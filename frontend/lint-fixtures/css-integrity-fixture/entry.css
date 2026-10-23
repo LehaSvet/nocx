@@ -6,3 +6,12 @@
 @import './styles/themes/fixture-theme.css';
 @import './styles/components/fixture-component.css';
 @import './styles/surfaces/fixture-surface.css';
+
+/* A face descriptor is a name, not a styled element bypassing tokens. */
+@font-face {
+  font-family: 'Fixture Mono';
+  src: url('fixture.woff2');
+}
+.literal-font-fixture {
+  font-family: 'Fixture Mono';
+}
