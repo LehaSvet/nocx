@@ -271,8 +271,10 @@ test.describe('the submit hand-off (nocx-1ebrs.40)', () => {
     // inner element has no active animations, then records another frame.
     // Its last two painted positions must therefore agree: no late scroll
     // jump after the hand-off has settled.
+    // The composer can become fully opaque before the settle glide finishes.
+    // Keep sampling through animation completion, not only through restoredAt.
     const restoredGlideFrames = frames
-      .slice(lastAbsent + 1, restoredAt + 1)
+      .slice(lastAbsent + 1)
       .filter((frame) =>
         frame.glDurations.some((duration) => Number.isFinite(duration) && duration > 0),
       )
