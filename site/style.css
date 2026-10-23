@@ -2146,3 +2146,229 @@ body {
 .os-tab {
   display: inline-block;
 }
+
+/* Public-site pillar demos: restrained, keyboard-native HTML controls. */
+.pillar-demos {
+  padding: 3.5rem 0 2rem;
+}
+.pillar-demos > h2 {
+  max-width: 18ch;
+  font-family: var(--sans);
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  line-height: 1.05;
+}
+.pillar-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+.pillar-card {
+  min-width: 0;
+  padding: 1.25rem;
+  border: 1px solid var(--line, #d8dbd1);
+  border-radius: 1rem;
+  background: var(--paper, #fbfcf8);
+}
+.pillar-card h3 {
+  margin: 0 0 0.7rem;
+  font-size: 1.2rem;
+}
+.pillar-card p {
+  line-height: 1.5;
+}
+.pillar-card label {
+  display: block;
+  margin: 0.65rem 0 0.35rem;
+  font-weight: 600;
+}
+.pillar-card select,
+.demo-action {
+  max-width: 100%;
+  min-height: 2.75rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--line, #b9beb3);
+  border-radius: 0.5rem;
+  color: inherit;
+  background: #fff;
+  font: inherit;
+}
+.demo-action {
+  margin-top: 0.7rem;
+  cursor: pointer;
+}
+.demo-action:focus-visible,
+.pillar-card select:focus-visible {
+  outline: 3px solid #347e68;
+  outline-offset: 2px;
+}
+.demo-value,
+.demo-response {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  background: #202c29;
+  color: #f2f3e8;
+  font-family: var(--mono);
+}
+.demo-note,
+.demo-status {
+  font-size: 0.9rem;
+}
+.demo-response {
+  min-height: 5rem;
+}
+@media (max-width: 720px) {
+  .pillar-demos {
+    padding: 2rem 0 1rem;
+  }
+  .pillar-grid {
+    grid-template-columns: 1fr;
+  }
+  .pillar-card {
+    padding: 1rem;
+  }
+}
+
+/* Pillar illustrations are static product-shaped examples, not live controls. */
+.pillar-grid {
+  align-items: stretch;
+}
+.app-illustration {
+  min-width: 0;
+  margin: 1rem 0 0.85rem;
+  padding: 1rem;
+  border: 1px solid #cbd3c0;
+  border-radius: 0.75rem;
+  background: #f0f3eb;
+  color: #27332c;
+  font: 0.84rem/1.55 var(--mono);
+  overflow-wrap: anywhere;
+}
+.illustration-title {
+  margin-bottom: 0.65rem;
+  color: #68775e;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.engine-row,
+.secret-row,
+.host-row,
+.credential-row,
+.request-row,
+.env-row,
+.response-head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+  padding: 0.35rem 0;
+}
+.engine-row {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.engine-row strong {
+  color: #365b48;
+}
+.engine-row.muted {
+  color: #72796f;
+  border-top: 1px dashed #cbd3c0;
+  margin-top: 0.4rem;
+  padding-top: 0.65rem;
+}
+.secret-row span {
+  font-weight: 700;
+}
+.secret-row small {
+  margin-left: auto;
+  color: #68775e;
+}
+.terminal-line {
+  margin-top: 0.65rem;
+  padding: 0.55rem;
+  border-radius: 0.4rem;
+  background: #202c29;
+  color: #f2f3e8;
+}
+.terminal-line i {
+  color: #a6c98e;
+  font-style: normal;
+}
+.app-illustration em {
+  color: #567b49;
+  font-style: normal;
+  overflow-wrap: anywhere;
+}
+.host-row.group {
+  color: #66745b;
+  font-weight: 700;
+}
+.host-row.selected {
+  margin-left: 0.5rem;
+  padding-left: 0.5rem;
+  border-left: 2px solid #567b49;
+  background: #e4eadc;
+}
+.credential-row {
+  margin-top: 0.45rem;
+  border-top: 1px solid #d8dfd1;
+  flex-wrap: wrap;
+}
+.request-row {
+  border: 1px solid #d5dccd;
+  border-radius: 0.4rem;
+  background: #fff;
+  padding: 0.55rem;
+}
+.request-row b {
+  color: #39734f;
+}
+.request-row span {
+  overflow-wrap: anywhere;
+}
+.env-row {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.env-row strong {
+  padding: 0.2rem 0.45rem;
+  border: 1px solid #cbd3c0;
+  border-radius: 0.3rem;
+  background: #fff;
+}
+.response-head {
+  justify-content: space-between;
+  border-top: 1px solid #d5dccd;
+  margin-top: 0.35rem;
+}
+.response-head strong {
+  color: #39734f;
+}
+.api-illustration pre {
+  margin: 0.35rem 0 0;
+  padding: 0.55rem;
+  border-radius: 0.35rem;
+  background: #202c29;
+  color: #f2f3e8;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.illustration-caption {
+  margin: 0;
+  color: #596457;
+  font-size: 0.92rem;
+}
+@media (max-width: 390px) {
+  .app-illustration {
+    padding: 0.75rem;
+    font-size: 0.75rem;
+  }
+  .engine-row {
+    justify-content: flex-start;
+  }
+}

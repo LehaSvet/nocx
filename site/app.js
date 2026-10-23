@@ -25,4 +25,6 @@ document.addEventListener('DOMContentLoaded', () => {
     })
     if (empty) empty.hidden = visible !== 0
   })
+
+  // The pillar illustrations are static examples and expose no interactive controls.
 })

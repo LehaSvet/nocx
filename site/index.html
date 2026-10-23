@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#f4f5ef" />
     <meta
       name="description"
-      content="A local-first terminal that keeps tabs, output, notes and secret references across restarts."
+      content="A local-first terminal with a secrets vault, SSH connection manager and API client built in, using your system WebView."
     />
-    <title>nocx — Your context. Right where it belongs.</title>
+    <title>nocx — A terminal with your tools built in</title>
     <link rel="icon" href="./assets/nocx-redesign-icon.png" />
     <link rel="stylesheet" href="./assets/redesign-fonts/fonts.css" />
     <link rel="stylesheet" href="./style.css" />
@@ -21,8 +21,8 @@
           ><span class="brand-symbol" aria-hidden="true">›_</span>nocx</a
         >
         <nav class="navlinks" aria-label="Main navigation">
-          <a href="#features">Features</a><a href="#privacy">Privacy</a
-          ><a href="#install">Install</a>
+          <a href="#pillars">Pillars</a><a href="#features">Features</a
+          ><a href="#privacy">Privacy</a><a href="#install">Install</a>
         </nav>
         <div class="nav-right">
           <a class="lang" href="./ru/" aria-label="Русский">EN / RU</a
@@ -34,16 +34,16 @@
           <div class="hero-top">
             <p class="eyebrow"><span class="dot"></span>Local-first terminal · macOS + Linux</p>
             <a class="release" href="https://github.com/shady2k/nocx/releases/latest"
-              ><span data-version>v0.6.0</span><span>MIT · 0.6 ↗</span></a
+              ><span data-version>v0.6.1</span><span>MIT · 0.6.1 ↗</span></a
             >
           </div>
           <div class="hero-grid">
-            <h1>Your context.<br /><span>Right where it belongs.</span></h1>
+            <h1>Why this terminal?<br /><span>Your tools, built in.</span></h1>
             <div>
               <p class="hero-desc">
-                A terminal that keeps your working context. Tabs, command output, notes and secret
-                references stay with you after a restart. In 0.6, nocx paints backend cells and runs
-                coordinator/worker orchestration in nocx panes without herdr.
+                A terminal with a secrets vault, SSH connection manager and API client built in,
+                using your system WebView instead of bundling a browser engine: WKWebView on macOS
+                and WebKitGTK on Linux.
               </p>
               <div class="hero-actions">
                 <a class="button" href="#install">Try nocx<span>↓</span></a
@@ -337,6 +337,88 @@
               ><span>Try the tabs and the file filter.</span>
             </figcaption>
           </figure>
+          <!-- Product claims: native WebView—docs/architecture.md §§1,4; vault—internal/vault/system/system.go and internal/vault/vault.go; SSH profiles/groups—internal/profile/profile.go; Tabby import—internal/importer/tabby.go; API collection/environment—internal/apicoll/collection.go; Postman import—internal/apiimport/postman.go. Static demo data only; no commands or network requests. -->
+          <section class="pillar-demos" id="pillars" aria-labelledby="pillar-title">
+            <p class="eyebrow">Built for the whole workflow</p>
+            <h2 id="pillar-title">One terminal. Vault, SSH manager and API client included.</h2>
+            <div class="pillar-grid">
+              <article class="pillar-card">
+                <h3>System WebView</h3>
+                <p>nocx uses your operating system’s WebView, not a bundled browser engine.</p>
+                <div
+                  class="app-illustration"
+                  role="img"
+                  aria-label="One nocx app process uses the system WebView; another app bundles a browser engine."
+                >
+                  <div class="illustration-title">APP ARCHITECTURE</div>
+                  <div class="engine-row">
+                    <b>nocx process</b><span>→</span><strong>System WebView</strong>
+                  </div>
+                  <div class="engine-row muted">
+                    <b>Other process</b><span>→</span><strong>Bundled browser engine</strong>
+                  </div>
+                </div>
+                <p class="illustration-caption">
+                  Use the browser engine your platform already provides, without bundling another
+                  one.
+                </p>
+              </article>
+              <article class="pillar-card">
+                <h3>Secrets vault</h3>
+                <p>Use saved secrets in commands without leaving their values in history.</p>
+                <div
+                  class="app-illustration"
+                  role="img"
+                  aria-label="Vault list with saved secrets and a command using a named vault reference. Example data."
+                >
+                  <div class="illustration-title">SECRETS · UNLOCKED</div>
+                  <div class="secret-row">● <span>DEPLOY_TOKEN</span><small>Token</small></div>
+                  <div class="secret-row">● <span>STAGING_KEY</span><small>SSH key</small></div>
+                  <div class="terminal-line">
+                    <i>›</i> deploy --token <em>{{secret:DEPLOY_TOKEN}}</em>
+                  </div>
+                </div>
+                <p class="illustration-caption">
+                  Keep the secret in the vault; history retains its named reference.
+                </p>
+              </article>
+              <article class="pillar-card">
+                <h3>SSH connection manager</h3>
+                <p>Organize hosts into groups and connect with credentials held in your vault.</p>
+                <div
+                  class="app-illustration"
+                  role="img"
+                  aria-label="SSH manager with API and CI groups, a selected staging host, and a vault-reference credential. Example data."
+                >
+                  <div class="illustration-title">CONNECTIONS</div>
+                  <div class="host-row group">▾ API</div>
+                  <div class="host-row selected">● staging-api</div>
+                  <div class="host-row group">▾ CI</div>
+                  <div class="host-row">● build-runner</div>
+                  <div class="credential-row">Credential <em>{{secret:STAGING_KEY}}</em></div>
+                </div>
+                <p class="illustration-caption">
+                  Find a host by group and connect without copying its credential.
+                </p>
+              </article>
+              <article class="pillar-card">
+                <h3>API client</h3>
+                <p>Keep requests, environments and responses together in your workspace.</p>
+                <div
+                  class="app-illustration api-illustration"
+                  role="img"
+                  aria-label="Static API request example: GET health endpoint, staging environment, successful response in 84 milliseconds and JSON body. Example data; no request was sent."
+                >
+                  <div class="illustration-title">API · REQUEST · HEALTH</div>
+                  <div class="request-row"><b>GET</b><span>api.example.test/health</span></div>
+                  <div class="env-row">Environment <strong>Staging ▾</strong></div>
+                  <div class="response-head"><strong>200 OK</strong><span>84 ms</span></div>
+                  <pre>{ "status": "ok", "version": "1.2.0" }</pre>
+                </div>
+                <p class="illustration-caption">See the request setup and response at a glance.</p>
+              </article>
+            </div>
+          </section>
           <div class="proofbar">
             <span
               ><svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -353,7 +435,7 @@
             ><span
               ><svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
                 <path d="m3 8 3 3 7-7" stroke="currentColor" stroke-width="1.3" /></svg
-              >Your data stays local</span
+              >No cloud service of its own</span
             >
           </div>
         </section>
@@ -421,7 +503,25 @@
               id="feature-panel"
               role="tabpanel"
               aria-labelledby="feature-0"
-            ></div>
+            >
+              <div class="visual-label">FILES · /workspace/demo</div>
+              <div
+                class="mini-panel"
+                role="img"
+                aria-label="Static file-browser illustration showing a workspace tree and current directory."
+              >
+                <div class="mini-head"><span>WORKSPACE</span><span>⌂</span></div>
+                <div class="mini-content">
+                  <div class="file-line"><span>▾ src</span><em>folder</em></div>
+                  <div class="file-line"><span>　▸ app</span><em>folder</em></div>
+                  <div class="file-line"><span>　▸ components</span><em>folder</em></div>
+                  <div class="file-line"><span>▸ docs</span><em>folder</em></div>
+                  <div class="file-line"><span>README.md</span><em>2.4 KB</em></div>
+                  <div class="mini-prompt">› pwd　/workspace/demo</div>
+                </div>
+              </div>
+              <p class="mini-note">Your active tab’s files, right beside the terminal.</p>
+            </div>
           </div>
         </section>
         <section class="section restore">
@@ -460,10 +560,10 @@
         <p class="eyebrow">03 / Local by design</p>
         <div class="privacy-grid">
           <div>
-            <h2>Your secret<br />stays a secret.</h2>
+            <h2>Secrets stay<br />as references.</h2>
             <p>
-              Save a key to the encrypted vault. The command in nocx keeps a reference that resolves
-              when you recall it and unlock the vault.
+              Store a secret in the vault. Command history keeps a reference in place of its value;
+              when you use the command, nocx resolves the reference after the vault is unlocked.
             </p>
           </div>
           <div class="vault">
@@ -507,7 +607,7 @@
             <h2>An API client.<br />Your ordinary files.</h2>
             <p>
               Import a Postman collection. Each request becomes a separate JSON file in your own
-              folder. Send locally or through an open SSH connection.
+              folder. Run locally or through an open SSH connection.
             </p>
             <div class="tool-graphic">
               <div class="small">COLLECTION /</div>
@@ -540,7 +640,7 @@
               No sign-up. Download nocx for your system and keep working with your existing hosts.
             </p>
             <p class="version">
-              <b data-version>v0.6.0</b>, released <span data-released>2026-10-19</span> · MIT
+              <b data-version>v0.6.1</b>, released <span data-released>2026-10-20</span> · MIT
             </p>
             <p class="aside-note">Early release. No formal support.</p>
           </div>
@@ -598,8 +698,9 @@
           <details>
             <summary>Can I bring my SSH connections?</summary>
             <p>
-              Yes. nocx imports ~/.ssh/config and Tabby exports. Passwords and key passphrases stay
-              in the vault; a connection references the secret.
+              Yes. nocx imports profiles and groups from Tabby. It can resolve aliases from
+              ~/.ssh/config when connecting, but does not import that file. Passwords and key
+              passphrases can be linked from the vault.
             </p>
           </details>
           <details>
@@ -639,8 +740,8 @@
           </nav>
         </div>
         <p>
-          <a href="https://github.com/shady2k/nocx/blob/main/docs/release-notes/v0.6.0.md"
-            >Read the <span data-version>v0.6.0</span> release notes</a
+          <a href="https://github.com/shady2k/nocx/blob/main/docs/release-notes/v0.6.1.md"
+            >Read the <span data-version>v0.6.1</span> release notes</a
           >
         </p>
       </footer>
