@@ -615,8 +615,10 @@ trap "R @INTERRUPTED@" HUP INT QUIT TERM
 [ -n "$T" ]&&stty raw -echo||R @TERMIOS@
 F=$(mktemp "${TMPDIR:-/tmp}/nocx.XXXXXX")||R @NOTEMP@
 printf "\033]1337;@READY@\a"
-X=$(dd bs=1 count=@HDRLEN@)
-[ -n "$X" ]||R @INTERRUPTED@
+X=$(dd bs=1 count=@HDRLEN@;printf .)
+X=${X%.}
+[ "${#X}" -eq @HDRLEN@ ]||R @INTERRUPTED@
+X=${X%?}
 [ "${X#@MAGIC@ @SEQ@ }" != "$X" ]||R @PROTOCOL@
 L=${X##* }
 [ "$L" -gt 0 ]||R @PROTOCOL@

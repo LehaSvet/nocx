@@ -237,6 +237,27 @@ func loaderPath(t *testing.T, tools ...string) string {
 	return dir
 }
 
+// loaderPathWithShortHeader makes the header read return a strict prefix, as
+// dd does when its input reaches EOF before the fixed-width count is met.
+func loaderPathWithShortHeader(t *testing.T, prefix string) string {
+	t.Helper()
+	dir := loaderPath(t, loaderBaseTools...)
+	dd := filepath.Join(dir, "dd")
+	if err := os.Remove(dd); err != nil {
+		t.Fatalf("remove dd symlink: %v", err)
+	}
+	realDD, err := exec.LookPath("dd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim := fmt.Sprintf("#!/bin/sh\nfor arg do case $arg in count=*) count=${arg#count=};; esac; done\nif [ \"$count\" = \"%d\" ]; then /bin/cat >/dev/null; printf '%%s' %q; else exec %q \"$@\"; fi\n", FrameHeaderLen, prefix, realDD)
+	//nolint:gosec // executable test shim owned by t.TempDir
+	if err := os.WriteFile(dd, []byte(shim), 0o700); err != nil {
+		t.Fatalf("write dd shim: %v", err)
+	}
+	return dir
+}
+
 // loaderBaseTools is the controlled host PATH for the loader refusal tests.
 // `id` is not a loader dependency: a native login shell can run the host
 // profile, which may call it (for example, to choose a user-specific path).
@@ -418,7 +439,7 @@ func TestLoader_ProtocolViolationRefused(t *testing.T) {
 func TestLoader_EOFMidFrameNamesBootstrapInterrupted(t *testing.T) {
 	home := loaderHome(t)
 	tmp := t.TempDir()
-	path := loaderPath(t, append(append([]string{}, loaderBaseTools...), "sha256sum")...)
+	path := loaderPathWithShortHeader(t, "NOCX1 1  ")
 
 	// SIGHUP IS THE HARNESS'S ARTEFACT AND NOT THE SCENARIO (nocx-l9le4).
 	//
@@ -441,8 +462,7 @@ func TestLoader_EOFMidFrameNamesBootstrapInterrupted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.write([]byte(h))
-	s.write([]byte("only-a-few-bytes"))
+	s.write([]byte(h[:FrameHeaderLen-1]))
 	_ = s.master.Close()
 
 	s.waitFor(OutcomePrefix + OutcomeToken(OutcomeBootstrapInterrupted))
