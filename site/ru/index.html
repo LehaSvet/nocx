@@ -21,8 +21,8 @@
           ><span class="brand-symbol" aria-hidden="true">›_</span>nocx</a
         >
         <nav class="navlinks" aria-label="Основная навигация">
-          <a href="#features">Возможности</a><a href="#privacy">Приватность</a
-          ><a href="#install">Установка</a>
+          <a href="#pillars">Причины</a><a href="#features">Возможности</a
+          ><a href="#privacy">Приватность</a><a href="#install">Установка</a>
         </nav>
         <div class="nav-right">
           <a class="lang" href="../?lang=en" aria-label="English">RU / EN</a
@@ -34,16 +34,15 @@
           <div class="hero-top">
             <p class="eyebrow"><span class="dot"></span>Локальный терминал · macOS + Linux</p>
             <a class="release" href="https://github.com/shady2k/nocx/releases/latest"
-              ><span data-version>v0.6.0</span><span>MIT · 0.6 ↗</span></a
+              ><span data-version>v0.6.1</span><span>MIT · 0.6.1 ↗</span></a
             >
           </div>
           <div class="hero-grid">
             <h1>Ваш контекст.<br /><span>На своём месте.</span></h1>
             <div>
               <p class="hero-desc">
-                Терминал, который помнит рабочий контекст. Вкладки, вывод команд, заметки и ссылки
-                на секреты остаются с вами после перезапуска. В версии 0.6 nocx рисует ячейки
-                бэкенда и управляет координатором и воркерами во вкладках без herdr.
+                Терминал для работы с сохранением контекста на встроенном WebView вашей системы:
+                WKWebView в macOS и WebKitGTK в Linux. Без встроенного Chromium.
               </p>
               <div class="hero-actions">
                 <a class="button" href="#install">Попробовать nocx<span>↓</span></a
@@ -341,6 +340,75 @@
               ><span>Вкладки и фильтр файлов можно попробовать.</span>
             </figcaption>
           </figure>
+          <!-- Product claims: native WebView—docs/architecture.md §§1,4; vault—internal/vault/system/system.go and internal/vault/vault.go; SSH profiles/groups—internal/profile/profile.go; Tabby import—internal/importer/tabby.go; API collection/environment—internal/apicoll/collection.go; Postman import—internal/apiimport/postman.go. Только статические демонстрационные данные; команды и сетевые запросы не выполняются. -->
+          <section class="pillar-demos" id="pillars" aria-labelledby="pillar-title">
+            <p class="eyebrow">Четыре причины</p>
+            <h2 id="pillar-title">Встроенный WebView. Vault. SSH-профили. API-клиент.</h2>
+            <div class="pillar-grid">
+              <article class="pillar-card">
+                <h3>Встроенный WebView</h3>
+                <p>
+                  Wails использует платформенный WebView: WKWebView в macOS и WebKitGTK в Linux. В
+                  AppImage для Linux включён WebKitGTK. Встроенного Chromium нет.
+                </p>
+                <label for="webview-demo">Выберите платформу</label>
+                <select id="webview-demo">
+                  <option value="mac">macOS</option>
+                  <option value="linux">Linux</option>
+                </select>
+                <p id="webview-demo-status" aria-live="polite">macOS использует WKWebView.</p>
+                <p class="demo-note">Сравнительных заявлений о потреблении памяти здесь нет.</p>
+              </article>
+              <article class="pillar-card">
+                <h3>Ссылки на секреты</h3>
+                <p>Посмотрите, как сохранённый секрет представлен в истории команды:</p>
+                <code class="demo-value" id="vault-demo-value"
+                  >DEPLOY_TOKEN=[значение секрета]</code
+                >
+                <button
+                  type="button"
+                  class="demo-action"
+                  id="vault-demo-toggle"
+                  aria-pressed="false"
+                >
+                  Показать сохранённый вид
+                </button>
+                <p class="demo-status" id="vault-demo-status" aria-live="polite">
+                  Только демонстрация. Секрет не сохраняется.
+                </p>
+              </article>
+              <article class="pillar-card">
+                <h3>SSH-профили и группы</h3>
+                <label for="connection-demo">Выберите демонстрационный профиль</label>
+                <select id="connection-demo">
+                  <option value="staging">Staging / api-demo</option>
+                  <option value="build">Build / build-demo</option>
+                </select>
+                <p id="connection-demo-status" aria-live="polite">
+                  Staging · группа: API · учётные данные: ссылка из vault
+                </p>
+                <p class="demo-note">
+                  Импорт Tabby поддерживается. Псевдонимы SSH-конфига разрешаются при подключении,
+                  но не импортируются.
+                </p>
+              </article>
+              <article class="pillar-card">
+                <h3>API-клиент</h3>
+                <label for="api-demo-env">Окружение</label>
+                <select id="api-demo-env">
+                  <option value="local">Локальное демо</option>
+                  <option value="staging">Демо Staging</option>
+                </select>
+                <button type="button" class="demo-action" id="api-demo-send">
+                  Показать запрос
+                </button>
+                <pre class="demo-response" id="api-demo-response" aria-live="polite">
+GET https://api.example.test/health
+Можно посмотреть · запрос не отправлен</pre>
+                <p class="demo-note">Только вымышленные данные. Элемент не обращается к сети.</p>
+              </article>
+            </div>
+          </section>
           <div class="proofbar">
             <span
               ><svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -357,7 +425,7 @@
             ><span
               ><svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
                 <path d="m3 8 3 3 7-7" stroke="currentColor" stroke-width="1.3" /></svg
-              >Ваши данные — локально</span
+              >Без собственного облака</span
             >
           </div>
         </section>
@@ -468,10 +536,10 @@
         <p class="eyebrow">03 / Локально — по устройству</p>
         <div class="privacy-grid">
           <div>
-            <h2>Секрет остаётся<br />секретом.</h2>
+            <h2>Секреты остаются<br />ссылками.</h2>
             <p>
-              Сохраните ключ в зашифрованное хранилище. В записи команды nocx останется ссылка,
-              которая разрешится при следующем запуске после разблокировки.
+              Сохраните секрет в хранилище. В истории команды вместо значения останется ссылка; при
+              запуске nocx разрешит её после разблокировки хранилища.
             </p>
           </div>
           <div class="vault">
@@ -517,7 +585,7 @@
             <h2>API-клиент.<br />Ваши обычные файлы.</h2>
             <p>
               Импортируйте коллекцию Postman. Каждый запрос станет отдельным JSON-файлом в вашей
-              папке. Запускайте запросы локально или через открытое SSH-соединение.
+              папке. Выполняйте запросы локально или через открытое SSH-соединение.
             </p>
             <div class="tool-graphic">
               <div class="small">COLLECTION /</div>
@@ -550,7 +618,7 @@
               Без регистрации. Скачайте nocx для своей системы и продолжайте с привычными хостами.
             </p>
             <p class="version">
-              <b data-version>v0.6.0</b>, выпущен <span data-released>2026-10-19</span> · MIT
+              <b data-version>v0.6.1</b>, выпущен <span data-released>2026-10-20</span> · MIT
             </p>
             <p class="aside-note">Ранний релиз, без формальной поддержки.</p>
           </div>
@@ -613,8 +681,9 @@
           <details>
             <summary>Можно перенести SSH-подключения?</summary>
             <p>
-              Да. nocx импортирует ~/.ssh/config и экспорт из Tabby. Пароли и парольные фразы ключей
-              хранятся в vault; подключение ссылается на секрет.
+              Да. nocx импортирует профили и группы из Tabby. При подключении он разрешает
+              псевдонимы из ~/.ssh/config, но не импортирует этот файл. Пароли и парольные фразы
+              ключей можно связать с секретами в vault.
             </p>
           </details>
           <details>
@@ -655,8 +724,8 @@
           </nav>
         </div>
         <p>
-          <a href="https://github.com/shady2k/nocx/blob/main/docs/release-notes/v0.6.0.md"
-            >Заметки к выпуску <span data-version>v0.6.0</span></a
+          <a href="https://github.com/shady2k/nocx/blob/main/docs/release-notes/v0.6.1.md"
+            >Заметки к выпуску <span data-version>v0.6.1</span></a
           >
         </p>
       </footer>

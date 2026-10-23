@@ -2146,3 +2146,89 @@ body {
 .os-tab {
   display: inline-block;
 }
+
+/* Public-site pillar demos: restrained, keyboard-native HTML controls. */
+.pillar-demos {
+  padding: 3.5rem 0 2rem;
+}
+.pillar-demos > h2 {
+  max-width: 18ch;
+  font-family: var(--sans);
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  line-height: 1.05;
+}
+.pillar-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+.pillar-card {
+  min-width: 0;
+  padding: 1.25rem;
+  border: 1px solid var(--line, #d8dbd1);
+  border-radius: 1rem;
+  background: var(--paper, #fbfcf8);
+}
+.pillar-card h3 {
+  margin: 0 0 0.7rem;
+  font-size: 1.2rem;
+}
+.pillar-card p {
+  line-height: 1.5;
+}
+.pillar-card label {
+  display: block;
+  margin: 0.65rem 0 0.35rem;
+  font-weight: 600;
+}
+.pillar-card select,
+.demo-action {
+  max-width: 100%;
+  min-height: 2.75rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--line, #b9beb3);
+  border-radius: 0.5rem;
+  color: inherit;
+  background: #fff;
+  font: inherit;
+}
+.demo-action {
+  margin-top: 0.7rem;
+  cursor: pointer;
+}
+.demo-action:focus-visible,
+.pillar-card select:focus-visible {
+  outline: 3px solid #347e68;
+  outline-offset: 2px;
+}
+.demo-value,
+.demo-response {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  background: #202c29;
+  color: #f2f3e8;
+  font-family: var(--mono);
+}
+.demo-note,
+.demo-status {
+  font-size: 0.9rem;
+}
+.demo-response {
+  min-height: 5rem;
+}
+@media (max-width: 720px) {
+  .pillar-demos {
+    padding: 2rem 0 1rem;
+  }
+  .pillar-grid {
+    grid-template-columns: 1fr;
+  }
+  .pillar-card {
+    padding: 1rem;
+  }
+}

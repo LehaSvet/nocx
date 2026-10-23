@@ -2,41 +2,26 @@
 
 # nocx
 
-A local-first terminal with GPU-accelerated rendering and a built-in SSH
-manager. No account, no cloud service of its own, no product telemetry — the
-network it touches is the network you point it at.
+<!-- Claims verified against docs/architecture.md, internal/vault/system, internal/vault/vault.go, internal/profile/profile.go, internal/importer/tabby.go, internal/apicoll/collection.go and internal/apiimport. -->
 
-**[shady2k.github.io/nocx](https://shady2k.github.io/nocx/)** — what it does, and how to install it.
+**A local-first terminal built on the platform WebView rather than Chromium.** On macOS it uses WKWebView; the Linux AppImage carries WebKitGTK. No comparative memory claim is made here.
 
-**Stack:** Go backend (PTY, SSH, session, transport) + client-painted cell renderer +
-Wails v3 desktop shell, connected over one WebSocket carrying a raw binary data
-plane and a JSON-RPC 2.0 control plane.
+1. **A native WebView by construction.** Wails uses the platform WebView—WKWebView on macOS and WebKitGTK on Linux—instead of Chromium. The Linux AppImage carries its WebKitGTK runtime. This describes the runtime architecture, not a measured memory advantage.
+2. **Secrets stay references.** nocx stores secrets in an OS-keychain provider or its encrypted file provider; command history keeps a reference in place of the secret value.
+3. **SSH connections stay organized.** Create profiles and groups, and link passwords or key passphrases from the vault. Tabby profiles and groups can be imported; `~/.ssh/config` aliases can be resolved, not imported.
+4. **An API client lives in your terminal.** Organize requests into file-backed collections, use environments, and import Postman collections. It is a focused API client, not a claim of full Postman feature parity.
 
-**Status:** `v0.6.0`, early release, no formal support. macOS (universal) and
-Linux (x86_64 AppImage). 0.6 adds a backend-painted cell renderer and agent
-work orchestrated in nocx panes, with herdr no longer needed. Tabs and workspaces,
-session restore, the sidebar (Files, Git, Ports, Notes, Operations), encrypted
-command history, the vault, snippets, file transfer between machines, an API
-client, and an assistant that runs things also ship — see the
-[0.6.0 release notes](docs/release-notes/v0.6.0.md) for details, and the
-[0.3.0 notes](docs/release-notes/v0.3.0.md) for earlier changes.
+Tabs, command output, notes and interface layout restore after restart; running processes do not resume. Files, Git, ports and transfers follow the active local or SSH tab.
 
-> An earlier version of this line said SSH, tabs and cwd were "under active
-> development" long after they shipped. It is named rather than quietly
-> replaced because a status line is the one part of a README a reader trusts
-> without checking, and this one was wrong for two releases.
+**[nocx.dev](https://nocx.dev/)** — product overview and installation.
+
+**Stack:** Go backend (PTY, SSH, session, transport) + client-painted cell renderer + Wails v3 desktop shell. Wails uses the platform WebView (WKWebView on macOS and WebKitGTK on Linux; the Linux AppImage carries WebKitGTK).
+
+**Status:** `v0.6.1`, early release, no formal support. macOS (universal) and Linux (x86_64 AppImage). See the [0.6.1 release notes](docs/release-notes/v0.6.1.md).
 
 ## What makes it different
 
-Flawless rendering of modern agent TUIs (Claude Code, aider, …) is table-stakes;
-the wedge is the _combination_, all local in one app: Ghostty-grade rendering,
-an integrated SSH manager, a secrets vault that leaves a reference in the
-command instead of the value, command blocks with completions and a real
-editor at the prompt, an API client whose collections are files in a folder you
-own, and an assistant that acts inside the same scrollback — without an account
-or a cloud service of ours.
-
-Everything in that list ships in `v0.6.0`. The terminal is painted from the backend cell model; nocx also coordinates agents in panes without requiring herdr.
+A terminal, SSH connection manager, secrets vault and file-backed API client in one local-first app. The assistant can act in the same scrollback, with user approval; the configured model provider’s data-retention policy still applies.
 
 ## Install (macOS)
 
