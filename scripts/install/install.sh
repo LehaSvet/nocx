@@ -157,7 +157,7 @@ trap 'rollback_install; cleanup_install; cleanup' EXIT
 trap 'rollback_install; cleanup_install; cleanup; exit 1' HUP INT TERM
 cp "$tmp/nocx.AppImage" "$install_tmp" || fail 'cannot stage verified AppImage in ~/.local/bin'
 chmod 755 "$install_tmp" || fail 'cannot make staged AppImage executable'
-printf '[Desktop Entry]\nName=nocx\nExec=%s\nIcon=nocx\nType=Application\nCategories=Utility;TerminalEmulator;\n' "$bin_dir/nocx" > "$desktop_tmp" || fail 'cannot stage desktop entry'
+printf '[Desktop Entry]\nName=nocx\nExec=%s\nIcon=nocx\nType=Application\nCategories=Utility;TerminalEmulator;\nStartupWMClass=nocx\n' "$bin_dir/nocx" > "$desktop_tmp" || fail 'cannot stage desktop entry'
 cp "$tmp/nocx.png" "$icon_tmp" || fail 'cannot stage nocx icon'
 # Back up existing user files before replacement. If any rename fails, the exit
 # trap restores them (or removes newly created files) before dropping staging data.

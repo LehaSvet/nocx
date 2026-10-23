@@ -99,6 +99,8 @@ run_ok() {
   test -x "$TMP/home/.local/bin/nocx"
   cmp "$TMP/release/app.AppImage" "$TMP/home/.local/bin/nocx"
   test -f "$TMP/home/.local/share/applications/nocx.desktop"
+  test "$(grep -c '^StartupWMClass=nocx$' "$TMP/home/.local/share/applications/nocx.desktop")" -eq 1
+  ! grep -q '^StartupWMClass=AppRun.wrapped$' "$TMP/home/.local/share/applications/nocx.desktop"
   test -f "$TMP/home/.local/share/icons/hicolor/256x256/apps/nocx.png"
 }
 run_ok compact
