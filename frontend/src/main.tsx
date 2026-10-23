@@ -114,6 +114,7 @@ import {
 } from './sidebar-width'
 import { UIStateClient } from './uistate-client'
 import { OUTPUT_WRAP_DEFAULT, OUTPUT_WRAP_KEY, applyOutputWrap } from './output-wrap'
+import { applyTerminalFont, TERMINAL_FONT_KEY } from './terminal-font'
 import { REASONING_EXPANDED_KEY, applyReasoningExpanded } from './reasoning-expanded'
 import { applyOutputCap, OUTPUT_CAP_KEY } from './output-cap'
 import { applyRestoreOnStartup, RESTORE_ON_STARTUP_KEY } from './restore-setting'
@@ -1282,6 +1283,7 @@ function main(): void {
         // has overridden, in place, with no restart and no reflow of the
         // blocks that carry their own answer.
         applyOutputWrap(snap.values[OUTPUT_WRAP_KEY])
+        void applyTerminalFont(snap.values[TERMINAL_FONT_KEY])
         // Live in the same sense: flipping it opens or shuts the thinking
         // notes ALREADY on screen, so the setting is never contradicted by
         // the answers a person is looking at.
@@ -2081,6 +2083,8 @@ function main(): void {
         }
         reconcileThemeFromGo(snap.values[THEME_KEY] as string | undefined, appliedThemeId)
         applyOutputWrap(snap.values[OUTPUT_WRAP_KEY])
+        await applyTerminalFont(snap.values[TERMINAL_FONT_KEY])
+        if (generation !== connectionGeneration || !dispatcher.connected) return
         applyReasoningExpanded(snap.values[REASONING_EXPANDED_KEY])
         applyOutputCap(snap.values[OUTPUT_CAP_KEY])
         applyRestoreOnStartup(snap.values[RESTORE_ON_STARTUP_KEY])

@@ -239,6 +239,14 @@ where to get it, because the commit-message hook resolves tasks through `br`.
 
 The e2e suite additionally needs its browser once: `npx playwright install chromium`.
 
+**Terminal font.** In **Settings → Terminal → Font family**, choose **Nordwand
+Mono** to use the bundled [Nordwand Mono 1.3.4](https://github.com/tywr/Nordwand-Mono/releases/tag/1.3.4)
+without installing a font or downloading one at runtime. Regular, italic, bold,
+and bold italic are included under the [SIL Open Font License](frontend/public/fonts/nordwand-mono/LICENSE-FONT.txt).
+The choice applies to the command editor and terminal output, is saved across
+restarts, and leaves the accepted terminal grid unchanged when switched live.
+**System default** restores the theme's original font stack and remains the default.
+
 **Native Fish.** Helper-hosted Fish preserves its normal configuration order,
 universal variables, history and prompt functions; it does not run through Bash.
 The verified startup prelude is Fish 4.9.3's

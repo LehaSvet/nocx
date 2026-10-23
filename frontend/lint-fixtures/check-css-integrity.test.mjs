@@ -41,3 +41,15 @@ describe('undefined-var', () => {
     expect(undefinedVarDetails().some((d) => d.includes('--fixture-runtime-width'))).toBe(false)
   })
 })
+
+describe('font-family token ownership', () => {
+  it('allows font-face descriptors but still rejects literal families on elements', () => {
+    const hits = checkCSSIntegrity({
+      entry: resolve(fixture, 'entry.css'),
+      stylesDir: resolve(fixture, 'styles'),
+      uiDir: resolve(fixture, 'ui'),
+    }).filter((v) => v.rule === 'untokenised-type' && v.detail.includes('Fixture Mono'))
+    expect(hits).toHaveLength(1)
+    expect(hits[0].detail).toContain('(1×)')
+  })
+})

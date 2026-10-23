@@ -9,6 +9,7 @@ import { restoredBlock } from './restored-block'
 import {
   blockColumnsOf,
   paintStoredRows,
+  repaintStoredRows,
   paintUnreadableRows,
   parseStoredBlockRows,
   type StoredBlockRows,
@@ -53,6 +54,39 @@ describe('stored block rows', () => {
     expect(row.dataset.blockId).toBe('block-7')
     expect(row.dataset.artifactVersion).toBe('artifact-v4')
     expect(row.dataset.logicalLine).toBe('12')
+  })
+
+  it('repaints loaded output without moving the live region or losing a read-failure notice', () => {
+    const container = document.createElement('div')
+    const block = document.createElement('article')
+    block.dataset.entryId = 'font-repaint-block'
+    container.appendChild(block)
+    paintStoredRows(
+      block,
+      { ...stored, artifactVersion: 'font-artifact' },
+      {
+        metric: null,
+        palette: DEFAULT_SNAPSHOT,
+      },
+    )
+    const live = document.createElement('div')
+    block.appendChild(live)
+    paintUnreadableRows(block)
+    const notice = block.querySelector('[data-output-unreadable]')
+    const text = block.querySelector('.cmd-output')!.textContent
+    const output = block.querySelector<HTMLElement>('.cmd-output')!
+    output.scrollLeft = 37
+
+    repaintStoredRows(container, { metric: null, palette: DEFAULT_SNAPSHOT })
+
+    expect(block.querySelector('.cmd-output')!.textContent).toBe(text)
+    expect(block.querySelector('.cmd-output')).toBe(output)
+    expect(output.scrollLeft).toBe(37)
+    expect([...block.children]).toEqual([block.querySelector('.cmd-output'), live, notice])
+    expect(
+      block.querySelector('[data-artifact-version]')?.getAttribute('data-artifact-version'),
+    ).toBe('font-artifact')
+    expect(block.querySelector('[data-output-unreadable]')).toBe(notice)
   })
 
   it('paints backend rows through the shared row painter', () => {

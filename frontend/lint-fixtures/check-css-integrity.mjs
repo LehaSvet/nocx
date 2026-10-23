@@ -531,6 +531,9 @@ function findUntokenisedType(ast) {
   css.walk(ast, {
     visit: 'Declaration',
     enter(node) {
+      // @font-face descriptors name the registered face; var() cannot
+      // replace that name. Only declarations styling elements owe a token.
+      if (this.atrule?.name === 'font-face') return
       const value = css.generate(node.value).trim()
       const at = node.loc?.start.line ?? 0
 
