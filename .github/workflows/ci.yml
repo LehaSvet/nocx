@@ -287,10 +287,17 @@ jobs:
       - name: Test (the widget-wrapping zsh plugin stack, both orders)
         run: go test -race -tags gtk3,nocx_framecheck -count=1 -v -run 'TestLocalZshPane_ThePluginStackIntegratesInEitherOrder' ./internal/shellintegration/
 
-      - name: Test (the OS-specific packages)
+      - name: Test (the OS-specific packages, per-test timings)
         env:
           PKGS: ${{ steps.pkgs.outputs.list }}
-        run: go test -race -tags gtk3,nocx_framecheck -count=1 $PKGS
+        # Keep go test's JSON stream in the log and summarize test-level pass/fail events
+        # per package. PIPESTATUS is copied on the very next command so the step
+        # returns go test's status, not the summarizer's.
+        run: |
+          set +e
+          go test -json -race -tags gtk3,nocx_framecheck -count=1 $PKGS | node scripts/summarize-go-test-json.mjs
+          pipeline_status=("${PIPESTATUS[@]}")
+          exit "${pipeline_status[0]}"
 
       # THE SECOND PASS. A package whose Go files all carry nocx_local_ssh does
       # not appear in `go list ./...` at all, so it was not merely failing to be

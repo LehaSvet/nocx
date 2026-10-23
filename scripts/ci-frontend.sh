@@ -120,6 +120,7 @@ if [ "$RUN_ROOT" = 1 ]; then
   echo "=== root: npm ci ==="
   (cd /work && npm ci --silent)
   echo "=== root: typecheck (the e2e suite) ==="; (cd /work && npm run typecheck)
+  echo "=== root: Go test JSON summarizer tests ==="; (cd /work && node --test scripts/summarize-go-test-json.test.mjs)
   echo "=== root: lint ===";                      (cd /work && npm run lint)
   echo "=== root: format:check ===";              (cd /work && npm run format:check)
   echo "=== root: every spec file is collected ==="
