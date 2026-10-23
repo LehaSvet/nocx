@@ -4450,7 +4450,13 @@ export class TerminalContent extends BasePaneContent {
       // The old session's seam reader goes with it: the new bind registers
       // its own under the new session id, and a stale one would read the
       // pane's CURRENT model for a session that no longer exists.
-      if (this.session) paneScreenReaders.delete(this.session.sessionId)
+      if (this.session) {
+        paneScreenReaders.delete(this.session.sessionId)
+        // The companion coordinate map closes over the same pane's cell model
+        // and must leave with the screen reader, or every closed session
+        // keeps renderer state reachable from the module-level seam.
+        paneScreenMappings.delete(this.session.sessionId)
+      }
       this.session?.close()
       this.session = null
 
@@ -8788,7 +8794,10 @@ export class TerminalContent extends BasePaneContent {
     this.session?.detach()
     // The pane stops answering the seam with its death: a dead pane's
     // reader has no model worth reading and no session to be found under.
-    if (this.session) paneScreenReaders.delete(this.session.sessionId)
+    if (this.session) {
+      paneScreenReaders.delete(this.session.sessionId)
+      paneScreenMappings.delete(this.session.sessionId)
+    }
     this._cellModel = null
     this._selectionGesture?.dispose()
     this._selectionGesture = null

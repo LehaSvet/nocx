@@ -18255,6 +18255,65 @@ function paneScreen(): PaneScreenReading | null {
   return host.__nocxPaneScreen?.() ?? null
 }
 
+function paneCellToPixel(col: number, row: number): { x: number; y: number } | null {
+  const host = window as unknown as {
+    __nocxPaneCellToPixel?: (col: number, row: number) => { x: number; y: number } | null
+  }
+  return host.__nocxPaneCellToPixel?.(col, row) ?? null
+}
+
+describe('the pane screen mapping follows the session lifetime', () => {
+  it('drops the old mapping when reconnect replaces its session', async () => {
+    const client = makeClient()
+    const { content, tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    try {
+      tab.pane.classList.add('active')
+      const first = sessionOf(content)
+      tab.pane.setAttribute('data-session-id', first.sessionId)
+      first.fireScreenFrame(screenFrame(1, ['prompt']))
+      await vi.waitFor(() => expect(paneCellToPixel(1, 1)).toEqual({ x: 8, y: 16 }))
+
+      const onExit = first.onExit.mock.calls[0]?.[0] as
+        ((exit: { sessionId: string; cause: 'interrupted' }) => void) | undefined
+      expect(onExit).toBeDefined()
+      onExit!({ sessionId: first.sessionId, cause: 'interrupted' })
+      await expect(content.reconnect()).resolves.toBe(true)
+
+      // Exercise the public renderer seam with the departed session identity.
+      tab.pane.setAttribute('data-session-id', first.sessionId)
+      expect(paneCellToPixel(1, 1)).toBeNull()
+    } finally {
+      teardown()
+    }
+  })
+
+  it('drops the mapping when the pane is finally disposed', async () => {
+    const client = makeClient()
+    const { content, tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    const session = sessionOf(content)
+    try {
+      tab.pane.classList.add('active')
+      tab.pane.setAttribute('data-session-id', session.sessionId)
+      session.fireScreenFrame(screenFrame(1, ['prompt']))
+      await vi.waitFor(() => expect(paneCellToPixel(1, 1)).toEqual({ x: 8, y: 16 }))
+
+      tab.close()
+      tab.pane.setAttribute('data-session-id', session.sessionId)
+      expect(paneCellToPixel(1, 1)).toBeNull()
+    } finally {
+      teardown()
+    }
+  })
+})
+
 describe('the pane receives the screen plane into its cell model (nocx-zg3k3.2.8)', () => {
   it('a valid frame advances the model the active pane reads, paired with a refused stale one', async () => {
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
