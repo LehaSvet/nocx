@@ -66,7 +66,7 @@ var carrierScriptTokens = map[string]bool{
 	// option letters and their values
 	"g": true, "raw": true, "echo": true, "l": true, "a": true,
 	"bs": true, "count": true, "c": true, "n": true, "f": true,
-	"r": true, "gt": true, "le": true, "eq": true, "s": true,
+	"r": true, "gt": true, "ge": true, "le": true, "eq": true, "s": true,
 	// the loader's own function and variables
 	"R": true, "T": true, "F": true, "H": true,
 	"X": true, "L": true, "SHELL": true, "TMPDIR": true,
@@ -83,10 +83,11 @@ var carrierScriptTokens = map[string]bool{
 	"termios": true, "interrupted": true, "protocol": true,
 	"too-large": true, "no-temp": true, "no-digest": true,
 	"bad-digest": true, "no-fd": true, "no-source": true,
-	// numeric literals: descriptor numbers and redirections, the frame
-	// sequence, the digest tool's algorithm argument, the frame cap
+	// numeric literals: descriptor numbers and redirections, signal numbers,
+	// the minimum header length (header width minus its newline), the frame
+	// sequence, the digest tool's algorithm argument, and the frame cap
 	"0": true, "1": true, "2": true, "6": true, "7": true, "9": true,
-	"17": true, "256": true, "32768": true,
+	"3": true, "15": true, "16": true, "17": true, "18": true, "256": true, "32768": true,
 }
 
 // carrierTokenRE is how the script is broken into words for the allowlist

@@ -615,9 +615,8 @@ trap "R @INTERRUPTED@" 1 2 3 15
 [ "$T" ]&&stty raw -echo||R @TERMIOS@
 F=$(mktemp "${TMPDIR:-/tmp}/nocx.XXXXXX")||R @NOTEMP@
 printf "\033]1337;@READY@\a"
-X=$(dd bs=1 count=@HDRLEN@;echo .)
-[ ${#X} -eq @HDRLENPLUS1@ ]||R @INTERRUPTED@
-X=${X%?}
+X=$(dd bs=1 count=@HDRLEN@)
+[ ${#X} -ge @HDRLENMINUS1@ ]||R @INTERRUPTED@
 [ "${X#@MAGIC@ @SEQ@ }" != "$X" ]||R @PROTOCOL@
 L=${X##* }
 [ "$L" -gt 0 ]||R @PROTOCOL@
@@ -648,7 +647,7 @@ func carrierLoader() string {
 		"@MAGIC@", FrameMagic,
 		"@SEQ@", strconv.Itoa(FrameStageSeq),
 		"@HDRLEN@", strconv.Itoa(FrameHeaderLen),
-		"@HDRLENPLUS1@", strconv.Itoa(FrameHeaderLen+1),
+		"@HDRLENMINUS1@", strconv.Itoa(FrameHeaderLen-1),
 		"@MAX@", strconv.Itoa(MaxStageFrameLen),
 		"@DIGARG@", strconv.Itoa(carrierArgCount),
 		"@TERMIOS@", OutcomeToken(OutcomeLoaderTermiosUnavailable),

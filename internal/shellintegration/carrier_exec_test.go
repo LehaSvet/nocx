@@ -307,6 +307,24 @@ func carrierFor(t *testing.T, payload []byte) string {
 // Paired hasher cases (design §11 assertion 4)
 // ---------------------------------------------------------------------------
 
+// TestLoader_RealFrameHeaderDoesNotTreatItsNewlineAsProtocolData exercises
+// the complete production FrameHeader and sendFrame path. On shells where
+// command substitution preserves the header newline, the loader must strip
+// no framing bytes and still parse the declared body length.
+func TestLoader_RealFrameHeaderDoesNotTreatItsNewlineAsProtocolData(t *testing.T) {
+	payload := []byte(fakeStageOne)
+	home := loaderHome(t)
+	tmp := t.TempDir()
+	path := loaderPath(t, append(append([]string{}, loaderBaseTools...), "sha256sum")...)
+	s := startLoader(t, carrierFor(t, payload), loaderEnv(home, path, tmp), stdoutOnTerminal)
+	s.waitFor(LoaderReadyToken)
+	s.sendFrame(FrameStageSeq, payload)
+	s.waitFor("STAGE1_RAN")
+	if out := s.output(); strings.Contains(out, OutcomePrefix+OutcomeToken(OutcomeBootstrapProtocol)) {
+		t.Fatalf("a complete production frame header was refused as protocol: %s", out)
+	}
+}
+
 func TestLoader_SourcesVerifiedStageOne_WithSha256sum(t *testing.T) {
 	payload := []byte(fakeStageOne)
 	home := loaderHome(t)
@@ -470,6 +488,28 @@ func TestLoader_EOFMidFrameNamesBootstrapInterrupted(t *testing.T) {
 
 	if out := s.output(); strings.Contains(out, "STAGE1_RAN") {
 		t.Errorf("a truncated frame was executed; output:\n%s", out)
+	}
+}
+
+// TestLoader_HeaderMissingOnlyItsFinalNewlineIsInterrupted distinguishes a
+// valid-looking strict header prefix from a complete malformed header. The
+// declared body cannot be read after the stream closes, so the outcome is
+// interruption, not a protocol refusal.
+func TestLoader_HeaderMissingOnlyItsFinalNewlineIsInterrupted(t *testing.T) {
+	home := loaderHome(t)
+	tmp := t.TempDir()
+	path := loaderPathWithShortHeader(t, "NOCX1 1      200") // canonical header without LF
+	s := startLoader(t, "trap '' HUP; "+carrierFor(t, []byte(fakeStageOne)), loaderEnv(home, path, tmp), stdoutOnPipe)
+	s.waitFor(LoaderReadyToken)
+	h, err := FrameHeader(FrameStageSeq, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.write([]byte(h[:len(h)-1]))
+	_ = s.master.Close()
+	s.waitFor(OutcomePrefix + OutcomeToken(OutcomeBootstrapInterrupted))
+	if out := s.output(); strings.Contains(out, OutcomePrefix+OutcomeToken(OutcomeBootstrapProtocol)) {
+		t.Fatalf("missing final header newline was misclassified as protocol: %s", out)
 	}
 }
 
