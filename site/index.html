@@ -41,8 +41,9 @@
             <h1>Your context.<br /><span>Right where it belongs.</span></h1>
             <div>
               <p class="hero-desc">
-                A terminal for persistent work, built on the native WebView already provided by your
-                operating system: WKWebView on macOS and WebKitGTK on Linux. No Chromium bundle.
+                A terminal with a secrets vault, SSH connection manager and API client built in,
+                using your system WebView instead of bundling a browser engine: WKWebView on macOS
+                and WebKitGTK on Linux.
               </p>
               <div class="hero-actions">
                 <a class="button" href="#install">Try nocx<span>↓</span></a
@@ -338,70 +339,83 @@
           </figure>
           <!-- Product claims: native WebView—docs/architecture.md §§1,4; vault—internal/vault/system/system.go and internal/vault/vault.go; SSH profiles/groups—internal/profile/profile.go; Tabby import—internal/importer/tabby.go; API collection/environment—internal/apicoll/collection.go; Postman import—internal/apiimport/postman.go. Static demo data only; no commands or network requests. -->
           <section class="pillar-demos" id="pillars" aria-labelledby="pillar-title">
-            <p class="eyebrow">The four reasons</p>
-            <h2 id="pillar-title">A native WebView. A vault. SSH profiles. An API client.</h2>
+            <p class="eyebrow">Built for the whole workflow</p>
+            <h2 id="pillar-title">One terminal. Vault, SSH manager and API client included.</h2>
             <div class="pillar-grid">
               <article class="pillar-card">
-                <h3>Native WebView</h3>
-                <p>
-                  Wails uses the platform WebView: WKWebView on macOS and WebKitGTK on Linux. The
-                  Linux AppImage carries WebKitGTK. No Chromium bundle.
-                </p>
-                <label for="webview-demo">Choose platform</label>
-                <select id="webview-demo">
-                  <option value="mac">macOS</option>
-                  <option value="linux">Linux</option>
-                </select>
-                <p id="webview-demo-status" aria-live="polite">macOS uses WKWebView.</p>
-                <p class="demo-note">No comparative memory claim is made.</p>
-              </article>
-              <article class="pillar-card">
-                <h3>Vault references</h3>
-                <p>See how a saved secret is represented in command history:</p>
-                <code class="demo-value" id="vault-demo-value">DEPLOY_TOKEN=[secret value]</code>
-                <button
-                  type="button"
-                  class="demo-action"
-                  id="vault-demo-toggle"
-                  aria-pressed="false"
+                <h3>System WebView</h3>
+                <p>nocx uses your operating system’s WebView, not a bundled browser engine.</p>
+                <div
+                  class="app-illustration"
+                  role="img"
+                  aria-label="One nocx app process uses the system WebView; another app bundles a browser engine."
                 >
-                  Show saved form
-                </button>
-                <p class="demo-status" id="vault-demo-status" aria-live="polite">
-                  Demo only. No secret is stored.
+                  <div class="illustration-title">APP ARCHITECTURE</div>
+                  <div class="engine-row">
+                    <b>nocx process</b><span>→</span><strong>System WebView</strong>
+                  </div>
+                  <div class="engine-row muted">
+                    <b>Other process</b><span>→</span><strong>Bundled browser engine</strong>
+                  </div>
+                </div>
+                <p class="illustration-caption">
+                  Use the browser engine your platform already provides, without bundling another
+                  one.
                 </p>
               </article>
               <article class="pillar-card">
-                <h3>SSH profiles and groups</h3>
-                <label for="connection-demo">Choose a demo profile</label>
-                <select id="connection-demo">
-                  <option value="staging">Staging / api-demo</option>
-                  <option value="build">Build / build-demo</option>
-                </select>
-                <p id="connection-demo-status" aria-live="polite">
-                  Staging · group: API · credential: vault reference
-                </p>
-                <p class="demo-note">
-                  Tabby import is supported. SSH config aliases resolve at connect time; they are
-                  not imported.
+                <h3>Secrets vault</h3>
+                <p>Use saved secrets in commands without leaving their values in history.</p>
+                <div
+                  class="app-illustration"
+                  role="img"
+                  aria-label="Vault list with saved secrets and a command using a named vault reference. Example data."
+                >
+                  <div class="illustration-title">SECRETS · UNLOCKED</div>
+                  <div class="secret-row">● <span>DEPLOY_TOKEN</span><small>Token</small></div>
+                  <div class="secret-row">● <span>STAGING_KEY</span><small>SSH key</small></div>
+                  <div class="terminal-line">
+                    <i>›</i> deploy --token <em>{{secret:DEPLOY_TOKEN}}</em>
+                  </div>
+                </div>
+                <p class="illustration-caption">
+                  Keep the secret in the vault; history retains its named reference.
                 </p>
               </article>
               <article class="pillar-card">
-                <h3>API workbench</h3>
-                <label for="api-demo-env">Environment</label>
-                <select id="api-demo-env">
-                  <option value="local">Local demo</option>
-                  <option value="staging">Staging demo</option>
-                </select>
-                <button type="button" class="demo-action" id="api-demo-send">
-                  Preview request
-                </button>
-                <pre class="demo-response" id="api-demo-response" aria-live="polite">
-GET https://api.example.test/health
-Ready to preview · no request sent</pre>
-                <p class="demo-note">
-                  Fictional data only. This control does not access the network.
+                <h3>SSH connection manager</h3>
+                <p>Organize hosts into groups and connect with credentials held in your vault.</p>
+                <div
+                  class="app-illustration"
+                  role="img"
+                  aria-label="SSH manager with API and CI groups, a selected staging host, and a vault-reference credential. Example data."
+                >
+                  <div class="illustration-title">CONNECTIONS</div>
+                  <div class="host-row group">▾ API</div>
+                  <div class="host-row selected">● staging-api</div>
+                  <div class="host-row group">▾ CI</div>
+                  <div class="host-row">● build-runner</div>
+                  <div class="credential-row">Credential <em>{{secret:STAGING_KEY}}</em></div>
+                </div>
+                <p class="illustration-caption">
+                  Find a host by group and connect without copying its credential.
                 </p>
+              </article>
+              <article class="pillar-card">
+                <h3>API client</h3>
+                <p>Keep requests, environments and responses together in your workspace.</p>
+                <div
+                  class="app-illustration api-illustration"
+                  role="img"
+                  aria-label="Static API request example: GET health endpoint, staging environment, successful response in 84 milliseconds and JSON body. Example data; no request was sent."
+                >
+                  <div class="illustration-title">API · REQUEST · HEALTH</div>
+                  <div class="request-row"><b>GET</b><span>api.example.test/health</span></div>
+                  <div class="env-row">Environment <strong>Staging ▾</strong></div>
+                  <div class="response-head"><strong>200 OK</strong><span>84 ms</span></div>
+                  <pre>{ "status": "ok", "version": "1.2.0" }</pre>
+                </div>
+                <p class="illustration-caption">See the request setup and response at a glance.</p>
               </article>
             </div>
           </section>
@@ -489,7 +503,25 @@ Ready to preview · no request sent</pre>
               id="feature-panel"
               role="tabpanel"
               aria-labelledby="feature-0"
-            ></div>
+            >
+              <div class="visual-label">FILES · /workspace/demo</div>
+              <div
+                class="mini-panel"
+                role="img"
+                aria-label="Static file-browser illustration showing a workspace tree and current directory."
+              >
+                <div class="mini-head"><span>WORKSPACE</span><span>⌂</span></div>
+                <div class="mini-content">
+                  <div class="file-line"><span>▾ src</span><em>folder</em></div>
+                  <div class="file-line"><span>　▸ app</span><em>folder</em></div>
+                  <div class="file-line"><span>　▸ components</span><em>folder</em></div>
+                  <div class="file-line"><span>▸ docs</span><em>folder</em></div>
+                  <div class="file-line"><span>README.md</span><em>2.4 KB</em></div>
+                  <div class="mini-prompt">› pwd　/workspace/demo</div>
+                </div>
+              </div>
+              <p class="mini-note">Your active tab’s files, right beside the terminal.</p>
+            </div>
           </div>
         </section>
         <section class="section restore">

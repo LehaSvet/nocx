@@ -41,8 +41,9 @@
             <h1>Ваш контекст.<br /><span>На своём месте.</span></h1>
             <div>
               <p class="hero-desc">
-                Терминал для работы с сохранением контекста на встроенном WebView вашей системы:
-                WKWebView в macOS и WebKitGTK в Linux. Без встроенного Chromium.
+                Терминал со встроенными хранилищем секретов, менеджером SSH-подключений и
+                API-клиентом. Он использует системный WebView вместо встроенного браузерного движка:
+                WKWebView в macOS и WebKitGTK в Linux.
               </p>
               <div class="hero-actions">
                 <a class="button" href="#install">Попробовать nocx<span>↓</span></a
@@ -342,70 +343,89 @@
           </figure>
           <!-- Product claims: native WebView—docs/architecture.md §§1,4; vault—internal/vault/system/system.go and internal/vault/vault.go; SSH profiles/groups—internal/profile/profile.go; Tabby import—internal/importer/tabby.go; API collection/environment—internal/apicoll/collection.go; Postman import—internal/apiimport/postman.go. Только статические демонстрационные данные; команды и сетевые запросы не выполняются. -->
           <section class="pillar-demos" id="pillars" aria-labelledby="pillar-title">
-            <p class="eyebrow">Четыре причины</p>
-            <h2 id="pillar-title">Встроенный WebView. Vault. SSH-профили. API-клиент.</h2>
+            <p class="eyebrow">Всё для рабочего процесса</p>
+            <h2 id="pillar-title">
+              Один терминал: хранилище секретов, менеджер SSH-подключений и API-клиент.
+            </h2>
             <div class="pillar-grid">
               <article class="pillar-card">
-                <h3>Встроенный WebView</h3>
+                <h3>Системный WebView</h3>
                 <p>
-                  Wails использует платформенный WebView: WKWebView в macOS и WebKitGTK в Linux. В
-                  AppImage для Linux включён WebKitGTK. Встроенного Chromium нет.
+                  nocx использует WebView операционной системы, а не встроенный браузерный движок.
                 </p>
-                <label for="webview-demo">Выберите платформу</label>
-                <select id="webview-demo">
-                  <option value="mac">macOS</option>
-                  <option value="linux">Linux</option>
-                </select>
-                <p id="webview-demo-status" aria-live="polite">macOS использует WKWebView.</p>
-                <p class="demo-note">Сравнительных заявлений о потреблении памяти здесь нет.</p>
-              </article>
-              <article class="pillar-card">
-                <h3>Ссылки на секреты</h3>
-                <p>Посмотрите, как сохранённый секрет представлен в истории команды:</p>
-                <code class="demo-value" id="vault-demo-value"
-                  >DEPLOY_TOKEN=[значение секрета]</code
+                <div
+                  class="app-illustration"
+                  role="img"
+                  aria-label="Процесс nocx использует системный WebView; другое приложение включает браузерный движок в свою поставку."
                 >
-                <button
-                  type="button"
-                  class="demo-action"
-                  id="vault-demo-toggle"
-                  aria-pressed="false"
-                >
-                  Показать сохранённый вид
-                </button>
-                <p class="demo-status" id="vault-demo-status" aria-live="polite">
-                  Только демонстрация. Секрет не сохраняется.
+                  <div class="illustration-title">АРХИТЕКТУРА ПРИЛОЖЕНИЯ</div>
+                  <div class="engine-row">
+                    <b>Процесс nocx</b><span>→</span><strong>Системный WebView</strong>
+                  </div>
+                  <div class="engine-row muted">
+                    <b>Другой процесс</b><span>→</span><strong>Встроенный браузер</strong>
+                  </div>
+                </div>
+                <p class="illustration-caption">
+                  Используйте движок браузера, который уже предоставляет система, без дополнительной
+                  встроенной копии.
                 </p>
               </article>
               <article class="pillar-card">
-                <h3>SSH-профили и группы</h3>
-                <label for="connection-demo">Выберите демонстрационный профиль</label>
-                <select id="connection-demo">
-                  <option value="staging">Staging / api-demo</option>
-                  <option value="build">Build / build-demo</option>
-                </select>
-                <p id="connection-demo-status" aria-live="polite">
-                  Staging · группа: API · учётные данные: ссылка из vault
+                <h3>Хранилище секретов</h3>
+                <p>Используйте сохранённые секреты в командах, не оставляя значения в истории.</p>
+                <div
+                  class="app-illustration"
+                  role="img"
+                  aria-label="Список сохранённых секретов и команда со ссылкой на секрет по имени. Пример данных."
+                >
+                  <div class="illustration-title">СЕКРЕТЫ · ОТКРЫТО</div>
+                  <div class="secret-row">● <span>DEPLOY_TOKEN</span><small>Токен</small></div>
+                  <div class="secret-row">● <span>STAGING_KEY</span><small>SSH-ключ</small></div>
+                  <div class="terminal-line">
+                    <i>›</i> deploy --token <em>{{secret:DEPLOY_TOKEN}}</em>
+                  </div>
+                </div>
+                <p class="illustration-caption">
+                  Секрет хранится в vault, а в истории остаётся ссылка по имени.
                 </p>
-                <p class="demo-note">
-                  Импорт Tabby поддерживается. Псевдонимы SSH-конфига разрешаются при подключении,
-                  но не импортируются.
+              </article>
+              <article class="pillar-card">
+                <h3>Менеджер SSH-подключений</h3>
+                <p>Группируйте хосты и подключайтесь с учётными данными из vault.</p>
+                <div
+                  class="app-illustration"
+                  role="img"
+                  aria-label="Менеджер SSH с группами API и CI, выбранным хостом staging-api и учётными данными-ссылкой из vault. Пример данных."
+                >
+                  <div class="illustration-title">ПОДКЛЮЧЕНИЯ</div>
+                  <div class="host-row group">▾ API</div>
+                  <div class="host-row selected">● staging-api</div>
+                  <div class="host-row group">▾ CI</div>
+                  <div class="host-row">● build-runner</div>
+                  <div class="credential-row">Учётные данные <em>{{secret:STAGING_KEY}}</em></div>
+                </div>
+                <p class="illustration-caption">
+                  Выберите хост в нужной группе, не копируя его пароль или ключ.
                 </p>
               </article>
               <article class="pillar-card">
                 <h3>API-клиент</h3>
-                <label for="api-demo-env">Окружение</label>
-                <select id="api-demo-env">
-                  <option value="local">Локальное демо</option>
-                  <option value="staging">Демо Staging</option>
-                </select>
-                <button type="button" class="demo-action" id="api-demo-send">
-                  Показать запрос
-                </button>
-                <pre class="demo-response" id="api-demo-response" aria-live="polite">
-GET https://api.example.test/health
-Можно посмотреть · запрос не отправлен</pre>
-                <p class="demo-note">Только вымышленные данные. Элемент не обращается к сети.</p>
+                <p>Запросы, окружения и ответы остаются вместе в рабочем пространстве.</p>
+                <div
+                  class="app-illustration api-illustration"
+                  role="img"
+                  aria-label="Статический пример API-запроса: GET health, окружение staging, успешный ответ за 84 мс и JSON. Пример данных; запрос не отправлялся."
+                >
+                  <div class="illustration-title">API · ЗАПРОС · HEALTH</div>
+                  <div class="request-row"><b>GET</b><span>api.example.test/health</span></div>
+                  <div class="env-row">Окружение <strong>Staging ▾</strong></div>
+                  <div class="response-head"><strong>200 OK</strong><span>84 мс</span></div>
+                  <pre>{ "status": "ok", "version": "1.2.0" }</pre>
+                </div>
+                <p class="illustration-caption">
+                  Сразу видны параметры запроса и полученный ответ.
+                </p>
               </article>
             </div>
           </section>
@@ -493,7 +513,25 @@ GET https://api.example.test/health
               id="feature-panel"
               role="tabpanel"
               aria-labelledby="feature-0"
-            ></div>
+            >
+              <div class="visual-label">ФАЙЛЫ · /workspace/demo</div>
+              <div
+                class="mini-panel"
+                role="img"
+                aria-label="Статичная иллюстрация файлового браузера: дерево рабочего пространства и текущая папка."
+              >
+                <div class="mini-head"><span>РАБОЧЕЕ ПРОСТРАНСТВО</span><span>⌂</span></div>
+                <div class="mini-content">
+                  <div class="file-line"><span>▾ src</span><em>папка</em></div>
+                  <div class="file-line"><span>　▸ app</span><em>папка</em></div>
+                  <div class="file-line"><span>　▸ components</span><em>папка</em></div>
+                  <div class="file-line"><span>▸ docs</span><em>папка</em></div>
+                  <div class="file-line"><span>README.md</span><em>2,4 КБ</em></div>
+                  <div class="mini-prompt">› pwd　/workspace/demo</div>
+                </div>
+              </div>
+              <p class="mini-note">Файлы активной вкладки рядом с терминалом.</p>
+            </div>
           </div>
         </section>
         <section class="section restore">
