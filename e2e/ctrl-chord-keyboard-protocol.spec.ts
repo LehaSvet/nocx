@@ -19,10 +19,11 @@ for (const [protocol, enable, want] of [
     // A raw-mode reader prints the bytes it receives, up to a full sequence.
     const count = want.split(' ').length
     await page.keyboard.type(
-      `printf '${enable}'; stty raw -echo; echo READY; dd bs=1 count=${String(count)} 2>/dev/null | od -An -tx1; stty sane`,
+      `printf '${enable}'; stty raw -echo; printf 'RE%sADY\\n' ''; dd bs=1 count=${String(count)} 2>/dev/null | od -An -tx1; stty sane`,
     )
     await page.keyboard.press('Enter')
-    await expect(page.locator(GRID)).toContainText('READY', { timeout: 15_000 })
+    // The marker is split in the command text and only appears after raw mode is active.
+    await expect(page.getByRole('row', { name: 'READY', exact: true })).toBeVisible()
     await page.locator(GRID).click()
     await page.keyboard.press('Control+c')
     await expect(page.locator(GRID)).toContainText(want, { timeout: 10_000 })
