@@ -335,6 +335,32 @@ function summonAnswersCeiling(pane: HTMLElement): number {
 const RESIZE_SETTLE_MS = 80
 
 /**
+ * The LAST-RESORT release of an alternate-screen fence (nocx-1ebrs.10): how
+ * long the switch may hold the person's input with no answer at all.
+ *
+ * IT IS NOT THE NORMAL PATH. The fence opens on the transport's own receipt,
+ * and nothing below this line decides an ordinary switch.
+ *
+ * It exists because NOTHING ELSE BOUNDS THE WAIT. `dispatcher.call` carries no
+ * per-request timeout — a pending call is settled by its answer, by a socket
+ * close, or by an abort, and by nothing else — and the connection's heartbeat
+ * does not help: it pings an idle socket and closes one that stops answering
+ * PINGS, so a coordinator that stalls this one request while still answering
+ * transport frames leaves the receipt pending forever and the held keys with
+ * it.
+ *
+ * The value comes from the measurements this bead was opened with: on a real
+ * PTY program the resize request goes out 87–234 ms after the first fullscreen
+ * frame and the pty is corrected 109–274 ms after the switch. 1.5 s is more
+ * than five times the slowest observed round trip, and a person's held
+ * keystrokes surfacing late is still better than keystrokes that never land.
+ * On expiry the held intents are DELIVERED, in order — a key typed at the
+ * wrong width is a rendering problem; a key swallowed forever is lost work —
+ * and the release is logged so the next investigation can see it happened.
+ */
+const ALT_SCREEN_RECEIPT_DEADLINE_MS = 1_500
+
+/**
  * How long output is treated as the shell's answer to a resize rather than as
  * unread activity.
  *
@@ -596,11 +622,13 @@ interface HeldWindow {
  *  carry the input must not keep holding it. `generation` numbers the
  *  requests so a late answer to an older one cannot open the fence, and
  *  `sent` remembers the report the newest one carried, so the same
- *  measurement is not asked for twice.
+ *  measurement is not asked for twice, and `deadline` is the one timer here —
+ *  the last-resort release of a request that is never answered
+ *  (ALT_SCREEN_RECEIPT_DEADLINE_MS), not a step in the normal path.
  *
- *  There is no timer in here and no frame count: the receipt is an RPC
- *  answer, the close is an RPC rejection or a socket loss, and those are the
- *  only two things that open the fence. */
+ *  Otherwise there is no timer in here and no frame count: the receipt is an
+ *  RPC answer, the close is an RPC rejection or a socket loss, and those are
+ *  what opens the fence. */
 interface AlternateScreenFence {
   /** The intents produced after the switch, in the order produced. */
   held: SessionIntent[]
@@ -610,6 +638,8 @@ interface AlternateScreenFence {
   newest: number
   /** The report the newest request carried, so a repeat is not sent again. */
   sent: SessionSize | null
+  /** The last-resort release's timer (ALT_SCREEN_RECEIPT_DEADLINE_MS). */
+  deadline: number | undefined
 }
 
 /** The host callbacks a tab may hand a TerminalContent. Named rather than
@@ -1555,8 +1585,12 @@ export class TerminalContent extends BasePaneContent {
    *  arrive before it against that grid, and holds what the person produces
    *  until a receipt says the resize applied. Nothing here waits on a
    *  painted frame — a frame can depend on the input this fence is holding,
-   *  which is the deadlock the receipt exists to avoid — and nothing here is
-   *  a timer: `dispatcher.call` answers or the socket closes. */
+   *  which is the deadlock the receipt exists to avoid.
+   *
+   *  The one timer is a last-resort release, not a step in the order: nothing
+   *  else bounds a request that is never answered, because `dispatcher.call`
+   *  has no per-request timeout and the connection's heartbeat keeps a socket
+   *  that still answers pings alive. See ALT_SCREEN_RECEIPT_DEADLINE_MS. */
   private _fence: AlternateScreenFence | null = null
   /** The columns this pane presents alternate-screen frames on, from the
    *  switch until the program's own grid catches up with the pane's
@@ -4642,6 +4676,7 @@ export class TerminalContent extends BasePaneContent {
     // binding's resize receipt will never arrive for anything this pane sends
     // now, and the input it was holding belongs to a surface whose screen
     // this bind is about to replace (nocx-1ebrs.10).
+    clearTimeout(this._fence?.deadline)
     this._fence = null
     this._switchCols = null
     for (const unsubscribe of this._blockRowsUnsubs) unsubscribe()
@@ -7037,7 +7072,7 @@ export class TerminalContent extends BasePaneContent {
     // has nothing that could ever open the fence — it would hold the input
     // for good instead of for a round trip.
     if (this.session === null) return
-    this._fence = { held: [], generation: 0, newest: 0, sent: null }
+    this._fence = { held: [], generation: 0, newest: 0, sent: null, deadline: undefined }
     // The presentation the switch starts is this pane's own grid, until a
     // frame arrives that agrees with it (see _switchCols).
     this._switchCols = this.lastLocalGridSize?.cols ?? null
@@ -7077,6 +7112,7 @@ export class TerminalContent extends BasePaneContent {
     fence.newest = generation
     clearTimeout(this.resizeTimer)
     this.resizeTimer = undefined
+    this._armFenceDeadline(fence, generation)
     const receipt = session.resizeApplied(size)
     void receipt.then(
       (outcome) => {
@@ -7105,26 +7141,63 @@ export class TerminalContent extends BasePaneContent {
   }
 
   /**
+   * The last-resort release for a request nothing answered
+   * (ALT_SCREEN_RECEIPT_DEADLINE_MS).
+   *
+   * Armed per generation and re-armed by every new request, so it always
+   * measures the wait on the newest one, and it never fires for a fence that
+   * has already been released or replaced. On expiry the fence is released as
+   * `forced`: the held intents are DELIVERED in order, because a key delivered
+   * to a program at the old width is a rendering problem while a key swallowed
+   * forever is lost work — and the release is logged, because an input path
+   * that silently changes its mind is one nobody can investigate later.
+   */
+  private _armFenceDeadline(fence: AlternateScreenFence, generation: number): void {
+    clearTimeout(fence.deadline)
+    fence.deadline = window.setTimeout(() => {
+      fence.deadline = undefined
+      if (this._fence !== fence || generation !== fence.newest) return
+      log.warn('nocx: no resize receipt at an alternate-screen switch — releasing held input', {
+        pane: this.pane.paneId,
+        held: fence.held.length,
+        waitedMs: ALT_SCREEN_RECEIPT_DEADLINE_MS,
+      })
+      this._closeAlternateScreenFence('forced')
+    }, ALT_SCREEN_RECEIPT_DEADLINE_MS)
+  }
+
+  /**
    * Release the fence and deliver what it held, in the order it was produced.
    *
-   * `applied` and `failed` deliver: the session is alive and the person's
-   * input is owed to it. `failed` delivering is deliberate — the fence exists
-   * to keep keys away from a grid that is about to change, and once the
-   * request cannot succeed there is no change to wait for; holding forever
-   * would be the deadlock the receipt exists to prevent. `thaw` (the program
-   * left the alternate screen) delivers for the same reason: the mode the
-   * fence was holding for is over. `closed` delivers nothing — the session
-   * this input was meant for no longer exists.
+   * `applied`, `forced` and `failed` deliver: the session is alive and the
+   * person's input is owed to it. `failed` and `forced` delivering is
+   * deliberate — the fence exists to keep keys away from a grid that is about
+   * to change, and once the request cannot succeed (or has gone unanswered
+   * for far longer than any observed round trip) there is no change left to
+   * wait for; holding forever would be the deadlock the receipt exists to
+   * prevent. `thaw` (the program left the alternate screen) delivers for the
+   * same reason: the mode the fence was holding for is over. `closed`
+   * delivers nothing — the session this input was meant for no longer exists.
    *
-   * Delivery re-enters onSessionIntent with the fence already gone, so a held
-   * Ctrl-C meets the submit window's own rule instead of a second copy of it.
+   * EXACTLY ONCE, IN ORDER. The queue is detached before the first delivery —
+   * the fence is already gone, so an intent produced while this loop runs (a
+   * key that arrives between two held ones) is queued by the ordinary path
+   * BEHIND them rather than appended to the list being walked, and nothing
+   * here can re-enter with the same object. Delivery goes back through
+   * onSessionIntent, so a held Ctrl-C meets the submit window's own rule
+   * instead of a second copy of it.
    */
-  private _closeAlternateScreenFence(reason: 'applied' | 'closed' | 'failed' | 'thaw'): void {
+  private _closeAlternateScreenFence(
+    reason: 'applied' | 'closed' | 'failed' | 'forced' | 'thaw',
+  ): void {
     const fence = this._fence
     if (fence === null) return
     this._fence = null
+    clearTimeout(fence.deadline)
+    fence.deadline = undefined
     if (reason === 'closed') return
-    for (const intent of fence.held) this.onSessionIntent(intent)
+    const held = fence.held
+    for (const intent of held) this.onSessionIntent(intent)
   }
 
   /** Apply alternate-screen presentation only from a locally accepted backend
@@ -9080,7 +9153,8 @@ export class TerminalContent extends BasePaneContent {
     this.resizeTimer = undefined
     // The fence dies with the pane: a receipt arriving after dispose has no
     // session to deliver to, and the input it held belongs to a surface the
-    // person no longer has.
+    // person no longer has. Its last-resort timer dies with it.
+    clearTimeout(this._fence?.deadline)
     this._fence = null
     this._switchCols = null
     // And the prediction's pending frame: a callback landing on a disposed

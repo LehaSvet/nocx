@@ -19637,9 +19637,14 @@ describe('an alternate-screen switch holds input for its applied grid (nocx-1ebr
     tab: Pane
     grid: () => HTMLElement
     receipt: (outcome: 'applied' | 'superseded' | 'closed') => void
+    /** Answer the request at `index` (0 is the switch's own), for a test that
+     *  needs an OLDER answer to arrive while a newer request is in flight. */
+    receiptAt: (index: number, outcome: 'applied' | 'superseded' | 'closed') => void
     fail: (error: Error) => void
     switchFrame: () => SessionFrame
     drawProgramFrame: (revision: number, cols?: number) => SessionFrame
+    /** The number of resize requests this pane has issued. */
+    requested: () => number
     teardown: () => void
   }> {
     const mounted = await mountTerminal(makeClipboard(), { attachToDocument: true })
@@ -19714,9 +19719,11 @@ describe('an alternate-screen switch holds input for its applied grid (nocx-1ebr
       // `receipt`/`fail` answer the NEWEST request, the way the transport's
       // newest request owns the pending slot.
       receipt: (outcome) => receipts[receipts.length - 1]?.(outcome),
+      receiptAt: (index, outcome) => receipts[index]?.(outcome),
       fail: (error) => failures[failures.length - 1]?.(error),
       switchFrame,
       drawProgramFrame,
+      requested: () => receipts.length,
       teardown,
     }
   }
@@ -19903,6 +19910,122 @@ describe('an alternate-screen switch holds input for its applied grid (nocx-1ebr
       await vi.waitFor(() =>
         expect(session.intent).toHaveBeenCalledWith('mouse', 'press left 50 2'),
       )
+    } finally {
+      teardown()
+    }
+  })
+
+  /** What the person did, in the order the session was told about it. Only the
+   *  input kinds: a `focus` intent is bookkeeping around them. */
+  function deliveredActs(session: SessionFake): string[] {
+    return session.intent.mock.calls
+      .filter(([kind]) => kind === 'text' || kind === 'key')
+      .map(([kind, payload]) => `${kind}:${String(payload)}`)
+  }
+
+  it('releases on its own bound when the receipt never arrives, delivering everything held', async () => {
+    const { content, session, switchFrame, teardown } = await switchingPane()
+    // Fake timers AFTER the mount: the mount's own settle timers must not be
+    // part of this test, and the fence's bound is armed at the switch.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      switchFrame()
+      typeIntoPane(content, 'a', '\r', 'b')
+      expect(deliveredActs(session)).toEqual([])
+
+      // THE INTERVAL'S MISSING END: the socket is alive and the request is
+      // simply never answered. Nothing in the client bounds it — a pending
+      // call is settled by its answer, a socket close or an abort, and the
+      // connection's heartbeat keeps a socket that answers PINGS alive — so
+      // without the fence's own bound this is where the keys would stay.
+      await vi.advanceTimersByTimeAsync(1_499)
+      expect(deliveredActs(session)).toEqual([])
+
+      await vi.advanceTimersByTimeAsync(1)
+      // Delivered, not dropped: a key typed at the old width is a rendering
+      // problem, a key swallowed forever is lost work.
+      expect(deliveredActs(session)).toEqual(['text:a', 'key:enter', 'text:b'])
+      // And the forced release is observable rather than silent.
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('no resize receipt at an alternate-screen switch'),
+      )
+    } finally {
+      warn.mockRestore()
+      vi.useRealTimers()
+      teardown()
+    }
+  })
+
+  it('delivers a key produced while the release loop runs, once and behind the held ones', async () => {
+    const { content, session, switchFrame, receipt, teardown } = await switchingPane()
+    try {
+      switchFrame()
+      typeIntoPane(content, 'a', '\r', 'b')
+      const input = intentElementOf(content)
+      // A key produced FROM INSIDE the release: the last held intent reaches
+      // the session and the pane is asked for another one before the queue it
+      // was walking has drained. A key that arrived while the release was in
+      // flight must land BEHIND everything that was held, exactly once — the
+      // shape that doubled characters once before.
+      let reentered = false
+      session.intent.mockImplementation((kind, payload) => {
+        if (!reentered && kind === 'text' && payload === 'b') {
+          reentered = true
+          input.dispatchEvent(
+            new KeyboardEvent('keydown', {
+              code: 'ArrowDown',
+              key: 'ArrowDown',
+              bubbles: true,
+              cancelable: true,
+            }),
+          )
+        }
+        return Promise.resolve({ state: 'executed', bytesWritten: 1, fenceAfter: 0 })
+      })
+
+      receipt('applied')
+      await vi.waitFor(() => expect(deliveredActs(session)).toHaveLength(4))
+      const acts = deliveredActs(session)
+      // Every act exactly once, and the one that arrived mid-release is
+      // behind the ones that were waiting rather than inside their run.
+      expect(acts).toEqual(['text:a', 'key:enter', 'text:b', 'key:down'])
+      expect(new Set(acts).size).toBe(4)
+    } finally {
+      teardown()
+    }
+  })
+
+  it('keeps a second switch holding after the first switch’s late receipt arrives', async () => {
+    const { content, session, switchFrame, receiptAt, requested, teardown } = await switchingPane()
+    try {
+      switchFrame()
+      typeIntoPane(content, 'a')
+      expect(requested()).toBe(1)
+
+      // The program leaves the alternate screen and comes back — a second
+      // switch, with the first one's receipt still outstanding.
+      const thawed = screenFrame(3, ['$ prompt'], { ...CELL, cols: 40, rows: 20 })
+      session.fireScreenFrame(thawed)
+      await vi.waitFor(() => expect(deliveredActs(session)).toEqual(['text:a']))
+      const resumed = screenFrame(4, ['ALT-READY'], { ...CELL, cols: 40, rows: 20 })
+      resumed.state.bufferKind = 'alternate'
+      session.fireScreenFrame(resumed)
+      expect(requested()).toBe(2)
+      typeIntoPane(content, 'b')
+      await Promise.resolve()
+      expect(deliveredActs(session)).toEqual(['text:a'])
+
+      // The FIRST switch's answer arrives late. It describes a fence that is
+      // gone, and it may not open the one that replaced it.
+      receiptAt(0, 'applied')
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(deliveredActs(session)).toEqual(['text:a'])
+
+      // The second switch's own receipt does.
+      receiptAt(1, 'applied')
+      await vi.waitFor(() => expect(deliveredActs(session)).toEqual(['text:a', 'text:b']))
     } finally {
       teardown()
     }
