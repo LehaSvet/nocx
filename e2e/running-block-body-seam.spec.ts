@@ -304,7 +304,68 @@ test.describe('the body of a running block that has outgrown its screen', () => 
       const target = live.find((row) => /^\s*45\|\s*$/.test(printed(row)))
       const last = [...block.querySelectorAll<HTMLElement>('.term-grid-row')].pop()
       const box = block.getBoundingClientRect()
+      const headerRect = header.getBoundingClientRect()
       const rect = target?.getBoundingClientRect() ?? null
+      const headerTopDelta = box.top - headerRect.top
+      const headerGeometry =
+        Math.abs(headerTopDelta) < 0.5
+          ? null
+          : (() => {
+              const measure = (el: HTMLElement) => {
+                const r = el.getBoundingClientRect()
+                const s = getComputedStyle(el)
+                return {
+                  node: `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''}${
+                    typeof el.className === 'string' && el.className.trim()
+                      ? `.${el.className.trim().split(/\s+/).join('.')}`
+                      : ''
+                  }`.slice(0, 180),
+                  rect: {
+                    top: +r.top.toFixed(3),
+                    bottom: +r.bottom.toFixed(3),
+                    height: +r.height.toFixed(3),
+                  },
+                  offsetTop: el.offsetTop,
+                  offsetHeight: el.offsetHeight,
+                  offsetParent:
+                    el.offsetParent instanceof HTMLElement
+                      ? `${el.offsetParent.tagName.toLowerCase()}${el.offsetParent.id ? `#${el.offsetParent.id}` : ''}${
+                          typeof el.offsetParent.className === 'string' &&
+                          el.offsetParent.className.trim()
+                            ? `.${el.offsetParent.className.trim().split(/\s+/).join('.')}`
+                            : ''
+                        }`.slice(0, 180)
+                      : null,
+                  style: {
+                    position: s.position,
+                    top: s.top,
+                    marginTop: s.marginTop,
+                    paddingTop: s.paddingTop,
+                    borderTopWidth: s.borderTopWidth,
+                    boxSizing: s.boxSizing,
+                    display: s.display,
+                    transform: s.transform,
+                    zoom: s.zoom,
+                  },
+                }
+              }
+              const ancestors: HTMLElement[] = []
+              for (
+                let el: HTMLElement | null = header;
+                el && ancestors.length < 8;
+                el = el.parentElement
+              ) {
+                ancestors.push(el)
+                if (el === pane) break
+              }
+              return {
+                devicePixelRatio,
+                blockHeaderTopDelta: +headerTopDelta.toFixed(3),
+                block: measure(block),
+                header: measure(header),
+                ancestors: ancestors.map(measure),
+              }
+            })()
       return {
         found: target !== undefined,
         inBlockTree: target !== undefined && block.contains(target),
@@ -317,7 +378,8 @@ test.describe('the body of a running block that has outgrown its screen', () => 
           rect.left >= box.left - 0.5 &&
           rect.right <= box.right + 0.5,
         boxTop: +box.top.toFixed(2),
-        headerTop: +header.getBoundingClientRect().top.toFixed(2),
+        headerTop: +headerRect.top.toFixed(2),
+        headerGeometry,
         boxBottom: +box.bottom.toFixed(2),
         lastRow: last ? printed(last) : null,
         lastRowBottom: last ? +last.getBoundingClientRect().bottom.toFixed(2) : null,
