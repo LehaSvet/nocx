@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render } from '@solidjs/testing-library'
+import { cleanup, fireEvent, render, waitFor } from '@solidjs/testing-library'
 import { Show } from 'solid-js'
 import { Dispatcher } from './dispatcher'
 import { fixedEndpoint } from './endpoint'
@@ -31,7 +31,7 @@ const STORED = {
  * seal can win after the cached unsealed status without relying on load. */
 class Socket {
   static readonly OPEN = 1
-  static current: Socket
+  static current: Socket | null = null
   readyState = Socket.OPEN
   onopen: (() => void) | null = null
   onclose: (() => void) | null = null
@@ -80,9 +80,6 @@ class Socket {
   }
 }
 
-const flush = async () => {
-  for (let i = 0; i < 8; i++) await Promise.resolve()
-}
 let dispatcher: Dispatcher | undefined
 
 afterEach(() => {
@@ -92,14 +89,15 @@ afterEach(() => {
 })
 
 async function mountList() {
+  Socket.current = null
   vi.stubGlobal('WebSocket', Socket)
   const d = new Dispatcher(fixedEndpoint(9876))
   dispatcher = d
   const vault = new VaultClient(d)
   const ctrl = createVaultState(vault)
   d.start()
-  await flush()
-  const socket = Socket.current
+  await waitFor(() => expect(Socket.current?.onopen).toBeTypeOf('function'))
+  const socket = Socket.current!
   socket.onopen?.()
   const refresh = ctrl.refresh()
   socket.reply('vault.status', UNSEALED)
@@ -124,8 +122,10 @@ async function mountList() {
   socket.reply('endpoints.list', [STORED])
   socket.reply('vault.seal', {})
   await seal
-  await flush()
-  expect(socket.requests.filter((r) => r.method === 'vault.inventory')).toHaveLength(1)
+  await waitFor(() => {
+    expect(socket.requests.filter((r) => r.method === 'vault.inventory')).toHaveLength(1)
+    expect(view.container.querySelector('[aria-label="Edit provider"]')).not.toBeNull()
+  })
   return { socket, ctrl, ...view }
 }
 
@@ -133,16 +133,19 @@ describe('endpoint inventory intent when a seal wins the cached-status race', ()
   it('keeps the passive list interactive with no unlock sheet', async () => {
     const { socket, ctrl, container } = await mountList()
     socket.sealedInventory()
-    await flush()
-    expect(ctrl.showUnlock()).toBe(false)
-    expect(document.querySelector('.ui-prompt-overlay')).toBeNull()
     // The seal notification can arrive later. The list then reports the
     // locked state, not a deleted credential or an unavailable store.
     const refresh = ctrl.refresh()
     socket.reply('vault.status', { ...UNSEALED, state: 'sealed' })
     await refresh
-    await flush()
-    expect(container.textContent).toContain('The vault is locked')
+    expect(ctrl.status()?.state).toBe('sealed')
+    expect(ctrl.showUnlock()).toBe(false)
+    // Sealed is deliberately quiet on the row; deleted/unavailable paint a
+    // status and disable Test. Keep the operation available without a sheet.
+    expect(container.querySelector('.ui-record-row__status')).toBeNull()
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Test provider"]')?.disabled,
+    ).toBe(false)
     expect(document.querySelector('.ui-prompt-overlay')).toBeNull()
     expect(container.querySelector('[aria-label="Edit provider"]')).not.toBeNull()
   })
@@ -150,15 +153,16 @@ describe('endpoint inventory intent when a seal wins the cached-status race', ()
   it('still asks to unlock when the person opens a bound-key editor', async () => {
     const { socket, ctrl, container } = await mountList()
     socket.reply('vault.inventory', { entries: [] })
-    await flush()
     const refresh = ctrl.refresh()
     socket.reply('vault.status', { ...UNSEALED, state: 'sealed' })
     await refresh
-    await flush()
+    expect(ctrl.status()?.state).toBe('sealed')
     fireEvent.click(container.querySelector('[aria-label="Edit provider"]')!)
+    await waitFor(() => {
+      expect(socket.requests.filter((r) => r.method === 'vault.inventory')).toHaveLength(2)
+    })
     socket.sealedInventory()
-    await flush()
-    expect(ctrl.showUnlock()).toBe(true)
+    await waitFor(() => expect(ctrl.showUnlock()).toBe(true))
     expect(document.querySelector('.ui-prompt-overlay')?.getAttribute('data-prompt')).toBe(
       'Unlock the vault',
     )
@@ -167,7 +171,8 @@ describe('endpoint inventory intent when a seal wins the cached-status race', ()
         (button) => button.textContent === 'Cancel',
       )!,
     )
-    await flush()
+    await waitFor(() => expect(ctrl.showUnlock()).toBe(false))
+    expect(container.querySelector('.nocx-dialog[open]')).not.toBeNull()
     expect(document.querySelector('.ui-prompt-overlay')).toBeNull()
   })
 })
