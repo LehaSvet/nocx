@@ -10,6 +10,8 @@ import (
 	"github.com/shady2k/nocx/internal/content"
 	"github.com/shady2k/nocx/internal/lifecycle"
 	"github.com/shady2k/nocx/internal/lifecyclechannel"
+	"github.com/shady2k/nocx/internal/session"
+	"github.com/shady2k/nocx/internal/transport"
 	"github.com/shady2k/nocx/internal/waittest"
 )
 
@@ -89,7 +91,22 @@ func TestACompletionDeliveredDuringShutdownIsAppliedOnceByTheNextCoordinator(t *
 	first.reg.lifecycleStopping = stopping
 	losses := &lossRecorder{}
 	first.reg.lifecycleLoss = losses.report
-	binding := openHostedFixture(t, first.coordinator, "pane-1")
+	var detached atomic.Bool
+	binding := openHostedFixture(t, first.coordinator, "pane-1", func(opened transport.HostedSessionOpen) {
+		detacher, ok := opened.Session.(interface{ SetLifecycleDetach(func()) })
+		if !ok || opened.DetachLifecycle == nil {
+			t.Fatal("the hosted session has no lifecycle handover to arm")
+		}
+		detacher.SetLifecycleDetach(func() {
+			select {
+			case <-opened.Session.Done():
+				t.Error("the session's carrier closed before its lifecycle handover")
+			default:
+			}
+			opened.DetachLifecycle()
+			detached.Store(true)
+		})
+	})
 	shell, _ := spawner.theShell(t)
 	shell.drain()
 	shell.send(t, lifecycle.Event{Kind: lifecycle.KindHello, Hello: &lifecycle.Hello{Shell: "bash"}})
@@ -104,8 +121,14 @@ func TestACompletionDeliveredDuringShutdownIsAppliedOnceByTheNextCoordinator(t *
 	shell.send(t, lifecycle.Event{
 		Kind: lifecycle.KindComplete, Complete: &lifecycle.Complete{AttemptID: &build, ExitCode: &code, Fence: lifecycle.FenceNonce{3}},
 	})
-	// The detach waits for any frame in hand: past it, the first
-	// coordinator's word on this frame is final.
+	// Orderly shutdown closes sessions through the registry before the
+	// shared helper connection. An abrupt quit alone is not that path.
+	if err := first.sess.Close(session.ID(binding.SessionID)); err != nil {
+		t.Fatalf("close the stopping coordinator's session: %v", err)
+	}
+	if !detached.Load() {
+		t.Fatal("the registry closed the session without running its lifecycle handover")
+	}
 	first.quit()
 	if done := first.emitter.completed(); len(done) != 0 {
 		t.Fatalf("the stopping coordinator completed %v: it applied a frame that arrived after it began stopping", completedCommands(done))

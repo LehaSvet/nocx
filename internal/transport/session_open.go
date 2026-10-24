@@ -377,6 +377,9 @@ func (o *sessionOpener) Open(ctx context.Context, spec OpenSpec) (OpenedSession,
 	if err := o.recordHostedBinding(ctx, sess, cfg, hosted, workspaceID, claim); err != nil {
 		return OpenedSession{}, err
 	}
+	// Both renderer and backend opens leave here with handover armed,
+	// before either caller can start pumping the lifecycle leg.
+	armLifecycleDetach(hosted)
 
 	// THE SAME STATEMENT session.Reg.Open's local-PTY path has always made on
 	// success, restored for the branch that bypasses it. A helper-hosted open
@@ -779,19 +782,6 @@ func (s *WSServer) OpenSession(ctx context.Context, spec OpenSpec) (OpenedSessio
 		opened.Hosted.StartLifecycle()
 		lg.Info("backend open: the pane's lifecycle leg is pumping",
 			"pane_id", spec.PaneID, "lane", string(opened.Hosted.LifecycleLane))
-	}
-	// The leg's orderly handover is armed on the session itself, whatever
-	// the start switch above did: a session whose leg failed to start still
-	// detaches cleanly on the coordinator's way out. The registry's Close —
-	// the coordinator-detach verb — runs it before the channel closes; see
-	// realSession's own field comment for why the order is load-bearing
-	// (ADR-0076).
-	if opened.Hosted != nil && opened.Hosted.DetachLifecycle != nil {
-		if detacher, ok := opened.Session.(interface {
-			SetLifecycleDetach(func())
-		}); ok {
-			detacher.SetLifecycleDetach(opened.Hosted.DetachLifecycle)
-		}
 	}
 	// THE DATA LEG IS STARTED HERE TOO, and until nocx-ui8q6.5 it was not
 	// (found writing that bead's own check, which is what this comment
