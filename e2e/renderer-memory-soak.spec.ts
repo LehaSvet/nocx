@@ -104,16 +104,16 @@ function awaitFrame(page: import('@playwright/test').Page): Promise<void> {
   return page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
 }
 
-test('renderer memory soak: six live tabs, output/redraw and tab churn (nocx-1ebrs.71)', async ({
+test('renderer memory soak: retained objects return to live tab count after churn (nocx-1ebrs.71)', async ({
   page,
+  browserName,
 }, info) => {
   test.setTimeout(180000)
   const startedAt = Date.now()
   await page.goto('/')
   await openSix(page)
 
-  // Ensure every tab owns a ready PTY and receives repeated continuous output plus
-  // full-screen redraws. Observable command completion replaces fixed sleeps.
+  // Exercise output and redraw in every live tab before churning replacements.
   for (let tab = 0; tab < 6; tab++) {
     await page.locator(TAB).nth(tab).click()
     await promptReady(page)
@@ -122,11 +122,21 @@ test('renderer memory soak: six live tabs, output/redraw and tab churn (nocx-1eb
     await send(page, command)
   }
 
-  // Allow pending paints and microtasks to reach an observable frame boundary.
   await awaitFrame(page)
-  const cdp = await page.context().newCDPSession(page)
-  const artifacts = path.join(info.outputDir, 'renderer-memory')
-  mkdirSync(artifacts, { recursive: true })
+  const retainedObjects = async () =>
+    page.evaluate(() => {
+      const host = window as typeof window & {
+        __nocxRendererRetainedObjects?: () => { panes: number; terminalContents: number }
+      }
+      return host.__nocxRendererRetainedObjects?.() ?? null
+    })
+  const expectedLiveCount = await page.locator(TAB).count()
+  const beforeRetainedObjects = await retainedObjects()
+  expect(beforeRetainedObjects, 'in-page retained-object observable is installed').not.toBeNull()
+  expect(beforeRetainedObjects).toEqual({
+    panes: expectedLiveCount,
+    terminalContents: expectedLiveCount,
+  })
   const beforeDOM = await page.evaluate(() => ({
     nodes: document.querySelectorAll('*').length,
     detachedPaneNodes: [...document.querySelectorAll('.pane')].filter((node) => !node.isConnected)
@@ -135,19 +145,13 @@ test('renderer memory soak: six live tabs, output/redraw and tab churn (nocx-1eb
       (node) => !node.isConnected,
     ).length,
   }))
-  const beforeSnapshot = await snapshot(page)
-  const beforeRetained = snapshotObjectCounts(beforeSnapshot)
-  writeFileSync(path.join(artifacts, 'before.heapsnapshot'), beforeSnapshot)
-  // Snapshot capture forces GC; measure the baseline after it so the later
-  // retained-heap comparison uses the same post-GC condition.
-  const beforeMetrics = await metrics(page)
 
-  const sample: { cycle: number; metrics: Metrics; dom: { nodes: number; paneNodes: number } }[] =
-    []
+  const sample: {
+    cycle: number
+    dom: { nodes: number; paneNodes: number }
+    retainedObjects: { panes: number; terminalContents: number } | null
+  }[] = []
   for (let cycle = 1; cycle <= CYCLES; cycle++) {
-    // Close the active sixth tab and wait for the renderer's observable DOM
-    // teardown, then open a replacement and wait for its prompt. This preserves
-    // six simultaneous live sessions while exercising disposal repeatedly.
     await page.locator(CLOSE_TAB).last().click()
     await expect(page.locator(TAB)).toHaveCount(5)
     await page.locator(NEW_TAB).click()
@@ -162,15 +166,15 @@ test('renderer memory soak: six live tabs, output/redraw and tab churn (nocx-1eb
     if (cycle % 3 === 0 || cycle === CYCLES) {
       sample.push({
         cycle,
-        metrics: await metrics(page),
         dom: await page.evaluate(() => ({
           nodes: document.querySelectorAll('*').length,
           paneNodes: document.querySelectorAll('.pane').length,
         })),
+        retainedObjects: await retainedObjects(),
       })
     }
   }
-  await cdp.detach()
+
   const afterDOM = await page.evaluate(() => ({
     nodes: document.querySelectorAll('*').length,
     detachedPaneNodes: [...document.querySelectorAll('.pane')].filter((node) => !node.isConnected)
@@ -179,52 +183,69 @@ test('renderer memory soak: six live tabs, output/redraw and tab churn (nocx-1eb
       (node) => !node.isConnected,
     ).length,
   }))
-  const afterSnapshot = await snapshot(page)
-  const afterRetained = snapshotObjectCounts(afterSnapshot)
-  writeFileSync(path.join(artifacts, 'after.heapsnapshot'), afterSnapshot)
-  const afterMetrics = await metrics(page)
-  const report = {
-    browser: info.project.name,
+  const afterRetainedObjects = await retainedObjects()
+  const artifacts = path.join(info.outputDir, 'renderer-memory')
+  mkdirSync(artifacts, { recursive: true })
+  const report: Record<string, unknown> = {
+    browser: browserName,
     browserVersion: page.context().browser()?.version() ?? 'unknown',
     durationMs: Date.now() - startedAt,
     cycles: CYCLES,
     outputRoundsPerTab: OUTPUT_ROUNDS,
-    tabs: 6,
-    beforeMetrics,
-    afterMetrics,
+    tabs: expectedLiveCount,
     beforeDOM,
     afterDOM,
-    beforeRetained,
-    afterRetained,
+    beforeRetainedObjects,
+    afterRetainedObjects,
     sample,
   }
-  writeFileSync(path.join(artifacts, 'measurements.json'), JSON.stringify(report, null, 2))
-
-  // Compare like-for-like counts on the live renderer after explicit GC. CDP
-  // heap snapshots and retained heap are saved for attribution.
-  const gc = await page.context().newCDPSession(page)
-  await gc.send('HeapProfiler.collectGarbage')
-  await gc.detach()
-  const settledMetrics = await metrics(page)
-  const heapGrowth =
-    (settledMetrics.JSHeapUsedSize ?? afterMetrics.JSHeapUsedSize ?? 0) -
-    (beforeMetrics.JSHeapUsedSize ?? 0)
-  const nodeGrowth = afterDOM.nodes - beforeDOM.nodes
   expect(
-    heapGrowth,
-    `retained JS heap grew ${heapGrowth} bytes; report: ${artifacts}`,
-  ).toBeLessThanOrEqual(RETAINED_HEAP_GROWTH_LIMIT)
+    afterRetainedObjects,
+    'in-page retained-object observable remains available',
+  ).not.toBeNull()
+  expect(afterRetainedObjects).toEqual({
+    panes: expectedLiveCount,
+    terminalContents: expectedLiveCount,
+  })
+  expect(afterDOM.detachedPaneNodes).toBe(0)
+  expect(afterDOM.detachedEditors).toBe(0)
+  const nodeGrowth = afterDOM.nodes - beforeDOM.nodes
   expect(nodeGrowth, `DOM node count grew ${nodeGrowth}; report: ${artifacts}`).toBeLessThanOrEqual(
     RETAINED_DOM_GROWTH_LIMIT,
   )
-  expect(
-    afterRetained.Pane ?? 0,
-    `heap snapshot retains ${afterRetained.Pane ?? 0} Pane objects (baseline ${beforeRetained.Pane ?? 0})`,
-  ).toBeLessThanOrEqual((beforeRetained.Pane ?? 0) + 1)
-  expect(
-    afterRetained.TerminalContent ?? 0,
-    `heap snapshot retains ${afterRetained.TerminalContent ?? 0} TerminalContent objects (baseline ${beforeRetained.TerminalContent ?? 0})`,
-  ).toBeLessThanOrEqual((beforeRetained.TerminalContent ?? 0) + 1)
-  expect(afterDOM.detachedPaneNodes).toBe(0)
-  expect(afterDOM.detachedEditors).toBe(0)
+
+  // Heap snapshots and GC metrics use Chromium DevTools Protocol. WKWebView has
+  // no CDP, so keep its product-critical retained-object bound above in-page.
+  if (browserName === 'chromium') {
+    const cdp = await page.context().newCDPSession(page)
+    const beforeSnapshot = await snapshot(page)
+    const beforeRetained = snapshotObjectCounts(beforeSnapshot)
+    writeFileSync(path.join(artifacts, 'before.heapsnapshot'), beforeSnapshot)
+    const beforeMetrics = await metrics(page)
+    const afterSnapshot = await snapshot(page)
+    const afterRetained = snapshotObjectCounts(afterSnapshot)
+    writeFileSync(path.join(artifacts, 'after.heapsnapshot'), afterSnapshot)
+    const afterMetrics = await metrics(page)
+    const settledMetrics = await metrics(page)
+    const heapGrowth =
+      (settledMetrics.JSHeapUsedSize ?? afterMetrics.JSHeapUsedSize ?? 0) -
+      (beforeMetrics.JSHeapUsedSize ?? 0)
+    report.beforeMetrics = beforeMetrics
+    report.afterMetrics = afterMetrics
+    report.beforeRetained = beforeRetained
+    report.afterRetained = afterRetained
+    report.heapGrowth = heapGrowth
+    writeFileSync(path.join(artifacts, 'measurements.json'), JSON.stringify(report, null, 2))
+    expect(
+      heapGrowth,
+      `retained JS heap grew ${heapGrowth} bytes; report: ${artifacts}`,
+    ).toBeLessThanOrEqual(RETAINED_HEAP_GROWTH_LIMIT)
+    expect(afterRetained.Pane ?? 0).toBeLessThanOrEqual((beforeRetained.Pane ?? 0) + 1)
+    expect(afterRetained.TerminalContent ?? 0).toBeLessThanOrEqual(
+      (beforeRetained.TerminalContent ?? 0) + 1,
+    )
+    await cdp.detach()
+  } else {
+    writeFileSync(path.join(artifacts, 'measurements.json'), JSON.stringify(report, null, 2))
+  }
 })

@@ -262,9 +262,16 @@ function installPaneScreenSeam(): void {
   const host = window as unknown as {
     __nocxPaneScreen?: () => PaneScreenReading | null
     __nocxPaneCellToPixel?: (col: number, row: number) => { x: number; y: number } | null
+    __nocxRendererRetainedObjects?: () => { panes: number; terminalContents: number }
   }
   if (!host.__nocxPaneScreen) host.__nocxPaneScreen = readActivePaneScreen
   if (!host.__nocxPaneCellToPixel) host.__nocxPaneCellToPixel = readActivePaneCellToPixel
+  if (!host.__nocxRendererRetainedObjects) {
+    host.__nocxRendererRetainedObjects = () => ({
+      panes: document.querySelectorAll('.pane').length,
+      terminalContents: paneScreenMappings.size,
+    })
+  }
 }
 
 /** Flatten one model snapshot to the seam's reading, beside what this
