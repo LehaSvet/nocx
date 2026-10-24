@@ -563,13 +563,17 @@ ci-full: ci-os-split ci-local-ssh-split ci ci-mac ci-backend ci-linux ci-fronten
 # and a package with a platform split that stays in the portable set has its
 # `!unix` half compiled by nothing at all.
 OS_PKG_DIRS := cmd/e2e-sshd internal/apicoll internal/app internal/contentkey \
-               internal/coordinator internal/helper/endpoint internal/helper/fishchannel \
+               internal/coordinator internal/desktopidentity internal/helper/endpoint internal/helper/fishchannel \
                internal/helper/session internal/lifecyclechannel \
                internal/loginshell internal/nativeports internal/procwatch \
                internal/pty internal/reveal internal/ssh/mux \
                internal/storage internal/update internal/vault/system \
                internal/peerpin internal/monoclock internal/emulator/ghostty/ghosttytest
-OS_PKG_RE := (cmd/e2e-sshd|internal/apicoll|internal/app|internal/contentkey|internal/coordinator|internal/helper/endpoint|internal/helper/fishchannel|internal/helper/session|internal/lifecyclechannel|internal/loginshell|internal/nativeports|internal/procwatch|internal/pty|internal/reveal|internal/ssh/mux|internal/storage|internal/update|internal/vault/system|internal/peerpin|internal/monoclock|internal/emulator/ghostty/ghosttytest)
+# One list owns both partitions; a second hand-kept regex can silently leave a
+# new OS package in the portable set even after OS_PKG_DIRS is corrected.
+os_pkg_empty :=
+os_pkg_space := $(os_pkg_empty) $(os_pkg_empty)
+OS_PKG_RE := ($(subst $(os_pkg_space),|,$(strip $(OS_PKG_DIRS))))
 
 # internal/claudeconformance cannot run in CI: no runner can carry an
 # authenticated vendor CLI, and a `t.Fatal` is the honest result when it is
@@ -856,10 +860,13 @@ print-os-local-ssh-pkgs:
 print-portable-local-ssh-pkgs:
 	@echo '$(LOCAL_SSH_PORTABLE_PKGS)'
 
+# testdata holds fixtures that tests may explicitly spawn, not build packages:
+# go list ./... excludes it. Derive the OS split from the same build universe,
+# rather than requiring fixture packages in OS_PKG_DIRS.
 ci-os-split:
 	@echo "=== the OS split is derived from the build constraints, not remembered ==="
 	@derived=$$(grep -rlE '^//go:build.*$(GOOS_RE)' --include='*.go' \
-	  --exclude-dir=node_modules --exclude-dir=worktrees . \
+	  --exclude-dir=node_modules --exclude-dir=worktrees --exclude-dir=testdata . \
 	  | grep -v '_test\.go$$' | xargs -n1 dirname | sed 's|^\./||' | sort -u \
 	  | while read -r d; do \
 	      p=$$d; nested=""; \

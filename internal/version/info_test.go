@@ -158,6 +158,9 @@ func TestReleaseBundleCarriesNocxOwnAboutIdentity(t *testing.T) {
 	if call == "" || !strings.Contains(call, "-productversion") {
 		t.Fatal("no build-assets invocation found; the check below proved nothing")
 	}
+	if got, ok := flagValue(call, "-productidentifier"); !ok || got != "dev.nocx" {
+		t.Errorf("release build-assets identifier = %q, want dev.nocx (ADR-0103)", got)
+	}
 	for _, flag := range []string{"-productcopyright", "-productcomments"} {
 		value, ok := flagValue(call, flag)
 		if !ok {

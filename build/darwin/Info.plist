@@ -7,13 +7,11 @@
         <string>{{.Info.ProductName}}</string>
         <key>CFBundleExecutable</key>
         <string>{{.OutputFilename}}</string>
-        <!-- Our own identity, written out rather than templated from the app
-             name. macOS keys per-app state to this string — notification
-             authorization above all — so a rename that silently moved it would
-             orphan every grant a user had given. It is a constant on purpose.
-             The dev build takes a disjoint one; see Info.dev.plist. -->
+        <!-- ADR-0103: agree with the release build-assets flag. This legacy
+             template is not read by Wails v3; release.yml generates the plist
+             from Wails' embedded templates and checks the assembled bundle. -->
         <key>CFBundleIdentifier</key>
-        <string>io.github.shady2k.nocx</string>
+        <string>dev.nocx</string>
         <key>CFBundleVersion</key>
         <string>{{.Info.ProductVersion}}</string>
         <key>CFBundleGetInfoString</key>

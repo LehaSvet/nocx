@@ -55,13 +55,14 @@ third_party/libghostty-vt/scripts/stage-notices.sh \
 # name an icon actually installed in the AppDir. It is `nocx`, and
 # the resize below writes nocx.png so the basename answers it
 # (nocx-zvd7).
-cat > AppDir/nocx.desktop << 'DESKTOP'
+cat > AppDir/dev.nocx.desktop << 'DESKTOP'
 [Desktop Entry]
 Name=nocx
 Exec=nocx
 Icon=nocx
 Type=Application
 Categories=Utility;TerminalEmulator;
+StartupWMClass=dev.nocx
 DESKTOP
 
 # No AppRun is written here. linuxdeploy generates its own — a wrapper
@@ -172,7 +173,7 @@ convert build/appicon.png -resize 512x512 "$icondir/nocx.png"
 # happens to have it; a container does not, and packaging you cannot run in a
 # container is packaging you cannot test before tagging.
 ./linuxdeploy.AppImage --appimage-extract-and-run --appdir AppDir \
-  --desktop-file AppDir/nocx.desktop \
+  --desktop-file AppDir/dev.nocx.desktop \
   --icon-file "$icondir/nocx.png" \
   --deploy-deps-only="AppDir$webkit_libexec" \
   --plugin gtk

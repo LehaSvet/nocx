@@ -399,7 +399,7 @@ jobs:
             -dir build/assets \
             -binaryname nocx \
             -productname nocx \
-            -productidentifier com.shady2k.nocx \
+            -productidentifier dev.nocx \
             -productversion "$VERSION" \
             -productcopyright "Copyright © 2026 shady2k" \
             -productcomments "A local-first, Warp-style terminal"
@@ -732,6 +732,16 @@ jobs:
           done
           sort -o embedded-local-hashes.txt embedded-local-hashes.txt
           cat embedded-local-hashes.txt
+
+      # Read the assembled app, not a source template: macOS keys notification
+      # authorization to this identifier (ADR-0103, nocx-1ebrs.51).
+      - name: Verify macOS bundle identifier
+        run: |
+          set -euo pipefail
+          plist="build/bin/nocx.app/Contents/Info.plist"
+          identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")"
+          echo "bundle identifier: $identifier"
+          [ "$identifier" = "dev.nocx" ] || { echo "::error::CFBundleIdentifier=$identifier != dev.nocx"; exit 1; }
 
       - name: Smoke checks
         run: |

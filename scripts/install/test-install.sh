@@ -98,9 +98,9 @@ run_ok() {
     sh "$TEST_INSTALLER" > "$TMP/stdout" 2> "$TMP/stderr"; then :; else cat "$TMP/stderr" >&2; exit 1; fi
   test -x "$TMP/home/.local/bin/nocx"
   cmp "$TMP/release/app.AppImage" "$TMP/home/.local/bin/nocx"
-  test -f "$TMP/home/.local/share/applications/nocx.desktop"
-  test "$(grep -c '^StartupWMClass=nocx$' "$TMP/home/.local/share/applications/nocx.desktop")" -eq 1
-  ! grep -q '^StartupWMClass=AppRun.wrapped$' "$TMP/home/.local/share/applications/nocx.desktop"
+  test -f "$TMP/home/.local/share/applications/dev.nocx.desktop"
+  test "$(grep -c '^StartupWMClass=dev.nocx$' "$TMP/home/.local/share/applications/dev.nocx.desktop")" -eq 1
+  ! grep -q '^StartupWMClass=AppRun.wrapped$' "$TMP/home/.local/share/applications/dev.nocx.desktop"
   test -f "$TMP/home/.local/share/icons/hicolor/256x256/apps/nocx.png"
 }
 run_ok compact
@@ -121,7 +121,7 @@ size=$(wc -c < "$TMP/release/app.AppImage" | tr -d ' ')
 sha=$(sha256sum "$TMP/release/app.AppImage" | awk '{print $1}')
 run_ok compact
 cp "$TMP/home/.local/bin/nocx" "$TMP/old-app"
-cp "$TMP/home/.local/share/applications/nocx.desktop" "$TMP/old-desktop"
+cp "$TMP/home/.local/share/applications/dev.nocx.desktop" "$TMP/old-desktop"
 cp "$TMP/home/.local/share/icons/hicolor/256x256/apps/nocx.png" "$TMP/old-icon"
 printf 'third payload version' > "$TMP/release/app.AppImage"
 size=$(wc -c < "$TMP/release/app.AppImage" | tr -d ' ')
@@ -133,21 +133,21 @@ for fail_at in 2 3; do
     echo "injected rename failure $fail_at unexpectedly succeeded" >&2; exit 1
   fi
   cmp "$TMP/old-app" "$TMP/home/.local/bin/nocx"
-  cmp "$TMP/old-desktop" "$TMP/home/.local/share/applications/nocx.desktop"
+  cmp "$TMP/old-desktop" "$TMP/home/.local/share/applications/dev.nocx.desktop"
   cmp "$TMP/old-icon" "$TMP/home/.local/share/icons/hicolor/256x256/apps/nocx.png"
-  test -z "$(find "$TMP/home" -name '.nocx.*' -o -name '.nocx.install.*')"
+  test -z "$(find "$TMP/home" -name '.nocx.*' -o -name '.dev.nocx.desktop*')"
 done
 
 assert_refused_without_install() {
   label=$1
   shift
-  rm -f "$TMP/home/.local/bin/nocx" "$TMP/home/.local/share/applications/nocx.desktop" "$TMP/home/.local/share/icons/hicolor/256x256/apps/nocx.png"
+  rm -f "$TMP/home/.local/bin/nocx" "$TMP/home/.local/share/applications/dev.nocx.desktop" "$TMP/home/.local/share/icons/hicolor/256x256/apps/nocx.png"
   if HOME="$TMP/home" PATH="$TMP/bin:$PATH" TEST_RELEASE="$TMP/release" \
       "$@" sh "$TEST_INSTALLER" > "$TMP/stdout" 2> "$TMP/stderr"; then
     echo "$label unexpectedly succeeded" >&2; exit 1
   fi
   test ! -e "$TMP/home/.local/bin/nocx"
-  test ! -e "$TMP/home/.local/share/applications/nocx.desktop"
+  test ! -e "$TMP/home/.local/share/applications/dev.nocx.desktop"
   test ! -e "$TMP/home/.local/share/icons/hicolor/256x256/apps/nocx.png"
 }
 # Authenticated but structurally invalid manifests must fail closed.

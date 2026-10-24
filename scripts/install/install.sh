@@ -134,10 +134,10 @@ mkdir -p "$bin_dir" "$applications_dir" "$icons_dir" || fail 'cannot create user
 # Prepare every file before the first persistent replacement. The AppImage stays in
 # the target directory so its final rename is atomic and remains user-owned.
 install_tmp="$bin_dir/.nocx.install.$$"
-desktop_tmp="$applications_dir/.nocx.desktop.$$"
+desktop_tmp="$applications_dir/.dev.nocx.desktop.$$"
 icon_tmp="$icons_dir/.nocx.png.$$"
 backup_app="$bin_dir/.nocx.backup.$$"
-backup_desktop="$applications_dir/.nocx.desktop.backup.$$"
+backup_desktop="$applications_dir/.dev.nocx.desktop.backup.$$"
 backup_icon="$icons_dir/.nocx.png.backup.$$"
 cleanup_install() {
   [ -z "$install_tmp" ] || rm -f "$install_tmp"
@@ -150,25 +150,25 @@ cleanup_install() {
 rollback_install() {
   [ "$committed" -eq 0 ] || return 0
   if [ -n "$backup_app" ] && [ -f "$backup_app" ]; then mv -f "$backup_app" "$bin_dir/nocx"; elif [ "$app_replaced" -eq 1 ]; then rm -f "$bin_dir/nocx"; fi
-  if [ -n "$backup_desktop" ] && [ -f "$backup_desktop" ]; then mv -f "$backup_desktop" "$applications_dir/nocx.desktop"; elif [ "$desktop_replaced" -eq 1 ]; then rm -f "$applications_dir/nocx.desktop"; fi
+  if [ -n "$backup_desktop" ] && [ -f "$backup_desktop" ]; then mv -f "$backup_desktop" "$applications_dir/dev.nocx.desktop"; elif [ "$desktop_replaced" -eq 1 ]; then rm -f "$applications_dir/dev.nocx.desktop"; fi
   if [ -n "$backup_icon" ] && [ -f "$backup_icon" ]; then mv -f "$backup_icon" "$icons_dir/nocx.png"; elif [ "$icon_replaced" -eq 1 ]; then rm -f "$icons_dir/nocx.png"; fi
 }
 trap 'rollback_install; cleanup_install; cleanup' EXIT
 trap 'rollback_install; cleanup_install; cleanup; exit 1' HUP INT TERM
 cp "$tmp/nocx.AppImage" "$install_tmp" || fail 'cannot stage verified AppImage in ~/.local/bin'
 chmod 755 "$install_tmp" || fail 'cannot make staged AppImage executable'
-printf '[Desktop Entry]\nName=nocx\nExec=%s\nIcon=nocx\nType=Application\nCategories=Utility;TerminalEmulator;\nStartupWMClass=nocx\n' "$bin_dir/nocx" > "$desktop_tmp" || fail 'cannot stage desktop entry'
+printf '[Desktop Entry]\nName=nocx\nExec=%s\nIcon=nocx\nType=Application\nCategories=Utility;TerminalEmulator;\nStartupWMClass=dev.nocx\n' "$bin_dir/nocx" > "$desktop_tmp" || fail 'cannot stage desktop entry'
 cp "$tmp/nocx.png" "$icon_tmp" || fail 'cannot stage nocx icon'
 # Back up existing user files before replacement. If any rename fails, the exit
 # trap restores them (or removes newly created files) before dropping staging data.
 [ ! -e "$bin_dir/nocx" ] || cp -p "$bin_dir/nocx" "$backup_app" || fail 'cannot preserve existing AppImage before upgrade'
-[ ! -e "$applications_dir/nocx.desktop" ] || cp -p "$applications_dir/nocx.desktop" "$backup_desktop" || fail 'cannot preserve existing desktop entry'
+[ ! -e "$applications_dir/dev.nocx.desktop" ] || cp -p "$applications_dir/dev.nocx.desktop" "$backup_desktop" || fail 'cannot preserve existing desktop entry'
 [ ! -e "$icons_dir/nocx.png" ] || cp -p "$icons_dir/nocx.png" "$backup_icon" || fail 'cannot preserve existing icon'
 # Replace stable user-owned AppImage path used by updater, then metadata.
 mv -f "$install_tmp" "$bin_dir/nocx" || fail 'cannot install AppImage'
 app_replaced=1
 install_tmp=
-mv -f "$desktop_tmp" "$applications_dir/nocx.desktop" || fail 'cannot install desktop entry'
+mv -f "$desktop_tmp" "$applications_dir/dev.nocx.desktop" || fail 'cannot install desktop entry'
 desktop_replaced=1
 desktop_tmp=
 mv -f "$icon_tmp" "$icons_dir/nocx.png" || fail 'cannot install nocx icon'
