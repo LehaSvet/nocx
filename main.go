@@ -111,7 +111,8 @@ func main() {
 	// it once the application is running (macosApp.setApplicationMenu), which
 	// is also the only moment AppKit accepts a main menu.
 	if runtime.GOOS == "darwin" {
-		shell.Menu.Set(quit.menu(appName))
+		menu, _ := quit.menu(appName, shell.Browser.OpenURL)
+		shell.Menu.Set(menu)
 	}
 
 	// THE SIZE THE WINDOW OPENS AT. Wails wants it before there is a window.
@@ -1037,11 +1038,9 @@ func (q *quitSeam) keyBindings(goos string) map[string]func(application.Window) 
 // That split is the whole decision: Wails' own application menu carries a Quit
 // ROLE item, whose click AppKit sends as `terminate:` — the item that worked
 // during this defect, and the one an application cannot log, test or label for
-// itself. Everything else in the bar (File's Close, Edit's Copy and Paste
-// through the responder chain, View's zoom and full screen, the window list,
-// Help) is a question Wails already answers, and a second copy of it here
-// would be a second answer.
-func (q *quitSeam) menu(name string) *application.Menu {
+// itself. File, Edit, View and Window remain Wails' menus; Help is written
+// here because Wails' default Learn More points to its framework homepage.
+func (q *quitSeam) menu(name string, openURL func(string) error) (*application.Menu, func(*application.Context)) {
 	menu := application.NewMenu()
 
 	appMenu := menu.AddSubmenu(name)
@@ -1051,7 +1050,7 @@ func (q *quitSeam) menu(name string) *application.Menu {
 	appMenu.AddSeparator()
 	appMenu.AddRole(application.Hide)
 	appMenu.AddRole(application.HideOthers)
-	appMenu.AddRole(application.UnHide)
+	appMenu.AddRole(application.ShowAll)
 	appMenu.AddSeparator()
 	q.addQuitItem(appMenu, name)
 
@@ -1059,8 +1058,14 @@ func (q *quitSeam) menu(name string) *application.Menu {
 	menu.AddRole(application.EditMenu)
 	menu.AddRole(application.ViewMenu)
 	menu.AddRole(application.WindowMenu)
-	menu.AddRole(application.HelpMenu)
-	return menu
+	helpMenu := menu.AddSubmenu("Help")
+	openDocumentation := func(*application.Context) {
+		if err := openURL("https://shady2k.github.io/nocx/"); err != nil {
+			q.logger.Warn("could not open nocx documentation", "error", err)
+		}
+	}
+	helpMenu.Add("Learn More").OnClick(openDocumentation)
+	return menu, openDocumentation
 }
 
 // addQuitItem writes the item a person reads as "Quit nocx" and adds it to m.

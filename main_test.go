@@ -386,6 +386,44 @@ func TestQuitMenuItemIsOursAndCarriesTheChord(t *testing.T) {
 // runs in this process is [WailsApp.shutdown], which logs. So no session,
 // stuck or otherwise, can hold a quit open — asserted by making the launcher
 // fail the test if a quit touches it.
+func TestApplicationMenuUsesProductHelpAndFunctionalShowAll(t *testing.T) {
+	application.New(application.Options{Name: "nocx"})
+	quit, _ := quittingApp(t)
+	var opened string
+	menu, openDocumentation := quit.menu("nocx", func(url string) error {
+		opened = url
+		return nil
+	})
+
+	for _, role := range []application.Role{
+		application.About, application.ServicesMenu, application.Hide,
+		application.HideOthers, application.ShowAll, application.FileMenu,
+		application.EditMenu, application.ViewMenu, application.WindowMenu,
+	} {
+		if menu.FindByRole(role) == nil {
+			t.Errorf("menu is missing platform role %v", role)
+		}
+	}
+	if menu.FindByRole(application.HelpMenu) != nil {
+		t.Fatal("Help delegates to Wails' Learn More destination")
+	}
+	if menu.FindByRole(application.UnHide) != nil {
+		t.Fatal("menu uses the inert UnHide role")
+	}
+	help := menu.ItemAt(5)
+	if help == nil || help.Label() != "Help" || !help.IsSubmenu() {
+		t.Fatalf("Help entry = %v, want Help submenu", help)
+	}
+	learnMore := help.GetSubmenu().ItemAt(0)
+	if learnMore == nil || learnMore.Label() != "Learn More" {
+		t.Fatal("Help menu is missing Learn More")
+	}
+	openDocumentation(nil)
+	if opened != "https://shady2k.github.io/nocx/" {
+		t.Fatalf("Learn More opened %q, want product documentation", opened)
+	}
+}
+
 func TestQuitAsksNothingOfTheBackend(t *testing.T) {
 	w := &WailsApp{
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
