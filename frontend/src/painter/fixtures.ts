@@ -148,6 +148,7 @@ export function frameOf(
     baseRow: 0,
     bracketedPaste: false,
     mouseTracking: false,
+    pointerShape: null,
     title: null,
     cwd: null,
   },

@@ -97,8 +97,21 @@ type frameState struct {
 	BufferInstance string     `json:"bufferInstance"`
 	BracketedPaste bool       `json:"bracketedPaste"`
 	MouseTracking  bool       `json:"mouseTracking"`
+	PointerShape   *string    `json:"pointerShape"`
 	Title          *string    `json:"title"`
 	Cwd            *CwdReport `json:"cwd"`
+}
+
+// pointerShape is the shape a program asked for with OSC 22 as the wire spells
+// it, or nil when it asked for nothing (nocx-1ebrs.24). The emulator reports
+// "nothing" as the empty string, and the wire spells it as null: an empty
+// shape name would be a value the client had to know means "unset", while null
+// is the same absence the title and cwd already carry.
+func pointerShape(asked string) *string {
+	if asked == "" {
+		return nil
+	}
+	return &asked
 }
 
 type frameGeometry struct {
@@ -160,6 +173,7 @@ func EncodeFrame(snap Snapshot) ([]byte, error) {
 			BufferInstance: strconv.FormatUint(snap.Identity.BufferInstance, 10),
 			BracketedPaste: snap.Modes.BracketedPaste,
 			MouseTracking:  snap.Modes.MouseTracking,
+			PointerShape:   pointerShape(snap.Modes.PointerShape),
 			Title:          snap.Title,
 			Cwd:            snap.Cwd,
 		},

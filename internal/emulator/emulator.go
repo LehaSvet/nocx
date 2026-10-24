@@ -323,17 +323,28 @@ type RowTrack interface {
 // concurrent with a read may or may not be reflected in it, exactly as the
 // program's own output is concurrent with the read of it.
 // Modes is the program-selected terminal state a caller reads from the
-// emulator instead of inferring from the bytes it fed in. The three are one
-// read because they are one kind of fact — what the program set — and they are
-// not all for the same reader. BracketedPaste and MouseTracking route local
+// emulator instead of inferring from the bytes it fed in. They are one read
+// because they are one kind of fact — what the program set — and they are not
+// all for the same reader. BracketedPaste and MouseTracking route local
 // selection and mediated paste and are the two a frame carries to the client;
-// SynchronizedOutput is the runtime's own, deciding when a frame is published
-// at all (nocx-1ebrs.33). None of them lets a client derive terminal bytes: key
-// encoding and mouse encoding remain owned by Terminal, and a mode a caller
-// needs beyond these is a method of its own rather than a guess.
+// PointerShape is the shape the program asked the pointer to take, carried by
+// the same frame to the same reader; SynchronizedOutput is the runtime's own,
+// deciding when a frame is published at all (nocx-1ebrs.33). None of them lets
+// a client derive terminal bytes: key encoding and mouse encoding remain owned
+// by Terminal, and a mode a caller needs beyond these is a method of its own
+// rather than a guess.
 type Modes struct {
 	BracketedPaste bool
 	MouseTracking  bool
+	// PointerShape is the pointer the program asked for with OSC 22
+	// (nocx-1ebrs.24), spelled the way the wire and the stylesheet both spell
+	// it — W3C cursor names, "wait", "crosshair", "pointer". Empty when the
+	// program has asked for nothing, which is the state a client answers for
+	// itself: the arrow while the program reports the mouse, the I-beam
+	// otherwise. A terminal that ignored the request would be advertising a
+	// capability it does not implement, so the answer travels rather than the
+	// request.
+	PointerShape string
 	// SynchronizedOutput is DEC private mode 2026 (BSU..ESU): the program is
 	// composing a complete frame and asks not to be shown drawing it. A
 	// terminal answers by keeping the last finished screen until the hold
@@ -346,10 +357,11 @@ type Modes struct {
 type Terminal interface {
 	// Modes reports the current program-selected modes: the two needed to
 	// distinguish a local selection gesture from mouse input and to guard
-	// multi-line snippet paste, and the synchronized-output hold that says
-	// whether the program is mid-redraw. A caller must not infer any of them
-	// from the output bytes it fed in — that is a second parser of the stream
-	// (AD-6), and the terminal it is already driving has the answer.
+	// multi-line snippet paste, the pointer shape the program asked for, and
+	// the synchronized-output hold that says whether the program is
+	// mid-redraw. A caller must not infer any of them from the output bytes it
+	// fed in — that is a second parser of the stream (AD-6), and the terminal
+	// it is already driving has the answer.
 	Modes() (Modes, error)
 
 	// Geometry is the size the terminal is running at. A closed terminal has

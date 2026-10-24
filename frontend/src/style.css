@@ -1042,22 +1042,169 @@
    and positions the cursor overlay, which is placed by THE mapping
    (frontend/src/painter/mapping.ts) in pixels of the committed geometry —
    never a glyph in the text flow. */
-/* WHO OWNS THIS CLICK, DRAWN BY THE POINTER (nocx-1ebrs.24).
-   A program that reports the mouse owns every press over the grid, so the
-   arrow is the honest pointer: an I-beam there promises a text selection that
-   will be posted to the program instead. `auto` was the whole of the old rule,
-   and `auto` over the rows' own text IS an I-beam — which is why nocx showed
-   one in both states, and why the state has to be stated rather than inherited.
-   The state itself is the painter's: `data-pointer` is written from the same
-   accepted frame the selection gesture reads, so the two cannot disagree. */
+/* WHO THE POINTER OBEYS, DRAWN BY IT (nocx-1ebrs.24).
+   `data-pointer` carries the CSS cursor name the pane is showing, decided in
+   one place (frontend/src/painter/painter.ts's pointerFor): the shape a
+   program asked for with OSC 22 when it asked for one, and otherwise who owns
+   the click — the arrow while the program reports the mouse, the I-beam while
+   the terminal selects. A program that reports the mouse owns every press over
+   the grid, so the arrow is the honest pointer there: an I-beam promises a
+   text selection that will be posted to the program instead. `auto` was the
+   whole of the old rule, and `auto` over the rows' own text IS an I-beam —
+   which is why nocx showed one in both states, and why the state has to be
+   stated rather than inherited.
+   The state itself is the painter's, written from the same accepted frame the
+   selection gesture reads, so the two cannot disagree. */
 .term-grid {
   position: relative;
   font-family: var(--font-family-mono);
   cursor: text;
 }
 
-.term-grid[data-pointer='program'] {
+/* ONE RULE PER NAME the wire can carry — the shape a program asked for, and
+   the two states the terminal decides itself (`default`, `text`). The names
+   ARE the CSS cursor vocabulary: the frame contract's list
+   (contracts/session.frame.schema.json) is the W3C list the emulator's own
+   shapes are named from, so each declaration states the name and nothing else.
+   A name with no rule here would fall through to the rule above and show the
+   I-beam under a program that asked for something else — a capability
+   advertised and not implemented — which is why
+   painter/pointer-shape.test.ts walks the contract's own list and fails on a
+   gap. */
+.term-grid[data-pointer='default'] {
   cursor: default;
+}
+
+.term-grid[data-pointer='context-menu'] {
+  cursor: context-menu;
+}
+
+.term-grid[data-pointer='help'] {
+  cursor: help;
+}
+
+.term-grid[data-pointer='pointer'] {
+  cursor: pointer;
+}
+
+.term-grid[data-pointer='progress'] {
+  cursor: progress;
+}
+
+.term-grid[data-pointer='wait'] {
+  cursor: wait;
+}
+
+.term-grid[data-pointer='cell'] {
+  cursor: cell;
+}
+
+.term-grid[data-pointer='crosshair'] {
+  cursor: crosshair;
+}
+
+.term-grid[data-pointer='vertical-text'] {
+  cursor: vertical-text;
+}
+
+.term-grid[data-pointer='alias'] {
+  cursor: alias;
+}
+
+.term-grid[data-pointer='copy'] {
+  cursor: copy;
+}
+
+.term-grid[data-pointer='move'] {
+  cursor: move;
+}
+
+.term-grid[data-pointer='no-drop'] {
+  cursor: no-drop;
+}
+
+.term-grid[data-pointer='not-allowed'] {
+  cursor: not-allowed;
+}
+
+.term-grid[data-pointer='grab'] {
+  cursor: grab;
+}
+
+.term-grid[data-pointer='grabbing'] {
+  cursor: grabbing;
+}
+
+.term-grid[data-pointer='all-scroll'] {
+  cursor: all-scroll;
+}
+
+.term-grid[data-pointer='col-resize'] {
+  cursor: col-resize;
+}
+
+.term-grid[data-pointer='row-resize'] {
+  cursor: row-resize;
+}
+
+.term-grid[data-pointer='n-resize'] {
+  cursor: n-resize;
+}
+
+.term-grid[data-pointer='e-resize'] {
+  cursor: e-resize;
+}
+
+.term-grid[data-pointer='s-resize'] {
+  cursor: s-resize;
+}
+
+.term-grid[data-pointer='w-resize'] {
+  cursor: w-resize;
+}
+
+.term-grid[data-pointer='ne-resize'] {
+  cursor: ne-resize;
+}
+
+.term-grid[data-pointer='nw-resize'] {
+  cursor: nw-resize;
+}
+
+.term-grid[data-pointer='se-resize'] {
+  cursor: se-resize;
+}
+
+.term-grid[data-pointer='sw-resize'] {
+  cursor: sw-resize;
+}
+
+.term-grid[data-pointer='ew-resize'] {
+  cursor: ew-resize;
+}
+
+.term-grid[data-pointer='ns-resize'] {
+  cursor: ns-resize;
+}
+
+.term-grid[data-pointer='nesw-resize'] {
+  cursor: nesw-resize;
+}
+
+.term-grid[data-pointer='nwse-resize'] {
+  cursor: nwse-resize;
+}
+
+.term-grid[data-pointer='zoom-in'] {
+  cursor: zoom-in;
+}
+
+.term-grid[data-pointer='zoom-out'] {
+  cursor: zoom-out;
+}
+
+.term-grid[data-pointer='text'] {
+  cursor: text;
 }
 
 /* THE ARMED LINK UNDER THE POINTER (nocx-1ebrs.48). The live grid has no
@@ -1067,7 +1214,8 @@
    keeps, including over a program that reports the mouse, whose armed
    click still opens rather than reports. One writer to the attribute, like
    `data-pointer` above; placed after it because the two rules tie on
-   specificity and the hand must win over both of the pointer's states. */
+   specificity and the hand must win over every pointer state — including a
+   program's own OSC 22 request. */
 .term-grid[data-link-hover='true'] {
   cursor: pointer;
 }

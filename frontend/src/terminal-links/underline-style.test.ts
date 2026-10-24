@@ -52,10 +52,10 @@ describe('the live grid\u2019s armed-link cascade (nocx-1ebrs.48)', () => {
     const rule = all.find((r) => r.selector === selector)
     expect(rule).toBeDefined()
     expect(declaration(rule!.body, 'cursor')).toBe('pointer')
-    // Equal specificity with `.term-grid[data-pointer='program']` decides by
-    // source order, so the hand rule has to come after it — an armed link
-    // under a mouse-reporting program still opens on ⌘+click.
-    const program = all.findIndex((r) => r.selector === ".term-grid[data-pointer='program']")
+    // Equal specificity with the pointer's own rules decides by source order,
+    // so the hand rule has to come after them — an armed link under a
+    // mouse-reporting program still opens on ⌘+click.
+    const program = all.findIndex((r) => r.selector === ".term-grid[data-pointer='default']")
     expect(all.findIndex((r) => r.selector === selector)).toBeGreaterThan(program)
   })
 })

@@ -165,6 +165,46 @@ func TestFrameCarriesReplayableTitleAndCwdState(t *testing.T) {
 	}
 }
 
+// TestFrameCarriesThePointerShapeTheProgramAskedFor is the wire's half of
+// nocx-1ebrs.24's OSC 22 arm: the shape the program asked the pointer to take
+// rides on the frame that already carries the modes, and "asked for nothing"
+// is null — the same absence title and cwd carry — rather than a shape name the
+// client would have to know means unset. A populated value is judged against
+// the contract too, because the vocabulary is the schema's: a shape this
+// package can spell and the wire cannot carry is a pane nobody can explain.
+func TestFrameCarriesThePointerShapeTheProgramAskedFor(t *testing.T) {
+	schema := loadFrameContractSchema(t)
+	for _, tc := range []struct {
+		asked string
+		want  string
+	}{
+		{asked: "", want: "null"},
+		{asked: "wait", want: `"wait"`},
+		{asked: "crosshair", want: `"crosshair"`},
+	} {
+		snap := denseSnapshot(80, 24)
+		snap.Modes.PointerShape = tc.asked
+		raw, err := EncodeFrame(snap)
+		if err != nil {
+			t.Fatalf("EncodeFrame: %v", err)
+		}
+		var wire struct {
+			State map[string]json.RawMessage `json:"state"`
+		}
+		if err := json.Unmarshal(raw, &wire); err != nil {
+			t.Fatalf("decode frame: %v", err)
+		}
+		value, ok := wire.State["pointerShape"]
+		if !ok {
+			t.Fatalf("frame state is missing the pointer shape; state carried %v", wire.State)
+		}
+		if string(value) != tc.want {
+			t.Errorf("asked %q: pointerShape = %s, want %s", tc.asked, value, tc.want)
+		}
+		validateFrameContract(t, schema, raw, "frame with pointer shape "+tc.want)
+	}
+}
+
 func TestFrameDTOConformsToContract(t *testing.T) {
 	schema := loadFrameContractSchema(t)
 	raw, err := EncodeFrame(denseSnapshot(80, 24))

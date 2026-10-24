@@ -107,6 +107,45 @@ export interface SessionFrame {
      */
     mouseTracking: boolean
     /**
+     * The pointer shape the running program asked for with OSC 22, in the W3C cursor spelling the stylesheet uses (`wait`, `crosshair`, `pointer`, ...). Null means the program has asked for nothing, and the client answers for itself: the arrow while `mouseTracking` says the program owns the click, the I-beam while the terminal does. `text` is declared because it is a shape a program may name, but the emulator cannot currently tell it apart from no request at all — its initial shape IS text — so a request for `text` arrives as null and the client's own fallback answers it. The value travels instead of the escape because a client that re-parsed the byte stream for OSC 22 would be a second terminal (AD-6).
+     */
+    pointerShape:
+      | null
+      | 'default'
+      | 'context-menu'
+      | 'help'
+      | 'pointer'
+      | 'progress'
+      | 'wait'
+      | 'cell'
+      | 'crosshair'
+      | 'vertical-text'
+      | 'alias'
+      | 'copy'
+      | 'move'
+      | 'no-drop'
+      | 'not-allowed'
+      | 'grab'
+      | 'grabbing'
+      | 'all-scroll'
+      | 'col-resize'
+      | 'row-resize'
+      | 'n-resize'
+      | 'e-resize'
+      | 's-resize'
+      | 'w-resize'
+      | 'ne-resize'
+      | 'nw-resize'
+      | 'se-resize'
+      | 'sw-resize'
+      | 'ew-resize'
+      | 'ns-resize'
+      | 'nesw-resize'
+      | 'nwse-resize'
+      | 'zoom-in'
+      | 'zoom-out'
+      | 'text'
+    /**
      * The latest program title. Null means no title has been reported; an empty string is an explicit clear. This is latest-value state, not replay of session.effect.
      */
     title: string | null
