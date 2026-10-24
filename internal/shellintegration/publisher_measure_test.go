@@ -246,9 +246,13 @@ import (
 // status to ours. Paid once per publish in exchange for a shell that no longer
 // asks bash to start a debugger it was not asked for, and that a `set -e` in
 // somebody's rc cannot kill.
+//
+// The shared Bash template's pre-startup tool-token slot adds one empty
+// remote separator, escaped in the launch carrier: 88212 bytes, still 63
+// calls (nocx-1ebrs.21). The same scenario on origin/main measured 88202.
 const (
 	measuredMaxPublishCalls = 63
-	measuredMaxPublishBytes = 88202
+	measuredMaxPublishBytes = 88212
 
 	// measuredMaxBoundedResidue is the same figure for the worst attempt
 	// that is still inside the residue bounds the design asks P3 to enforce

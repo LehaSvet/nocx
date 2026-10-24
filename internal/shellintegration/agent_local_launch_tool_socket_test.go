@@ -113,6 +113,9 @@ func TestBashLocalPaneLaunchCarriesToolSocketAndStagesAgent(t *testing.T) {
 	s.waitForRenderedThroughPrompt()
 
 	out := strings.ReplaceAll(s.output(), "\r", "")
+	if strings.Contains(out, "@EARLYTOKEN@") {
+		t.Fatal("the local pane exposed an unresolved startup slot")
+	}
 	if strings.Contains(out, "tool surface unavailable") {
 		t.Fatalf("a pane started with a configured tool socket refused the tool surface: %q", out)
 	}
@@ -168,7 +171,9 @@ done
 	}
 	waitForEvent(t, k, "agent_enrol")
 	waitForEvent(t, k, "agent_withdraw")
-	waitUntil(t, "the fake agent's auth result", func() bool { return strings.Contains(s.output(), "TOOL_AUTH_") })
+	waitUntil(t, "the fake agent's auth result", func() bool {
+		return strings.Contains(s.output(), "TOOL_AUTHENTICATED") || strings.Contains(s.output(), "TOOL_AUTH_REFUSED")
+	})
 	out := strings.ReplaceAll(s.output(), "\r", "")
 	if !strings.Contains(out, "TOOL_AUTHENTICATED") {
 		t.Fatal("the local agent tool did not authenticate with its pane-bound bearer")

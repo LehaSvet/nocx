@@ -37,9 +37,9 @@ func LocalBashRcfile(opts LaunchOptions) (string, error) {
 	}
 	rc := bashRcfile(localChild, launcherEnvBlock(opts), localScript(bashScriptRaw, opts),
 		capabilityLiteral(bashUnsetExport, opts.Capability, opts.Recovery))
-	if opts.AgentToolToken != "" {
-		rc = strings.Replace(rc, "@EARLYTOKEN@", toolTokenFromDescriptor(bashUnsetExport), 1)
-	}
+	// Always consume the slot: even a pane with no tool surface must start
+	// with valid shell text and clear any inherited private-token state.
+	rc = strings.Replace(rc, "@EARLYTOKEN@", toolTokenFromDescriptor(bashUnsetExport), 1)
 	return rc, nil
 }
 
@@ -267,12 +267,6 @@ const localScriptFD = 3
 // lifecycle bearers followed by the optional tool bearer, in
 // capabilityFromDescriptor's order. Values travel as descriptor data, never
 // as part of the transient ZDOTDIR files.
-//
-// The pane's AGENT TOOL TOKEN is deliberately not a third line here: this arm
-// has never delivered it (capabilityLiteral does not carry it either), and
-// making it start arriving is a different decision with a different blast
-// radius. capabilityFromDescriptor reads a third line and, absent one, leaves
-// the variable empty — the state this tier is in today.
 func capabilityLines(opts LaunchOptions) string {
 	return opts.Capability + "\n" + opts.Recovery + "\n" + opts.AgentToolToken + "\n"
 }

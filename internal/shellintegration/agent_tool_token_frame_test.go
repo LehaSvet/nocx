@@ -119,6 +119,9 @@ func TestTheCapabilityReaderAssignsANonExportedToolToken(t *testing.T) {
 func TestLocalBashKeepsTheBearerOutOfItsStartupScript(t *testing.T) {
 	const token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	opts := localTestOpts()
+	// The lifecycle capability is allowed in the descriptor-carried script;
+	// use a different value so this assertion identifies the tool bearer.
+	opts.Capability = strings.Repeat("ab", 32)
 	opts.AgentToolToken = token
 	rc, err := LocalBashRcfile(opts)
 	if err != nil {
@@ -127,6 +130,14 @@ func TestLocalBashKeepsTheBearerOutOfItsStartupScript(t *testing.T) {
 	if strings.Contains(rc, token) {
 		t.Fatal("local Bash rcfile contains the bearer")
 	}
+	opts.AgentToolToken = strings.Repeat("cd", 32)
+	other, err := LocalBashRcfile(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc != other {
+		t.Fatal("changing the tool bearer changed local Bash startup text")
+	}
 	readAt := strings.Index(rc, "IFS= read -r __nocx_agent_token")
 	userStartupAt := strings.Index(rc, `. "${HOME}/.bashrc"`)
 	if readAt < 0 || userStartupAt < 0 || readAt >= userStartupAt {
@@ -134,5 +145,16 @@ func TestLocalBashKeepsTheBearerOutOfItsStartupScript(t *testing.T) {
 	}
 	if !strings.Contains(rc, AgentToolTokenFDEnv) || !strings.Contains(rc, "__nocx_agent_token") {
 		t.Fatal("local Bash rcfile does not read the token descriptor")
+	}
+}
+
+// With no bearer, a local pane must still receive executable startup text.
+func TestLocalBashWithoutAToolTokenHasNoUnresolvedStartupSlot(t *testing.T) {
+	rc, err := LocalBashRcfile(localTestOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rc, "@EARLYTOKEN@") {
+		t.Fatal("local Bash without a tool token executes an unresolved startup slot")
 	}
 }
