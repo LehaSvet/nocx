@@ -97,6 +97,8 @@ func (s *WSServer) ReadoptHostedSession(ctx context.Context, sid session.ID, rea
 			string(sid), string(hosted.Session.ID()))
 	}
 
+	armLifecycleDetach(&hosted)
+
 	// The helper's holes reach the ring from here, BEFORE the pump starts —
 	// the same rule and the same reason as handleOpen's: the observer fires on
 	// the pump's own goroutine as it reads, so registering it after the pump
@@ -203,5 +205,18 @@ func (s *WSServer) recordedThrough(ctx context.Context, sid session.ID) uint64 {
 func abortLifecycle(hosted HostedSessionOpen) {
 	if hosted.AbortLifecycle != nil {
 		hosted.AbortLifecycle()
+	}
+}
+
+// armLifecycleDetach gives every hosted entry path the same orderly ending.
+// The registry invokes it before closing the session carrier (ADR-0076).
+// Arm before any pump starts, including when no lifecycle bridge can start:
+// shutdown must still dispose that leg as a handover, never as carrier loss.
+func armLifecycleDetach(hosted *HostedSessionOpen) {
+	if hosted == nil || hosted.Session == nil || hosted.DetachLifecycle == nil {
+		return
+	}
+	if detacher, ok := hosted.Session.(interface{ SetLifecycleDetach(func()) }); ok {
+		detacher.SetLifecycleDetach(hosted.DetachLifecycle)
 	}
 }
