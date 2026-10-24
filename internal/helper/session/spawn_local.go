@@ -279,6 +279,9 @@ func (s *LocalSpawner) Spawn(req SpawnRequest) (Process, error) {
 				_ = lifecycleChild.Close()
 			}
 		}
+		if launch.AgentToolTokenFile != nil {
+			launch.ExtraFiles = append(launch.ExtraFiles, launch.AgentToolTokenFile)
+		}
 		cfg.Command = launch.Command
 		cfg.Args = launch.Args
 		cfg.Env = append(cfg.Env, launch.Env...)

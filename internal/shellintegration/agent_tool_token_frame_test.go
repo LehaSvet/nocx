@@ -112,3 +112,27 @@ func TestTheCapabilityReaderAssignsANonExportedToolToken(t *testing.T) {
 		t.Fatalf("the agent-env block carried a bearer: %q", env)
 	}
 }
+
+// TestLocalBashKeepsTheBearerOutOfItsStartupScript confirms the local
+// bootstrap names a private descriptor but never embeds the token in rcfile
+// text; the inherited descriptor is the only bearer carrier.
+func TestLocalBashKeepsTheBearerOutOfItsStartupScript(t *testing.T) {
+	const token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	opts := localTestOpts()
+	opts.AgentToolToken = token
+	rc, err := LocalBashRcfile(opts)
+	if err != nil {
+		t.Fatalf("LocalBashRcfile: %v", err)
+	}
+	if strings.Contains(rc, token) {
+		t.Fatal("local Bash rcfile contains the bearer")
+	}
+	readAt := strings.Index(rc, "IFS= read -r __nocx_agent_token")
+	userStartupAt := strings.Index(rc, `. "${HOME}/.bashrc"`)
+	if readAt < 0 || userStartupAt < 0 || readAt >= userStartupAt {
+		t.Fatal("local Bash does not consume its token descriptor before user startup")
+	}
+	if !strings.Contains(rc, AgentToolTokenFDEnv) || !strings.Contains(rc, "__nocx_agent_token") {
+		t.Fatal("local Bash rcfile does not read the token descriptor")
+	}
+}

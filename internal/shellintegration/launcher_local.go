@@ -35,8 +35,12 @@ func LocalBashRcfile(opts LaunchOptions) (string, error) {
 	if !opts.Enhanced || opts.SessionID == "" {
 		return "", fmt.Errorf("shellintegration: local lifecycle bootstrap requires an enhanced session with a session id")
 	}
-	return bashRcfile(localChild, launcherEnvBlock(opts), localScript(bashScriptRaw, opts),
-		capabilityLiteral(bashUnsetExport, opts.Capability, opts.Recovery)), nil
+	rc := bashRcfile(localChild, launcherEnvBlock(opts), localScript(bashScriptRaw, opts),
+		capabilityLiteral(bashUnsetExport, opts.Capability, opts.Recovery))
+	if opts.AgentToolToken != "" {
+		rc = strings.Replace(rc, "@EARLYTOKEN@", toolTokenFromDescriptor(bashUnsetExport), 1)
+	}
+	return rc, nil
 }
 
 // localScript renders an authored script for a LOCAL pane: this machine's
@@ -90,8 +94,10 @@ type LocalLaunch struct {
 	Args       []string
 	Env        []string
 	ExtraFiles []*os.File
-	Cleanup    func()
-	Abort      func()
+	// AgentToolTokenFile is appended after an optional lifecycle descriptor.
+	AgentToolTokenFile *os.File
+	Cleanup            func()
+	Abort              func()
 	// Refusal keeps an unsupported native startup layout conventional, without
 	// passing it a credential pipe, lifecycle socket or activation marker.
 	Refusal RefusalReason
@@ -123,7 +129,29 @@ func LocalEnhancedLaunchInMemory(shellPath string, kind ShellKind, opts LaunchOp
 		if err != nil {
 			return LocalLaunch{}, err
 		}
-		return pipeLaunch(shellPath, []string{"--rcfile", "/dev/fd/3", "-i"}, nil, rc)
+		launch, err := pipeLaunch(shellPath, []string{"--rcfile", "/dev/fd/3", "-i"}, nil, rc)
+		if err != nil || opts.AgentToolToken == "" {
+			return launch, err
+		}
+		tokenReader, tokenWriter, err := os.Pipe()
+		if err != nil {
+			launch.Abort()
+			return LocalLaunch{}, fmt.Errorf("shellintegration: local tool token descriptor: %w", err)
+		}
+		go func() {
+			_, _ = io.WriteString(tokenWriter, opts.AgentToolToken+"\n")
+			_ = tokenWriter.Close()
+		}()
+		launch.AgentToolTokenFile = tokenReader
+		tokenFD := 4
+		if opts.LifecycleFD > 0 {
+			tokenFD = 5
+		}
+		launch.Env = append(launch.Env, AgentToolTokenFDEnv+"="+fmt.Sprint(tokenFD))
+		previousCleanup, previousAbort := launch.Cleanup, launch.Abort
+		launch.Cleanup = func() { previousCleanup(); _ = tokenReader.Close() }
+		launch.Abort = func() { _ = tokenWriter.Close(); previousAbort(); _ = tokenReader.Close() }
+		return launch, nil
 	case ShellFish:
 		return localFishLaunch(shellPath, opts)
 	case ShellZsh:
@@ -235,11 +263,10 @@ func pipeLaunch(command string, args, env []string, script string) (LocalLaunch,
 // ENV=/dev/fd/3 are three spellings of one fact.
 const localScriptFD = 3
 
-// capabilityLines is what a local zsh pane's descriptor carries: one bearer
-// per line, in capabilityFromDescriptor's order. Two lines and not a script,
-// which is the point (nocx-1ebrs.8) — the writer has always finished writing a
-// hundred-odd bytes before the reader arrives, so there is no window in which
-// a slow startup or a busy machine can change the outcome.
+// capabilityLines is what a local zsh pane's descriptor carries: the two
+// lifecycle bearers followed by the optional tool bearer, in
+// capabilityFromDescriptor's order. Values travel as descriptor data, never
+// as part of the transient ZDOTDIR files.
 //
 // The pane's AGENT TOOL TOKEN is deliberately not a third line here: this arm
 // has never delivered it (capabilityLiteral does not carry it either), and
@@ -247,7 +274,7 @@ const localScriptFD = 3
 // radius. capabilityFromDescriptor reads a third line and, absent one, leaves
 // the variable empty — the state this tier is in today.
 func capabilityLines(opts LaunchOptions) string {
-	return opts.Capability + "\n" + opts.Recovery + "\n"
+	return opts.Capability + "\n" + opts.Recovery + "\n" + opts.AgentToolToken + "\n"
 }
 
 // localZshEnv is the environment the transient ZDOTDIR needs, and it is the
