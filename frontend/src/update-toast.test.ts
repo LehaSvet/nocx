@@ -19,7 +19,13 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createUpdateToast } from './update-toast'
+import { RestartWindow } from '../bindings/github.com/shady2k/nocx/wailsapp'
 import { toasts, clearToasts } from './ui/toast'
+
+vi.mock('../bindings/github.com/shady2k/nocx/wailsapp', () => ({
+  ApplyUpdate: vi.fn<() => Promise<void>>(),
+  RestartWindow: vi.fn<() => Promise<void>>(),
+}))
 
 const NOTES = 'https://example.com/releases/0.7.0'
 
@@ -111,13 +117,16 @@ describe('createUpdateToast', () => {
     expect(restart).toHaveBeenCalledTimes(1)
   })
 
-  it('offers no dead Restart now while no restart seam exists (nocx-1ebrs.53)', async () => {
-    const toast = createUpdateToast({ apply: vi.fn().mockResolvedValue(undefined) })
+  it('installed update Restart now invokes the bound window restart action', async () => {
+    vi.mocked(RestartWindow).mockReset()
+    const toast = createUpdateToast()
     toast.showAvailable('0.7.0', NOTES)
     action('Install now').onClick()
 
     await vi.waitFor(() => expect(toasts()[0].message).toContain('installed'))
-    expect(toasts()[0].actions).toBeUndefined()
+    expect(toasts()[0].actions?.map((a) => a.label)).toEqual(['Restart now'])
+    toasts()[0].actions![0].onClick()
+    expect(RestartWindow).toHaveBeenCalledTimes(1)
   })
 
   it('keeps an install failure with its cause, and does not claim it installed', async () => {

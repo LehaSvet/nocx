@@ -68,7 +68,7 @@ func hostedSessionDelayingClose(t *testing.T, wrap *delayedCloseSession) func(in
 	return func(in io.Reader, out io.Writer) int {
 		h := hostFor(in, out, log)
 		h.Register(wrap)
-		release := wrap.Bind(h)
+		release := wrap.Service.Bind(h)
 		defer release()
 		if err := h.Serve(context.Background()); err != nil {
 			return 1

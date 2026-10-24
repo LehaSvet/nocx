@@ -200,6 +200,14 @@ export function ResolveBackend(): $CancellablePromise<$models.BackendResolution>
 }
 
 /**
+ * RestartWindow starts the installed app and quits this window; the new process
+ * resolves the existing coordinator.
+ */
+export function RestartWindow(): $CancellablePromise<void> {
+    return $Call.ByName("main.WailsApp.RestartWindow");
+}
+
+/**
  * SetUpdateChannel selects which signed manifest the next check fetches:
  * stable (the default) or nightly (ADR-0097). The renderer calls this with
  * the persisted update.channel setting — at startup and whenever the person

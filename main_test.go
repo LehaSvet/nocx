@@ -31,6 +31,55 @@ import (
 	"github.com/shady2k/nocx/internal/version"
 )
 
+func TestRestartWindowStartsInstalledPathBeforeQuitting(t *testing.T) {
+	started := ""
+	quit := 0
+	order := []string{}
+	app := &WailsApp{
+		restartWindowFn: func(path string) error { started = path; order = append(order, "start"); return nil },
+		quit: &quitSeam{
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			quit:   func() { quit++; order = append(order, "quit") },
+		},
+	}
+	if err := app.RestartWindow(); err != nil {
+		t.Fatalf("RestartWindow: %v", err)
+	}
+	if started != upgradeInstallPath(mustExecutable(t)) {
+		t.Fatalf("started %q, want installed path %q", started, upgradeInstallPath(mustExecutable(t)))
+	}
+	if quit != 1 {
+		t.Fatalf("quit called %d times, want once after successful start", quit)
+	}
+	if got, want := strings.Join(order, ","), "start,quit"; got != want {
+		t.Fatalf("restart order = %q, want %q", got, want)
+	}
+}
+
+func TestRestartWindowKeepsCurrentWindowWhenStartFails(t *testing.T) {
+	quit := 0
+	app := &WailsApp{
+		restartWindowFn: func(string) error { return errors.New("launch refused") },
+		quit:            &quitSeam{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), quit: func() { quit++ }},
+	}
+	err := app.RestartWindow()
+	if err == nil || !strings.Contains(err.Error(), "launch refused") {
+		t.Fatalf("RestartWindow error = %v, want launch failure", err)
+	}
+	if quit != 0 {
+		t.Fatalf("quit called %d times after launch failure, want 0", quit)
+	}
+}
+
+func mustExecutable(t *testing.T) string {
+	t.Helper()
+	path, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	return path
+}
+
 func TestResolveBackendReportsSuccessAndFailure(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		w := &WailsApp{
