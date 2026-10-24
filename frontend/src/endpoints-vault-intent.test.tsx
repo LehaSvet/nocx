@@ -35,7 +35,15 @@ class Socket {
   readyState = Socket.OPEN
   onopen: (() => void) | null = null
   onclose: (() => void) | null = null
-  onmessage: ((event: { data: string }) => void) | null = null
+  private listeners = new Map<string, Set<(event: { data: string }) => void>>()
+  addEventListener(type: string, listener: (event: { data: string }) => void) {
+    let listeners = this.listeners.get(type)
+    if (!listeners) this.listeners.set(type, (listeners = new Set()))
+    listeners.add(listener)
+  }
+  removeEventListener(type: string, listener: (event: { data: string }) => void) {
+    this.listeners.get(type)?.delete(listener)
+  }
   requests: { id: number; method: string; params: unknown }[] = []
   constructor() {
     Socket.current = this
@@ -66,7 +74,9 @@ class Socket {
     })
   }
   deliver(message: unknown) {
-    this.onmessage?.({ data: JSON.stringify(message) })
+    for (const listener of this.listeners.get('message') ?? []) {
+      listener({ data: JSON.stringify(message) })
+    }
   }
 }
 
