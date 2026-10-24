@@ -291,7 +291,9 @@ jobs:
         run: scripts/install-fish-ci.sh "$RUNNER_TEMP/fish-ci"
 
       - name: Test (native Fish startup and lifecycle)
-        run: go test -race -tags gtk3,nocx_framecheck -count=1 -run 'TestNativeFish|TestFishComment' ./internal/shellintegration/
+        env:
+          NOCX_REQUIRE_NATIVE_FISH: '1'
+        run: go test -race -tags gtk3,nocx_framecheck -count=1 -v -run 'TestNativeFish|TestFishComment' ./internal/shellintegration/
 
       - name: Test (the OS-specific packages, per-test timings)
         env:
