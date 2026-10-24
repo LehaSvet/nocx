@@ -386,6 +386,32 @@ func TestQuitMenuItemIsOursAndCarriesTheChord(t *testing.T) {
 // runs in this process is [WailsApp.shutdown], which logs. So no session,
 // stuck or otherwise, can hold a quit open — asserted by making the launcher
 // fail the test if a quit touches it.
+func TestApplicationMenuUsesProductHelpAndFunctionalShowAll(t *testing.T) {
+	application.New(application.Options{Name: "nocx"})
+	quit, _ := quittingApp(t)
+	var opened string
+	menu, openDocumentation := quit.menu("nocx", func(url string) error {
+		opened = url
+		return nil
+	})
+
+	if menu.FindByRole(application.ShowAll) == nil {
+		t.Fatal("Window menu has no functional Show All item")
+	}
+	help := menu.ItemAt(5)
+	if help == nil || help.Label() != "Help" || !help.IsSubmenu() {
+		t.Fatalf("Help entry = %v, want Help submenu", help)
+	}
+	learnMore := help.GetSubmenu().ItemAt(0)
+	if learnMore == nil || learnMore.Label() != "Learn More" {
+		t.Fatal("Help menu is missing Learn More")
+	}
+	openDocumentation(nil)
+	if opened != "https://shady2k.github.io/nocx/" {
+		t.Fatalf("Learn More opened %q, want product documentation", opened)
+	}
+}
+
 func TestQuitAsksNothingOfTheBackend(t *testing.T) {
 	w := &WailsApp{
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
