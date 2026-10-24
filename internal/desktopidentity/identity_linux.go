@@ -24,7 +24,7 @@ import (
 // This uses GLib's public pre-registration API, not Wails internals or a fork:
 // https://docs.gtk.org/gio/method.Application.set_application_id.html
 // Refuse a missing or already registered application so lifecycle drift fails
-// startup instead of silently shipping a different Wayland identity.
+// startup instead of silently shipping a different GtkApplication identity.
 func SetDefault() error {
 	app := C.g_application_get_default()
 	if app == nil {

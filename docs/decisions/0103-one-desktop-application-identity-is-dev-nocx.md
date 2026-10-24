@@ -104,9 +104,15 @@ executable and icon remain `nocx`. Installer fixture tests check the installed
 basename and identity metadata. Development runtime identity is
 `dev.nocx-dev`; no development AppImage/installer target is introduced. The
 different `ProgramName` alone separates development/release WebKit page stores;
-the GLib setter is not needed for storage, only GtkApplication identity. Before
-this change both builds used `ProgramName: nocx`, even though their product
-profile paths were already separate.
+the GLib setter is not needed for storage, only GtkApplication identity.
+ProgramName is one knob driving two outputs: the compositor's `app_id` and the
+page-store directory. It cannot be `dev.nocx` for the compositor and `nocx` for
+the store through this supported API. Changing it back changes both.
+
+Before this change both builds used `ProgramName: nocx`, even though their
+product profile paths were already separate. A development run could therefore
+see the shipped app's browser page storage. The new program identities also fix
+that shared-browser-namespace defect; the profile separation alone never did.
 
 ## State and consent consequences
 

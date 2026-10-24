@@ -68,7 +68,7 @@ Read `IDENTITY before-run registered=0`, `IDENTITY registered=1`, and the
 | Release: both setters                               | `dev.nocx` / same                           | `dev.nocx`     | `dev.nocx`           |
 | Development: both setters                           | `dev.nocx-dev` / same                       | `dev.nocx-dev` | `dev.nocx-dev`       |
 
-All four processes stayed running, registered their GtkApplication, and sent
+All five configurations stayed running, registered their GtkApplication, and sent
 Wayland surface commits. The first trial disproved the assumption that changing
 the GtkApplication ID alone changes the Wayland identity. The control also proves
 that the hardcoded Wails GtkApplication ID was not itself the Wayland ID.
