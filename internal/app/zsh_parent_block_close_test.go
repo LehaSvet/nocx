@@ -390,7 +390,11 @@ func TestLiveSshd_ZshParentBlockClosesWhenTheSshChildExits(t *testing.T) {
 				return false
 			}
 			childDomain = top
-			return true
+			// Kernel.Domain becomes Established inside Ingest before the
+			// publisher resumes and emits the destination projection. Wait for
+			// both observable states; the kernel read alone can win that race.
+			_, destinationPublished := facts.destinationOf(childDomain)
+			return destinationPublished
 		})
 	if dest, ok := facts.destinationOf(childDomain); ok {
 		if dest.Host != "127.0.0.1" || dest.User != fx.user || dest.Port != fx.fixturePort() {
