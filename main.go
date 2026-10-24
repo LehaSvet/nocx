@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -307,8 +308,9 @@ type BackendResolution struct {
 // how to reach that process and what to tell the person when reaching it
 // went badly.
 type WailsApp struct {
-	logger *slog.Logger
-	window *application.WebviewWindow
+	logger          *slog.Logger
+	window          *application.WebviewWindow
+	restartWindowFn func(string) error
 
 	// launchCoordinatorFn is the launcher seam used by ResolveBackend. The
 	// production value is nil, which selects launchCoordinator; tests can
@@ -395,6 +397,49 @@ type WailsApp struct {
 // renderer is this window's, and the file belongs to the daemon now.
 func (w *WailsApp) Log(message string) {
 	w.logger.Info("frontend", "message", message)
+}
+
+// RestartWindow starts the installed build, then quits this window. The new
+// Wails process runs the ordinary startup path, which finds the compatible
+// coordinator and preserves its live sessions.
+func (w *WailsApp) RestartWindow() error {
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolving executable: %w", err)
+	}
+	if w.quit == nil {
+		return errors.New("this window cannot quit the application")
+	}
+	installPath := upgradeInstallPath(execPath)
+	start := w.restartWindowFn
+	if start == nil {
+		start = startInstalledApplication
+	}
+	if err := start(installPath); err != nil {
+		return fmt.Errorf("starting the installed nocx build: %w", err)
+	}
+	w.quit.request(quitFromUpdateRestart)
+	return nil
+}
+
+// startInstalledApplication starts the bundle or AppImage exchanged by the
+// updater. macOS waits for Launch Services to accept the `open` request. On
+// Linux, successful process creation is the launch boundary: it does not prove
+// the new AppImage stayed healthy. The child is waited asynchronously so its
+// process resources are reaped if it exits after this app quits.
+func startInstalledApplication(installPath string) error {
+	if runtime.GOOS == "darwin" {
+		return exec.Command("/usr/bin/open", "-n", installPath).Run()
+	}
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("restart after update is not supported on %s", runtime.GOOS)
+	}
+	cmd := exec.Command(installPath)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 // LogFilePath reports where the backend log file lives. "" means
@@ -946,10 +991,11 @@ type quitCause string
 const (
 	quitFromMenu  quitCause = "menu"
 	quitFromChord quitCause = "chord"
-	// quitFromUpdateFinish is the update surface's Restart now: the same
-	// decision as the two keys, reached from a button a person pressed
-	// knowing it closes their sessions.
-	quitFromUpdateFinish quitCause = "update-finish"
+	// quitFromUpdateFinish is the explicit held-update action that stops the
+	// kept coordinator before quitting. It is distinct from the session-
+	// preserving update restart below.
+	quitFromUpdateFinish  quitCause = "update-finish"
+	quitFromUpdateRestart quitCause = "update-restart"
 )
 
 // quitSeam is the one place a quit is decided.

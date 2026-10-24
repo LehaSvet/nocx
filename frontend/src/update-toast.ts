@@ -15,16 +15,12 @@
  * declined version, which is what makes the dismissal quiet rather than a
  * loss.
  *
- * Install now rides the existing ApplyUpdate path and reports what it did —
- * downloading, then installed. "Restart now" is offered only where a restart
- * seam is injected: restarting onto the new build while the coordinator
- * survives is nocx-1ebrs.53's outcome, and this side links to that seam
- * rather than inventing a restart of its own. Until it lands, the installed
- * toast says what to do and the strip holds the pending state; a button that
- * cannot restart yet would be a dead control.
+ * Restart now launches the installed app before the current process quits. The
+ * new process resolves the existing coordinator, which keeps its live sessions
+ * across a compatible update (nocx-1ebrs.53).
  */
 
-import { ApplyUpdate } from '../bindings/github.com/shady2k/nocx/wailsapp'
+import { ApplyUpdate, RestartWindow } from '../bindings/github.com/shady2k/nocx/wailsapp'
 import { showToast, dismissToast } from './ui/toast'
 
 /** What the announcement needs from its embedding. The ApplyUpdate path is
@@ -32,8 +28,7 @@ import { showToast, dismissToast } from './ui/toast'
 export interface UpdateToastDeps {
   /** Downloads and applies the checked update. */
   apply?: () => Promise<void>
-  /** Restarts onto the installed build (nocx-1ebrs.53's seam). Absent while
-   *  no restart behavior exists — then no Restart now is offered. */
+  /** Restarts the window through its native shell binding. */
   restart?: () => void | Promise<void>
 }
 
@@ -50,6 +45,7 @@ type Phase = 'idle' | 'announcing' | 'downloading' | 'installed'
 
 export function createUpdateToast(deps: UpdateToastDeps = {}): UpdateToastController {
   const apply = deps.apply ?? (() => ApplyUpdate())
+  const restart = deps.restart ?? (() => RestartWindow())
   /** Versions declined with Later in this app run. In memory by design:
    *  "until next app start" is the bead's rule, and a persisted value would
    *  silence the first check of the next run too. */
@@ -83,17 +79,13 @@ export function createUpdateToast(deps: UpdateToastDeps = {}): UpdateToastContro
           level: 'success',
           message: `nocx ${version} installed — restart to apply`,
           duration: 0,
-          ...(deps.restart
-            ? {
-                actions: [
-                  {
-                    label: 'Restart now',
-                    variant: 'primary' as const,
-                    onClick: () => void deps.restart?.(),
-                  },
-                ],
-              }
-            : {}),
+          actions: [
+            {
+              label: 'Restart now',
+              variant: 'primary',
+              onClick: () => void restart(),
+            },
+          ],
         })
       } catch (err) {
         phase = 'idle'

@@ -1895,9 +1895,9 @@ function main(): void {
   // The actionable announcement (nocx-1ebrs.54): the check's finding fans
   // out to BOTH presenters at this one composition point — the strip stays
   // as the quiet persistent marker a dismissed update remains findable in,
-  // and the toast is the announcement a person answers. `restart` is left
-  // unset until nocx-1ebrs.53 lands the coordinator-survival restart; the
-  // installed toast then gains its Restart now in the one line below.
+  // and the toast's Restart now starts the installed app before this window
+  // quits. The new process resolves the compatible coordinator and keeps its
+  // live sessions (nocx-1ebrs.53).
   const updateToast = createUpdateToast()
   const updateCheck = createUpdateCheck(
     {
