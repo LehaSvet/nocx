@@ -97,6 +97,21 @@ func capabilityFromDescriptor(unsetVar string) string {
 	return b.String()
 }
 
+// toolTokenFromDescriptor reads the local Bash pane's tool bearer from its
+// own inherited descriptor. It is separate from the rcfile descriptor because
+// Bash must consume that descriptor as code; appending a token there would
+// turn bearer bytes into executable startup text.
+func toolTokenFromDescriptor(unsetVar string) string {
+	var b strings.Builder
+	b.WriteString("__nocx_agent_token=\n")
+	b.WriteString("case \"${" + AgentToolTokenFDEnv + ":-}\" in ''|*[!0-9]*) ;; *)\n")
+	b.WriteString("    { IFS= read -r __nocx_agent_token <&\"${" + AgentToolTokenFDEnv + "}\"; } 2>/dev/null || :\n")
+	b.WriteString("    { eval \"exec ${" + AgentToolTokenFDEnv + "}<&-\"; } 2>/dev/null || :\n    ;;\nesac\n")
+	b.WriteString("unset " + AgentToolTokenFDEnv + "\n")
+	b.WriteString(unsetVar + " __nocx_agent_token 2>/dev/null\n")
+	return b.String()
+}
+
 // capabilityLiteral renders the assignment form: the values are in the
 // rcfile's own text, which is delivered through a descriptor rather than
 // through a filesystem name.

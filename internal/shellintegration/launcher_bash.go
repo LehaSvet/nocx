@@ -56,6 +56,7 @@ case "${BASH_SOURCE[0]:-}" in
     */nocx-bash.??????) rm -f "${BASH_SOURCE[0]}" 2>/dev/null ;;
 esac
 @ENV@
+@EARLYTOKEN@
 
 @LOGINPHASE@
 # User startup — first, and it wins.
@@ -160,6 +161,11 @@ func bashRcfile(mode startupMode, envBlock, scriptSource, capSource string) stri
 		login = loginPhase(ShellBash)
 	}
 	rc := strings.ReplaceAll(bashRcfileTemplate, "@ENV@", envBlock)
+	earlyToken := ""
+	if mode == localChild {
+		earlyToken = "@EARLYTOKEN@"
+	}
+	rc = strings.ReplaceAll(rc, "@EARLYTOKEN@", earlyToken)
 	rc = strings.ReplaceAll(rc, "@LOGINPHASE@", login)
 	rc = strings.ReplaceAll(rc, "@CAPSRC@", capSource)
 	rc = strings.ReplaceAll(rc, "@NOCX_BASH@", scriptSource)

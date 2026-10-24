@@ -27,6 +27,10 @@ import (
 // local pane is started with, with the tool socket (if any) and the fake
 // agent binary already in place — nobody exports anything by hand.
 func startLocalBashPane(t *testing.T, k *nestedKernel, agentToolSocketPath, binName, fakeBody string) *channelShell {
+	return startLocalBashPaneWithToken(t, k, agentToolSocketPath, binName, fakeBody, "")
+}
+
+func startLocalBashPaneWithToken(t *testing.T, k *nestedKernel, agentToolSocketPath, binName, fakeBody, token string) *channelShell {
 	t.Helper()
 	bash := requireShell(t, "bash")
 
@@ -40,6 +44,7 @@ func startLocalBashPane(t *testing.T, k *nestedKernel, agentToolSocketPath, binN
 
 	opts := localTestOpts()
 	opts.AgentToolSocketPath = agentToolSocketPath
+	opts.AgentToolToken = token
 	launch, err := LocalEnhancedLaunchInMemory(bash, ShellBash, opts)
 	if err != nil {
 		t.Fatalf("LocalEnhancedLaunchInMemory: %v", err)
@@ -54,7 +59,12 @@ func startLocalBashPane(t *testing.T, k *nestedKernel, agentToolSocketPath, binN
 	// The script's reader first and the lifecycle channel second — fd 3 and
 	// fd 4, the order LifecycleFD names and the order the helper's spawner
 	// (internal/helper/session/spawn_local.go) appends them in.
-	cmd.ExtraFiles = append(append([]*os.File{}, launch.ExtraFiles...), shellFile)
+	extraFiles := append([]*os.File{}, launch.ExtraFiles...)
+	extraFiles = append(extraFiles, shellFile)
+	if launch.AgentToolTokenFile != nil {
+		extraFiles = append(extraFiles, launch.AgentToolTokenFile)
+	}
+	cmd.ExtraFiles = extraFiles
 	cmd.Env = append(
 		cleanEnv("HOME="+home, "TMPDIR="+t.TempDir(), "TERM=xterm", "HISTFILE=/dev/null",
 			"PATH="+binDir+":"+os.Getenv("PATH")),
@@ -103,6 +113,9 @@ func TestBashLocalPaneLaunchCarriesToolSocketAndStagesAgent(t *testing.T) {
 	s.waitForRenderedThroughPrompt()
 
 	out := strings.ReplaceAll(s.output(), "\r", "")
+	if strings.Contains(out, "@EARLYTOKEN@") {
+		t.Fatal("the local pane exposed an unresolved startup slot")
+	}
 	if strings.Contains(out, "tool surface unavailable") {
 		t.Fatalf("a pane started with a configured tool socket refused the tool surface: %q", out)
 	}
@@ -132,6 +145,41 @@ func TestBashLocalPaneLaunchCarriesToolSocketAndStagesAgent(t *testing.T) {
 		if server.Args[i] != wantArgs[i] {
 			t.Fatalf("MCP args = %#v, want %#v", server.Args, wantArgs)
 		}
+	}
+}
+
+// TestBashLocalPaneLaunchAuthenticatesItsSpawnBoundToolBearer proves a local
+// pane's launched agent receives the exact bearer in its private MCP config.
+// The fake agent reports only whether the config matches; it never prints the
+// bearer or the config contents into terminal output.
+func TestBashLocalPaneLaunchAuthenticatesItsSpawnBoundToolBearer(t *testing.T) {
+	const token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	const body = `#!/bin/sh
+for arg do
+    if [ "$read_config" = 1 ]; then
+        if grep -Fq '"NOCX_AGENT_TOKEN":"` + token + `"' "$arg"; then echo TOOL_AUTHENTICATED; else echo TOOL_AUTH_REFUSED; fi
+        break
+    fi
+    [ "$arg" = "--mcp-config" ] && read_config=1
+done
+`
+	k := newNestedKernel(t)
+	k.launchCommand = "claude"
+	s := startLocalBashPaneWithToken(t, k, filepath.Join(t.TempDir(), "tool.sock"), "claude", body, token)
+	if _, err := s.ptmx.Write([]byte("claude --model test prompt\n")); err != nil {
+		t.Fatalf("type agent command: %v", err)
+	}
+	waitForEvent(t, k, "agent_enrol")
+	waitForEvent(t, k, "agent_withdraw")
+	waitUntil(t, "the fake agent's auth result", func() bool {
+		return strings.Contains(s.output(), "TOOL_AUTHENTICATED") || strings.Contains(s.output(), "TOOL_AUTH_REFUSED")
+	})
+	out := strings.ReplaceAll(s.output(), "\r", "")
+	if !strings.Contains(out, "TOOL_AUTHENTICATED") {
+		t.Fatal("the local agent tool did not authenticate with its pane-bound bearer")
+	}
+	if strings.Contains(out, token) {
+		t.Fatal("the local pane disclosed its bearer in terminal output")
 	}
 }
 

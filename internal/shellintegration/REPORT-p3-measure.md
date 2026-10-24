@@ -7,7 +7,7 @@ the filesystem seam and counts calls across publish paths.
 ## Current maximum
 
 - Maximum filesystem-seam calls per publish: **63**.
-- Maximum bytes written per publish: **88,202**.
+- Maximum bytes written per publish: **88,212**.
 - Measured worst path: replacement plus sweep, with the launch carrier absent.
 - Fault position used for the reported worst case: `remove#4`.
 
@@ -52,3 +52,10 @@ text (nocx-1ebrs.22), which is one printf in the carrier, and `extdebug` moved o
 startup and into the first prompt with the guards that keep the move inert under a person's
 `set -e` (nocx-1ebrs.23), which is a function and two guards in each wrapper. The
 filesystem-call maximum did not change.
+
+The 2026-10-24 measurement is **10 bytes above** that 88,202-byte figure, at **88,212**.
+The shared Bash rcfile template now reserves the pre-startup tool-token reader slot
+(nocx-1ebrs.21). Its empty remote form adds a newline, which is escaped in the launch
+carrier and measured again when that carrier is published. The local bearer itself
+never enters the published text. The identical measurement on `origin/main` before
+this change remains 88,202 bytes, and the filesystem-call maximum remains 63.

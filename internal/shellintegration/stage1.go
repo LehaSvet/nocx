@@ -102,6 +102,9 @@ const (
 	// point 7); the variable is unset in the same breath, so no descendant
 	// of the user's shell learns the number either.
 	CapabilityFDEnv = "NOCX_CAP_FD"
+	// AgentToolTokenFDEnv names the independent descriptor carrying the
+	// local Bash pane’s tool bearer. Its number, never the bearer, is public.
+	AgentToolTokenFDEnv = "NOCX_AGENT_TOKEN_FD" // #nosec G101 -- name of an environment variable, not a credential
 	// BootstrapEnv marks the launch carrier as running under a bootstrap,
 	// which is the only condition under which it may emit a terminal
 	// outcome. Without it the carrier is silent, so a launch that did not
