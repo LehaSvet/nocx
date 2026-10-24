@@ -54,16 +54,20 @@ async function snapshot(page: import('@playwright/test').Page): Promise<string> 
   }
 }
 
-async function settled(page: import('@playwright/test').Page): Promise<void> {
-  await expect(page.locator('.pane.active .cmd-block-running')).toHaveCount(0, { timeout: 15000 })
-}
-
-async function send(page: import('@playwright/test').Page, command: string): Promise<void> {
+async function send(
+  page: import('@playwright/test').Page,
+  command: string,
+  outputMarker: string,
+): Promise<void> {
   const input = page.locator('.pane.active .nocx-editor-input')
   await input.fill(command)
   await page.keyboard.press('Enter')
-  await expect(page.locator('.pane.active .cmd-block-running')).toHaveCount(1, { timeout: 15000 })
-  await settled(page)
+  const block = page
+    .locator('.pane.active .cmd-block[data-block-kind="command"]')
+    .filter({ hasText: outputMarker })
+  await expect(block).toHaveCount(1)
+  await expect(block.locator('.cmd-output')).toContainText(outputMarker)
+  await expect(block).not.toHaveClass(/cmd-block-running/)
 }
 
 async function openSix(page: import('@playwright/test').Page): Promise<void> {
@@ -118,8 +122,8 @@ test('renderer memory soak: retained objects return to live tab count after chur
     await page.locator(TAB).nth(tab).click()
     await promptReady(page)
     const marker = `NOCX_SOAK_${tab}_${Date.now().toString(36)}`
-    const command = `i=0; while [ $i -lt ${OUTPUT_ROUNDS} ]; do i=$((i+1)); printf '\\033[?1049h\\033[H\\033[2J${marker} %s\\n\\033[?1049l\\033[H\\033[2J' "$i"; done`
-    await send(page, command)
+    const command = `i=0; while [ $i -lt ${OUTPUT_ROUNDS} ]; do i=$((i+1)); printf '\\033[?1049h\\033[H\\033[2J${marker} %s\\n\\033[?1049l\\033[H\\033[2J' "$i"; done; printf '\\n%s_ROUNDS=%s\\n' '${marker}' "$i"`
+    await send(page, command, `${marker}_ROUNDS=${OUTPUT_ROUNDS}`)
   }
 
   await awaitFrame(page)
@@ -161,6 +165,7 @@ test('renderer memory soak: retained objects return to live tab count after chur
     await send(
       page,
       `printf '\\033[?1049h\\033[H\\033[2J${marker}\\n'; printf '\\033[?1049l\\033[H\\033[2J'; echo ${marker}`,
+      marker,
     )
     await awaitFrame(page)
     if (cycle % 3 === 0 || cycle === CYCLES) {
