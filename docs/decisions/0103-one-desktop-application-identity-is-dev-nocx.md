@@ -39,7 +39,9 @@ The open question was whether a supported pre-registration GLib call could
 align the GtkApplication ID and the compositor's `app_id`, without a dependency
 fork, vendored module or launcher-only identity compromise. Measurement settled
 it: GLib changes the GtkApplication ID, and `Linux.ProgramName` independently
-changes GTK3's Wayland `app_id`. Both are required.
+changes GTK3's Wayland `app_id`. Both are required for the union, not for one
+output: without the setter GtkApplication remains `org.wails.nocx`; without
+ProgramName the compositor still sees `nocx`.
 
 ## Decision
 
@@ -87,6 +89,7 @@ buffer commits. This measured windows and identity, not terminal functionality.
 | ----------------------------------------------------------------- | --------------------------------------------------- | -------------- | ------------------- |
 | Unchanged control (identity service absent, original ProgramName) | `org.wails.nocx` / `org.wails.nocx`                 | `nocx`         | `nocx`              |
 | GLib setter only                                                  | `dev.nocx` / `dev.nocx`                             | `nocx`         | `nocx`              |
+| ProgramName only                                                  | `org.wails.nocx` / `org.wails.nocx`                 | `dev.nocx`     | `dev.nocx`          |
 | Both, release                                                     | `dev.nocx` / `dev.nocx`                             | `dev.nocx`     | `dev.nocx`          |
 | Both, development                                                 | `dev.nocx-dev` / `dev.nocx-dev`                     | `dev.nocx-dev` | `dev.nocx-dev`      |
 
@@ -99,7 +102,11 @@ The AppImage desktop entry and user-installed desktop entry are
 `dev.nocx.desktop`, matching the measured release `app_id`; the visible name,
 executable and icon remain `nocx`. Installer fixture tests check the installed
 basename and identity metadata. Development runtime identity is
-`dev.nocx-dev`; no development AppImage/installer target is introduced.
+`dev.nocx-dev`; no development AppImage/installer target is introduced. The
+different `ProgramName` alone separates development/release WebKit page stores;
+the GLib setter is not needed for storage, only GtkApplication identity. Before
+this change both builds used `ProgramName: nocx`, even though their product
+profile paths were already separate.
 
 ## State and consent consequences
 
@@ -118,6 +125,7 @@ upgrade behavior has not been measured on macOS.
 | macOS and Linux settings, SSH profiles, vault documents, file secrets, history, workspaces and app caches | `internal/storage/appdir.go` names `nocx`; `paths.go` uses `Library/Application Support/nocx` and `Library/Caches/nocx` on macOS, and XDG config/data/cache directories under `nocx` on Linux. `release`/dev profile selection is unchanged.                                     | **Carries over:** neither ID renames these directories or their documents.                                                                                                                                                                                                                                                                                                                                                                                 |
 | macOS keychain and Linux Secret Service secrets / content key                                             | `internal/vault/system/system.go` uses service `nocx` and persisted secret-reference accounts. The coordinator remains separately signed as `com.nocx.server` (`release.yml`, `build/darwin/requirement.txt`). Content-key namespace/salt and machine identity remain unchanged. | **Carries over:** no service/account rename, access-group change or content-key rotation. A bundle-only identity change does not rename the coordinator that accesses secrets.                                                                                                                                                                                                                                                                             |
 | macOS and Linux running sessions / coordinator discovery / update journal                                 | `internal/coordinator/server.go` puts runtime discovery under the unchanged data directory. `internal/update/journal.go`'s `bundleID` is device/inode identity, not `CFBundleIdentifier`.                                                                                        | **Carries over:** no desktop-ID-dependent session or journal migration.                                                                                                                                                                                                                                                                                                                                                                                    |
+| Linux default webview page storage/cache                                                                  | Wails GTK3 uses the default WebKit data manager; WebKit `WebsiteDataStoreGLib.cpp` derives its default cache/data subdirectory from `g_get_prgname()`, which this decision changes.                                                                                              | **Page storage starts empty:** a dismissed warning can return and diagnostic flags/samples reset. Observed in isolated launch directories: unchanged/control and GLib-only wrote `nocx`, ProgramName-only and both-release wrote `dev.nocx`, and both-dev wrote `dev.nocx-dev`. Product-owned XDG `nocx` documents remain unchanged.                                                                                                                       |
 | Linux dock/launcher grouping and per-app compositor rules                                                 | Wayland `app_id` matches the desktop entry basename. GTK application identity also names the GApplication bus registration.                                                                                                                                                      | **New desktop identity:** new `dev.nocx.desktop`; user-pinned old launchers and rules targeting `nocx` or `org.wails.nocx` need re-pinning/reconfiguration if they target the old identity. No core data moves.                                                                                                                                                                                                                                            |
 | Linux notifications                                                                                       | Wails `notifications_linux.go` passes `application.Options.Name` (`nocx`) to `org.freedesktop.Notifications.Notify`; no desktop-entry hint is sent. Categories remain `os.UserConfigDir()/nocx/notification-categories.json`; permission methods return true.                    | **Carries over in this code:** app name/category path unchanged; no macOS-style permission prompt introduced. Desktop-specific policies were not measured.                                                                                                                                                                                                                                                                                                 |
 
@@ -136,8 +144,14 @@ The WebKit mechanism is documented by Apple's
 and [`WKWebsiteDataStore.default()`](<https://developer.apple.com/documentation/webkit/wkwebsitedatastore/default()>).
 Upstream WebKit's
 [`WebsiteDataStoreCocoa.mm`](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/WebsiteData/Cocoa/WebsiteDataStoreCocoa.mm)
-uses `applicationOrProcessIdentifier()` for the default directories. These are
+uses `applicationOrProcessIdentifier()` for the default directories. Its
+[`WebsiteDataStoreGLib.cpp`](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/WebsiteData/glib/WebsiteDataStoreGLib.cpp)
+uses `g_get_prgname()` for Linux default website data/cache paths. These are
 mechanism evidence, not a measurement of every shipped macOS WebKit version.
+On Linux, inspecting the launch homes additionally observed
+`.local/share/<ProgramName>/{storage,mediakeys/v1}` and
+`.cache/<ProgramName>/{WebKitCache,CacheStorage}` for the corresponding matrix
+rows. No old browser data was copied into the new directories.
 
 ## What the next person inherits
 
