@@ -19,6 +19,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/services/notifications"
 
 	"github.com/shady2k/nocx/internal/coordinator"
+	"github.com/shady2k/nocx/internal/desktopidentity"
 	"github.com/shady2k/nocx/internal/log"
 	"github.com/shady2k/nocx/internal/notify"
 	"github.com/shady2k/nocx/internal/notify/wailsadapter"
@@ -86,15 +87,16 @@ func main() {
 			Handler: application.BundledAssetFileServer(assets),
 		},
 		Services: []application.Service{
+			application.NewService(&desktopIdentityService{}),
 			application.NewService(wailsApp),
 		},
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: true,
 		},
 		Linux: application.LinuxOptions{
-			// GTK uses the stable program name for the X11 window class.
-			// The AppImage launcher name is not the application's identity.
-			ProgramName: appName,
+			// GTK uses this for its Wayland app_id and X11 window class.
+			// GtkApplication has a separate ID, set by the first service.
+			ProgramName: desktopidentity.ID,
 		},
 		OnShutdown: wailsApp.shutdown,
 	})
