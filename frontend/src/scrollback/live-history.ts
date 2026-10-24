@@ -815,6 +815,7 @@ export class LiveHistorySurface {
         baseRow: page.start,
         bracketedPaste: false,
         mouseTracking: false,
+        pointerShape: null,
         title: null,
         cwd: null,
       },

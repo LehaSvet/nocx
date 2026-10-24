@@ -24,6 +24,7 @@ import { CARET_IDLE_MS, CARET_PHASE_ATTR } from '../caret-phase'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { frameOf, snapshotOf, styleOf, type CellSpec } from './fixtures'
+import type { SessionFrame } from '../generated/session.frame'
 
 /** The row the one-owner test drives: `a`, wide `漢` plus its spacer, `b`.
  *  With M1 the wide ink measures 15px in an 8px cell, so its spacing (1)
@@ -559,11 +560,12 @@ describe('accessible live rows (nocx-zg3k3.4.2)', () => {
 })
 
 describe('the pointer answers who owns the click (nocx-1ebrs.24)', () => {
-  /** One accepted frame, with the program's mouse-reporting bit as the
-   *  backend measured it (1000/1002/1003 ORed together in
+  /** One accepted frame, with the program's pointer facts as the backend
+   *  measured them: the mouse-reporting bit (1000/1002/1003 ORed together in
    *  internal/emulator/ghostty — the SAME fact the selection gesture already
-   *  reads, never a second derivation of the escape sequences). */
-  const withTracking = (tracking: boolean) =>
+   *  reads, never a second derivation of the escape sequences) and the shape
+   *  the program asked for with OSC 22, read from the same terminal state. */
+  const pointed = (tracking: boolean, shape: SessionFrame['state']['pointerShape'] = null) =>
     snapshotOf(
       frameOf(
         1,
@@ -576,6 +578,7 @@ describe('the pointer answers who owns the click (nocx-1ebrs.24)', () => {
           baseRow: 0,
           bracketedPaste: false,
           mouseTracking: tracking,
+          pointerShape: shape,
           title: null,
           cwd: null,
         },
@@ -587,12 +590,28 @@ describe('the pointer answers who owns the click (nocx-1ebrs.24)', () => {
     // promising a text selection it will not get. Other terminals show the
     // arrow in exactly this state and the I-beam in exactly the other, and
     // nocx showed the I-beam in both, because nothing set a cursor at all and
-    // `auto` over the rows' text is an I-beam.
+    // `auto` over the rows' text is an I-beam. The values are CSS cursor names
+    // because the stylesheet's rules are keyed on them.
     const { painter, surface } = mount(() => null)
-    painter.apply(withTracking(true))
-    expect(surface.dataset.pointer).toBe('program')
-    painter.apply(withTracking(false))
+    painter.apply(pointed(true))
+    expect(surface.dataset.pointer).toBe('default')
+    painter.apply(pointed(false))
     expect(surface.dataset.pointer).toBe('text')
+    painter.dispose()
+  })
+
+  it('shows the shape the program asked for over either state (OSC 22)', () => {
+    // The request is the program's own: a busy program asks for `wait` and a
+    // drawing one for `crosshair`, and neither is answering a question about
+    // who owns the click. When it stops asking — null on the wire — the click
+    // owner answers again.
+    const { painter, surface } = mount(() => null)
+    painter.apply(pointed(true, 'wait'))
+    expect(surface.dataset.pointer).toBe('wait')
+    painter.apply(pointed(false, 'crosshair'))
+    expect(surface.dataset.pointer).toBe('crosshair')
+    painter.apply(pointed(true))
+    expect(surface.dataset.pointer).toBe('default')
     painter.dispose()
   })
 
@@ -601,10 +620,10 @@ describe('the pointer answers who owns the click (nocx-1ebrs.24)', () => {
     // a row would be lost on the frame that touched it. The surface is the one
     // element that outlives every revision.
     const { painter, surface } = mount(() => null)
-    painter.apply(withTracking(true))
+    painter.apply(pointed(true))
     const stale = surface.firstElementChild
-    painter.apply(withTracking(true))
-    expect(surface.dataset.pointer).toBe('program')
+    painter.apply(pointed(true))
+    expect(surface.dataset.pointer).toBe('default')
     expect(stale?.isConnected).toBe(true)
     painter.dispose()
     expect(surface.dataset.pointer).toBeUndefined()

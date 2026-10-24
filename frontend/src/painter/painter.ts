@@ -150,11 +150,31 @@ interface LinkHighlightRange {
   readonly to: number
 }
 
-/** The pointer state the stylesheet reads (nocx-1ebrs.24): `program` while the
- *  program reports the mouse, `text` while the terminal owns the click. Named
- *  here and read by style.css, so the two cannot spell the same state twice. */
+/** The pointer state the stylesheet reads (nocx-1ebrs.24): the CSS cursor
+ *  name the pane is showing — `default` while the program owns the click,
+ *  `text` while the terminal does, and whatever shape the program asked for
+ *  with OSC 22 on top of both. Named here and read by style.css, so the two
+ *  cannot spell the same state twice. */
 export const POINTER_ATTR = 'data-pointer'
-export type PointerOwner = 'program' | 'text'
+export type PointerShape = NonNullable<ScreenSnapshot['state']['pointerShape']>
+
+/** THE POINTER A PANE SHOWS, from the two facts that decide it, in one place.
+ *
+ *  The program's own request wins: OSC 22 is a program saying "give me the
+ *  busy pointer", and a terminal that ignored it would advertise a capability
+ *  it does not implement. With no request, WHO OWNS THE CLICK decides — the
+ *  frame's `mouseTracking` bit, the same one the selection gesture reads to
+ *  answer whether a press is a selection or a report, so the pointer cannot
+ *  tell a person something the click does not mean (ADR-0092).
+ *
+ *  This is not a second derivation of that bit: it is the second CONSUMER of
+ *  it, and the answer is the CSS keyword the stylesheet declares. */
+export function pointerFor(state: {
+  readonly mouseTracking: boolean
+  readonly pointerShape: ScreenSnapshot['state']['pointerShape']
+}): PointerShape {
+  return state.pointerShape ?? (state.mouseTracking ? 'default' : 'text')
+}
 
 export function createCellPainter(opts: CellPainterOptions): CellPainter {
   const surface = opts.surface
@@ -309,13 +329,15 @@ export function createCellPainter(opts: CellPainterOptions): CellPainter {
 
   function apply(snapshot: ScreenSnapshot): void {
     surface.setAttribute('aria-colcount', String(snapshot.geometry.cols))
-    // WHO OWNS THE CLICK, read from the frame the gesture already reads
-    // (nocx-1ebrs.24). The backend ORs DECSET 1000/1002/1003 into one bit, and
-    // selection-gesture.ts asks the same field to decide whether a double click
-    // is a word or a report: one answer, two consumers. Set on the SURFACE and
-    // not on a row, because rows are replaced by the level diff and the
-    // pointer's state has to outlive every revision.
-    surface.setAttribute(POINTER_ATTR, snapshot.state.mouseTracking ? 'program' : 'text')
+    // WHO OWNS THE POINTER, from the frame the gesture already reads
+    // (nocx-1ebrs.24): the shape the program asked for with OSC 22, else the
+    // arrow-or-I-beam the mouse-tracking bit decides. The backend ORs DECSET
+    // 1000/1002/1003 into that one bit, and selection-gesture.ts asks the same
+    // field to decide whether a double click is a word or a report: one answer,
+    // two consumers. Set on the SURFACE and not on a row, because rows are
+    // replaced by the level diff and the pointer's state has to outlive every
+    // revision.
+    surface.setAttribute(POINTER_ATTR, pointerFor(snapshot.state))
     // The metric first: reading it is what begins the fit's row context,
     // which its warm() measures against.
     const metric = opts.metric?.() ?? null

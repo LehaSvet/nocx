@@ -59,6 +59,7 @@ function defaultFrameState(): SessionFrame['state'] {
     baseRow: 0,
     bracketedPaste: false,
     mouseTracking: false,
+    pointerShape: null,
     title: null,
     cwd: null,
   }
@@ -143,6 +144,7 @@ describe('backend terminal state', () => {
         baseRow: 0,
         bracketedPaste: true,
         mouseTracking: true,
+        pointerShape: null,
         title: null,
         cwd: null,
       },
@@ -157,6 +159,7 @@ describe('backend terminal state', () => {
       baseRow: 0,
       bracketedPaste: true,
       mouseTracking: true,
+      pointerShape: null,
       title: null,
       cwd: null,
     })
@@ -174,6 +177,56 @@ describe('backend terminal state', () => {
     expect(model.current()?.revision).toBe(1)
   })
 
+  it('carries the pointer shape the program asked for, and judges only its type', () => {
+    // The shape is the pane's cursor (nocx-1ebrs.24), so it rides the accepted
+    // revision like every other mode and is readable from the snapshot the
+    // painter's rules are written against.
+    const model = createCellModel()
+    const asked = fixtureFrameOf(1, [[['x', 1, true]]], undefined, undefined, {
+      bufferKind: 'normal',
+      bufferInstance: '1',
+      baseRow: 0,
+      bracketedPaste: false,
+      mouseTracking: true,
+      pointerShape: 'wait',
+      title: null,
+      cwd: null,
+    })
+    const accepted = model.apply(asked)
+    expect(accepted.ok).toBe(true)
+    if (accepted.ok) expect(accepted.snapshot.state.pointerShape).toBe('wait')
+
+    // A shape is cosmetic: a value that is neither a name nor null is refused
+    // as malformed state, because it is not the wire's shape at all...
+    const wrongType = fixtureFrameOf(2, [[['y', 1, true]]], undefined, undefined, {
+      bufferKind: 'normal',
+      bufferInstance: '1',
+      baseRow: 0,
+      bracketedPaste: false,
+      mouseTracking: true,
+      pointerShape: 7 as unknown as SessionFrame['state']['pointerShape'],
+      title: null,
+      cwd: null,
+    })
+    expect(model.apply(wrongType)).toEqual({ ok: false, refusal: { reason: 'malformed-state' } })
+    expect(model.current()?.revision).toBe(1)
+
+    // ...while a name the stylesheet has no rule for still installs: the pane
+    // keeps the base pointer instead of freezing the screen over a cursor.
+    const unknownName = fixtureFrameOf(2, [[['z', 1, true]]], undefined, undefined, {
+      bufferKind: 'normal',
+      bufferInstance: '1',
+      baseRow: 0,
+      bracketedPaste: false,
+      mouseTracking: true,
+      pointerShape: 'not-a-cursor' as unknown as SessionFrame['state']['pointerShape'],
+      title: null,
+      cwd: null,
+    })
+    const installed = model.apply(unknownName)
+    expect(installed.ok).toBe(true)
+  })
+
   it('refuses malformed mode or buffer identity without replacing the prior revision', () => {
     const model = createCellModel()
     const firstFrame = fixtureFrameOf(1, [[['a', 1, true]]])
@@ -185,6 +238,7 @@ describe('backend terminal state', () => {
       baseRow: 0,
       bracketedPaste: false,
       mouseTracking: false,
+      pointerShape: null,
       title: null,
       cwd: null,
     })

@@ -182,4 +182,13 @@ GhosttyResult nocxMouseEncode(GhosttyMouseEncoder encoder,
 GhosttyResult nocxModeValue(GhosttyTerminal terminal, uint16_t mode,
                             bool *out);
 
+/*
+ * Reads the pointer shape the program asked for with OSC 22 (nocx-1ebrs.24).
+ * This one needs no shim of its own beyond the fetch: GhosttyMouseShape is a
+ * plain C enum, and the request is a data option of the terminal the same way
+ * a mode is — the terminal the program set it on holds it, so it is read from
+ * there rather than remembered beside it.
+ */
+GhosttyResult nocxMouseShape(GhosttyTerminal terminal, GhosttyMouseShape *out);
+
 #endif /* NOCX_EMULATOR_GHOSTTY_BRIDGE_H */

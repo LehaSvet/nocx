@@ -75,6 +75,7 @@ describe('session.frame contract parity', () => {
       | 'baseRow'
       | 'bracketedPaste'
       | 'mouseTracking'
+      | 'pointerShape'
       | 'title'
       | 'cwd'
     >()
@@ -108,6 +109,7 @@ describe('session.frame contract parity', () => {
         baseRow: 0,
         bracketedPaste: false,
         mouseTracking: false,
+        pointerShape: null,
         title: null,
         cwd: null,
       },

@@ -66,6 +66,7 @@ function fireFrameMetadata(
     baseRow: 0,
     bracketedPaste: false,
     mouseTracking: false,
+    pointerShape: null,
     title: metadata.title ?? null,
     cwd: metadata.cwd ?? null,
   }

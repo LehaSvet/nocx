@@ -321,6 +321,12 @@ function refusalFor(frame: SessionFrame, currentRevision: number | null): FrameR
     state.baseRow + frame.geometry.rows > Number.MAX_SAFE_INTEGER ||
     typeof state.bracketedPaste !== 'boolean' ||
     typeof state.mouseTracking !== 'boolean' ||
+    // The pointer shape is COSMETIC, so only its type is judged here and not
+    // its vocabulary (nocx-1ebrs.24): an unknown name matches no stylesheet
+    // rule and the pane keeps the base text pointer, while refusing the frame
+    // would freeze a whole screen over a cursor. The vocabulary itself is the
+    // contract's, and both ends of it are generated from the same schema.
+    (state.pointerShape !== null && typeof state.pointerShape !== 'string') ||
     (state.title !== null && typeof state.title !== 'string') ||
     (state.cwd !== null &&
       (typeof state.cwd !== 'object' ||

@@ -1999,7 +1999,28 @@ func (t *terminal) Modes() (emulator.Modes, error) {
 	if err != nil {
 		return emulator.Modes{}, err
 	}
-	return emulator.Modes{BracketedPaste: bracketed, MouseTracking: tracking, SynchronizedOutput: held}, nil
+	pointer, err := t.pointerShape()
+	if err != nil {
+		return emulator.Modes{}, err
+	}
+	return emulator.Modes{
+		BracketedPaste:     bracketed,
+		MouseTracking:      tracking,
+		PointerShape:       pointer,
+		SynchronizedOutput: held,
+	}, nil
+}
+
+// pointerShape is the shape a program asked the pointer to take with OSC 22
+// (nocx-1ebrs.24). Like the modes above it is a query of the library's own
+// state rather than a copy kept beside it, and like them it is spelled for the
+// reader that consumes it — the wire's W3C cursor names, not the enum.
+func (t *terminal) pointerShape() (string, error) {
+	var shape C.GhosttyMouseShape
+	if r := C.nocxMouseShape(t.t, &shape); r != C.GHOSTTY_SUCCESS {
+		return "", resultError("terminal_mouse_shape", r)
+	}
+	return mouseShapeName(shape), nil
 }
 
 func (t *terminal) mode(value int) (bool, error) {

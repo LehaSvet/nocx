@@ -236,6 +236,14 @@ GhosttyResult nocxModeValue(GhosttyTerminal terminal, uint16_t mode,
   return GHOSTTY_SUCCESS;
 }
 
+/* ---------------------------------------------------------- pointer shape */
+
+GhosttyResult nocxMouseShape(GhosttyTerminal terminal,
+                             GhosttyMouseShape *out) {
+  return ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_SHAPE,
+                              out);
+}
+
 /* -------------------------------------------------------------------- reads */
 
 /*
