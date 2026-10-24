@@ -418,7 +418,7 @@ func (c *coordinator) quit() {
 // binding the transport would have written for it. It is the SHIPPED opener —
 // helperRegistry.OpenHosted — so what is taken back below is what the product
 // actually creates.
-func openHostedFixture(t *testing.T, c *coordinator, paneID string) content.PendingSession {
+func openHostedFixture(t *testing.T, c *coordinator, paneID string, beforeStart ...func(transport.HostedSessionOpen)) content.PendingSession {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -432,6 +432,12 @@ func openHostedFixture(t *testing.T, c *coordinator, paneID string) content.Pend
 	}
 	if !selected {
 		t.Fatal("the helper was not selected for a consented machine, so there is nothing to take back")
+	}
+	// A shutdown scenario can arm the transport's lifecycle handover before
+	// the bridge starts. Most callers intentionally leave it unarmed: quit
+	// models a lost connection, and their loss/replay assertions require it.
+	for _, configure := range beforeStart {
+		configure(opened)
 	}
 	// The transport starts the lifecycle bridge after the open ack; without
 	// it the shell's hello never reaches the adapter and the handshake bound
