@@ -608,7 +608,7 @@ test.describe('long transcript scroll budget', () => {
   // Active stage acceptance for nocx-zg3k3.5: durable capture must retain
   // every row independently of the default live scrollback budget.
 
-  test('measures 500 blocks and preserves native selection/search', async ({ page }) => {
+  test('measures 500 blocks and preserves native selection/search', async ({ page }, testInfo) => {
     const endpoint = await backend.start()
     await bindEndpoint(page, endpoint)
     await page.goto('/')
@@ -616,7 +616,45 @@ test.describe('long transcript scroll budget', () => {
 
     for (let index = 1; index <= BLOCKS; index += 1) await runBlock(page, index)
 
-    await expect(page.locator(BLOCK)).toHaveCount(BLOCKS, { timeout: 60_000 })
+    try {
+      await expect(page.locator(BLOCK)).toHaveCount(BLOCKS, { timeout: 60_000 })
+    } catch (error) {
+      // The failure report runs after afterEach has stopped this backend. Take
+      // the block DOM now, only on this failure path, without changing the
+      // assertion's selector, timeout, or polling behavior. Do not include row
+      // text: command output can contain secrets.
+      try {
+        const snapshot = await page.evaluate((selector) => {
+          const blocks = [...document.querySelectorAll<HTMLElement>('.cmd-block')]
+          const chain = (element: HTMLElement) => {
+            const ancestors: Array<{ className: string; entryId: string | null }> = []
+            for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+              ancestors.push({
+                className: parent.className.toString(),
+                entryId: parent.dataset.entryId ?? null,
+              })
+            }
+            return ancestors
+          }
+          return {
+            selector,
+            selectorCount: document.querySelectorAll(selector).length,
+            blocks: blocks.map((block) => ({
+              className: block.className.toString(),
+              entryId: block.dataset.entryId ?? null,
+              parentChain: chain(block),
+            })),
+          }
+        }, BLOCK)
+        await testInfo.attach('transcript-scroll-budget-block-dom', {
+          body: JSON.stringify(snapshot, null, 2),
+          contentType: 'application/json',
+        })
+      } catch {
+        // A diagnostic must never replace the assertion that triggered it.
+      }
+      throw error
+    }
 
     // THE CRITERION: every block frozen, and every block holding exactly its own
     // command's hundred rows — in the STORE, and in what the DOM paints.
