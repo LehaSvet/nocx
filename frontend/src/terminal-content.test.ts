@@ -19603,3 +19603,308 @@ describe('the copy chord does not claim plain Ctrl+C (nocx-1ebrs.19.1)', () => {
     }
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The alternate-screen size fence (nocx-1ebrs.10)
+// ═══════════════════════════════════════════════════════════════════════════
+// Measured on the tree before this fix: the first alternate-screen frames
+// carried the PREVIOUS mode's geometry (192 columns with the pane settled
+// wider; 70 columns in a 1394 px pane), the program read the person's keys
+// while its own stty still reported the old width, and the resize request
+// went out 87–234 ms after the first fullscreen frame and always behind the
+// post-switch input.
+//
+// So the pane now does three things at the switch, and these tests are the
+// three statements: it asks for its own measured grid immediately, it presents
+// the frames that arrive before that request applies on the pane's grid rather
+// than the program's, and it holds what the person produces until the request
+// answers that it APPLIED — never until a frame, which can depend on the input
+// being held.
+describe('an alternate-screen switch holds input for its applied grid (nocx-1ebrs.10)', () => {
+  const PANE = { width: 800, height: 400 }
+  const CELL = { cellWidthPx: 8, cellHeightPx: 16 }
+  /** 800 / 8 by 400 / 16 — the grid this pane measures for itself. */
+  const FITTED = { cols: 100, rows: 25 }
+
+  /** Mount a pane, give it a measured box and a live normal-buffer frame, then
+   * fire the frame that switches to the alternate screen.
+   *
+   * The switch frame carries the geometry the defect recorded: the PREVIOUS
+   * mode's 40 columns in a pane that has measured 100. */
+  async function switchingPane(): Promise<{
+    content: TerminalContent
+    session: SessionFake
+    tab: Pane
+    grid: () => HTMLElement
+    receipt: (outcome: 'applied' | 'superseded' | 'closed') => void
+    fail: (error: Error) => void
+    switchFrame: () => SessionFrame
+    drawProgramFrame: (revision: number, cols?: number) => SessionFrame
+    teardown: () => void
+  }> {
+    const mounted = await mountTerminal(makeClipboard(), { attachToDocument: true })
+    const { content, tab } = mounted
+    // The painter's only ordering boundary is an animation frame; run the
+    // pending ones synchronously so an assertion below reads a PAINTED grid
+    // rather than a scheduled paint. Installed after the mount, because the
+    // editor measures through the same frame callback.
+    const raf = globalThis.requestAnimationFrame
+    globalThis.requestAnimationFrame = (cb: FrameRequestCallback): number => {
+      cb(0)
+      return 0
+    }
+    const teardown = (): void => {
+      globalThis.requestAnimationFrame = raf
+      mounted.teardown()
+    }
+    tab.pane.classList.add('active')
+    const session = sessionOf(content)
+    const scrollback = scrollbackFor(content)
+    Object.defineProperty(scrollback.scrollbackArea, 'clientWidth', {
+      configurable: true,
+      value: PANE.width,
+    })
+    Object.defineProperty(scrollback.scrollbackArea, 'clientHeight', {
+      configurable: true,
+      value: PANE.height,
+    })
+    // The pane's own box, delivered the way the presentation host delivers it.
+    content.viewportChanged({ width: PANE.width, height: PANE.height })
+    // A first frame in the normal buffer gives the pane a committed cell
+    // metric, which is what its fit measures with.
+    session.fireScreenFrame(screenFrame(1, ['$ prompt'], CELL))
+    await vi.waitFor(() =>
+      expect(session.sendResize).toHaveBeenCalledWith({
+        cols: FITTED.cols,
+        rows: FITTED.rows,
+        xpixel: PANE.width,
+        ypixel: PANE.height,
+      }),
+    )
+    session.sendResize.mockClear()
+    const grid = () => tab.pane.querySelector<HTMLElement>('.term-grid')!
+    const receipts: Array<(outcome: 'applied' | 'superseded' | 'closed') => void> = []
+    const failures: Array<(error: Error) => void> = []
+    session.resizeApplied.mockImplementation(
+      () =>
+        new Promise<'applied' | 'superseded' | 'closed'>((resolve, reject) => {
+          receipts.push(resolve)
+          failures.push(reject)
+        }),
+    )
+    const switchFrame = (): SessionFrame => {
+      const frame = screenFrame(2, ['ALT-READY'], { ...CELL, cols: 40, rows: 20 })
+      frame.state.bufferKind = 'alternate'
+      frame.state.mouseTracking = true
+      session.fireScreenFrame(frame)
+      return frame
+    }
+    const drawProgramFrame = (revision: number, cols = 100): SessionFrame => {
+      const frame = screenFrame(revision, ['ALT-READY'], { ...CELL, cols, rows: 20 })
+      frame.state.bufferKind = 'alternate'
+      frame.state.mouseTracking = true
+      session.fireScreenFrame(frame)
+      return frame
+    }
+    return {
+      content,
+      session,
+      tab,
+      grid,
+      // `receipt`/`fail` answer the NEWEST request, the way the transport's
+      // newest request owns the pending slot.
+      receipt: (outcome) => receipts[receipts.length - 1]?.(outcome),
+      fail: (error) => failures[failures.length - 1]?.(error),
+      switchFrame,
+      drawProgramFrame,
+      teardown,
+    }
+  }
+
+  it('asks for the pane’s measured grid as the switch is accepted, not the frame’s', async () => {
+    const { session, switchFrame, teardown } = await switchingPane()
+    try {
+      switchFrame()
+      // Synchronously: the switch is a known moment, and there is nothing
+      // to settle. The frame the pane just accepted says 40 columns; the
+      // pane says 100, and the pane is the one that knows its box.
+      expect(session.resizeApplied).toHaveBeenCalledWith({
+        cols: FITTED.cols,
+        rows: FITTED.rows,
+        xpixel: PANE.width,
+        ypixel: PANE.height,
+      })
+    } finally {
+      teardown()
+    }
+  })
+
+  it('presents the switch frame on the pane’s grid, keeping its text and its row count', async () => {
+    const { grid, switchFrame, teardown } = await switchingPane()
+    try {
+      switchFrame()
+      const painted = grid()
+      expect(painted.textContent).toContain('ALT-READY')
+      // The size is the pane's…
+      expect(painted.getAttribute('aria-colcount')).toBe(String(FITTED.cols))
+      // …and only the size: the program's rows are the program's, so no
+      // row is invented to fill the box, and the frame's own rows are all
+      // still there.
+      expect(painted.querySelectorAll('.term-grid-row')).toHaveLength(20)
+    } finally {
+      teardown()
+    }
+  })
+
+  it('holds what the person produces and releases it on the applied receipt', async () => {
+    const { content, session, switchFrame, receipt, teardown } = await switchingPane()
+    try {
+      switchFrame()
+      typeIntoPane(content, 'q')
+      expect(session.intent).not.toHaveBeenCalledWith('text', 'q')
+      expect(session.intent).not.toHaveBeenCalledWith('key', 'q')
+      // The request went out before the input did: the resize is what the
+      // program needs before the key can mean anything.
+      expect(session.resizeApplied.mock.invocationCallOrder[0]).toBeLessThan(
+        session.intent.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      )
+
+      receipt('applied')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'q'))
+      // Delivered ONCE, in the order produced: the queue is replayed, not
+      // re-decided.
+      const delivered = session.intent.mock.calls
+        .map(([kind, payload]) => `${kind}:${String(payload)}`)
+        .filter((call) => call.endsWith(':q'))
+      expect(delivered).toEqual(['text:q'])
+    } finally {
+      teardown()
+    }
+  })
+
+  it('does not release on a painted frame — only on the receipt', async () => {
+    const { content, session, switchFrame, drawProgramFrame, receipt, teardown } =
+      await switchingPane()
+    try {
+      switchFrame()
+      typeIntoPane(content, 'q')
+      // The program repaints at the grid it was told, twice: output is not
+      // an answer to a question about the pty's size.
+      drawProgramFrame(3)
+      drawProgramFrame(4)
+      await Promise.resolve()
+      expect(session.intent).not.toHaveBeenCalledWith('text', 'q')
+
+      receipt('applied')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'q'))
+    } finally {
+      teardown()
+    }
+  })
+
+  it('keeps holding on a superseded receipt and releases on the newer resize', async () => {
+    const { content, session, tab, switchFrame, receipt, teardown } = await switchingPane()
+    try {
+      switchFrame()
+      typeIntoPane(content, 'q')
+      // Superseded is not this pane's failure: a newer resize owns the
+      // session's pending slot, so the grid is still on its way. No toast
+      // (nothing failed) and no retry (a retry is a resize storm).
+      receipt('superseded')
+      await Promise.resolve()
+      expect(session.intent).not.toHaveBeenCalledWith('text', 'q')
+      // No toast: nothing failed, a newer resize is simply in flight.
+      const announced = vi
+        .mocked(showToast)
+        .mock.calls.map(([toast]) => JSON.stringify(toast))
+        .filter((toast) => /resiz/i.test(toast))
+      expect(announced).toEqual([])
+
+      // The pane widens while the switch is still in flight: this is the
+      // newer request, and ITS receipt opens the fence.
+      const scrollback = scrollbackFor(content)
+      Object.defineProperty(scrollback.scrollbackArea, 'clientWidth', {
+        configurable: true,
+        value: 960,
+      })
+      content.viewportChanged({ width: 960, height: PANE.height })
+      await vi.waitFor(() =>
+        expect(session.resizeApplied).toHaveBeenLastCalledWith({
+          cols: 120,
+          rows: FITTED.rows,
+          xpixel: 960,
+          ypixel: PANE.height,
+        }),
+      )
+      expect(session.intent).not.toHaveBeenCalledWith('text', 'q')
+
+      receipt('applied')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'q'))
+      // The pointer and the keyboard both read the grid the receipt named.
+      expect(session.resizeApplied).toHaveBeenLastCalledWith({
+        cols: 120,
+        rows: FITTED.rows,
+        xpixel: 960,
+        ypixel: PANE.height,
+      })
+      expect(tab.pane.querySelector('.term-grid')?.textContent).toContain('ALT-READY')
+    } finally {
+      teardown()
+    }
+  })
+
+  it('releases on a failed request rather than holding the keys for a size it cannot get', async () => {
+    const { content, session, switchFrame, fail, teardown } = await switchingPane()
+    try {
+      switchFrame()
+      typeIntoPane(content, 'q')
+      expect(session.intent).not.toHaveBeenCalledWith('text', 'q')
+
+      fail(new Error('the session is no longer attached'))
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'q'))
+    } finally {
+      teardown()
+    }
+  })
+
+  it('releases on a closed session without delivering input to it', async () => {
+    const { content, session, switchFrame, receipt, teardown } = await switchingPane()
+    try {
+      switchFrame()
+      typeIntoPane(content, 'q')
+      receipt('closed')
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(session.intent).not.toHaveBeenCalledWith('text', 'q')
+    } finally {
+      teardown()
+    }
+  })
+
+  it('maps the pointer through the grid the applied receipt reported', async () => {
+    const { content, session, switchFrame, receipt, teardown } = await switchingPane()
+    try {
+      switchFrame()
+      const input = intentElementOf(content)
+      // Column 50 exists in this pane (100 columns) and not in the program's
+      // 40 — the click that landed on empty space before.
+      input.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          clientX: 50 * CELL.cellWidthPx,
+          clientY: 2 * CELL.cellHeightPx,
+        }),
+      )
+      expect(session.intent).not.toHaveBeenCalledWith('mouse', expect.anything())
+
+      receipt('applied')
+      await vi.waitFor(() =>
+        expect(session.intent).toHaveBeenCalledWith('mouse', 'press left 50 2'),
+      )
+    } finally {
+      teardown()
+    }
+  })
+})
