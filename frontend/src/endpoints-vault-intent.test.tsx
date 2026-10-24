@@ -119,7 +119,7 @@ async function mountList() {
       </Show>
     </>
   ))
-  socket.reply('endpoints.list', [STORED])
+  socket.reply('endpoints.list', { endpoints: [STORED] })
   socket.reply('vault.seal', {})
   await seal
   await waitFor(() => {
@@ -167,7 +167,7 @@ describe('endpoint inventory intent when a seal wins the cached-status race', ()
       'Unlock the vault',
     )
     fireEvent.click(
-      Array.from(document.querySelectorAll('button')).find(
+      Array.from(document.querySelectorAll('.ui-prompt-overlay button')).find(
         (button) => button.textContent === 'Cancel',
       )!,
     )
