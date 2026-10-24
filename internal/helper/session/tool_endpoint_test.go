@@ -38,11 +38,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -273,11 +275,11 @@ func TestEachCoordinatorsLocalPaneIsToldItsOwnToolEndpoint(t *testing.T) {
 	endpointA := serveToolEndpoint(t, coordA, false)
 	endpointB := serveToolEndpoint(t, coordB, false)
 
-	printedA := mustPrintItsOwnToolEndpoint(t, first, coordA, "11111111111111111111111111111111")
+	printedA := mustPrintItsOwnToolEndpoint(t, first, coordA, "first coordinator pane", "11111111111111111111111111111111")
 	if printedA != coordA {
 		t.Fatalf("the first coordinator's pane named %q as its tool endpoint, want its own %q", printedA, coordA)
 	}
-	printedB := mustPrintItsOwnToolEndpoint(t, second, coordB, "22222222222222222222222222222222")
+	printedB := mustPrintItsOwnToolEndpoint(t, second, coordB, "second coordinator pane", "22222222222222222222222222222222")
 	if printedB != coordB {
 		t.Fatalf("the second coordinator's pane named %q as its tool endpoint, want its own %q", printedB, coordB)
 	}
@@ -326,7 +328,7 @@ const toolEndpointMarker = "NOCX-TOOL-ENDPOINT["
 // The answer is what the caller compares against its own value, so a pane that
 // was told nothing, or was told the daemon's start environment value instead,
 // returns that and fails — which is the defect this test exists for.
-func mustPrintItsOwnToolEndpoint(t *testing.T, c *client.Client, endpoint, subscriber string) string {
+func mustPrintItsOwnToolEndpoint(t *testing.T, c *client.Client, endpoint, pane, subscriber string) string {
 	t.Helper()
 	entry, err := c.Spawn(context.Background(), proto.SpawnParams{
 		Cwd: "/", Cols: 80, Rows: 24, AgentToolEndpoint: endpoint,
@@ -362,6 +364,10 @@ func mustPrintItsOwnToolEndpoint(t *testing.T, c *client.Client, endpoint, subsc
 	}
 	prompted := make(chan struct{})
 	read := make(chan readResult, 1)
+	const maxDiagnosticBytes = 4096
+	var seenMu sync.Mutex
+	var diagnosticBytes []byte
+	var totalBytes int
 	go func() {
 		var seen []byte
 		promptSeen := false
@@ -370,6 +376,17 @@ func mustPrintItsOwnToolEndpoint(t *testing.T, c *client.Client, endpoint, subsc
 			n, readErr := attached.Read(buf)
 			if n > 0 {
 				seen = append(seen, buf[:n]...)
+				seenMu.Lock()
+				totalBytes += n
+				remaining := maxDiagnosticBytes - len(diagnosticBytes)
+				if remaining > 0 {
+					capture := buf[:n]
+					if len(capture) > remaining {
+						capture = capture[:remaining]
+					}
+					diagnosticBytes = append(diagnosticBytes, capture...)
+				}
+				seenMu.Unlock()
 				if !promptSeen && bytes.Contains(seen, []byte("\x1b]133;A")) {
 					promptSeen = true
 					close(prompted)
@@ -389,12 +406,21 @@ func mustPrintItsOwnToolEndpoint(t *testing.T, c *client.Client, endpoint, subsc
 	}()
 
 	deadline := time.After(toolEndpointWait)
+	context := func() string {
+		seenMu.Lock()
+		defer seenMu.Unlock()
+		truncation := ""
+		if totalBytes > len(diagnosticBytes) {
+			truncation = ", truncated"
+		}
+		return fmt.Sprintf("pane=%s session=%+v; bytes received (%d%s): %q", pane, entry.HostSessionID, totalBytes, truncation, diagnosticBytes)
+	}
 	select {
 	case <-prompted:
 	case r := <-read:
 		t.Fatalf("the pane's stream ended before its shell prompted: %v\npane wrote: %q", r.err, r.seen)
 	case <-deadline:
-		t.Fatalf("the pane's shell never prompted (no OSC 133;A)")
+		t.Fatalf("%s: the pane's shell never prompted (no OSC 133;A)", context())
 	}
 	printed := `printf '` + toolEndpointMarker + `%s]\n' "$NOCX_TOOL_SOCKET"`
 	if _, err := attached.Write([]byte(printed + "\n")); err != nil {
@@ -407,7 +433,7 @@ func mustPrintItsOwnToolEndpoint(t *testing.T, c *client.Client, endpoint, subsc
 		}
 		return r.value
 	case <-deadline:
-		t.Fatalf("the pane never printed its tool endpoint")
+		t.Fatalf("%s: the pane never printed its tool endpoint", context())
 		return ""
 	}
 }
