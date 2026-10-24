@@ -18,6 +18,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -47,7 +48,8 @@ const (
 // grant answers the parent's request with the child's identity and the
 // opaque bootstrap the parent executes.
 type nestedKernel struct {
-	t               *testing.T
+	errMu           sync.Mutex
+	errors          []error
 	conn            net.Conn
 	mu              sync.Mutex
 	seq             map[string]uint64
@@ -127,7 +129,17 @@ type nestedKernel struct {
 }
 
 func newNestedKernel(t *testing.T) *nestedKernel {
-	return &nestedKernel{t: t, seq: map[string]uint64{}}
+	t.Helper()
+	return &nestedKernel{seq: map[string]uint64{}}
+}
+
+func (k *nestedKernel) reportError(err error) {
+	if err == nil {
+		return
+	}
+	k.errMu.Lock()
+	k.errors = append(k.errors, err)
+	k.errMu.Unlock()
 }
 
 func (k *nestedKernel) serve(conn net.Conn) {
@@ -174,17 +186,14 @@ func (k *nestedKernel) accept(f frame, body []byte) {
 		// it as prose.
 		if k.parentActivated {
 			k.rejected++
-			k.t.Logf("rejected late child frame: evt=%s seq=%d", f.Evt, f.Seq)
 			return
 		}
 	default:
 		k.rejected++
-		k.t.Logf("rejected wrong tuple: dom=%s epoch=%d evt=%s seq=%d cap=%s", f.Dom, f.Epoch, f.Evt, f.Seq, f.Cap)
 		return // wrong tuple: not one of the two domains
 	}
 	if f.Seq <= k.seq[f.Dom] {
 		k.rejected++
-		k.t.Logf("rejected stale seq: dom=%s evt=%s seq=%d (last=%d)", f.Dom, f.Evt, f.Seq, k.seq[f.Dom])
 		return
 	}
 	k.seq[f.Dom] = f.Seq
@@ -202,10 +211,10 @@ func (k *nestedKernel) accept(f frame, body []byte) {
 			// ordering violation, it is the expected path.
 			k.childHeard = true
 			if !k.parentSuspended {
-				k.t.Errorf("child hello before the parent suspended — §9 ordering violated")
+				k.reportError(fmt.Errorf("child hello before the parent suspended — §9 ordering violated"))
 			}
 			if k.childClosed {
-				k.t.Errorf("child hello after the child closed — a late frame slipped through")
+				k.reportError(fmt.Errorf("child hello after the child closed — a late frame slipped through"))
 			}
 		}
 		k.sendAcceptLocked(f.Dom, f.Epoch)
@@ -258,7 +267,7 @@ func (k *nestedKernel) accept(f frame, body []byte) {
 		// the real kernel accepts an activation of a parent whose Pending
 		// child never reached the stack, §9).
 		if k.childHeard && !k.childClosed {
-			k.t.Errorf("parent activated while the child was still live; order=%v", k.order)
+			k.reportError(fmt.Errorf("parent activated while the child was still live; order=%v", k.order))
 		}
 		k.parentActivated = true
 	}
@@ -281,7 +290,7 @@ func (k *nestedKernel) grantLocked(request string) {
 			LifecycleFD: 3,
 		})
 		if err != nil {
-			k.t.Fatalf("child rcfile: %v", err)
+			k.reportError(fmt.Errorf("child rcfile: %v", err))
 		}
 		// The child reads the rcfile from the preserved bootstrap descriptor
 		// chosen by the PARENT at launch (bash's free 4-9 scan, zsh's {var}
@@ -306,7 +315,7 @@ func (k *nestedKernel) grantLocked(request string) {
 		}},
 	}
 	if _, err := lifecyclecodec.Encode(k.conn, env); err != nil {
-		k.t.Fatalf("encode grant: %v", err)
+		k.reportError(fmt.Errorf("encode grant: %v", err))
 	}
 }
 
@@ -323,11 +332,9 @@ func (k *nestedKernel) sendAcceptLocked(dom string, epoch uint64) {
 		Epoch:   epoch,
 		Event:   lifecycle.Event{Kind: lifecycle.KindAccept, Accept: &lifecycle.Accept{}},
 	}
-	k.t.Logf("kernel sending accept for dom=%s epoch=%d", dom, epoch)
 	if _, err := lifecyclecodec.Encode(k.conn, env); err != nil {
-		k.t.Fatalf("encode accept: %v", err)
+		k.reportError(fmt.Errorf("encode accept: %v", err))
 	}
-	k.t.Logf("kernel accept sent for dom=%s", dom)
 }
 
 // sendAgentAnswerLocked answers the enrolment pair (protocol §15). The answer
@@ -376,7 +383,8 @@ func (k *nestedKernel) sendHeldEnrolAnswer() {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.held == nil {
-		k.t.Fatal("sendHeldEnrolAnswer before any enrolment was held")
+		k.reportError(errors.New("sendHeldEnrolAnswer before any enrolment was held"))
+		return
 	}
 	if k.question != nil {
 		k.sendQuestionLocked()
@@ -410,7 +418,7 @@ func (k *nestedKernel) answerLaunchResolveLocked(f frame) {
 	argv := append([]string{k.launchCommand}, k.launchArgs...)
 	payload, err := EncodeAgentLaunchPayload(argv, k.launchEnv)
 	if err != nil {
-		k.t.Fatalf("encode fake launch payload: %v", err)
+		k.reportError(fmt.Errorf("encode fake launch payload: %v", err))
 	}
 	k.encodeAgentAnswerLocked(f, lifecycle.Event{
 		Kind: lifecycle.KindAgentLaunchResolved,
@@ -432,7 +440,8 @@ func (k *nestedKernel) sendHeldLaunchAnswer() {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.heldLaunch == nil {
-		k.t.Fatal("sendHeldLaunchAnswer before any launch resolution was held")
+		k.reportError(errors.New("sendHeldLaunchAnswer before any launch resolution was held"))
+		return
 	}
 	k.answerLaunchResolveLocked(*k.heldLaunch)
 }
@@ -445,7 +454,8 @@ func (k *nestedKernel) closeQuestion(reason string) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.question == nil {
-		k.t.Fatal("closeQuestion before any question was raised")
+		k.reportError(errors.New("closeQuestion before any question was raised"))
+		return
 	}
 	f := *k.question
 	k.encodeAgentAnswerLocked(f, lifecycle.Event{
@@ -468,7 +478,7 @@ func (k *nestedKernel) encodeAgentAnswerLocked(f frame, evt lifecycle.Event) {
 		Event:   evt,
 	}
 	if _, err := lifecyclecodec.Encode(k.conn, env); err != nil {
-		k.t.Fatalf("encode %s: %v", kind, err)
+		k.reportError(fmt.Errorf("encode %s: %v", kind, err))
 	}
 }
 
@@ -476,11 +486,11 @@ func (k *nestedKernel) sendMalformedAgentLaunchAnswerLocked() {
 	body := []byte(`{"evt":`)
 	var hdr [4]byte
 	if uint64(len(body)) > uint64(^uint32(0)) {
-		k.t.Fatal("malformed frame body exceeds the 32-bit length bound")
+		k.reportError(errors.New("malformed frame body exceeds the 32-bit length bound"))
 	}
 	binary.BigEndian.PutUint32(hdr[:], uint32(len(body))) // #nosec G115 -- body length is checked above
 	if _, err := k.conn.Write(append(hdr[:], body...)); err != nil {
-		k.t.Fatalf("write malformed launch answer: %v", err)
+		k.reportError(fmt.Errorf("write malformed launch answer: %v", err))
 	}
 }
 
@@ -489,7 +499,7 @@ func (k *nestedKernel) sendMalformedAgentAnswerLocked() {
 	var hdr [4]byte
 	binary.BigEndian.PutUint32(hdr[:], 7)
 	if _, err := k.conn.Write(append(hdr[:], body...)); err != nil {
-		k.t.Fatalf("write malformed agent answer: %v", err)
+		k.reportError(fmt.Errorf("write malformed agent answer: %v", err))
 	}
 }
 
@@ -508,7 +518,7 @@ func (k *nestedKernel) sendRefresh(rid string) {
 		}},
 	}
 	if _, err := lifecyclecodec.Encode(k.conn, env); err != nil {
-		k.t.Fatalf("encode refresh: %v", err)
+		k.reportError(fmt.Errorf("encode refresh: %v", err))
 	}
 }
 
@@ -552,10 +562,41 @@ func (k *nestedKernel) events() []kernelEvent {
 	return append([]kernelEvent(nil), k.accepted...)
 }
 
+func (k *nestedKernel) startServe(t *testing.T, f *os.File) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		k.serveFile(f)
+	}()
+	t.Cleanup(func() {
+		// Closing both endpoints unblocks any socket read before joining the
+		// server. The test goroutine is the only place that touches testing.T.
+		k.mu.Lock()
+		conn := k.conn
+		shellFile := k.shellFile
+		k.mu.Unlock()
+		if conn != nil {
+			_ = conn.Close()
+		}
+		if shellFile != nil {
+			_ = shellFile.Close()
+		}
+		<-done
+		k.errMu.Lock()
+		errs := append([]error(nil), k.errors...)
+		k.errMu.Unlock()
+		for _, err := range errs {
+			t.Errorf("nested kernel: %v", err)
+		}
+	})
+}
+
 func (k *nestedKernel) serveFile(f *os.File) {
 	c, err := net.FileConn(f)
 	_ = f.Close()
 	if err != nil {
+		k.reportError(fmt.Errorf("open nested kernel connection: %w", err))
 		return
 	}
 	k.serve(c)
@@ -736,7 +777,7 @@ func startNestedBashParentBinTMPDIR(t *testing.T, bash string, k *nestedKernel, 
 		"NOCX_LIFECYCLE_TIMEOUT_MS=3000",
 	)
 
-	go k.serveFile(kernelFile)
+	k.startServe(t, kernelFile)
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
@@ -840,7 +881,7 @@ func driveNestedHappyInterval(t *testing.T, s *channelShell, k *nestedKernel, en
 		t.Fatalf("parent never suspended; order=%v", k.order)
 	}
 	if !resumed {
-		k.t.Logf("final order=%v", k.order)
+		t.Logf("final order=%v", k.order)
 		t.Fatalf("parent lifecycle did not resume after activation; order=%v output=%q", k.order, s.output())
 	}
 	// Not asserted here: rejected == 0. The fixture's own gate in the
@@ -920,7 +961,7 @@ func startNestedZshParent(t *testing.T, k *nestedKernel, binName, fakeBody strin
 		"NOCX_LIFECYCLE_TIMEOUT_MS=3000",
 	)
 
-	go k.serveFile(kernelFile)
+	k.startServe(t, kernelFile)
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
