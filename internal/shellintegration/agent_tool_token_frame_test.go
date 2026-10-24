@@ -157,4 +157,10 @@ func TestLocalBashWithoutAToolTokenHasNoUnresolvedStartupSlot(t *testing.T) {
 	if strings.Contains(rc, "@EARLYTOKEN@") {
 		t.Fatal("local Bash without a tool token executes an unresolved startup slot")
 	}
+	if strings.Contains(rc, "IFS= read -r __nocx_agent_token") {
+		t.Fatal("a token-less local pane can read an inherited token descriptor marker")
+	}
+	if !strings.Contains(rc, "unset "+AgentToolTokenFDEnv) {
+		t.Fatal("a token-less local pane did not clear the inherited descriptor marker")
+	}
 }

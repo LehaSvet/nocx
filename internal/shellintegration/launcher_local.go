@@ -37,9 +37,14 @@ func LocalBashRcfile(opts LaunchOptions) (string, error) {
 	}
 	rc := bashRcfile(localChild, launcherEnvBlock(opts), localScript(bashScriptRaw, opts),
 		capabilityLiteral(bashUnsetExport, opts.Capability, opts.Recovery))
-	// Always consume the slot: even a pane with no tool surface must start
-	// with valid shell text and clear any inherited private-token state.
-	rc = strings.Replace(rc, "@EARLYTOKEN@", toolTokenFromDescriptor(bashUnsetExport), 1)
+	// Always consume the slot, but only read a descriptor this launch owns.
+	// A token-less pane must not act on an inherited descriptor marker.
+	earlyToken := "__nocx_agent_token=\n" + bashUnsetExport + " __nocx_agent_token 2>/dev/null\n" +
+		"unset " + AgentToolTokenFDEnv + "\n"
+	if opts.AgentToolToken != "" {
+		earlyToken = toolTokenFromDescriptor(bashUnsetExport)
+	}
+	rc = strings.Replace(rc, "@EARLYTOKEN@", earlyToken, 1)
 	return rc, nil
 }
 
