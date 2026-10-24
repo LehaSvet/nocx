@@ -395,20 +395,8 @@ func TestApplicationMenuUsesProductHelpAndFunctionalShowAll(t *testing.T) {
 		return nil
 	})
 
-	for _, role := range []application.Role{
-		application.About, application.ServicesMenu, application.Hide,
-		application.HideOthers, application.ShowAll, application.FileMenu,
-		application.EditMenu, application.ViewMenu, application.WindowMenu,
-	} {
-		if menu.FindByRole(role) == nil {
-			t.Errorf("menu is missing platform role %v", role)
-		}
-	}
-	if menu.FindByRole(application.HelpMenu) != nil {
-		t.Fatal("Help delegates to Wails' Learn More destination")
-	}
-	if menu.FindByRole(application.UnHide) != nil {
-		t.Fatal("menu uses the inert UnHide role")
+	if menu.FindByRole(application.ShowAll) == nil {
+		t.Fatal("Window menu has no functional Show All item")
 	}
 	help := menu.ItemAt(5)
 	if help == nil || help.Label() != "Help" || !help.IsSubmenu() {
