@@ -53,14 +53,15 @@ export type IntentSink = (intent: SessionIntent) => void
 
 // ── the key vocabulary ──────────────────────────────────────────────────────
 //
-// ONE TABLE, keyed by the PHYSICAL key (KeyboardEvent.code), and it is the
-// whole of what the wire will accept: internal/sessionruntime/intent.go's own
+// ONE VOCABULARY, keyed by the PHYSICAL key (KeyboardEvent.code), partitioned
+// so named non-printing keys can be recognised before mapping a code. It is
+// the whole of what the wire will accept: internal/sessionruntime/intent.go's own
 // keyNames, spelled identically. The names are lower case and the backend
 // matches case-insensitively, so a name this table does not carry is a key the
 // runtime has no identity for — the pane sends NOTHING for it rather than
 // inventing a name, because a key-encoding table that fell back to something
 // is exactly the defect ADR-0066 exists against.
-const KEY_NAMES: Readonly<Record<string, string>> = {
+const NON_PRINTING_KEY_NAMES: Readonly<Record<string, string>> = {
   ArrowLeft: 'left',
   ArrowRight: 'right',
   ArrowUp: 'up',
@@ -84,6 +85,22 @@ const KEY_NAMES: Readonly<Record<string, string>> = {
   NumpadEnter: 'numpadenter',
   Tab: 'tab',
   Escape: 'escape',
+  F1: 'f1',
+  F2: 'f2',
+  F3: 'f3',
+  F4: 'f4',
+  F5: 'f5',
+  F6: 'f6',
+  F7: 'f7',
+  F8: 'f8',
+  F9: 'f9',
+  F10: 'f10',
+  F11: 'f11',
+  F12: 'f12',
+}
+
+const KEY_NAMES: Readonly<Record<string, string>> = {
+  ...NON_PRINTING_KEY_NAMES,
   Space: 'space',
 
   KeyA: 'a',
@@ -135,19 +152,6 @@ const KEY_NAMES: Readonly<Record<string, string>> = {
   Quote: 'quote',
   Semicolon: 'semicolon',
   Slash: 'slash',
-
-  F1: 'f1',
-  F2: 'f2',
-  F3: 'f3',
-  F4: 'f4',
-  F5: 'f5',
-  F6: 'f6',
-  F7: 'f7',
-  F8: 'f8',
-  F9: 'f9',
-  F10: 'f10',
-  F11: 'f11',
-  F12: 'f12',
 }
 
 /** The modifier prefixes, in the order this module writes them. The backend
@@ -190,6 +194,17 @@ function keyIntentOf(e: KeyboardEvent): SessionIntent | null {
   // character follows as text, exactly as a plain letter's does.
   if (e.getModifierState?.('AltGraph')) return null
   if (producesCharacter(e)) return null
+  // A physical code does not prove a character was resolved. After a layout
+  // switch WebKit can report key='Unidentified' with code='KeyT' before the
+  // real keydown and text arrive (nocx-hss79). Only a named non-printing key
+  // or a Ctrl/Meta chord may use its code as a key intent.
+  if (
+    !e.ctrlKey &&
+    !e.metaKey &&
+    !Object.prototype.hasOwnProperty.call(NON_PRINTING_KEY_NAMES, e.key)
+  ) {
+    return null
+  }
   const name = KEY_NAMES[e.code]
   if (!name) return null
   return { kind: 'key', payload: modifierPrefix(e) + name }
