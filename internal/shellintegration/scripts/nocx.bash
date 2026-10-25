@@ -61,12 +61,14 @@ __nocx_lc_owns_channel() {
     [[ "${__nocx_lc_shell:-}" == "bash" \
     && "${__nocx_lc_owner:-}" == "$$" && "${__nocx_lc_active:-0}" == 1 \
     && "${__nocx_lc_subshell:-}" == "${BASH_SUBSHELL:-0}" \
-    && "${__nocx_lc_lane:-}" == "${NOCX_LIFECYCLE_LANE:-}" \
-    && "${__nocx_lc_dom:-}" == "${NOCX_LIFECYCLE_DOMAIN:-}" \
-    && "${__nocx_lc_epoch:-}" == "${NOCX_LIFECYCLE_EPOCH:-}" ]]
+    && "${__nocx_lc_lane:-}" == "${1-${__nocx_lc_lane:-}}" \
+    && "${__nocx_lc_dom:-}" == "${2-${__nocx_lc_dom:-}}" \
+    && "${__nocx_lc_epoch:-}" == "${3-${__nocx_lc_epoch:-}}" ]]
 }
 __nocx_lc_reuse=0
-if __nocx_lc_owns_channel; then
+# In-band source assignments are temporary: runtime sends use the established
+# address; a re-source must additionally match its prospective address.
+if __nocx_lc_owns_channel "${NOCX_LIFECYCLE_LANE:-}" "${NOCX_LIFECYCLE_DOMAIN:-}" "${NOCX_LIFECYCLE_EPOCH:-}"; then
     __nocx_lc_reuse=1
 else
     __nocx_lc_lane="${NOCX_LIFECYCLE_LANE:-}"
