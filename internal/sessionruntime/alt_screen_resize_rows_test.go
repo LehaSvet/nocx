@@ -193,3 +193,124 @@ func TestAGrowthWhileTheAlternateScreenIsUpDoesNotReportRowsTwice(t *testing.T) 
 		t.Fatalf("the block stored %d rows, want exactly its %d output rows:\n%s", len(mine), len(want), strings.Join(mine, "\n"))
 	}
 }
+
+// A full-screen command has no primary-screen output. A width commit made
+// on the alternate screen must not turn the restored primary's earlier blocks
+// into its closing rows, even when the fence beats the commit back (nocx-l3evv).
+func TestAlternateScreenWidthCommitKeepsPriorBlocksOutOfClosingRows(t *testing.T) {
+	for _, size := range []struct{ cols, rows int }{{100, 24}, {60, 24}, {80, 40}, {80, 20}} {
+		for _, backBeforeFence := range []bool{false, true} {
+			for _, fenceFirst := range []bool{false, true} {
+				for _, priorLines := range []int{3, 30} {
+					name := fmt.Sprintf("%dx%d/backBeforeFence=%v/fenceFirst=%v/prior=%d", size.cols, size.rows, backBeforeFence, fenceFirst, priorLines)
+					t.Run(name, func(t *testing.T) {
+						s, rs := streamSession(t, harnessGeometry(80, 24))
+						ingest := func(text string) {
+							t.Helper()
+							if err := s.Ingest([]byte(text)); err != nil {
+								t.Fatal(err)
+							}
+						}
+						commit := func(cols, rows int) {
+							t.Helper()
+							if _, err := s.CommitGeometry(harnessGeometry(cols, rows)); err != nil {
+								t.Fatal(err)
+							}
+						}
+						seal := func(k byte) FenceNonce {
+							t.Helper()
+							nonce := obsNonce(k)
+							if fenceFirst {
+								ingest(fenceFor(k))
+							}
+							s.Completed(s.Incarnation(), nonce, 0)
+							if !fenceFirst {
+								ingest(fenceFor(k))
+							}
+							return nonce
+						}
+						var prior strings.Builder
+						prior.WriteString("$ agent\r\n" + outputMarkerFixed)
+						for i := 0; i < priorLines; i++ {
+							fmt.Fprintf(&prior, "PRIOR-AGENT-%02d %s\r\n", i, strings.Repeat("=", 70))
+						}
+						ingest(prior.String())
+						seal(1)
+						ingest("\x1b[J$ ls\r\n" + outputMarkerFixed + "PRIOR-LS-1  PRIOR-LS-2\r\nPRIOR-LS-3\r\n")
+						seal(2)
+						for run := byte(3); run < 6; run++ {
+							ingest("\x1b[J$ htop\r\n" + outputMarkerFixed + "\x1b[?1049h\x1b[H\x1b[2JTasks: 1 running\r\n")
+							commit(size.cols, size.rows)
+							ingest("\x1b[H\x1b[2JTasks: 1 running (redraw)\r\n")
+							ingest("\x1b[?1049l\r\x1b[?1l\x1b>")
+							if backBeforeFence {
+								commit(80, 24)
+							}
+							nonce := seal(run)
+							if !backBeforeFence {
+								commit(80, 24)
+							}
+							if got := storedRowsFor(t, rs, nonce); len(got) != 0 {
+								t.Errorf("full-screen run %d stored %d rows from the restored primary, want none:\n%s", run-2, len(got), strings.Join(got, "\n"))
+							}
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+// Reflow must not bless output written over the mark's prefix as old content.
+// The rewrite is visible on primary before the geometry commit, including
+// when the commit itself is deferred until the alternate screen returns.
+func TestGeometryCommitDoesNotRepairARewrittenOutputPrefix(t *testing.T) {
+	for _, alternate := range []bool{false, true} {
+		for _, captured := range []bool{false, true} {
+			name := fmt.Sprintf("alternate=%v/captured=%v", alternate, captured)
+			t.Run(name, func(t *testing.T) {
+				s, rs := streamSession(t, harnessGeometry(80, 24))
+				if err := s.Ingest([]byte("prev-1\r\nprev-2\r\nprev-3\r\n$ cmd\r\n" + outputMarkerFixed)); err != nil {
+					t.Fatal(err)
+				}
+				// No ED2: the pin survives and only the stands check detects
+				// that the program rewrote the prefix in place.
+				if err := s.Ingest([]byte("\x1b[2A\x1b[2KUP\r\n\x1b[2KOUT\r\n")); err != nil {
+					t.Fatal(err)
+				}
+				forged := obsNonce(0x79)
+				if captured {
+					if err := s.SightFence(forged, []byte("unverified")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if alternate {
+					if err := s.Ingest([]byte("\x1b[?1049h")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := s.CommitGeometry(harnessGeometry(100, 24)); err != nil {
+					t.Fatal(err)
+				}
+				if alternate {
+					if err := s.Ingest([]byte("\x1b[?1049l")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if captured {
+					if err := s.ExpireRendezvous(forged); err != nil {
+						t.Fatal(err)
+					}
+				}
+				nonce := obsNonce(0x78)
+				s.Completed(s.Incarnation(), nonce, 0)
+				if err := s.Ingest([]byte(fenceFor(0x78))); err != nil {
+					t.Fatal(err)
+				}
+				if got := storedRowsFor(t, rs, nonce); strings.Join(got, "|") != "UP|OUT" {
+					t.Fatalf("stored %q, want exactly UP, OUT: earlier rows were not rewritten", got)
+				}
+			})
+		}
+	}
+}

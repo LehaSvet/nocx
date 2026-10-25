@@ -129,19 +129,26 @@ func TestOutputThatRepeatsTheCommandLineIsKeptAfterTheSessionNarrows(t *testing.
 	}
 }
 
-// storedRowsFor is every row streamed so far plus the interval's closing
-// screen, as text, in order: what the block stores.
+// storedRowsFor is the rows between the previous end marker and this
+// interval's end, plus its closing screen: what this block stores.
 func storedRowsFor(t *testing.T, rs *recordingRowStream, nonce FenceNonce) []string {
 	t.Helper()
 	var stored []string
 	for _, e := range rs.snapshot() {
-		if e.kind == "rows" {
+		switch e.kind {
+		case "rows":
 			for _, r := range e.rows {
 				stored = append(stored, streamRowText(r))
 			}
+		case "end":
+			if e.nonce == nonce {
+				return append(stored, closingTexts(t, rs, nonce)...)
+			}
+			stored = nil
 		}
 	}
-	return append(stored, closingTexts(t, rs, nonce)...)
+	t.Fatalf("no end marker for %x", nonce)
+	return nil
 }
 
 // A commit while a full-screen program holds the alternate screen re-lays the

@@ -1154,6 +1154,8 @@ func (s *Session) CommitGeometry(g Geometry) (GeometryCommit, error) {
 	if !g.Valid() {
 		return s.geom, ErrGeometryInvalid
 	}
+	s.settleOwedReflowLocked()
+	s.refreshOutputPrefixesLocked()
 	if err := s.terminal.Resize(g); err != nil {
 		// The terminal's own refusal changed nothing, so there is nothing to
 		// put back and the commit in force simply stands.
@@ -1205,6 +1207,7 @@ func (s *Session) CommitGeometry(g Geometry) (GeometryCommit, error) {
 // past. What it can do, and does, is make what is running and what the session
 // describes one size again.
 func (s *Session) repairLocked() error {
+	s.refreshOutputPrefixesLocked()
 	var failed []error
 	if err := s.terminal.Resize(s.geom.Geometry); err != nil {
 		failed = append(failed, err)
@@ -1458,6 +1461,7 @@ func (s *Session) Ingest(b []byte) error {
 				return err
 			}
 		}
+		s.refreshOutputPrefixesLocked()
 	}
 	s.tick()
 	if err := s.publishFrameLocked(); err != nil {
