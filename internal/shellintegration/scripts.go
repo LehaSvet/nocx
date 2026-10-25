@@ -327,7 +327,9 @@ var (
 // still sourcing 63 arms extdebug during exactly that startup.
 // 65: native helper-hosted Fish uses the existing lifecycle channel, with a
 // protected native-startup adapter and Fish-specific generated launch hooks.
-const version = "65"
+// 66: same-shell lifecycle re-sources retain the authenticated channel and
+// sequence, and agents still run when the channel is unavailable (nocx-5qa8h).
+const version = "66"
 
 // ScriptVersion is the integration script version other packages may read.
 // Command discovery puts it in its cache key (internal/commandnames): the

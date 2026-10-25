@@ -318,6 +318,9 @@ test.describe('a fresh pane completes its first command (nocx-ruf5o)', () => {
       [
         '# An ordinary zsh setup: the widget-wrapping plugins most people have.',
         ...sources.map((p) => `. ${JSON.stringify(p)}`),
+        // Keep the gate that nocx itself installs. Its first load must not
+        // make the launcher's second load replay the lifecycle hello.
+        '[[ -n "$NOCX_SHELL_INTEGRATION" ]] && source "$HOME/.nocx/shell-integration.zsh"',
         '',
       ].join('\n'),
     )
