@@ -1592,10 +1592,19 @@ export class TerminalContent extends BasePaneContent {
    *  has no per-request timeout and the connection's heartbeat keeps a socket
    *  that still answers pings alive. See ALT_SCREEN_RECEIPT_DEADLINE_MS. */
   private _fence: AlternateScreenFence | null = null
-  /** The columns this pane presents alternate-screen frames on, from the
-   *  switch until the program's own grid catches up with the pane's
-   *  (nocx-1ebrs.10). Read by _presentedSnapshot; null when the presentation
-   *  is the frame's own, which is the steady state.
+  /** Whether alternate-screen frames are presented on THIS PANE's measured
+   *  grid, from the switch until the program's own grid catches up with it
+   *  (nocx-1ebrs.10). Read by _presentedSnapshot; false is the steady state,
+   *  where the frame's own geometry is the truth.
+   *
+   *  It is a FLAG and not a number on purpose. The columns it presents are
+   *  read from `lastLocalGridSize` at the moment of the paint, because the
+   *  number that matters is the pane's fit AFTER the switch applied — the one
+   *  the fullscreen layout produces, with the prose inset gone. A number
+   *  captured when the switch was accepted was the PREVIOUS layout's fit (192
+   *  columns with the gutter, where the fullscreen pane admits 199), and
+   *  presenting it reproduced the defect exactly: the assertion is the pane's
+   *  own grid, so the presentation has to read the pane's current one.
    *
    *  It outlives the fence on purpose. The fence opens on the resize RECEIPT
    *  — that is when input may go — while the frame that carried the previous
@@ -1605,7 +1614,7 @@ export class TerminalContent extends BasePaneContent {
    *  receipt would let exactly the frame this bead is about paint at the old
    *  width, so the presentation ends where the evidence does — a frame whose
    *  own grid is the pane's. */
-  private _switchCols: number | null = null
+  private _switchPresents = false
   private nativeMode = false
   private _disposed = false
   private mountAbortController: AbortController | null = null
@@ -4678,7 +4687,7 @@ export class TerminalContent extends BasePaneContent {
     // this bind is about to replace (nocx-1ebrs.10).
     clearTimeout(this._fence?.deadline)
     this._fence = null
-    this._switchCols = null
+    this._switchPresents = false
     for (const unsubscribe of this._blockRowsUnsubs) unsubscribe()
     this._blockRowsUnsubs = []
     this._blockRowsInFlight.clear()
@@ -5100,19 +5109,17 @@ export class TerminalContent extends BasePaneContent {
           // Latest-value metadata is consumed only with an accepted frame:
           // its title/cwd and cell rows belong to the same backend revision.
           this._resetFrameMetadataSession(session.sessionId)
-          // THE SWITCH'S FENCE OPENS ON THE FRAME, BEFORE ANYTHING IS PAINTED
-          // OR SCHEDULED (nocx-1ebrs.10). This frame is the first one that
-          // describes the alternate screen, and the grid it carries is the
-          // previous mode's until the pty takes the new size — so the pane
-          // must ask for its own grid now and present this very frame against
-          // it. Opening it in _applyBufferKind instead (which runs after the
-          // paint, because the fullscreen layout reads the painted mode) would
-          // let exactly the frame the owner saw go out at the old width.
+          // THE SWITCH'S PRESENTATION STARTS ON THE FRAME, BEFORE IT IS
+          // PAINTED (nocx-1ebrs.10). The flag is set here, synchronously, so
+          // the paint that this handler schedules below already knows the
+          // frame is to be presented on the pane's grid; the GRID itself is
+          // read at paint time, because the fit that matters is the one the
+          // fullscreen layout produces a moment later (_applyBufferKind).
           if (
             result.snapshot.state.bufferKind === 'alternate' &&
             this._bufferType !== 'alternate'
           ) {
-            this._openAlternateScreenFence()
+            this._switchPresents = true
           }
           this.scrollback?.blockManager.acceptOutputStartFrame(result.snapshot)
           this.scrollback?.outputAnchorChanged()
@@ -5122,16 +5129,25 @@ export class TerminalContent extends BasePaneContent {
           this._rememberAcceptedGeometryDpr(geometry)
           // THE TRANSITION IS OVER WHEN THE PROGRAM AGREES WITH THE PANE. The
           // padded presentation exists for frames still describing the size
-          // the switch replaced; a frame whose own grid is at least the
-          // pane's is the program drawing at the new size, and from there the
-          // frame is the truth again — a program legitimately narrower than
-          // this pane (another window's grid) is not padded a second time.
+          // the switch replaced; a frame whose own grid is at least this
+          // pane's fit is the program drawing at the new size, and from there
+          // the frame is the truth again — a program legitimately narrower
+          // than this pane (another window's grid) is not padded a second
+          // time.
+          const fitted = this.lastLocalGridSize
           if (
-            this._switchCols !== null &&
+            this._switchPresents &&
+            // …and not on the frame that STARTED the transition: its grid is
+            // the one being replaced, measured against the fit this pane had
+            // before the mode change (192 where the fullscreen pane admits
+            // 199), so comparing the two here would end the presentation on
+            // its own first frame.
+            this._bufferType === 'alternate' &&
             result.snapshot.state.bufferKind === 'alternate' &&
-            geometry.cols >= this._switchCols
+            fitted !== null &&
+            geometry.cols >= fitted.cols
           ) {
-            this._switchCols = null
+            this._switchPresents = false
           }
           // The grid this pane PRESENTS is its own measurement; the one the
           // frame declares is the program's, and it is applied by a request
@@ -5167,11 +5183,11 @@ export class TerminalContent extends BasePaneContent {
             (geometry.cellWidthPx <= 0 || geometry.cellHeightPx <= 0) &&
             this.liveCellMetrics() !== null
           ) {
-            this._paintFrame(result.snapshot, presented)
+            this._paintFrame(result.snapshot)
             this.scheduleLiveResize()
           } else {
             this.scheduleLiveResize()
-            this._paintFrame(result.snapshot, presented)
+            this._paintFrame(result.snapshot)
           }
           const bufferKind = result.snapshot.state.bufferKind
           if (this._bufferType !== bufferKind) this._applyBufferKind(bufferKind)
@@ -5264,7 +5280,7 @@ export class TerminalContent extends BasePaneContent {
       // the same supersession code it answers a newer one — which is not a
       // reason to hold the person's keys forever. The fence and the switch's
       // presentation end here (nocx-1ebrs.10).
-      this._switchCols = null
+      this._switchPresents = false
       this._closeAlternateScreenFence('closed')
       this._cancelDeferredShellSubmissions()
       this.hooks.onActiveOriginChange?.()
@@ -5480,7 +5496,7 @@ export class TerminalContent extends BasePaneContent {
    * the pixel mapping, which answer "where is that on my glass", read the
    * presented one.
    */
-  private _paintFrame(snapshot: ScreenSnapshot, presented: ScreenSnapshot = snapshot): void {
+  private _paintFrame(snapshot: ScreenSnapshot): void {
     // THE ONE WATCHER FRAMES FLOW THROUGH (nocx-zg3k3.10.4): a column
     // change is a reflow, and a reflow renumbers the emulator's history
     // under the reader (ADR-0078) — the surface drops its pages rather
@@ -5499,14 +5515,20 @@ export class TerminalContent extends BasePaneContent {
     // output that moved the row under a still pointer re-derives the hover,
     // before the frame paints it.
     this._detachLinks?.screenChanged()
-    this._pendingPaint = presented
+    this._pendingPaint = snapshot
     if (this._paintFrameHandle !== 0) return
     this._paintFrameHandle = requestAnimationFrame(() => {
       this._paintFrameHandle = 0
       const pending = this._pendingPaint
       this._pendingPaint = null
       if (pending === null || this._disposed) return
-      this._painter?.apply(pending)
+      // THE RECTANGLE IS READ HERE, NOT WHEN THE FRAME ARRIVED. An alternate
+      // switch moves the pane's usable box (the prose gutter goes away), and
+      // that refit lands between accepting the frame and painting it — so a
+      // snapshot padded from the fit known at acceptance would carry the
+      // PREVIOUS layout's width, which is the defect. By the time this runs,
+      // the fit is the one the pane will actually show (nocx-1ebrs.10).
+      this._painter?.apply(this._presentedSnapshot(pending))
       // A REPAINT CHANGES WHAT THE MEASUREMENT READS (nocx-1ebrs.42). The
       // output-driven resize path runs its refit in a frame scheduled BEFORE
       // this one, so a pane whose first accepted frame is also its first
@@ -5539,8 +5561,15 @@ export class TerminalContent extends BasePaneContent {
    * when the fence opened.
    */
   private _presentedSnapshot(snapshot: ScreenSnapshot): ScreenSnapshot {
-    const cols = this._switchCols
-    if (cols === null || snapshot.state.bufferKind !== 'alternate') return snapshot
+    if (!this._switchPresents || snapshot.state.bufferKind !== 'alternate') return snapshot
+    // THE PANE'S CURRENT FIT, read now — not a width captured when the switch
+    // was accepted. A captured number was the PREVIOUS layout's: the prose
+    // gutter is still subtracted at that instant and the fullscreen pane
+    // admits more columns than the fit had (192 against 199, measured in the
+    // e2e), so presenting the captured one reproduced the defect the same
+    // frame it was meant to fix.
+    const cols = this.lastLocalGridSize?.cols ?? null
+    if (cols === null) return snapshot
     return padSnapshotToColumns(snapshot, cols)
   }
 
@@ -5811,10 +5840,10 @@ export class TerminalContent extends BasePaneContent {
     const rows = Math.max(1, Math.floor(usable.height / metrics.cellHeight))
     this.lastLocalGridSize = { cols, rows }
     // A pane that moves DURING an alternate-screen switch is the pane the
-    // frames in the transition are fitted to (nocx-1ebrs.10): the switch's
-    // own report was taken at the old box, and presenting the old box is the
-    // same defect one resize later.
-    if (this._switchCols !== null) this._switchCols = cols
+    // frames in the transition are fitted to (nocx-1ebrs.10) — and nothing
+    // has to be copied out of here for that: the presentation reads THIS fit
+    // at paint time, which is why the width it uses is always the current
+    // one and never the one the switch was accepted at.
     const accepted = this._cellModel?.current()?.geometry
     if (accepted && (accepted.cellWidthPx <= 0 || accepted.cellHeightPx <= 0)) {
       this.scrollback?.cellMetricsChanged()
@@ -7073,9 +7102,7 @@ export class TerminalContent extends BasePaneContent {
     // for good instead of for a round trip.
     if (this.session === null) return
     this._fence = { held: [], generation: 0, newest: 0, sent: null, deadline: undefined }
-    // The presentation the switch starts is this pane's own grid, until a
-    // frame arrives that agrees with it (see _switchCols).
-    this._switchCols = this.lastLocalGridSize?.cols ?? null
+    this._switchPresents = true
     this._requestFenceResize()
   }
 
@@ -7207,16 +7234,6 @@ export class TerminalContent extends BasePaneContent {
     if (this._bufferType === type) return
     const thawing = this._bufferType === 'alternate' && type === 'normal'
     this._bufferType = type
-    // Entering is fenced (the frame handler opens it before the paint); the
-    // guard is here because the mode can also be applied through this method
-    // alone. Leaving cannot be waited on: the program is not full-screen any
-    // more, so the grid the fence was holding for is no longer the one being
-    // drawn — and a fence with no owner to apply it would hold keys forever.
-    if (type === 'alternate') this._openAlternateScreenFence()
-    else if (thawing) {
-      this._switchCols = null
-      this._closeAlternateScreenFence('thaw')
-    }
     // The ask interval ends at the program's thaw: clear the frozen
     // presentation, then seat every answer before normal-buffer ownership
     // resumes. The shared helper preserves each exact answer node.
@@ -7226,7 +7243,27 @@ export class TerminalContent extends BasePaneContent {
     this.lifecycle.setBuffer(type)
     if (type === 'alternate') {
       this.scrollback?.enterFullscreen()
+      // THE FIT FIRST, THEN THE REQUEST (nocx-1ebrs.10). Entering fullscreen
+      // zeroes the prose inset the fit subtracts, so the pane's grid is a
+      // DIFFERENT, wider rectangle from this instant — 199 columns where the
+      // normal-buffer fit had 192, measured on the e2e's page. A request sent
+      // before this refit asks the pty for the previous layout's width, which
+      // is the stale size this bead is about, and the presentation would then
+      // pad the switch frame to that same stale width: the fix reproducing
+      // the defect it was written for. This is the one synchronous refit in a
+      // mode change, and it is here so the fence's first request — and the
+      // fit the paint reads — are both the pane's own grid.
+      this._switchPresents = true
+      this.refitIfResized()
+      this._openAlternateScreenFence()
     } else {
+      // Leaving cannot be waited on: the program is not full-screen any more,
+      // so the grid the fence was holding for is no longer the one being
+      // drawn — and a fence with no owner to apply it would hold keys forever.
+      if (thawing) {
+        this._switchPresents = false
+        this._closeAlternateScreenFence('thaw')
+      }
       // A conventional terminal stays unstructured: the scrollback-block
       // model never takes over (ADR-0024 §4). Exit fullscreen before deciding
       // which layout the lifecycle currently owns.
@@ -9156,7 +9193,7 @@ export class TerminalContent extends BasePaneContent {
     // person no longer has. Its last-resort timer dies with it.
     clearTimeout(this._fence?.deadline)
     this._fence = null
-    this._switchCols = null
+    this._switchPresents = false
     // And the prediction's pending frame: a callback landing on a disposed
     // pane would measure nothing that exists (the same rule the paint
     // frame's cancellation below keeps).

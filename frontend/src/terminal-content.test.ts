@@ -19645,20 +19645,38 @@ describe('an alternate-screen switch holds input for its applied grid (nocx-1ebr
     drawProgramFrame: (revision: number, cols?: number) => SessionFrame
     /** The number of resize requests this pane has issued. */
     requested: () => number
+    /** Run every animation frame the pane has scheduled, in order. */
+    flushFrames: () => void
     teardown: () => void
   }> {
     const mounted = await mountTerminal(makeClipboard(), { attachToDocument: true })
     const { content, tab } = mounted
-    // The painter's only ordering boundary is an animation frame; run the
-    // pending ones synchronously so an assertion below reads a PAINTED grid
-    // rather than a scheduled paint. Installed after the mount, because the
-    // editor measures through the same frame callback.
+    // The painter's only ordering boundary is an animation frame. The frames
+    // are COLLECTED and run on demand (flushFrames) rather than run inline:
+    // inline would paint inside the frame handler, before the mode change the
+    // same handler makes a moment later — an order the browser never
+    // produces, and the one that hid the real defect (a paint on the fit from
+    // before the switch). Installed after the mount, because the editor
+    // measures through the same frame callback.
     const raf = globalThis.requestAnimationFrame
+    let queued: FrameRequestCallback[] = []
     globalThis.requestAnimationFrame = (cb: FrameRequestCallback): number => {
-      cb(0)
-      return 0
+      queued.push(cb)
+      return queued.length
+    }
+    const flushFrames = (): void => {
+      // A callback may schedule the next one (the paint schedules the refit),
+      // so the queue is drained rather than run once. The bound is a guard
+      // against a scheduling loop in the code under test, not a frame count
+      // anything depends on.
+      for (let pass = 0; queued.length > 0 && pass < 50; pass++) {
+        const frame = queued
+        queued = []
+        for (const cb of frame) cb(0)
+      }
     }
     const teardown = (): void => {
+      queued = []
       globalThis.requestAnimationFrame = raf
       mounted.teardown()
     }
@@ -19678,6 +19696,7 @@ describe('an alternate-screen switch holds input for its applied grid (nocx-1ebr
     // A first frame in the normal buffer gives the pane a committed cell
     // metric, which is what its fit measures with.
     session.fireScreenFrame(screenFrame(1, ['$ prompt'], CELL))
+    flushFrames()
     await vi.waitFor(() =>
       expect(session.sendResize).toHaveBeenCalledWith({
         cols: FITTED.cols,
@@ -19724,6 +19743,7 @@ describe('an alternate-screen switch holds input for its applied grid (nocx-1ebr
       switchFrame,
       drawProgramFrame,
       requested: () => receipts.length,
+      flushFrames,
       teardown,
     }
   }
@@ -19746,10 +19766,96 @@ describe('an alternate-screen switch holds input for its applied grid (nocx-1ebr
     }
   })
 
+  it('presents the pane’s FULLSCREEN fit, not the fit the previous mode had', async () => {
+    // THE CASE THE REAL STACK MEASURED, and the one the jsdom-default fixture
+    // cannot see: in the normal buffer the live region wears the prose gutter,
+    // and entering fullscreen zeroes it. So the pane's own grid is a WIDER
+    // rectangle the instant the mode changes — 94 columns before, 100 after,
+    // for an 800 px pane with an 8 px cell — and on the real page the frame
+    // that switches carries the 94 the pty still has. Presenting the fit the
+    // pane had BEFORE the switch (94) is what the e2e caught: 192 columns
+    // where the pane admitted 199.
+    const mounted = await mountTerminal(makeClipboard(), { attachToDocument: true })
+    const { content, tab } = mounted
+    const raf = globalThis.requestAnimationFrame
+    let queued: FrameRequestCallback[] = []
+    globalThis.requestAnimationFrame = (cb: FrameRequestCallback): number => {
+      queued.push(cb)
+      return queued.length
+    }
+    // Frames run AFTER the handler that scheduled them, as the browser runs
+    // them — the order in which the mode change and its refit precede the
+    // paint.
+    const flushFrames = (): void => {
+      for (let pass = 0; queued.length > 0 && pass < 50; pass++) {
+        const frame = queued
+        queued = []
+        for (const cb of frame) cb(0)
+      }
+    }
+    try {
+      tab.pane.classList.add('active')
+      const session = sessionOf(content)
+      const scrollback = scrollbackFor(content)
+      // The stylesheet's own rule, stated where jsdom cannot read it: the
+      // inset is the mode class's (`.live-fullscreen { padding-inline: 0 }`).
+      Object.defineProperty(scrollback, 'liveInlineInsetPx', {
+        configurable: true,
+        get: () =>
+          scrollback.terminalLiveContainer.classList.contains('live-fullscreen') ? 0 : 48,
+      })
+      Object.defineProperty(scrollback.scrollbackArea, 'clientWidth', {
+        configurable: true,
+        value: PANE.width,
+      })
+      Object.defineProperty(scrollback.scrollbackArea, 'clientHeight', {
+        configurable: true,
+        value: PANE.height,
+      })
+      content.viewportChanged({ width: PANE.width, height: PANE.height })
+      session.fireScreenFrame(screenFrame(1, ['$ prompt'], { ...CELL, cols: 94, rows: 25 }))
+      flushFrames()
+      await vi.waitFor(() =>
+        expect(session.sendResize).toHaveBeenCalledWith({
+          cols: 94,
+          rows: FITTED.rows,
+          xpixel: 94 * CELL.cellWidthPx,
+          ypixel: PANE.height,
+        }),
+      )
+      session.sendResize.mockClear()
+      session.resizeApplied.mockImplementation(() => Promise.resolve('applied'))
+
+      // The switch frame says 94 — the width the program still has.
+      const switched = screenFrame(2, ['ALT-READY'], { ...CELL, cols: 94, rows: 20 })
+      switched.state.bufferKind = 'alternate'
+      session.fireScreenFrame(switched)
+      flushFrames()
+
+      // The request is the PANE's grid, not the previous mode's…
+      expect(session.resizeApplied).toHaveBeenCalledWith({
+        cols: FITTED.cols,
+        rows: FITTED.rows,
+        xpixel: PANE.width,
+        ypixel: PANE.height,
+      })
+      // …and so is the grid the frame is presented on.
+      const painted = tab.pane.querySelector<HTMLElement>('.term-grid')!
+      expect(painted.textContent).toContain('ALT-READY')
+      expect(painted.getAttribute('aria-colcount')).toBe(String(FITTED.cols))
+      expect(painted.querySelectorAll('.term-grid-row')).toHaveLength(20)
+    } finally {
+      queued = []
+      globalThis.requestAnimationFrame = raf
+      mounted.teardown()
+    }
+  })
+
   it('presents the switch frame on the pane’s grid, keeping its text and its row count', async () => {
-    const { grid, switchFrame, teardown } = await switchingPane()
+    const { grid, switchFrame, flushFrames, teardown } = await switchingPane()
     try {
       switchFrame()
+      flushFrames()
       const painted = grid()
       expect(painted.textContent).toContain('ALT-READY')
       // The size is the pane's…
@@ -19810,9 +19916,11 @@ describe('an alternate-screen switch holds input for its applied grid (nocx-1ebr
   })
 
   it('keeps holding on a superseded receipt and releases on the newer resize', async () => {
-    const { content, session, tab, switchFrame, receipt, teardown } = await switchingPane()
+    const { content, session, tab, switchFrame, receipt, flushFrames, teardown } =
+      await switchingPane()
     try {
       switchFrame()
+      flushFrames()
       typeIntoPane(content, 'q')
       // Superseded is not this pane's failure: a newer resize owns the
       // session's pending slot, so the grid is still on its way. No toast
@@ -19889,9 +19997,10 @@ describe('an alternate-screen switch holds input for its applied grid (nocx-1ebr
   })
 
   it('maps the pointer through the grid the applied receipt reported', async () => {
-    const { content, session, switchFrame, receipt, teardown } = await switchingPane()
+    const { content, session, switchFrame, receipt, flushFrames, teardown } = await switchingPane()
     try {
       switchFrame()
+      flushFrames()
       const input = intentElementOf(content)
       // Column 50 exists in this pane (100 columns) and not in the program's
       // 40 — the click that landed on empty space before.
