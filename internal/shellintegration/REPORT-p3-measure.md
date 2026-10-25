@@ -7,7 +7,7 @@ the filesystem seam and counts calls across publish paths.
 ## Current maximum
 
 - Maximum filesystem-seam calls per publish: **63**.
-- Maximum bytes written per publish: **88,212**.
+- Maximum bytes written per publish: **89,930**.
 - Measured worst path: replacement plus sweep, with the launch carrier absent.
 - Fault position used for the reported worst case: `remove#4`.
 
@@ -59,3 +59,13 @@ The shared Bash rcfile template now reserves the pre-startup tool-token reader s
 carrier and measured again when that carrier is published. The local bearer itself
 never enters the published text. The identical measurement on `origin/main` before
 this change remains 88,202 bytes, and the filesystem-call maximum remains 63.
+
+The 2026-10-25 CI measurement (run `40186714654`, job `121149032510`,
+`TestMeasuredMaximumIsStill`) is **1,718 bytes above** 88,212, at **89,930**.
+The growth is the Bash/zsh same-owner lifecycle guard and Bash's idempotent
+hook captures (nocx-5qa8h). The archive and client stack are unchanged. The
+worst path and maximum of 63 filesystem calls are unchanged.
+
+This records that CI snapshot, not an inferred final value. The subsequent
+fork-send ownership guard changes the scripts again; its exact byte footprint
+awaits the next CI run, which must update this report and the constant together.

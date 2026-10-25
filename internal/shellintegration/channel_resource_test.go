@@ -62,7 +62,7 @@ func TestShellChannel_ResourcePreservesTheActiveAttempt(t *testing.T) {
 				t.Fatal(err)
 			}
 			s.run("unset __nocx_loaded; . " + ShellQuote(file) + "; unset __nocx_loaded; . " + ShellQuote(file) + "; unset __nocx_loaded; . " + ShellQuote(file) + "; echo RESOURCE_DONE")
-			s.run("(unset __nocx_loaded __nocx_cap; . " + ShellQuote(file) + "; echo SUBSHELL_ACTIVE=$__nocx_lc_active)")
+			s.run("echo PARENT_BEFORE_FORK; (unset __nocx_loaded; . " + ShellQuote(file) + "; echo SUBSHELL_ACTIVE=$__nocx_lc_active; __nocx_lc_send domain_closed; true)")
 			if !strings.Contains(s.output(), "SUBSHELL_ACTIVE=0") {
 				t.Fatalf("fork reused the parent's established channel: %q", s.output())
 			}

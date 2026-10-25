@@ -49,13 +49,16 @@ typeset +x __nocx_cap 2>/dev/null
 # lane: another pane must not inherit this pane's stream.
 # domain: a nested environment must not speak for its parent.
 # epoch: a replacement channel must not inherit a retired sequence.
-__nocx_lc_reuse=0
-if [[ "${__nocx_lc_shell:-}" == "zsh" \
+__nocx_lc_owns_channel() {
+    [[ "${__nocx_lc_shell:-}" == "zsh" \
     && "${__nocx_lc_owner:-}" == "$$" && "${__nocx_lc_active:-0}" == 1 \
     && "${__nocx_lc_subshell:-}" == "${ZSH_SUBSHELL:-0}" \
     && "${__nocx_lc_lane:-}" == "${NOCX_LIFECYCLE_LANE:-}" \
     && "${__nocx_lc_dom:-}" == "${NOCX_LIFECYCLE_DOMAIN:-}" \
-    && "${__nocx_lc_epoch:-}" == "${NOCX_LIFECYCLE_EPOCH:-}" ]]; then
+    && "${__nocx_lc_epoch:-}" == "${NOCX_LIFECYCLE_EPOCH:-}" ]]
+}
+__nocx_lc_reuse=0
+if __nocx_lc_owns_channel; then
     __nocx_lc_reuse=1
 else
     __nocx_lc_lane="${NOCX_LIFECYCLE_LANE:-}"
@@ -122,6 +125,7 @@ __nocx_lc_json_escape() {
 __nocx_lc_send() {
     # $1 = event kind; $2 = extra JSON fields (leading comma) or empty
     local __evt="$1" __extra="${2:-}" __json __len __b0 __b1 __b2 __b3 LC_ALL=C
+    [[ "$__evt" == hello ]] || __nocx_lc_owns_channel || return 1
     __nocx_lc_seq=$(( __nocx_lc_seq + 1 ))
     __json="{\"v\":1,\"lane\":\"${__nocx_lc_lane_esc}\",\"dom\":\"${__nocx_lc_dom_esc}\",\"epoch\":${__nocx_lc_epoch},\"seq\":${__nocx_lc_seq},\"cap\":\"${__nocx_cap}\",\"evt\":\"${__evt}\"${__extra}}"
     __len=${#__json}
@@ -245,6 +249,11 @@ __nocx_lc_fence() {
 # failure leaves a conventional terminal with a visible native prompt.
 __nocx_lc_init() {
     [[ "$__nocx_lc_reuse" == 1 ]] && return 0
+    # A fork inherits the descriptor and credentials, never its ownership.
+    if [[ "${__nocx_lc_owner:-}" == "$$" \
+        && "${__nocx_lc_subshell:-}" != "${ZSH_SUBSHELL:-0}" ]]; then
+        return 0
+    fi
     local __cfg_ok=0
     __nocx_lc_active=0
     if [[ -n "$__nocx_cap" ]] && [[ "$__nocx_cap" =~ ^[0-9a-f]{64}$ ]] \

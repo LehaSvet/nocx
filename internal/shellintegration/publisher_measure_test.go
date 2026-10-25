@@ -250,9 +250,13 @@ import (
 // The shared Bash template's pre-startup tool-token slot adds one empty
 // remote separator, escaped in the launch carrier: 88212 bytes, still 63
 // calls (nocx-1ebrs.21). The same scenario on origin/main measured 88202.
+// CI run 40186714654 measured 89930 bytes (+1718), still 63 calls, for
+// the same-shell lifecycle guard and idempotent Bash hook captures (nocx-5qa8h).
+// Archive and client stack are unchanged. The later fork-send guard awaits
+// the next CI measurement; never infer its byte delta from this snapshot.
 const (
 	measuredMaxPublishCalls = 63
-	measuredMaxPublishBytes = 88212
+	measuredMaxPublishBytes = 89930
 
 	// measuredMaxBoundedResidue is the same figure for the worst attempt
 	// that is still inside the residue bounds the design asks P3 to enforce
