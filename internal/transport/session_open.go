@@ -749,6 +749,16 @@ func (s *WSServer) OpenSession(ctx context.Context, spec OpenSpec) (OpenedSessio
 	// one — the two callers each open a different session and each
 	// registers its own, exactly once.
 	s.registerOpenedIntegration(opened.Session, opened.Config, opened.Hosted)
+	// AND SO IS THE BUNDLE'S DELIVERY OUTCOME (nocx-1kejz.4), for the reason
+	// above spelled one fact along: a backend-opened pane is one a person
+	// attaches to later, and a copy that did not land is a fact it must hear
+	// when it does. Retained rather than emitted — there is no subscriber yet —
+	// which is exactly what replayPublishFailure exists to answer. Same
+	// once-only rule: the handler records the session ITSELF opened, and this
+	// records the one this caller opened.
+	if opened.Hosted != nil {
+		s.recordPublishFailure(opened.Session.ID(), opened.Hosted.PublishFailure)
+	}
 	// THE LIFECYCLE LEG IS STARTED HERE, and this is the one place the two
 	// callers legitimately differ in TIMING rather than in behaviour. The
 	// handler starts it after the ack, because AD-7 requires every

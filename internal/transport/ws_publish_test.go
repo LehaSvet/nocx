@@ -275,3 +275,63 @@ func TestSessionPublishFailed_IsSilentWhenTheCopyLanded(t *testing.T) {
 			"about a copy that landed", reason)
 	}
 }
+
+// TestSessionPublishFailed_ReachesARendererThatAttachesLater is the retention's
+// own test, and the reason the fact is not simply sent once at open: a
+// backend-opened pane has no renderer when its copy fails — the worker record
+// opens it, the person's window attaches afterwards — and a pane that reloads
+// attaches to a session whose publish settled long ago. Both cases are this one:
+// the fact must be waiting.
+func TestSessionPublishFailed_ReachesARendererThatAttachesLater(t *testing.T) {
+	schema := loadSchema(t, "session.publishFailed.schema.json")
+	logger := log.NewSlogAdapter(nil)
+	reg := newRegWithStub(logger)
+	helperID := session.ID("0123456789abcdef0123456789abcde3")
+	ws := NewWSServer(logger, reg,
+		WithProfileResolver(&fakeResolver{
+			resolveFn: func(string) (string, *ssh.ConnectConfig, error) {
+				return "remote.example", &ssh.ConnectConfig{User: "alice"}, nil
+			},
+		}),
+		WithHelperSessionOpener(&publishFailureOpener{
+			reg: reg, id: helperID, reason: shellintegration.PublishFailureHome,
+		}),
+	)
+	ctx := context.Background()
+	if err := ws.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = ws.Stop(ctx) }()
+
+	// The backend's own way in: no connection, so nothing can hear the fact
+	// when it settles.
+	opened, err := ws.OpenSession(ctx, OpenSpec{
+		Kind: "ssh", ProfileID: "p", Cols: 80, Rows: 24, PaneID: helperOpenPane,
+	})
+	if err != nil {
+		t.Fatalf("backend open: %v", err)
+	}
+	if opened.Session.ID() != helperID {
+		t.Fatalf("backend open session = %q, want helper-minted %q", opened.Session.ID(), helperID)
+	}
+
+	conn := connectWS(t, ws)
+	defer func() { _ = conn.Close() }()
+	jsonrpcCallWithID(t, conn, "attach", map[string]any{
+		"sessionId": opened.Session.ID(), "offset": 0,
+	}, 2)
+
+	raw, err := awaitNotification(conn, "session.publishFailed", wantWithin)
+	if err != nil {
+		t.Fatalf("waiting for the retained delivery fact on attach: %v", err)
+	}
+	validateJSON(t, schema, raw, "session.publishFailed replay")
+	var got publishFailureParams
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.SessionID != string(helperID) || got.Reason != string(shellintegration.PublishFailureHome) {
+		t.Fatalf("replayed fact = %+v, want session %q with reason %q", got, helperID,
+			shellintegration.PublishFailureHome)
+	}
+}
