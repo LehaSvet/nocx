@@ -41,31 +41,54 @@ __nocx_cap="${__nocx_cap:-}"
 # assignment, publishing the capability in /proc/<pid>/environ.
 # NOTE: zsh's `typeset -n` is a nameref — never use it for this.
 typeset +x __nocx_cap 2>/dev/null
-__nocx_lc_lane="${NOCX_LIFECYCLE_LANE:-}"
-__nocx_lc_dom="${NOCX_LIFECYCLE_DOMAIN:-}"
-__nocx_lc_epoch="${NOCX_LIFECYCLE_EPOCH:-}"
-__nocx_lc_fd="${NOCX_LIFECYCLE_FD:-}"
-__nocx_lc_port="${NOCX_LIFECYCLE_PORT:-}"
-if [[ "${NOCX_LIFECYCLE_TIMEOUT_MS:-}" =~ ^[0-9]+$ ]] && (( NOCX_LIFECYCLE_TIMEOUT_MS >= 1 )); then
-    # zsh `read -t` takes integer seconds; ceil the millisecond override.
-    __nocx_lc_timeout_s=$(( (NOCX_LIFECYCLE_TIMEOUT_MS + 999) / 1000 ))
+# Reinstall current hooks after either the installer gate or launcher loaded
+# us, retaining a live stream only for this full owner key (nocx-5qa8h):
+# shell: another interpreter must not inherit this dialect's state.
+# pid: a newly executed shell must establish its own channel.
+# subshell depth: a fork retains $$ but cannot share a copied sequence.
+# lane: another pane must not inherit this pane's stream.
+# domain: a nested environment must not speak for its parent.
+# epoch: a replacement channel must not inherit a retired sequence.
+__nocx_lc_owns_channel() {
+    [[ "${__nocx_lc_shell:-}" == "zsh" \
+    && "${__nocx_lc_owner:-}" == "$$" && "${__nocx_lc_active:-0}" == 1 \
+    && "${__nocx_lc_subshell:-}" == "${ZSH_SUBSHELL:-0}" \
+    && "${__nocx_lc_lane:-}" == "${1-${__nocx_lc_lane:-}}" \
+    && "${__nocx_lc_dom:-}" == "${2-${__nocx_lc_dom:-}}" \
+    && "${__nocx_lc_epoch:-}" == "${3-${__nocx_lc_epoch:-}}" ]]
+}
+__nocx_lc_reuse=0
+# In-band source assignments are temporary: runtime sends use the established
+# address; a re-source must additionally match its prospective address.
+if __nocx_lc_owns_channel "${NOCX_LIFECYCLE_LANE:-}" "${NOCX_LIFECYCLE_DOMAIN:-}" "${NOCX_LIFECYCLE_EPOCH:-}"; then
+    __nocx_lc_reuse=1
 else
-    # Matches the kernel's hello_timeout (protocol doc §5): a shell that
-    # gives up before the kernel's own budget would strand an accept that
-    # arrives late, leaving an Established domain with no consumer.
-    __nocx_lc_timeout_s=10
+    __nocx_lc_lane="${NOCX_LIFECYCLE_LANE:-}"
+    __nocx_lc_dom="${NOCX_LIFECYCLE_DOMAIN:-}"
+    __nocx_lc_epoch="${NOCX_LIFECYCLE_EPOCH:-}"
+    __nocx_lc_fd="${NOCX_LIFECYCLE_FD:-}"
+    __nocx_lc_port="${NOCX_LIFECYCLE_PORT:-}"
+    if [[ "${NOCX_LIFECYCLE_TIMEOUT_MS:-}" =~ ^[0-9]+$ ]] && (( NOCX_LIFECYCLE_TIMEOUT_MS >= 1 )); then
+        # zsh `read -t` takes integer seconds; ceil the millisecond override.
+        __nocx_lc_timeout_s=$(( (NOCX_LIFECYCLE_TIMEOUT_MS + 999) / 1000 ))
+    else
+        # Matches the kernel's hello_timeout (protocol doc §5): a shell that
+        # gives up before the kernel's own budget would strand an accept that
+        # arrives late, leaving an Established domain with no consumer.
+        __nocx_lc_timeout_s=10
+    fi
+    __nocx_lc_active=0
+    __nocx_lc_seq=0
+    __nocx_lc_attempt_open=0
+    __nocx_lc_attempt_n=0
+    __nocx_lc_attempt_id=''
+    __nocx_lc_last_completed_id=''
+    __nocx_lc_last_completed_code=''
+    __nocx_lc_desynced=0
+    __nocx_lc_frame=''
+    __nocx_lc_lane_esc=''
+    __nocx_lc_dom_esc=''
 fi
-__nocx_lc_active=0
-__nocx_lc_seq=0
-__nocx_lc_attempt_open=0
-__nocx_lc_attempt_n=0
-__nocx_lc_attempt_id=''
-__nocx_lc_last_completed_id=''
-__nocx_lc_last_completed_code=''
-__nocx_lc_desynced=0
-__nocx_lc_frame=''
-__nocx_lc_lane_esc=''
-__nocx_lc_dom_esc=''
 
 # JSON-escape one string into __nocx_lc_json_escaped. Backslash, quote and
 # the C0/DEL bytes JSON forbids are escaped; raw UTF-8 passes through.
@@ -104,6 +127,7 @@ __nocx_lc_json_escape() {
 __nocx_lc_send() {
     # $1 = event kind; $2 = extra JSON fields (leading comma) or empty
     local __evt="$1" __extra="${2:-}" __json __len __b0 __b1 __b2 __b3 LC_ALL=C
+    [[ "$__evt" == hello ]] || __nocx_lc_owns_channel || return 1
     __nocx_lc_seq=$(( __nocx_lc_seq + 1 ))
     __json="{\"v\":1,\"lane\":\"${__nocx_lc_lane_esc}\",\"dom\":\"${__nocx_lc_dom_esc}\",\"epoch\":${__nocx_lc_epoch},\"seq\":${__nocx_lc_seq},\"cap\":\"${__nocx_cap}\",\"evt\":\"${__evt}\"${__extra}}"
     __len=${#__json}
@@ -226,6 +250,12 @@ __nocx_lc_fence() {
 # the shell suppress its prompt or emit lifecycle events (decision 3). Any
 # failure leaves a conventional terminal with a visible native prompt.
 __nocx_lc_init() {
+    [[ "$__nocx_lc_reuse" == 1 ]] && return 0
+    # A fork inherits the descriptor and credentials, never its ownership.
+    if [[ "${__nocx_lc_owner:-}" == "$$" \
+        && "${__nocx_lc_subshell:-}" != "${ZSH_SUBSHELL:-0}" ]]; then
+        return 0
+    fi
     local __cfg_ok=0
     __nocx_lc_active=0
     if [[ -n "$__nocx_cap" ]] && [[ "$__nocx_cap" =~ ^[0-9a-f]{64}$ ]] \
@@ -292,6 +322,10 @@ __nocx_lc_init() {
         *) return 0 ;;
     esac
     __nocx_lc_active=1
+    __nocx_lc_shell=zsh
+    __nocx_lc_owner=$$
+    __nocx_lc_subshell=${ZSH_SUBSHELL:-0}
+    typeset +x __nocx_lc_owner 2>/dev/null
     return 0
 }
 __nocx_lc_init

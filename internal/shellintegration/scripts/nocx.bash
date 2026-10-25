@@ -49,35 +49,58 @@ export -n __nocx_cap 2>/dev/null
 # read failed instantly and the parent ran the user's ssh conventionally with
 # no diagnostic (nocx-beib). Keep in step with lifecycle.MaxFrameBytes.
 __nocx_lc_max_frame=262144
-__nocx_lc_lane="${NOCX_LIFECYCLE_LANE:-}"
-__nocx_lc_dom="${NOCX_LIFECYCLE_DOMAIN:-}"
-__nocx_lc_epoch="${NOCX_LIFECYCLE_EPOCH:-}"
-__nocx_lc_fd="${NOCX_LIFECYCLE_FD:-}"
-__nocx_lc_port="${NOCX_LIFECYCLE_PORT:-}"
-if [[ "${NOCX_LIFECYCLE_TIMEOUT_MS:-}" =~ ^[0-9]+$ ]] && (( NOCX_LIFECYCLE_TIMEOUT_MS >= 1 )); then
-    __nocx_lc_timeout_s=$(( (NOCX_LIFECYCLE_TIMEOUT_MS + 999) / 1000 ))
+# Reinstall current hooks after either the installer gate or launcher loaded
+# us, retaining a live stream only for this full owner key (nocx-5qa8h):
+# shell: another interpreter must not inherit this dialect's state.
+# pid: a newly executed shell must establish its own channel.
+# subshell depth: a fork retains $$ but cannot share a copied sequence.
+# lane: another pane must not inherit this pane's stream.
+# domain: a nested environment must not speak for its parent.
+# epoch: a replacement channel must not inherit a retired sequence.
+__nocx_lc_owns_channel() {
+    [[ "${__nocx_lc_shell:-}" == "bash" \
+    && "${__nocx_lc_owner:-}" == "$$" && "${__nocx_lc_active:-0}" == 1 \
+    && "${__nocx_lc_subshell:-}" == "${BASH_SUBSHELL:-0}" \
+    && "${__nocx_lc_lane:-}" == "${1-${__nocx_lc_lane:-}}" \
+    && "${__nocx_lc_dom:-}" == "${2-${__nocx_lc_dom:-}}" \
+    && "${__nocx_lc_epoch:-}" == "${3-${__nocx_lc_epoch:-}}" ]]
+}
+__nocx_lc_reuse=0
+# In-band source assignments are temporary: runtime sends use the established
+# address; a re-source must additionally match its prospective address.
+if __nocx_lc_owns_channel "${NOCX_LIFECYCLE_LANE:-}" "${NOCX_LIFECYCLE_DOMAIN:-}" "${NOCX_LIFECYCLE_EPOCH:-}"; then
+    __nocx_lc_reuse=1
 else
-    # Matches the kernel's hello_timeout (protocol doc §5): a shell that
-    # gives up before the kernel's own budget would strand an accept that
-    # arrives late, leaving an Established domain with no consumer.
-    __nocx_lc_timeout_s=10
+    __nocx_lc_lane="${NOCX_LIFECYCLE_LANE:-}"
+    __nocx_lc_dom="${NOCX_LIFECYCLE_DOMAIN:-}"
+    __nocx_lc_epoch="${NOCX_LIFECYCLE_EPOCH:-}"
+    __nocx_lc_fd="${NOCX_LIFECYCLE_FD:-}"
+    __nocx_lc_port="${NOCX_LIFECYCLE_PORT:-}"
+    if [[ "${NOCX_LIFECYCLE_TIMEOUT_MS:-}" =~ ^[0-9]+$ ]] && (( NOCX_LIFECYCLE_TIMEOUT_MS >= 1 )); then
+        __nocx_lc_timeout_s=$(( (NOCX_LIFECYCLE_TIMEOUT_MS + 999) / 1000 ))
+    else
+        # Matches the kernel's hello_timeout (protocol doc §5): a shell that
+        # gives up before the kernel's own budget would strand an accept that
+        # arrives late, leaving an Established domain with no consumer.
+        __nocx_lc_timeout_s=10
+    fi
+    __nocx_lc_active=0
+    __nocx_lc_seq=0
+    __nocx_lc_attempt_open=0
+    __nocx_lc_attempt_n=0
+    __nocx_lc_attempt_id=''
+    __nocx_lc_last_completed_id=''
+    __nocx_lc_last_completed_code=''
+    __nocx_lc_desynced=0
+    __nocx_lc_frame=''
+    __nocx_lc_lane_esc=''
+    __nocx_lc_dom_esc=''
+    # How this shell answers "is the channel readable right now, consuming
+    # nothing" — resolved ONCE by __nocx_lc_resolve_probe, never per call. See it
+    # for why the answer is per-bash-version and why it is cached.
+    __nocx_lc_probe_mode=''
+    __nocx_lc_probe_helper=''
 fi
-__nocx_lc_active=0
-__nocx_lc_seq=0
-__nocx_lc_attempt_open=0
-__nocx_lc_attempt_n=0
-__nocx_lc_attempt_id=''
-__nocx_lc_last_completed_id=''
-__nocx_lc_last_completed_code=''
-__nocx_lc_desynced=0
-__nocx_lc_frame=''
-__nocx_lc_lane_esc=''
-__nocx_lc_dom_esc=''
-# How this shell answers "is the channel readable right now, consuming
-# nothing" — resolved ONCE by __nocx_lc_resolve_probe, never per call. See it
-# for why the answer is per-bash-version and why it is cached.
-__nocx_lc_probe_mode=''
-__nocx_lc_probe_helper=''
 
 # JSON-escape one string into __nocx_lc_json_escaped. Backslash, quote and
 # the C0/DEL bytes JSON forbids are escaped; raw UTF-8 passes through (the
@@ -114,6 +137,7 @@ __nocx_lc_json_escape() {
 __nocx_lc_send() {
     # $1 = event kind; $2 = extra JSON fields (leading comma) or empty
     local __evt="$1" __extra="${2:-}" __json __len __b0 __b1 __b2 __b3 LC_ALL=C
+    [[ "$__evt" == hello ]] || __nocx_lc_owns_channel || return 1
     __nocx_lc_seq=$(( __nocx_lc_seq + 1 ))
     __json="{\"v\":1,\"lane\":\"${__nocx_lc_lane_esc}\",\"dom\":\"${__nocx_lc_dom_esc}\",\"epoch\":${__nocx_lc_epoch},\"seq\":${__nocx_lc_seq},\"cap\":\"${__nocx_cap}\",\"evt\":\"${__evt}\"${__extra}}"
     __len=${#__json}
@@ -341,6 +365,12 @@ __nocx_lc_fence() {
 # the shell suppress its prompt or emit lifecycle events (decision 3). Any
 # failure leaves a conventional terminal with a visible native prompt.
 __nocx_lc_init() {
+    [[ "$__nocx_lc_reuse" == 1 ]] && return 0
+    # A fork inherits the descriptor and credentials, never its ownership.
+    if [[ "${__nocx_lc_owner:-}" == "$$" \
+        && "${__nocx_lc_subshell:-}" != "${BASH_SUBSHELL:-0}" ]]; then
+        return 0
+    fi
     local __cfg_ok=0
     __nocx_lc_active=0
     # The descriptor and the port are DIGITS or they are nothing. Both come
@@ -428,6 +458,10 @@ __nocx_lc_init() {
         *) return 0 ;;
     esac
     __nocx_lc_active=1
+    __nocx_lc_shell=bash
+    __nocx_lc_owner=$$
+    __nocx_lc_subshell=${BASH_SUBSHELL:-0}
+    export -n __nocx_lc_owner 2>/dev/null
     return 0
 }
 __nocx_lc_init
@@ -1916,7 +1950,9 @@ __nocx_prompt_command() {
     __nocx_in_prompt_command=0
 }
 
-if [[ -z "${PROMPT_COMMAND:-}" ]]; then
+if [[ "${PROMPT_COMMAND:-}" == '__nocx_prompt_command' ]]; then
+    : # A re-source retains the original predecessor, never our own wrapper.
+elif [[ -z "${PROMPT_COMMAND:-}" ]]; then
     PROMPT_COMMAND='__nocx_prompt_command'
 elif [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" == declare\ -a* ]]; then
     # Array form: save and replace.
@@ -1928,7 +1964,11 @@ else
 fi
 
 # Save the original DEBUG trap so we can chain to it after our preexec hook.
-__nocx_old_debug="$(trap -p DEBUG 2>/dev/null | sed "s/^trap -- '//;s/' DEBUG$//")"
+__nocx_current_debug="$(trap -p DEBUG 2>/dev/null | sed "s/^trap -- '//;s/' DEBUG$//")"
+if [[ "$__nocx_current_debug" != '__nocx_preexec_wrapper' ]]; then
+    __nocx_old_debug="$__nocx_current_debug"
+fi
+unset __nocx_current_debug
 
 # extdebug (nocx-u7uh.11): with it, a DEBUG trap returning non-zero SKIPS
 # the next command. That is the nested-environment interception: the parent
@@ -2219,7 +2259,11 @@ fi
 # time captured at spawn, read back via `ps -o lstart=` at exit. A reaped
 # child's PID may have been reused — a reused PID has a different start time,
 # so it is never killed.
-__nocx_old_exit="$(trap -p EXIT 2>/dev/null | sed "s/^trap -- '//;s/' EXIT$//")"
+__nocx_current_exit="$(trap -p EXIT 2>/dev/null | sed "s/^trap -- '//;s/' EXIT$//")"
+if [[ "$__nocx_current_exit" != '__nocx_exit_cleanup' ]]; then
+    __nocx_old_exit="$__nocx_current_exit"
+fi
+unset __nocx_current_exit
 __nocx_exit_cleanup() {
     # The DEBUG trap fires for every simple command below (and inside trap
     # handlers on some bash versions); mark the exit path as "in a prompt
@@ -2229,7 +2273,7 @@ __nocx_exit_cleanup() {
     # already be gone, and the kernel marks open attempts unknown on close).
     # No explicit fd close: the process exit closes it, which is what the
     # adapter reads as the transport ending.
-    if [[ "${__nocx_lc_active:-0}" == "1" ]]; then
+    if __nocx_lc_owns_channel; then
         __nocx_lc_send domain_closed
         __nocx_lc_active=0
     fi

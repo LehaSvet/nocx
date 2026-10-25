@@ -619,9 +619,7 @@ func agentWrapperSaysSoWhenLifecycleChannelIsAbsent(t *testing.T, shell, scriptN
 	if !strings.Contains(out, "nocx: not orchestrated — this pane has no lifecycle channel") {
 		t.Errorf("the absent channel was not reported in the pane; output=%q", out)
 	}
-	if strings.Contains(out, "AGENT-RAN") {
-		t.Errorf("a local wrapper without a resolved record ran the typed agent ID; output=%q", out)
-	}
+	waitForOutput(t, s, "AGENT-RAN")
 	// With no descriptor there is nowhere a frame could be written, so the
 	// absence of a withdrawal is structural rather than observable here. The
 	// falsifiable withdrawal assertion lives in the refused-enrolment test,

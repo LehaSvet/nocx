@@ -172,8 +172,8 @@ if (( ${#history} == 0 )); then
     fc -R "${HISTFILE}" 2>/dev/null
 fi
 
-# nocx installs last. Re-sourcing after an installer-era gate in the
-# user's file is idempotent (add-zsh-hook dedupes; state is unset first).
+# nocx installs last. Reinstall current hooks after an installer-era gate;
+# the script retains a live same-shell lifecycle channel and its sequence.
 unset __nocx_loaded __nocx_prompt_wrapped __nocx_owned_session
 # The per-epoch capability and the one-shot recovery fence — never exported,
 # never in the environment, never in a named file. The block below is one of

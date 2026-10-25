@@ -271,16 +271,16 @@ describe('a live pane says where its output stream has a hole', () => {
     pane.appendChild(terminal)
     document.body.appendChild(pane)
     const onDismiss = vi.fn()
-    const gap: SessionOutputGap = {
-      sessionId: '0123456789abcdef0123456789abcdef',
-      start: 11,
-      end: 4107,
-      reason: 'hostWindow',
-    }
-    dispose = mountLiveOutputGapNotice(pane, gap, onDismiss)
+    const handle = mountLiveOutputGapNotice(
+      pane,
+      { missing: 4096, hostWindow: true, unknownCause: false },
+      onDismiss,
+    )
+    dispose = () => handle.dispose()
     expect(title()).toBe('4096 bytes of live output are missing')
     expect(desc()).toContain("execution host's output window moved past this tab")
     expect(pane.firstElementChild?.classList.contains('nocx-recovery-notice')).toBe(true)
+    expect(pane.firstElementChild?.getAttribute('data-notice-kind')).toBe('live-output-gap')
     expect(pane.contains(terminal)).toBe(true)
     pane.querySelector('button')?.click()
     expect(onDismiss).toHaveBeenCalledOnce()
@@ -289,16 +289,37 @@ describe('a live pane says where its output stream has a hole', () => {
     expect(pane.contains(terminal)).toBe(true)
   })
 
-  it('uses generic wording for an unknown gap reason', () => {
+  it('updates the exact total and both causes without replacing the host or dismiss button', () => {
     pane = document.createElement('div')
+    const terminal = document.createElement('div')
+    pane.appendChild(terminal)
     document.body.appendChild(pane)
-    dispose = mountLiveOutputGapNotice(
+    const onDismiss = vi.fn()
+    const handle = mountLiveOutputGapNotice(
       pane,
-      { sessionId: '0123456789abcdef0123456789abcdef', start: 2, end: 9, reason: 'future-cause' },
-      vi.fn(),
+      { missing: 10, hostWindow: true, unknownCause: false },
+      onDismiss,
     )
-    expect(title()).toBe('7 bytes of live output are missing')
-    expect(desc()).toContain('This output gap has an unknown cause.')
-    expect(desc()).not.toContain('execution host')
+    dispose = () => handle.dispose()
+    const host = pane.querySelector('[data-notice-kind="live-output-gap"]')
+    const button = host?.querySelector<HTMLButtonElement>('button[aria-label="Dismiss"]')
+    expect(host).not.toBeNull()
+    expect(button).not.toBeNull()
+
+    handle.update({ missing: 15, hostWindow: true, unknownCause: true })
+    expect(title()).toBe('15 bytes of live output are missing')
+    expect(desc()).toContain('execution host')
+    expect(desc()).toContain('unknown cause')
+    expect(pane.querySelectorAll('[data-notice-kind="live-output-gap"]')).toHaveLength(1)
+    expect(pane.querySelector('[data-notice-kind="live-output-gap"]')).toBe(host)
+    expect(host?.querySelector('button[aria-label="Dismiss"]')).toBe(button)
+    expect(pane.contains(terminal)).toBe(true)
+    button!.click()
+    expect(onDismiss).toHaveBeenCalledOnce()
+
+    handle.dispose()
+    dispose = null
+    expect(pane.querySelector('[data-notice-kind="live-output-gap"]')).toBeNull()
+    expect(pane.contains(terminal)).toBe(true)
   })
 })

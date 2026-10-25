@@ -79,6 +79,8 @@ import {
   mountLiveOutputGapNotice,
   recoveryAccount,
   uncoveredGapRanges,
+  type LiveOutputGapAccount,
+  type LiveOutputGapNoticeHandle,
 } from './recovery-notice'
 import { mountUnreconciledNotice, type UnreconciledCause } from './unreconciled-notice'
 import { mountConnectionMark } from './connection-mark'
@@ -1710,8 +1712,14 @@ export class TerminalContent extends BasePaneContent {
    *  compared against before the card is rebuilt (nocx-zg3k3.14.24). Null when
    *  no card is up. */
   private _recoveryNoticeSignature: string | null = null
-  /** Each disjoint live-gap notice has its own dismissible lifetime. */
-  private readonly _liveOutputGapNoticeDisposers = new Map<string, () => void>()
+  /** Presentation expires; the binding's loss account survives it. */
+  private _liveOutputGapNotice: LiveOutputGapNoticeHandle | null = null
+  private _liveOutputGapNoticeTimer: ReturnType<typeof setTimeout> | undefined
+  private _liveOutputGapAccount: LiveOutputGapAccount = {
+    missing: 0,
+    hostWindow: false,
+    unknownCause: false,
+  }
   /** Every live range named during this session, used to partition those
    *  bytes out of the historical recovery account. */
   private _liveOutputGaps: SessionOutputGap[] = []
@@ -4856,9 +4864,10 @@ export class TerminalContent extends BasePaneContent {
     }
 
     this._dropRecoveryNotice()
-    this._dropLiveOutputGapNotices()
+    this._dropLiveOutputGapNotice()
     this._recoveryNoticeDismissedForSession = false
     this._liveOutputGaps = []
+    this._liveOutputGapAccount = { missing: 0, hostWindow: false, unknownCause: false }
     this.snapshotStore.reset()
     this.session = session
     this._resetFrameMetadataSession(session.sessionId)
@@ -6722,21 +6731,30 @@ export class TerminalContent extends BasePaneContent {
     gap: SessionOutputGap,
     target: HTMLElement,
   ): void {
-    if (this.session !== session) return
+    if (this._disposed || this.session !== session) return
     const uncovered = uncoveredGapRanges(gap, this._liveOutputGaps)
     if (uncovered.length === 0) return
     const newGaps = uncovered.map((range) => ({ ...gap, ...range }))
     const unannouncedBytes = uncovered.reduce((total, range) => total + range.end - range.start, 0)
     this._liveOutputGaps.push(...newGaps)
+    this._liveOutputGapAccount = {
+      missing: this._liveOutputGapAccount.missing + unannouncedBytes,
+      hostWindow: this._liveOutputGapAccount.hostWindow || gap.reason === 'hostWindow',
+      unknownCause: this._liveOutputGapAccount.unknownCause || gap.reason !== 'hostWindow',
+    }
     this._showRecoveryNotice(session, target)
-    const key = `${gap.start}:${gap.end}:${gap.reason}`
-    const dispose = mountLiveOutputGapNotice(
-      target,
-      gap,
-      () => this._dropLiveOutputGapNotice(key),
-      unannouncedBytes,
-    )
-    this._liveOutputGapNoticeDisposers.set(key, dispose)
+    if (this._liveOutputGapNotice) {
+      this._liveOutputGapNotice.update(this._liveOutputGapAccount)
+    } else {
+      this._liveOutputGapNotice = mountLiveOutputGapNotice(target, this._liveOutputGapAccount, () =>
+        this._dropLiveOutputGapNotice(),
+      )
+      const notice = this._liveOutputGapNotice
+      // Fixed from first mount: a busy stream must still give the space back.
+      this._liveOutputGapNoticeTimer = setTimeout(() => {
+        if (this._liveOutputGapNotice === notice) this._dropLiveOutputGapNotice()
+      }, 8000)
+    }
     this.scheduleLiveResize()
   }
 
@@ -6824,22 +6842,15 @@ export class TerminalContent extends BasePaneContent {
     this.scheduleLiveResize()
   }
 
-  /** Take one live-gap card down without changing the ranges already named. */
-  private _dropLiveOutputGapNotice(key: string): void {
-    const dispose = this._liveOutputGapNoticeDisposers.get(key)
-    if (!dispose) return
-    this._liveOutputGapNoticeDisposers.delete(key)
-    dispose()
-    this.scheduleLiveResize()
-  }
-
-  /** A rebind or disposal ends every card from the previous live session. */
-  private _dropLiveOutputGapNotices(): void {
-    if (this._liveOutputGapNoticeDisposers.size === 0) return
-    const disposers = [...this._liveOutputGapNoticeDisposers.values()]
-    this._liveOutputGapNoticeDisposers.clear()
-    for (const dispose of disposers) dispose()
-    this.scheduleLiveResize()
+  /** Remove presentation only; dismissed and expired bytes stay accounted for. */
+  private _dropLiveOutputGapNotice(): void {
+    clearTimeout(this._liveOutputGapNoticeTimer)
+    this._liveOutputGapNoticeTimer = undefined
+    const notice = this._liveOutputGapNotice
+    this._liveOutputGapNotice = null
+    if (!notice) return
+    notice.dispose()
+    if (!this._disposed) this.scheduleLiveResize()
   }
 
   /** Take the card down and give the pane back to the terminal. */
@@ -9232,9 +9243,9 @@ export class TerminalContent extends BasePaneContent {
     this._integrationWaitingDispose = null
     this._recoveryNoticeDispose?.()
     this._recoveryNoticeDispose = null
-    for (const dispose of this._liveOutputGapNoticeDisposers.values()) dispose()
-    this._liveOutputGapNoticeDisposers.clear()
+    this._dropLiveOutputGapNotice()
     this._liveOutputGaps = []
+    this._liveOutputGapAccount = { missing: 0, hostWindow: false, unknownCause: false }
     this._unreconciledNoticeDispose?.()
     this._unreconciledNoticeDispose = null
     this._lifecycleChangeUnsub?.()
