@@ -105,7 +105,7 @@ func TestExplicitAutoIsAskableLikeSilence(t *testing.T) {
 func TestHelperIsAdditiveNotAlternative(t *testing.T) {
 	// The helper half: an explicit helper still reaches the binary — but
 	// only from the MACHINE's grant, which is the question the two axes
-	// separated (ADR-0104, nocx-1kejz.3). This test used to assert that the
+	// separated (ADR-0105, nocx-1kejz.3). This test used to assert that the
 	// mode alone resolved to the helper, "with no surface having to ask";
 	// that is exactly what let a deployment happen on a machine nobody had
 	// answered for, so the granted machine is seeded here and the mode is

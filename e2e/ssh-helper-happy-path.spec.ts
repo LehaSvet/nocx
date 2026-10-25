@@ -358,7 +358,7 @@ async function seedPasswordConnection(ep: BackendEndpoint, fixture: SshdFixture)
   // desiredMode is declared explicitly as helper: this spec's subject IS the
   // helper tier (one connection sharing a pane and Files), not which method
   // the connection uses. It is NOT the machine's permission to have a binary
-  // deployed on it (ADR-0104, nocx-1kejz.3): that is asked once, at connect,
+  // deployed on it (ADR-0105, nocx-1kejz.3): that is asked once, at connect,
   // and the spec answers it below the way a person does.
   await ask(ep, 'profiles.create', {
     type: 'ssh',
@@ -492,7 +492,7 @@ test.describe('one ssh connection per host, answered unwatched, surviving the co
 
       await openSavedProfile(first, PROFILE_NAME)
 
-      // THE CONNECT-TIME ASK IS OWED BY A HELPER-MODE CONNECTION TOO (ADR-0104,
+      // THE CONNECT-TIME ASK IS OWED BY A HELPER-MODE CONNECTION TOO (ADR-0105,
       // nocx-1kejz.3). The profile names the helper as its METHOD; whether
       // nocx may deploy a binary on this machine is the machine's own answer,
       // given here and remembered by its host-key fingerprint. This IS the

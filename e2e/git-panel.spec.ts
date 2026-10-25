@@ -738,7 +738,7 @@ test('on an SSH tab whose connection was set to Script at the connect-time ask, 
         // git store reach git.open — and is also what raises the
         // connect-time ask below (ADR-0069). An explicit Script mode would
         // skip past the ask this spec needs; Helper would be asked too
-        // (ADR-0104), but this spec's subject is the auto path.
+        // (ADR-0105), but this spec's subject is the auto path.
       },
     })
     createdProfileId = created?.id ?? null

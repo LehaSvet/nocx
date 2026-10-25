@@ -130,7 +130,7 @@ func validDesiredMode(v DesiredMode) bool {
 // internal/helper/consent), and is answered by the connect-time ask (ADR-0069).
 // A connection's DesiredMode is not it either: `helper` names the method the
 // person wants, and a machine nobody has answered for is asked before anything
-// is deployed on it (ADR-0104, nocx-1kejz.3).
+// is deployed on it (ADR-0105, nocx-1kejz.3).
 //
 // This paragraph used to end "Helper mode without consent=granted behaves as
 // raw", which was true of nothing: no call site applied it, the connection

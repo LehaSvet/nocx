@@ -755,7 +755,7 @@ func testConsentStores(t *testing.T) (*consent.Store, *consent.InstallStore) {
 	t.Helper()
 	// BOTH IDENTITIES ARE ANSWERED, because the default stand plays two: the
 	// platform probe reports "SHA256:fake" (fakeProbeConn) and the git-lane
-	// session reports "SHA256:test-host" (fakeRemoteSession). Before ADR-0104
+	// session reports "SHA256:test-host" (fakeRemoteSession). Before ADR-0105
 	// only the second mattered — a helper-mode open never consulted the store
 	// — and now an open whose machine has no answer is asked instead of
 	// opened, so a stand built for the helper has to have answered for the
@@ -766,7 +766,7 @@ func testConsentStores(t *testing.T) (*consent.Store, *consent.InstallStore) {
 // testConsentStoresFor is the same pair with the caller's own machine answers,
 // for a stand whose identities the caller knows: a fixture over a REAL host
 // reports that host's key, which no canned fingerprint can predict, so the
-// caller passes what its own probe will report (ADR-0104 — a helper-mode open
+// caller passes what its own probe will report (ADR-0105 — a helper-mode open
 // reads this store, so a stand that opens the helper has to have answered for
 // the machine its probe names).
 func testConsentStoresFor(t *testing.T, fingerprints ...string) (*consent.Store, *consent.InstallStore) {

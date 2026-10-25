@@ -286,7 +286,7 @@ test('a commit from the panel, on a remote host, through its own pre-commit hook
         // (ADR-0033), which is what makes this connect raise the
         // connect-time ask (ADR-0069) below — an explicit Script would skip
         // straight past it, and Helper is asked too but answers a different
-        // question (ADR-0104). Auto also wraps and installs the
+        // question (ADR-0105). Auto also wraps and installs the
         // launcher automatically, which is what makes the remote shell
         // emit OSC 7 so the cwd — and with it the tab title and git.open's
         // origin — lands.

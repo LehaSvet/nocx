@@ -42,7 +42,7 @@ func seedGrantedDocument(t *testing.T, dir, fingerprint string) *consent.Store {
 
 // seedDeniedDocument is the same document with the machine's other answer.
 // Denied is unreachable from any surface today (nocx-j49sp) and the resolver
-// already honours it; ADR-0104 puts the explicit `helper` method through that
+// already honours it; ADR-0105 puts the explicit `helper` method through that
 // same answer, so the row is asserted rather than assumed.
 func seedDeniedDocument(t *testing.T, dir, fingerprint string) *consent.Store {
 	t.Helper()
@@ -55,7 +55,7 @@ func seedAnsweredDocument(t *testing.T, dir, fingerprint string, answer consent.
 }
 
 // seedAnswersDocument is the same document with one answer per machine, for a
-// fixture that plays more than one identity. Since ADR-0104 a helper-mode open
+// fixture that plays more than one identity. Since ADR-0105 a helper-mode open
 // consults this store, and a fixture's PROBE and its SESSION need not report
 // the same fingerprint (fakeProbeConn says "SHA256:fake", fakeRemoteSession
 // says "SHA256:test-host"), so both have to be answered by a fixture that opens
@@ -129,7 +129,7 @@ func TestResolverLadder(t *testing.T) {
 			want: Refused,
 		},
 		{
-			// ADR-0104, nocx-1kejz.3. Naming the method is not the
+			// ADR-0105, nocx-1kejz.3. Naming the method is not the
 			// machine's permission: a connection set to helper whose
 			// machine has never answered is asked at connect, exactly as
 			// silence is. Before this row, the arm returned helper for

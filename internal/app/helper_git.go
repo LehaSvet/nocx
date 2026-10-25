@@ -265,7 +265,7 @@ func refusedHelperReason(sess session.Session, store *consent.Store) string {
 		// An answer, not a gap: script asked for the shell tiers and not
 		// the binary, so this is not a refusal to explain away but a
 		// choice to name back. Neither mode in this sentence is named as a
-		// way to "allow it outright", because since ADR-0104 no Delivery
+		// way to "allow it outright", because since ADR-0105 no Delivery
 		// mode is: the machine is asked, once, whatever the connection
 		// says.
 		return "this connection is set to Script, which installs the shell integration but not the nocx helper — set its Delivery mode to Auto or Helper to ask for the helper on this machine"
@@ -274,7 +274,7 @@ func refusedHelperReason(sess session.Session, store *consent.Store) string {
 		if ans, ok := store.Lookup(sess.HostKeyFingerprint()); ok {
 			if ans == consent.Denied {
 				// A denial is the machine's answer, and the connection's
-				// Delivery mode cannot override it (ADR-0104): the answer
+				// Delivery mode cannot override it (ADR-0105): the answer
 				// itself is what changes, on the surface that owns it.
 				return "this machine has declined to run the nocx helper — change that answer in the footprint screen to allow it"
 			}
@@ -876,7 +876,7 @@ func (r *helperRegistry) openHoldingLease(ctx context.Context, cfg session.Confi
 		// never been answered fell through to a silent script-tier open
 		// and was never asked, on every connect, forever.
 		//
-		// A CONNECTION SET TO `helper` ARRIVES HERE TOO (ADR-0104,
+		// A CONNECTION SET TO `helper` ARRIVES HERE TOO (ADR-0105,
 		// nocx-1kejz.3). It used to answer DesiredHelper from its own mode
 		// alone, so the machine was never asked and the pane ran whatever
 		// the deployment produced — with nothing on screen saying which
@@ -899,7 +899,7 @@ func (r *helperRegistry) openHoldingLease(ctx context.Context, cfg session.Confi
 // (owner's decision 2026-09-16: never two dialogs in sequence).
 //
 // THE MODES THAT MAY ASK ARE THE MODES THAT MAY HAVE THE HELPER: silence
-// (auto, which is "not answered") and an explicit `helper` (ADR-0104 —
+// (auto, which is "not answered") and an explicit `helper` (ADR-0105 —
 // naming the method is not the machine's permission). An explicit `script`
 // is an answer and asks nothing, and `raw` never reaches here at all.
 //

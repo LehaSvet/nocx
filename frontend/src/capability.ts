@@ -19,7 +19,7 @@ import type { LifecycleState } from './lifecycle/state'
 //     actually happened this session, read by the renderer from the markers;
 //   - HelperConsent (unknown|granted|denied): persisted per MACHINE, keyed by
 //     the destination's host-key fingerprint, and answered at connect; it is
-//     not a property of the saved connection (ADR-0034, ADR-0104).
+//     not a property of the saved connection (ADR-0034, ADR-0105).
 //
 // The action set is derived ONLY after both authorisation and technical
 // eligibility are resolved — the invariant that kills the worst defect in
@@ -51,7 +51,7 @@ export type DesiredMode = 'auto' | 'raw' | 'script' | 'helper'
  *  connection (ADR-0034), and answered at connect by the one ask (ADR-0069).
  *  A connection's delivery mode is not this consent: `helper` says which
  *  method the person wants, and a machine nobody has answered for is asked
- *  before any binary is deployed on it (ADR-0104, nocx-1kejz.3). */
+ *  before any binary is deployed on it (ADR-0105, nocx-1kejz.3). */
 export type HelperConsent = 'unknown' | 'granted' | 'denied'
 
 /** What nocx observes about the shell right now — semantic evidence, not

@@ -244,7 +244,7 @@ func farPaneConfig() session.Config {
 			User: "dev", Port: 22, AuthMode: "password",
 			// AN EXPLICIT HELPER MODE asks for the binary and — with the
 			// stand's grant for the fingerprint its probe reports
-			// (testConsentStores, ADR-0104) — is what makes this destination
+			// (testConsentStores, ADR-0105) — is what makes this destination
 			// the far host's OWN helper's pane rather than a fall-through to
 			// this machine's `spawn-ssh`. An `auto` connection here would
 			// resolve to the consent ask instead (helperConnection says the

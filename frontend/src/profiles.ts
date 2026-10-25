@@ -73,7 +73,7 @@ export interface SSHProfileOptions {
    *  per-connection value that NO decision reads: consent to deploy the
    *  helper belongs to the machine, keyed by its host-key fingerprint
    *  (ADR-0034), and is answered at connect — a connection's `desiredMode`
-   *  is not it (ADR-0104, nocx-1kejz.3). Kept on the wire until the field
+   *  is not it (ADR-0105, nocx-1kejz.3). Kept on the wire until the field
    *  itself is removed; nothing in the renderer offers it any more. */
   helperConsent?: 'unknown' | 'granted' | 'denied'
   canBeJumpServer?: boolean // Whether this profile can be used as a jump server

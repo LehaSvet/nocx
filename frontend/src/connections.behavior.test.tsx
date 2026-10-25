@@ -2869,7 +2869,7 @@ describe('desiredMode', () => {
   })
 
   it('a helper selection offers no per-connection consent control', async () => {
-    // ADR-0104 (nocx-1kejz.3). The control that used to sit here promised a
+    // ADR-0105 (nocx-1kejz.3). The control that used to sit here promised a
     // rule nothing applied ("a Helper selection without granted consent
     // behaves as raw"), while the deployment decision read a fingerprint
     // store keyed by the MACHINE and never this field. A person set Granted

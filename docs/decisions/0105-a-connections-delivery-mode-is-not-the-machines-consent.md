@@ -1,4 +1,4 @@
-# ADR-0104 — A connection's delivery mode is not the machine's consent
+# ADR-0105 — A connection's delivery mode is not the machine's consent
 
 - **Status:** Accepted
 - **Date:** 2026-10-25

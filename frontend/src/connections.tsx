@@ -218,7 +218,7 @@ const DESIRED_MODES: { value: DesiredMode; label: string }[] = [
   { value: 'helper', label: 'Helper — deploy the nocx binary' },
 ]
 
-// THE HELPER-CONSENT CONTROL IS GONE (ADR-0104, nocx-1kejz.3), and this is
+// THE HELPER-CONSENT CONTROL IS GONE (ADR-0105, nocx-1kejz.3), and this is
 // where it used to be. It offered Unknown / Granted / Denied per saved
 // connection under a hint promising "a Helper selection without granted
 // consent behaves as raw" — a rule no decision applied, because consent to

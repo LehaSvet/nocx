@@ -3,7 +3,7 @@ package app
 // The connect-time helper ask (ADR-0068, owner's decision 2026-09-16):
 // openHoldingLease is where a connection whose machine has not answered about
 // the helper is asked, instead of silently proceeding without it — for
-// silence (`auto`) and, since ADR-0104, for a connection that names `helper`
+// silence (`auto`) and, since ADR-0105, for a connection that names `helper`
 // as its method too (nocx-1kejz.3). It is also where, when the SAME dial
 // discovered an unknown or changed host key, the two questions travel in one
 // refusal rather than two dialogs in sequence.
@@ -323,7 +323,7 @@ func TestHelperConsentAskForProbeFailure_RawAndScriptNeverAsk(t *testing.T) {
 }
 
 // TestHelperConsentAskForProbeFailure_ExplicitHelperAsksOnAnUnansweredMachine
-// is ADR-0104 at the host-key-failure seam (nocx-1kejz.3): a connection set
+// is ADR-0105 at the host-key-failure seam (nocx-1kejz.3): a connection set
 // to helper whose machine has never answered is asked, and the one refusal
 // carries both questions. Naming the method is not the permission, so this
 // mode is askable exactly as silence is.

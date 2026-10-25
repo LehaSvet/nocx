@@ -191,7 +191,7 @@ async function openProfileAndWaitForItsPane(
   if (answerAsk) {
     // A helper-mode connection is asked even though it names the helper as its
     // METHOD: the deployment is the machine's permission, not the
-    // connection's choice (ADR-0104, nocx-1kejz.3).
+    // connection's choice (ADR-0105, nocx-1kejz.3).
     const helperAsk = page.getByRole('dialog').filter({ hasText: 'Choose how nocx connects' })
     await expect(helperAsk).toBeVisible({ timeout: 30_000 })
     await helperAsk.getByRole('radio', { name: 'Helper' }).click()

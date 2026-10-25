@@ -377,7 +377,7 @@ func newCoordinator(t *testing.T, provider *fakeLaneProvider) *coordinator {
 
 // helperConnection is a saved connection whose destination mode is an explicit
 // helper — the person said "use the helper on this machine". The machine's
-// permission is its own answer (ADR-0104), which this stand's store carries for
+// permission is its own answer (ADR-0105), which this stand's store carries for
 // the fingerprint its probe reports (testConsentStores); an `auto` connection
 // would resolve to the consent ASK instead only if that answer were missing,
 // and there would be nothing to take back.
@@ -1059,7 +1059,7 @@ func TestConsentWithdrawnBetweenRunsStopsTheHelperBeingReached(t *testing.T) {
 	first.quit()
 
 	// The binding records the machine the session runs on. A route whose mode
-	// is `auto` is the case where the STORE alone decides; since ADR-0104 an
+	// is `auto` is the case where the STORE alone decides; since ADR-0105 an
 	// explicit helper mode consults it too, and revoking a grant stops both —
 	// which is what makes the withdrawal below a statement about the machine
 	// rather than about one connection's settings.

@@ -23,7 +23,7 @@ package app
 // so the second condition — and the option that carried it — is gone with
 // it.
 //
-// AND A CONNECTION THAT NAMES THE HELPER IS ASKED TOO (ADR-0104, nocx-1kejz.3).
+// AND A CONNECTION THAT NAMES THE HELPER IS ASKED TOO (ADR-0105, nocx-1kejz.3).
 // Until then this ladder answered an explicit `helper` with DesiredHelper and
 // never consulted the store — "an explicit helper choice is the consent for
 // the binary", §4.3 — which read the connection's METHOD as the machine's
@@ -48,7 +48,7 @@ const (
 	DesiredHelper Outcome = "helper"
 	// ConsentRequired — the machine has no helper-tier answer, and the
 	// connection asks for the helper: silence (auto) or the explicit
-	// `helper` method (ADR-0104). Only the connect-time caller
+	// `helper` method (ADR-0105). Only the connect-time caller
 	// (openHoldingLease, ADR-0068) may raise the ask on this outcome; every
 	// other caller — git.open included — treats it exactly like Refused,
 	// because no feature surface may raise a machine's tier.
@@ -116,7 +116,7 @@ func (r *resolver) Resolve(m Machine) Outcome {
 	case profile.DesiredHelper:
 		// An explicit helper names the METHOD this connection uses; it is
 		// not the machine's permission to have a binary deployed on it
-		// (ADR-0104). Falling through to the machine-keyed half is what
+		// (ADR-0105). Falling through to the machine-keyed half is what
 		// makes the difference real: a granted machine serves the helper
 		// exactly as before, a denied one is never upgraded, and an
 		// unanswered one is ASKED at connect instead of being handed a
@@ -153,7 +153,7 @@ func (r *resolver) Resolve(m Machine) Outcome {
 // or — for a machine nobody has asked — the connect-time ask. Both `auto`
 // (nothing answered) and `helper` (the method answered, the permission not)
 // reach it, which is what keeps the permission in one place while the method
-// stays where a connection keeps it (AD-8, ADR-0104).
+// stays where a connection keeps it (AD-8, ADR-0105).
 //
 // Silence is not consent and neither is a method choice. The fail-closed
 // default is unchanged: a machine with nothing to offer — no artifact for its

@@ -232,7 +232,7 @@ const readoptAttemptTimeout = 15 * time.Second
 // readoptConsentRefusal is why a carried-over session's machine was not asked
 // about it, in the two words the resolver actually answered.
 //
-// UNANSWERED IS NOT THE SAME AS DECLINED, and since ADR-0104 a connection whose
+// UNANSWERED IS NOT THE SAME AS DECLINED, and since ADR-0105 a connection whose
 // delivery mode is `helper` can be either: a machine nobody has answered for
 // resolves to ConsentRequired rather than to the helper, so a restart after an
 // upgrade meets sessions whose machine has simply never been asked. The old
