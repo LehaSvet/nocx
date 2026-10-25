@@ -229,7 +229,7 @@ for (const timing of ['before', 'during', 'after']) {
         exit = join(root, 'exit')
       const sample = join(root, 'size'),
         events = join(root, 'events')
-      const script = join(root, 'fixture.sh')
+      const script = join(root, 'fixture.cjs')
       const observations: Record<string, unknown> = {}
       let error = ''
       let probeDone: Promise<void> | null = null
@@ -243,47 +243,64 @@ for (const timing of ['before', 'during', 'after']) {
         })()
         return probeDone
       })
-      // A real foreground program in raw mode: it reports every size change it
-      // SEES, every byte it READS and whether the read succeeded, so the size
-      // the PTY actually holds is an observation rather than an inference.
+      // A real foreground program in raw mode: Node drains each input chunk
+      // without starting a process per byte. Its TTY dimensions report the
+      // size the PTY actually holds, not an inference from the renderer.
       writeFileSync(
         script,
-        [
-          '#!/bin/bash',
-          'old=$(stty -g)',
-          `cleanup() { stty "$old"; printf '\\033[?1000l\\033[?1006l\\033[?1049l'; }`,
-          'trap cleanup EXIT',
-          `log() { printf '%s %s %s %s\\n' "$EPOCHREALTIME" "$1" "$(stty size)" "\${2-}" >> '${events}'; }`,
-          `printf 'WAITING-FOR-SWITCH\\n'`,
-          `while [ ! -e '${gate}' ] && [ ! -e '${exit}' ]; do stty size > '${sample}.tmp'; mv '${sample}.tmp' '${sample}'; sleep 0.01; done`,
-          'stty raw -echo',
-          'log SWITCH',
-          `printf '\\033[?1049h\\033[?1000h\\033[?1006h\\033[2J\\033[5;1HALT-READY'`,
-          'last=',
-          `while [ ! -e '${exit}' ]; do`,
-          '  size=$(stty size)',
-          `  if [ "$size" != "$last" ]; then log SIZE; last="$size"; fi`,
-          `  printf '%s\\n' "$size" > '${sample}.tmp'; mv '${sample}.tmp' '${sample}'`,
-          '  key=',
-          // A timed read can consume a byte before returning nonzero; both the
-          // status and the partial value are logged, so a missing byte is not
-          // mistaken for a byte that never arrived.
-          '  IFS= read -r -N 1 -t 0.005 key; status=$?',
-          `  hex=$(printf '%s' "$key" | od -An -tx1 | tr -d ' \n')`,
-          '  log RETURN "$status:$hex"',
-          '  if [ -n "$hex" ]; then log BYTE "$hex"; fi',
-          'done',
-          '',
-        ]
-          .join('\n')
-          .replaceAll('\\\\033', '\\033')
-          .replaceAll('\\\\n', '\\n'),
+        String.raw`
+const { appendFileSync, existsSync, renameSync, writeFileSync } = require('node:fs')
+const gate = ${JSON.stringify(gate)}
+const exit = ${JSON.stringify(exit)}
+const sample = ${JSON.stringify(sample)}
+const events = ${JSON.stringify(events)}
+const { stdin, stdout } = process
+let switched = false
+let lastSize = ''
+const size = () => {
+  const [cols, rows] = stdout.getWindowSize()
+  return rows + ' ' + cols
+}
+const log = (kind, value = '') => {
+  appendFileSync(events, (Date.now() / 1000).toFixed(6) + ' ' + kind + ' ' + size() + ' ' + value + '\n')
+}
+const recordSize = () => {
+  const current = size()
+  writeFileSync(sample + '.tmp', current + '\n')
+  renameSync(sample + '.tmp', sample)
+  if (switched && current !== lastSize) {
+    log('SIZE')
+    lastSize = current
+  }
+}
+stdout.on('resize', recordSize)
+recordSize()
+stdout.write('WAITING-FOR-SWITCH\n')
+process.on('exit', () => {
+  if (switched) stdin.setRawMode(false)
+  stdout.write('\x1b[?1000l\x1b[?1006l\x1b[?1049l')
+})
+setInterval(() => {
+  if (existsSync(exit)) process.exit(0)
+  if (switched || !existsSync(gate)) return
+  stdin.setRawMode(true)
+  stdin.on('data', (chunk) => {
+    const hex = chunk.toString('hex')
+    log('RETURN', '0:' + hex)
+    log('BYTE', hex)
+  })
+  switched = true
+  log('SWITCH')
+  recordSize()
+  stdout.write('\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[2J\x1b[5;1HALT-READY')
+}, 10)
+`,
       )
       try {
         await page.setViewportSize({ width: 850, height: 800 })
         await page.goto('/')
         await promptReady(page)
-        await page.keyboard.type(`bash '${script}'`)
+        await page.keyboard.type(`node '${script}'`)
         await page.keyboard.press('Enter')
         await expect(page.locator('.pane.active .terminal-live-container')).toContainText(
           'WAITING-FOR-SWITCH',
@@ -476,7 +493,7 @@ for (const timing of ['before', 'during', 'after']) {
             read(events)
               .split('\n')
               .filter((line) => line.includes(' BYTE '))
-              .map((line) => line.trim().split(/\s+/).at(-1)),
+              .flatMap((line) => line.trim().split(/\s+/).at(-1)!.match(/.{2}/g) ?? []),
           )
           .toEqual(expected)
         observations.receiptsComplete = true
