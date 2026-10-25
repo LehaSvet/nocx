@@ -118,7 +118,10 @@ func TestARealRemoteCDReachesTheAttachedRendererAsCwdMetadata(t *testing.T) {
 	probes := &helperProbes{local: opener, resolve: rc}
 	leases := installLeaseRoutes{viaLocal: overHelper, probes: probes}
 	source := realHelperArtifacts(t)
-	consentStore, installStore := testConsentStores(t)
+	// THE MACHINE IS ANSWERED BY ITS REAL KEY (ADR-0105): this stand opens in
+	// helper mode against a live sshd, and the fingerprint the resolver reads
+	// is the one that fixture minted — no canned identity can stand in for it.
+	consentStore, installStore := testConsentStoresFor(t, gossh.FingerprintSHA256(fx.hostKey))
 	_, helperReg := helperGitFactory(leases, source, consentStore, installStore, logger)
 	helperReg.registry = registry
 	helperReg.lifecycle = lifePub

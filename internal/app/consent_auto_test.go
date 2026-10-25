@@ -103,11 +103,17 @@ func TestExplicitAutoIsAskableLikeSilence(t *testing.T) {
 // shell was left plain, and the gate alone cannot see that the helper was
 // allowed.
 func TestHelperIsAdditiveNotAlternative(t *testing.T) {
-	// The helper half: an explicit helper is the consent, with no surface
-	// having to ask (§4.3).
-	r := newResolver(withHelperArtifactAvailable(true))
+	// The helper half: an explicit helper still reaches the binary — but
+	// only from the MACHINE's grant, which is the question the two axes
+	// separated (ADR-0105, nocx-1kejz.3). This test used to assert that the
+	// mode alone resolved to the helper, "with no surface having to ask";
+	// that is exactly what let a deployment happen on a machine nobody had
+	// answered for, so the granted machine is seeded here and the mode is
+	// what carries the request.
+	store := seedGrantedDocument(t, t.TempDir(), explicitHelper.Fingerprint)
+	r := newResolver(withStore(store), withHelperArtifactAvailable(true))
 	if got := r.Resolve(explicitHelper); got != DesiredHelper {
-		t.Errorf("helper resolved to %q, want %q — the explicit choice is the consent", got, DesiredHelper)
+		t.Errorf("helper resolved to %q, want %q — a granted machine serves the helper this connection asked for", got, DesiredHelper)
 	}
 
 	// The scripts half: the same session still publishes the bundle and
