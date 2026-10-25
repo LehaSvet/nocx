@@ -1018,6 +1018,7 @@ func (r *helperRegistry) openFarHelper(ctx context.Context, cfg session.Config, 
 			log.NewSlogAdapter(r.log).WithContext(ctx), driveKernel, coordinatorConn,
 			lifecyclechannel.WithLossReporter(r.reportLifecycleLoss),
 			lifecyclechannel.WithFrameScope(cursor.applyFrame),
+			lifecyclechannel.WithSetupTimeout(remoteShellSetupTimeout),
 		)
 		if lifecycleErr != nil {
 			_ = peerConn.Close()
@@ -1071,6 +1072,9 @@ func (r *helperRegistry) openFarHelper(ctx context.Context, cfg session.Config, 
 		} else {
 			routes, toolToken = prepared, mintToolToken()
 		}
+	}
+	if lifecycleAdapter != nil {
+		lifecycleAdapter.BeginSetup()
 	}
 	entry, err := c.Spawn(ctx, proto.SpawnParams{
 		Cwd: cfg.Cwd, Cols: cfg.Cols, Rows: cfg.Rows, Lifecycle: lifecycleLaunch,
@@ -1146,6 +1150,10 @@ func (r *helperRegistry) openFarHelper(ctx context.Context, cfg session.Config, 
 	// THE STREAMED BLOCK OUTPUT, registered before the adopt like the screen
 	// drain, so no row is dropped at a door nobody opened yet.
 	stopBlockRows := bindHeldBlockRows(ctx, r.blockRows, sid, attached, held)
+	// Observe before Adopt can consume its first post-bootstrap PTY bytes.
+	if lifecycleAdapter != nil {
+		attached.OnFirstOutput(lifecycleAdapter.ObserveShellOutput)
+	}
 	sess, err := r.registry.Adopt(ctx, cfg, sid, attached)
 	if err != nil {
 		stopBlockRows()

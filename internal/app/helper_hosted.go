@@ -47,6 +47,15 @@ import (
 	"github.com/shady2k/nocx/internal/ssh"
 )
 
+// remoteShellSetupTimeout is a deliberate spawn-to-first-PTY-output budget,
+// not a longer hello deadline. CI 40237808138: adapter 22:24:56.589, bridge
+// 57.368, old hello deadline 22:25:06.589, actual hello 09.430. About twelve
+// seconds elapsed before the integrated shell spoke. Thirty seconds bounds
+// setup that never produces a shell without charging it to the ten-second
+// hello interval. No helper-ready wire message is added: older helper
+// generations must remain attachable (ADR-0104).
+const remoteShellSetupTimeout = 30 * time.Second
+
 // hostedSpawn is the three acts, with the seams they need and nothing that
 // names a carrier.
 type hostedSpawn struct {
@@ -231,6 +240,9 @@ func (h hostedSpawn) run(ctx context.Context, cfg session.Config, spawn spawnFun
 		if h.helloTimeout > 0 {
 			opts = append(opts, lifecyclechannel.WithHelloTimeout(h.helloTimeout))
 		}
+		if cfg.Kind == session.KindRemote {
+			opts = append(opts, lifecyclechannel.WithSetupTimeout(remoteShellSetupTimeout))
+		}
 		// THE CAUSE LINE JOINS THE EXCHANGE (nocx-n14oo.3). The adapter's
 		// loss is reported from a hello timer and a read pump, neither of
 		// which holds a context — and a hello-timeout is the single most
@@ -283,6 +295,9 @@ func (h hostedSpawn) run(ctx context.Context, cfg session.Config, spawn spawnFun
 		}
 	}
 
+	if lifecycleAdapter != nil {
+		lifecycleAdapter.BeginSetup()
+	}
 	entry, err := spawn(ctx, life)
 	if err != nil {
 		abortLifecycleNow()
@@ -311,6 +326,12 @@ func (h hostedSpawn) run(ctx context.Context, cfg session.Config, spawn spawnFun
 	}
 	if cursor != nil {
 		cursor.bind(entry.HostSessionID.Session, attached.LifecycleIngested())
+	}
+
+	// Register before Adopt starts its read pump: no first PTY byte can
+	// pass between attachment and the adapter's transition to hello time.
+	if lifecycleAdapter != nil && cfg.Kind == session.KindRemote {
+		attached.OnFirstOutput(lifecycleAdapter.ObserveShellOutput)
 	}
 
 	// THE HELPER'S OWN KEEPALIVE PROBER, RELAYED (nocx-y6fh7 item 6). A local
