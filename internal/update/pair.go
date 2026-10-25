@@ -29,14 +29,12 @@ import (
 // version and no commit, so the journal has no expected commit to compare
 // against, and a check against a fact nobody recorded is theatre.
 //
-// Compatible is the launcher's own decision about the answering
-// coordinator (ADR-0101): true when that coordinator speaks this build's
-// protocol, whatever its version and commit. The probe reports it as a
-// FACT it was handed with the launch — the decision itself has one owner,
-// the launcher — and the transaction reads it to tell the two version
-// mismatches apart: a compatible older coordinator is a held pair waiting
-// for turnover, an incompatible one is the mixed pair this file has always
-// refused.
+// Compatible reports the launcher's wire predicate: true when the attached
+// coordinator speaks this build's protocol. It does not grant cross-Version
+// reuse (ADR-0104). The probe records the actual attached pair, including an
+// older window that attached under ADR-0101 before the takeover policy. The
+// transaction keeps that legacy held state distinct from an incompatible
+// mixed pair, without weakening certification of the installed version.
 type CoordinatorBuild struct {
 	Version    string
 	Commit     string
@@ -78,7 +76,8 @@ var (
 	// message needs to be told which of the two happened.
 	ErrPairMismatch = errors.New("update: the coordinator answering is not the version this update installed")
 
-	// ErrPairHeld reports the accepted ADR-0101 state, not a defect: the
+	// ErrPairHeld retains the ADR-0101 held state for already attached
+	// windows; new launches take over across Version changes (ADR-0104). The
 	// reporting build is healthy, and the coordinator answering it is an
 	// OLDER one this window's launcher deliberately kept because it speaks
 	// the same protocol. The update cannot finalise yet — its server has

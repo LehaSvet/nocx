@@ -200,7 +200,8 @@ function main(): void {
   // Update notice — renders inline in the tab bar, right-aligned.
   const notice = mountUpdateNotice(bar)
 
-  // A pending update held by an older coordinator (ADR-0101) is the one
+  // A pair already attached under ADR-0101 can still be held; new launches
+  // take over across Versions (ADR-0104). That retained held state is the one
   // startup state the strip must say aloud with its action: the update is
   // installed, the kept coordinator is still serving it, and finishing
   // means a full restart that closes the open sessions. Anything less than

@@ -295,10 +295,8 @@ func TestLaunchProbe_ReportsTheLaunchItWasAttachedTo(t *testing.T) {
 	}
 }
 
-// The probe's answer carries the launcher's own compatibility decision
-// (ADR-0101): Compatible is computed from the SAME predicate the launcher
-// uses, so the updater's held state and the launcher's keep decision can
-// never disagree about one coordinator.
+// The probe shares the launcher's wire predicate, not its Version reuse
+// policy (ADR-0104). Older attached windows may still report a held pair.
 func TestLaunchProbeAnswersCompatibilityWithTheLaunchersPredicate(t *testing.T) {
 	compatible := coordinator.NewLaunchProbe()
 	compatible.Attach(coordinator.Launch{Hello: coordinator.Hello{

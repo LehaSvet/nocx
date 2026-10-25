@@ -68,7 +68,8 @@ type journalRecord struct {
 	LaunchAttempts int      `json:"launchAttempts"`
 
 	// HeldByCoordinator records that a healthy window reported against a
-	// protocol-compatible OLDER coordinator the launcher kept (ADR-0101),
+	// protocol-compatible OLDER coordinator kept under ADR-0101 (new
+	// launches take over instead, ADR-0104),
 	// and names that coordinator's version. HeldAt is when the report
 	// arrived; every such report also resets LaunchAttempts, because the
 	// one thing the counter measures — a build that cannot get healthy
