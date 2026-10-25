@@ -376,10 +376,11 @@ func newCoordinator(t *testing.T, provider *fakeLaneProvider) *coordinator {
 }
 
 // helperConnection is a saved connection whose destination mode is an explicit
-// helper — the person said "use the helper on this machine", which is the
-// consent for the binary (§4.3). The fake probe lease reports no host-key
-// fingerprint, so an `auto` connection here would resolve to the consent ASK
-// rather than to a helper, and there would be nothing to take back.
+// helper — the person said "use the helper on this machine". The machine's
+// permission is its own answer (ADR-0104), which this stand's store carries for
+// the fingerprint its probe reports (testConsentStores); an `auto` connection
+// would resolve to the consent ASK instead only if that answer were missing,
+// and there would be nothing to take back.
 func helperConnection(user string) *ssh.ConnectConfig {
 	return &ssh.ConnectConfig{User: user, DesiredMode: string(profile.DesiredHelper)}
 }
@@ -1058,8 +1059,10 @@ func TestConsentWithdrawnBetweenRunsStopsTheHelperBeingReached(t *testing.T) {
 	first.quit()
 
 	// The binding records the machine the session runs on. A route whose mode
-	// is `auto` is the case where the STORE decides — an explicit helper mode
-	// is itself the consent (§4.3) and would not consult it.
+	// is `auto` is the case where the STORE alone decides; since ADR-0104 an
+	// explicit helper mode consults it too, and revoking a grant stops both —
+	// which is what makes the withdrawal below a statement about the machine
+	// rather than about one connection's settings.
 	binding.Fingerprint = machine
 	routes := &stubRoutes{host: binding.Host, cfg: &ssh.ConnectConfig{User: binding.Account}}
 

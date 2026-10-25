@@ -24,6 +24,7 @@ var machineWithNoStoredAnswer = Machine{Fingerprint: "SHA256:unanswered"}
 
 var (
 	grantedMachine = Machine{Fingerprint: "SHA256:granted"}
+	deniedMachine  = Machine{Fingerprint: "SHA256:denied"}
 	explicitScript = Machine{Fingerprint: "SHA256:script", Mode: profile.DesiredScript}
 	explicitRaw    = Machine{Fingerprint: "SHA256:raw", Mode: profile.DesiredRaw}
 	explicitHelper = Machine{Fingerprint: "SHA256:helper", Mode: profile.DesiredHelper}
@@ -36,9 +37,38 @@ var (
 // will, and the store must read it unchanged.
 func seedGrantedDocument(t *testing.T, dir, fingerprint string) *consent.Store {
 	t.Helper()
+	return seedAnsweredDocument(t, dir, fingerprint, consent.Granted)
+}
+
+// seedDeniedDocument is the same document with the machine's other answer.
+// Denied is unreachable from any surface today (nocx-j49sp) and the resolver
+// already honours it; ADR-0104 puts the explicit `helper` method through that
+// same answer, so the row is asserted rather than assumed.
+func seedDeniedDocument(t *testing.T, dir, fingerprint string) *consent.Store {
+	t.Helper()
+	return seedAnsweredDocument(t, dir, fingerprint, consent.Denied)
+}
+
+func seedAnsweredDocument(t *testing.T, dir, fingerprint string, answer consent.Answer) *consent.Store {
+	t.Helper()
+	return seedAnswersDocument(t, dir, map[string]consent.Answer{fingerprint: answer})
+}
+
+// seedAnswersDocument is the same document with one answer per machine, for a
+// fixture that plays more than one identity. Since ADR-0104 a helper-mode open
+// consults this store, and a fixture's PROBE and its SESSION need not report
+// the same fingerprint (fakeProbeConn says "SHA256:fake", fakeRemoteSession
+// says "SHA256:test-host"), so both have to be answered by a fixture that opens
+// the helper either way.
+func seedAnswersDocument(t *testing.T, dir string, answers map[string]consent.Answer) *consent.Store {
+	t.Helper()
+	encoded := make(map[string]string, len(answers))
+	for fingerprint, answer := range answers {
+		encoded[fingerprint] = string(answer)
+	}
 	raw, err := json.Marshal(map[string]any{
 		"version": 1,
-		"answers": map[string]string{fingerprint: string(consent.Granted)},
+		"answers": encoded,
 	})
 	if err != nil {
 		t.Fatalf("seed document: %v", err)
@@ -53,6 +83,7 @@ func seedGrantedDocument(t *testing.T, dir, fingerprint string) *consent.Store {
 // the user is shown, not how the code routes.
 func TestResolverLadder(t *testing.T) {
 	store := seedGrantedDocument(t, t.TempDir(), grantedMachine.Fingerprint)
+	denied := seedDeniedDocument(t, t.TempDir(), deniedMachine.Fingerprint)
 	cases := []struct {
 		name string
 		opts []option
@@ -98,10 +129,36 @@ func TestResolverLadder(t *testing.T) {
 			want: Refused,
 		},
 		{
-			name: "explicit helper: the explicit choice is the consent",
+			// ADR-0104, nocx-1kejz.3. Naming the method is not the
+			// machine's permission: a connection set to helper whose
+			// machine has never answered is asked at connect, exactly as
+			// silence is. Before this row, the arm returned helper for
+			// this machine and deployed a binary nobody had been asked
+			// about.
+			name: "explicit helper with no machine answer: the ask, not a deployment",
+			opts: []option{withHelperArtifactAvailable(true)},
+			m:    explicitHelper,
+			want: ConsentRequired,
+		},
+		{
+			name: "explicit helper on a machine that granted: helper, silently",
+			opts: []option{withHelperArtifactAvailable(true), withStore(store)},
+			m:    Machine{Fingerprint: grantedMachine.Fingerprint, Mode: profile.DesiredHelper},
+			want: DesiredHelper,
+		},
+		{
+			name: "explicit helper on a machine that declined: refused, never upgraded",
+			opts: []option{withHelperArtifactAvailable(true), withStore(denied)},
+			m:    Machine{Fingerprint: deniedMachine.Fingerprint, Mode: profile.DesiredHelper},
+			want: Refused,
+		},
+		{
+			// Nothing to offer on this platform: no ask, because there is
+			// no question behind it (the same fail-closed arm auto uses).
+			name: "explicit helper with no artifact for the platform: refused, never asked",
 			opts: nil,
 			m:    explicitHelper,
-			want: DesiredHelper,
+			want: Refused,
 		},
 		{
 			name: "no artifact for the platform: nothing to offer, fail-closed default",

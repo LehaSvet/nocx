@@ -356,11 +356,10 @@ async function seedPasswordConnection(ep: BackendEndpoint, fixture: SshdFixture)
   // wire.
   //
   // desiredMode is declared explicitly as helper: this spec's subject IS the
-  // helper tier (one connection sharing a pane and Files), not the
-  // connect-time ask (ADR-0069) that decides it for an unanswered auto
-  // connection. An explicit helper choice is its own consent for the binary
-  // (ADR-0034 §4.3, internal/app/consent.go's Resolve) — no separate
-  // machine grant needs seeding.
+  // helper tier (one connection sharing a pane and Files), not which method
+  // the connection uses. It is NOT the machine's permission to have a binary
+  // deployed on it (ADR-0104, nocx-1kejz.3): that is asked once, at connect,
+  // and the spec answers it below the way a person does.
   await ask(ep, 'profiles.create', {
     type: 'ssh',
     name: PROFILE_NAME,
@@ -492,6 +491,21 @@ test.describe('one ssh connection per host, answered unwatched, surviving the co
       expect(starterSessions).toHaveLength(1)
 
       await openSavedProfile(first, PROFILE_NAME)
+
+      // THE CONNECT-TIME ASK IS OWED BY A HELPER-MODE CONNECTION TOO (ADR-0104,
+      // nocx-1kejz.3). The profile names the helper as its METHOD; whether
+      // nocx may deploy a binary on this machine is the machine's own answer,
+      // given here and remembered by its host-key fingerprint. This IS the
+      // regression the bead describes: before it, this open resolved to the
+      // helper from the mode alone and nothing was asked. Choosing Helper is
+      // the grant, and the open retries itself the moment the dialog settles —
+      // which is why the poll below still waits for the pane rather than for a
+      // second press of Enter.
+      const helperAsk = first.getByRole('dialog').filter({ hasText: 'Choose how nocx connects' })
+      await expect(helperAsk).toBeVisible({ timeout: 30_000 })
+      await helperAsk.getByRole('radio', { name: 'Helper' }).click()
+      await helperAsk.getByRole('button', { name: 'Continue' }).click()
+      await expect(helperAsk).not.toBeVisible()
 
       // THE PANE, identified by the session that did not exist before we asked
       // for the profile — and read off the pane element the renderer built,

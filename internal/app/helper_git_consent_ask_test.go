@@ -1,10 +1,12 @@
 package app
 
 // The connect-time helper ask (ADR-0068, owner's decision 2026-09-16):
-// openHoldingLease is where a fresh auto connection is asked about the
-// helper, instead of silently proceeding without it — and where, when the
-// SAME dial also discovered an unknown or changed host key, the two
-// questions travel in one refusal rather than two dialogs in sequence.
+// openHoldingLease is where a connection whose machine has not answered about
+// the helper is asked, instead of silently proceeding without it — for
+// silence (`auto`) and, since ADR-0104, for a connection that names `helper`
+// as its method too (nocx-1kejz.3). It is also where, when the SAME dial
+// discovered an unknown or changed host key, the two questions travel in one
+// refusal rather than two dialogs in sequence.
 //
 // These tests exercise the decision at the seam helperGitFactory's own
 // tests already use (fakeLaneProvider, stubArtifacts): openHoldingLease
@@ -190,6 +192,64 @@ func TestOpenHoldingLease_GrantedMachineIsFoundAgainByGitOpen(t *testing.T) {
 	}
 }
 
+// TestOpenHoldingLease_ExplicitHelperUnansweredAsks is nocx-1kejz.3 pinned at
+// the connect-time seam: a SAVED connection whose delivery mode is helper and
+// whose machine has never been answered used to resolve to the helper from its
+// own mode alone and deploy a binary nobody had been asked about — no ask, no
+// log line, nothing on the pane. It is asked now, and nothing is installed
+// before the answer.
+func TestOpenHoldingLease_ExplicitHelperUnansweredAsks(t *testing.T) {
+	provider := &fakeLaneProvider{peer: realHelperPeer(t)}
+	store := consent.NewStore(log.NewSlogAdapter(discardLogger(t)), storage.NewDocumentStore(t.TempDir()), "consent.json")
+	r := newTestRegistry(t, provider, store)
+
+	opened, hold, selected, err := r.openHoldingLease(context.Background(), remoteConfigFor(profile.DesiredHelper), "claim-1")
+	defer hold.release()
+
+	if !selected {
+		t.Fatal("selected = false, want true — a helper-mode connection with no machine answer must not fall through to the local opener silently")
+	}
+	if opened.Session != nil {
+		t.Fatal("a session was opened before the machine's answer")
+	}
+	var ask *transport.ErrHelperConsentNeeded
+	if !errors.As(err, &ask) {
+		t.Fatalf("err = %v, want *transport.ErrHelperConsentNeeded", err)
+	}
+	if ask.Fingerprint == "" {
+		t.Error("ask carries no fingerprint — the renderer has nothing to key the answer on")
+	}
+	if ask.Cause != nil {
+		t.Errorf("ask.Cause = %v, want nil — the probe dial succeeded, so the key is already trusted", ask.Cause)
+	}
+	// The interval this bead is about: nothing is installed, and nothing is
+	// spawned, until a person answers. A lane here would be a binary
+	// deployed on somebody else's machine without permission.
+	if got := provider.laneCount(); got != 0 {
+		t.Errorf("the ask brought up %d helper lanes, want 0", got)
+	}
+}
+
+// TestOpenHoldingLease_ExplicitHelperGrantedResolvesAsBefore: the other half
+// of the regression — a connection whose consent is granted behaves exactly as
+// it did, silently, with no ask and a helper-hosted session.
+func TestOpenHoldingLease_ExplicitHelperGrantedResolvesAsBefore(t *testing.T) {
+	provider := &fakeLaneProvider{peer: realHelperPeerWithSpawner(t)}
+	// fakeProbeConn.HostKeyFingerprint is the fixed "SHA256:fake" (helper_git_test.go).
+	store := seedGrantedDocument(t, t.TempDir(), "SHA256:fake")
+	r := newTestRegistry(t, provider, store)
+
+	opened, hold, selected, err := r.openHoldingLease(context.Background(), remoteConfigFor(profile.DesiredHelper), "claim-1")
+	defer hold.release()
+
+	if err != nil {
+		t.Fatalf("openHoldingLease: %v", err)
+	}
+	if !selected || opened.Session == nil {
+		t.Fatalf("selected=%v session=%v, want a helper-hosted session with no ask", selected, opened.Session)
+	}
+}
+
 // TestOpenHoldingLease_ExplicitRawNeverAsks: an explicit raw connection
 // never reaches the ask, whatever the store holds — mode is checked before
 // any consent lookup (D8, unchanged by this bead).
@@ -248,18 +308,36 @@ func TestHelperConsentAskForProbeFailure_ChangedKeyAsksToo(t *testing.T) {
 	}
 }
 
-// TestHelperConsentAskForProbeFailure_ExplicitModeNeverAsks: script/helper/
-// raw are answers, not gaps (D8) — a probe failure on an explicitly-moded
-// connection must never raise the connect-time ask, even for a host-key
-// failure.
-func TestHelperConsentAskForProbeFailure_ExplicitModeNeverAsks(t *testing.T) {
+// TestHelperConsentAskForProbeFailure_RawAndScriptNeverAsk: raw and script
+// are answers, not gaps (D8) — a probe failure on one of those must never
+// raise the connect-time ask, even for a host-key failure.
+func TestHelperConsentAskForProbeFailure_RawAndScriptNeverAsk(t *testing.T) {
 	store := consent.NewStore(log.NewSlogAdapter(discardLogger(t)), storage.NewDocumentStore(t.TempDir()), "consent.json")
 	probeErr := &ssh.ErrUnknownHostKey{Addr: "h:22", Fingerprint: "SHA256:offered"}
 
-	for _, mode := range []profile.DesiredMode{profile.DesiredRaw, profile.DesiredScript, profile.DesiredHelper} {
+	for _, mode := range []profile.DesiredMode{profile.DesiredRaw, profile.DesiredScript} {
 		if err := helperConsentAskForProbeFailure("h:22", mode, probeErr, store); err != nil {
-			t.Errorf("mode %q: err = %v, want nil — an explicit mode is never asked", mode, err)
+			t.Errorf("mode %q: err = %v, want nil — raw and script are answers, and neither may be asked", mode, err)
 		}
+	}
+}
+
+// TestHelperConsentAskForProbeFailure_ExplicitHelperAsksOnAnUnansweredMachine
+// is ADR-0104 at the host-key-failure seam (nocx-1kejz.3): a connection set
+// to helper whose machine has never answered is asked, and the one refusal
+// carries both questions. Naming the method is not the permission, so this
+// mode is askable exactly as silence is.
+func TestHelperConsentAskForProbeFailure_ExplicitHelperAsksOnAnUnansweredMachine(t *testing.T) {
+	store := consent.NewStore(log.NewSlogAdapter(discardLogger(t)), storage.NewDocumentStore(t.TempDir()), "consent.json")
+	probeErr := &ssh.ErrUnknownHostKey{Addr: "h:22", Fingerprint: "SHA256:offered", KeyAlgo: "ssh-ed25519"}
+
+	err := helperConsentAskForProbeFailure("h:22", profile.DesiredHelper, probeErr, store)
+	var ask *transport.ErrHelperConsentNeeded
+	if !errors.As(err, &ask) {
+		t.Fatalf("err = %v, want *transport.ErrHelperConsentNeeded — a helper-mode connection whose machine has not answered must be asked", err)
+	}
+	if ask.Fingerprint != "SHA256:offered" {
+		t.Errorf("fingerprint = %q, want the offered one", ask.Fingerprint)
 	}
 }
 

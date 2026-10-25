@@ -163,8 +163,9 @@ export function HostKeyDialog(props: HostKeyDialogProps) {
           {(ask) => (
             <>
               <p>
-                This connection is set to decide automatically. Choose how nocx integrates with this
-                machine — the answer is saved on the connection, so it is asked only once.
+                Choose how nocx integrates with this machine. The method is saved on the connection,
+                and permission to deploy nocx&rsquo;s helper here is remembered for the machine
+                itself — so this is asked once, whichever of the two was still open.
               </p>
               <SegmentedControl
                 ariaLabel="Integration method"

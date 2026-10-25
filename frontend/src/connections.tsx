@@ -72,7 +72,7 @@ import { log } from './log'
 import { showToast } from './ui/toast'
 import { VaultOperationCancelledError, type VaultController } from './vault'
 import type { InventoryEntry, VaultClient } from './vault-client'
-import type { DesiredMode, HelperConsent } from './capability'
+import type { DesiredMode } from './capability'
 
 // ── Provenance helpers ───────────────────────────────────────────────────────
 
@@ -218,13 +218,14 @@ const DESIRED_MODES: { value: DesiredMode; label: string }[] = [
   { value: 'helper', label: 'Helper — deploy the nocx binary' },
 ]
 
-/** The closed helper-consent states (spec §3.5), in display order. Consent
- *  is per destination and never inherited; script mode never reads it. */
-const HELPER_CONSENTS: { value: HelperConsent; label: string }[] = [
-  { value: 'unknown', label: 'Unknown — not asked' },
-  { value: 'granted', label: 'Granted' },
-  { value: 'denied', label: 'Denied' },
-]
+// THE HELPER-CONSENT CONTROL IS GONE (ADR-0104, nocx-1kejz.3), and this is
+// where it used to be. It offered Unknown / Granted / Denied per saved
+// connection under a hint promising "a Helper selection without granted
+// consent behaves as raw" — a rule no decision applied, because consent to
+// deploy a binary belongs to the MACHINE's host-key fingerprint (ADR-0034)
+// and is answered at connect. A control that governs nothing is the surface
+// the soft-degrade rule exists to forbid: a person set Granted and was asked
+// anyway, or set nothing and believed the helper was blocked.
 /**
  * Whether a stored forward's destination is a usable "host:port". The
  * backend's authority is net.SplitHostPort; this mirrors its acceptance
@@ -2636,21 +2637,11 @@ export function ConnectionsView(props: ConnectionsViewProps) {
                     </div>
                   </Field>
                   <Show when={fvStr('desiredMode') === 'helper'}>
-                    <Field for="helper-consent" label="Helper consent">
-                      <div class="cm-field-row">
-                        <Select
-                          value={fvStr('helperConsent') || 'unknown'}
-                          onChange={(v) => setOption('helperConsent', v || undefined)}
-                          options={HELPER_CONSENTS.map((m) => ({ value: m.value, label: m.label }))}
-                          placeholder="&mdash; Unknown &mdash;"
-                        />
-                      </div>
-                      <p class="cm-hint">
-                        The helper is a binary nocx deploys on the destination; that needs explicit
-                        consent per host, and a Helper selection without granted consent behaves as
-                        raw.
-                      </p>
-                    </Field>
+                    <p class="cm-hint">
+                      The helper is a binary nocx deploys on the destination. Permission to deploy
+                      it belongs to the machine, not to this connection: nocx asks the first time it
+                      connects, and every connection to that host reuses the answer.
+                    </p>
                   </Show>
                   <div class="cm-check-group">
                     <Checkbox

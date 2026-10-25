@@ -229,6 +229,23 @@ func pipeOpenedAt(mine *client.SessionEntry, fallback time.Time) time.Time {
 // hosts that were fine.
 const readoptAttemptTimeout = 15 * time.Second
 
+// readoptConsentRefusal is why a carried-over session's machine was not asked
+// about it, in the two words the resolver actually answered.
+//
+// UNANSWERED IS NOT THE SAME AS DECLINED, and since ADR-0104 a connection whose
+// delivery mode is `helper` can be either: a machine nobody has answered for
+// resolves to ConsentRequired rather than to the helper, so a restart after an
+// upgrade meets sessions whose machine has simply never been asked. The old
+// sentence — "this machine no longer consents" — would have said the opposite
+// of what happened to every one of them.
+func readoptConsentRefusal(outcome Outcome, host string) string {
+	if outcome == ConsentRequired {
+		return "nocx has not been told whether it may use its helper on " + host +
+			" — reconnect that connection to be asked"
+	}
+	return "this machine no longer consents to the nocx helper"
+}
+
 // Readopt is one attempt for one carried-over session.
 // stageReadopt prepares the registry-owned remote helper channel for one pending
 // session after the vault readiness poll can reach its credentials. Readopt
@@ -250,8 +267,8 @@ func (rp *readoptPass) stageReadopt(ctx context.Context, p content.PendingSessio
 	}
 	if rp.registry.consent != nil && p.Fingerprint != "" {
 		resolver := newResolver(withStore(rp.registry.consent), withHelperArtifactAvailable(true))
-		if resolver.Resolve(Machine{Fingerprint: p.Fingerprint, Mode: profile.DesiredMode(cfg.DesiredMode)}) != DesiredHelper {
-			return fmt.Errorf("this machine no longer consents to the nocx helper")
+		if got := resolver.Resolve(Machine{Fingerprint: p.Fingerprint, Mode: profile.DesiredMode(cfg.DesiredMode)}); got != DesiredHelper {
+			return errors.New(readoptConsentRefusal(got, p.Host))
 		}
 	}
 	f := &sessionFactory{
@@ -338,12 +355,12 @@ func (rp *readoptPass) Readopt(ctx context.Context, p content.PendingSession) (s
 			// from the store.
 			withHelperArtifactAvailable(true),
 		)
-		if resolver.Resolve(Machine{
+		if got := resolver.Resolve(Machine{
 			Fingerprint: p.Fingerprint,
 			Mode:        profile.DesiredMode(cfg.DesiredMode),
-		}) != DesiredHelper {
-			return nil, fmt.Errorf(
-				"this machine no longer consents to the nocx helper, so %s was not asked about its sessions", p.Host)
+		}); got != DesiredHelper {
+			return nil, fmt.Errorf("%s, so %s was not asked about its sessions",
+				readoptConsentRefusal(got, p.Host), p.Host)
 		}
 	}
 

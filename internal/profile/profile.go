@@ -123,10 +123,21 @@ func validDesiredMode(v DesiredMode) bool {
 }
 
 // HelperConsent is the THIRD of the three delivery axes (spec §3.5): whether
-// the user has consented to nocx deploying the helper binary on this
-// destination. Persisted per destination and NEVER inherited — a group
-// cannot express consent, and script mode never reads it. Helper mode without
-// consent=granted behaves as raw.
+// the user has consented to nocx deploying the helper binary. It is persisted
+// per destination and NEVER inherited — a group cannot express consent — and
+// no decision in this tree reads it: consent belongs to the MACHINE, keyed by
+// the destination's host-key fingerprint (ADR-0034,
+// internal/helper/consent), and is answered by the connect-time ask (ADR-0069).
+// A connection's DesiredMode is not it either: `helper` names the method the
+// person wants, and a machine nobody has answered for is asked before anything
+// is deployed on it (ADR-0104, nocx-1kejz.3).
+//
+// This paragraph used to end "Helper mode without consent=granted behaves as
+// raw", which was true of nothing: no call site applied it, the connection
+// editor was its only surface, and a person who set Helper was handed a
+// deployment either way. The value survives on the wire until the field itself
+// is removed (nocx-1kejz.5); its removal is ADR-0034's own unfulfilled
+// consequence.
 type HelperConsent string
 
 const (

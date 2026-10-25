@@ -242,12 +242,13 @@ func farPaneConfig() session.Config {
 		Cols: 80, Rows: 24,
 		Remote: &ssh.ConnectConfig{
 			User: "dev", Port: 22, AuthMode: "password",
-			// AN EXPLICIT HELPER MODE IS THE CONSENT for the binary (§4.3), and
-			// it is what makes this destination the far host's OWN helper's
-			// pane rather than a fall-through to this machine's `spawn-ssh`:
-			// the fake probe lease reports no host-key fingerprint, so an `auto`
-			// connection here would resolve to the consent ask instead
-			// (helperConnection says the same, one package over).
+			// AN EXPLICIT HELPER MODE asks for the binary and — with the
+			// stand's grant for the fingerprint its probe reports
+			// (testConsentStores, ADR-0104) — is what makes this destination
+			// the far host's OWN helper's pane rather than a fall-through to
+			// this machine's `spawn-ssh`. An `auto` connection here would
+			// resolve to the consent ask instead (helperConnection says the
+			// same, one package over).
 			DesiredMode:        string(profile.DesiredHelper),
 			Secrets:            rememberedPassword{value: openPasswordFixturePassword},
 			SecretID:           "sec:far-tools:1",

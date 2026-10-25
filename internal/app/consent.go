@@ -22,6 +22,17 @@ package app
 // different way: the connect-time ask runs once per machine, automatically,
 // so the second condition — and the option that carried it — is gone with
 // it.
+//
+// AND A CONNECTION THAT NAMES THE HELPER IS ASKED TOO (ADR-0104, nocx-1kejz.3).
+// Until then this ladder answered an explicit `helper` with DesiredHelper and
+// never consulted the store — "an explicit helper choice is the consent for
+// the binary", §4.3 — which read the connection's METHOD as the machine's
+// PERMISSION. A connection whose profile said `helper` therefore deployed a
+// binary the machine had never been asked about, and the editor's own consent
+// field (a leftover ADR-0034 deleted the owner of) was the only place that
+// question appeared to be answered. The method and the permission are two
+// questions with two owners — the connection for the first, the machine for
+// the second — so `helper` now waits for the same answer `auto` waits for.
 
 import (
 	"github.com/shady2k/nocx/internal/helper/consent"
@@ -35,11 +46,12 @@ const (
 	// DesiredHelper — the machine resolves to the helper tier: install the
 	// helper (if not complete) and serve it.
 	DesiredHelper Outcome = "helper"
-	// ConsentRequired — the machine has no helper-tier answer. Only the
-	// connect-time caller (openHoldingLease, ADR-0068) may raise the ask
-	// on this outcome; every other caller — git.open included — treats it
-	// exactly like Refused, because no feature surface may raise a
-	// machine's tier.
+	// ConsentRequired — the machine has no helper-tier answer, and the
+	// connection asks for the helper: silence (auto) or the explicit
+	// `helper` method (ADR-0104). Only the connect-time caller
+	// (openHoldingLease, ADR-0068) may raise the ask on this outcome; every
+	// other caller — git.open included — treats it exactly like Refused,
+	// because no feature surface may raise a machine's tier.
 	ConsentRequired Outcome = "consentRequired"
 	// Refused — nothing is written and nothing is asked: raw, script, a
 	// denied answer, no artifact to offer, or — outside the connect-time
@@ -102,8 +114,19 @@ func (r *resolver) Resolve(m Machine) Outcome {
 		// raw: nothing is written and nothing is asked (§4.2).
 		return Refused
 	case profile.DesiredHelper:
-		// An explicit helper choice is the consent for the binary (§4.3).
-		return DesiredHelper
+		// An explicit helper names the METHOD this connection uses; it is
+		// not the machine's permission to have a binary deployed on it
+		// (ADR-0104). Falling through to the machine-keyed half is what
+		// makes the difference real: a granted machine serves the helper
+		// exactly as before, a denied one is never upgraded, and an
+		// unanswered one is ASKED at connect instead of being handed a
+		// deployment nobody consented to.
+		//
+		// This arm used to return DesiredHelper unconditionally —
+		// "an explicit helper choice is the consent for the binary" (§4.3)
+		// — which merged the two questions and left the store unread on
+		// the one path a person is most likely to take deliberately.
+		return r.forMachine(m)
 	case profile.DesiredScript:
 		// An explicit script is an ANSWER: "the shell tiers, and do not
 		// offer me the binary" — script is an answer, not a gap.
@@ -122,6 +145,21 @@ func (r *resolver) Resolve(m Machine) Outcome {
 		return Refused
 	}
 	// auto falls through: the machine's own answer, or the ask.
+	return r.forMachine(m)
+}
+
+// forMachine is the machine-keyed half of the ladder, and the ONE answer to
+// "may this machine have the helper": the store's grant, the store's denial,
+// or — for a machine nobody has asked — the connect-time ask. Both `auto`
+// (nothing answered) and `helper` (the method answered, the permission not)
+// reach it, which is what keeps the permission in one place while the method
+// stays where a connection keeps it (AD-8, ADR-0104).
+//
+// Silence is not consent and neither is a method choice. The fail-closed
+// default is unchanged: a machine with nothing to offer — no artifact for its
+// platform (§3.1 arm 3) — is never asked, because there is nothing to ask
+// about.
+func (r *resolver) forMachine(m Machine) Outcome {
 	if r.store != nil {
 		if ans, ok := r.store.Lookup(m.Fingerprint); ok {
 			switch ans {
@@ -135,8 +173,6 @@ func (r *resolver) Resolve(m Machine) Outcome {
 		}
 	}
 	if !r.artifactAvailable {
-		// No suitable binary for this platform (§3.1 arm 3): nothing to
-		// offer, so no ask.
 		return Refused
 	}
 	// No helper-tier answer, on a machine that has not answered: the

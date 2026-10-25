@@ -2868,8 +2868,15 @@ describe('desiredMode', () => {
     expect(sent[0].defaults?.['desiredMode']).toBe('raw')
   })
 
-  it('a helper selection makes the consent state visible, and a grant saves per profile', async () => {
-    const { container, client } = mount({ profiles: MOCK_PROFILES.slice(0, 1) })
+  it('a helper selection offers no per-connection consent control', async () => {
+    // ADR-0104 (nocx-1kejz.3). The control that used to sit here promised a
+    // rule nothing applied ("a Helper selection without granted consent
+    // behaves as raw"), while the deployment decision read a fingerprint
+    // store keyed by the MACHINE and never this field. A person set Granted
+    // and was asked anyway, or set nothing and believed the helper was
+    // blocked. So the selection offers no consent question at all: the
+    // connect-time ask is where the machine answers, once.
+    const { container } = mount({ profiles: MOCK_PROFILES.slice(0, 1) })
     await waitForProfiles(container, 1)
     await openProfileEditor(container, 'prod-web')
     selectProfileSection(container, 'Advanced')
@@ -2880,26 +2887,13 @@ describe('desiredMode', () => {
       ?.querySelector('.ui-select') as HTMLSelectElement
     fireEvent.change(modeSelect, { target: { value: 'helper' } })
 
-    // The consent control appears only for a helper selection — never
-    // silently pretending the helper is granted.
-    const consentLabel = container.querySelector('label[for="helper-consent"]')
-    expect(consentLabel, 'Helper consent field must appear for a helper selection').toBeTruthy()
-    const consentSelect = consentLabel!
-      .closest('.ui-field')
-      ?.querySelector('.ui-select') as HTMLSelectElement
-    expect(consentSelect.value, 'consent must start honest: unknown, not granted').toBe('unknown')
-    fireEvent.change(consentSelect, { target: { value: 'granted' } })
-
-    const patchSpy = vi.spyOn(client, 'patchProfile').mockResolvedValue(MOCK_EFFECTIVE_CRED)
-    const dialog = findDialogByTitleContaining(container, 'prod-web')!
-    clickButtonByText(container, 'Save Connection', dialog)
-
-    await vi.waitFor(() => {
-      expect(patchSpy).toHaveBeenCalled()
-    })
-    const params = patchSpy.mock.calls[0][0] as { set?: Record<string, unknown> }
-    expect(params.set?.['options.desiredMode']).toBe('helper')
-    expect(params.set?.['options.helperConsent']).toBe('granted')
+    expect(
+      container.querySelector('label[for="helper-consent"]'),
+      'a helper selection must not offer a per-connection consent control',
+    ).toBeNull()
+    // …and what replaces it says where the answer is given, so the person is
+    // not left looking for a control that is gone.
+    expect(container.textContent).toContain('Permission to deploy it belongs to the machine')
   })
 })
 

@@ -264,20 +264,26 @@ func refusedHelperReason(sess session.Session, store *consent.Store) string {
 	case profile.DesiredScript:
 		// An answer, not a gap: script asked for the shell tiers and not
 		// the binary, so this is not a refusal to explain away but a
-		// choice to name back.
-		return "this connection is set to Script, which installs the shell integration but not the nocx helper — change its Delivery mode to Auto to be offered the helper, or to Helper to allow it outright"
+		// choice to name back. Neither mode in this sentence is named as a
+		// way to "allow it outright", because since ADR-0104 no Delivery
+		// mode is: the machine is asked, once, whatever the connection
+		// says.
+		return "this connection is set to Script, which installs the shell integration but not the nocx helper — set its Delivery mode to Auto or Helper to ask for the helper on this machine"
 	}
 	if store != nil {
 		if ans, ok := store.Lookup(sess.HostKeyFingerprint()); ok {
 			if ans == consent.Denied {
-				return "this machine has declined to run the nocx helper — set the connection's Delivery mode to Helper, or change the answer in the footprint screen, to allow it"
+				// A denial is the machine's answer, and the connection's
+				// Delivery mode cannot override it (ADR-0104): the answer
+				// itself is what changes, on the surface that owns it.
+				return "this machine has declined to run the nocx helper — change that answer in the footprint screen to allow it"
 			}
 		} else {
 			// No answer at all (ConsentRequired at the resolver): ADR-0068
 			// puts the ask at the connection, beside the host-key
 			// verification — never here. This surface only says what it
 			// cannot do and names what would change it.
-			return "this connection has not yet been asked about the nocx helper — reconnect to be asked, or set its Delivery mode to Helper to allow it outright"
+			return "this machine has not been asked yet whether nocx may use its helper — reconnect this connection to be asked"
 		}
 	}
 	return "no helper available for this SSH session"
@@ -863,12 +869,20 @@ func (r *helperRegistry) openHoldingLease(ctx context.Context, cfg session.Confi
 	case ConsentRequired:
 		// The key is ALREADY trusted (the probe above just dialed it
 		// successfully) — nothing about the host key rides this refusal,
-		// and the one dialog the renderer raises asks about the helper
+		// and the one dialog the renderer raises asks about the method
 		// alone. Answered here, `selected: true`, rather than swallowed
 		// like an ordinary Refused: swallowing this outcome is exactly the
 		// bug ADR-0068 fixes — an auto connection whose fingerprint has
 		// never been answered fell through to a silent script-tier open
 		// and was never asked, on every connect, forever.
+		//
+		// A CONNECTION SET TO `helper` ARRIVES HERE TOO (ADR-0104,
+		// nocx-1kejz.3). It used to answer DesiredHelper from its own mode
+		// alone, so the machine was never asked and the pane ran whatever
+		// the deployment produced — with nothing on screen saying which
+		// delivery was in force. The method a connection keeps and the
+		// permission a machine gives are two answers to two questions, and
+		// this arm is where the second one is obtained.
 		return transport.HostedSessionOpen{}, hold, true, transport.NewHelperConsentNeeded(cfg.Host, fingerprint, nil)
 	default:
 		// Refused: raw, script, an explicit helper that failed elsewhere,
@@ -884,22 +898,24 @@ func (r *helperRegistry) openHoldingLease(ctx context.Context, cfg session.Confi
 // failure is a host-key trust decision the SAME dialog can carry it beside
 // (owner's decision 2026-09-16: never two dialogs in sequence).
 //
-// Returns nil for every case that must NOT ask here: an explicit mode
-// (script is an answer, not a gap — D8; raw and helper never reach this
-// function's caller at all since only auto falls through to a probe
-// failure this deep — see below), a probe failure that is not a host-key
-// one, or a fingerprint ADR-0034 has already answered through some OTHER
-// route to the same machine ("one machine, one answer" —
-// TestOneMachineOneAnswerAcrossConnections). In every nil case the existing
-// mechanism answers on its own: the local opener's own dial produces the
-// ordinary host-key-only refusal a moment later (or, for an already-
-// answered fingerprint, the key gets trusted and the very next probe
-// resolves the machine's already-recorded answer without asking again).
+// THE MODES THAT MAY ASK ARE THE MODES THAT MAY HAVE THE HELPER: silence
+// (auto, which is "not answered") and an explicit `helper` (ADR-0104 —
+// naming the method is not the machine's permission). An explicit `script`
+// is an answer and asks nothing, and `raw` never reaches here at all.
+//
+// Returns nil for every case that must NOT ask here: `script`, a probe
+// failure that is not a host-key one, or a fingerprint ADR-0034 has already
+// answered through some OTHER route to the same machine ("one machine, one
+// answer" — TestOneMachineOneAnswerAcrossConnections). In every nil case the
+// existing mechanism answers on its own: the local opener's own dial produces
+// the ordinary host-key-only refusal a moment later (or, for an already-
+// answered fingerprint, the key gets trusted and the very next probe resolves
+// the machine's already-recorded answer without asking again).
 func helperConsentAskForProbeFailure(host string, mode profile.DesiredMode, probeErr error, store *consent.Store) error {
 	if mode == "" {
 		mode = profile.DesiredAuto
 	}
-	if mode != profile.DesiredAuto {
+	if mode != profile.DesiredAuto && mode != profile.DesiredHelper {
 		return nil
 	}
 	fingerprint := offeredHostKeyFingerprint(probeErr)
