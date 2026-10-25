@@ -489,6 +489,11 @@ test.describe('one ssh connection per host, answered unwatched, surviving the co
       // id" is true of the starter tab too and gates nothing.
       const starterSessions = (await liveSessions(endpoint)).map((s) => s.sessionId)
       expect(starterSessions).toHaveLength(1)
+      // AUTHENTICATIONS BEFORE THIS OPEN, so criterion 1 below is a delta and
+      // not an absolute: the start of a fixture's sshd may already have served
+      // something, and counting from zero would make the number mean two
+      // different things in two runs.
+      const authBeforeOpen = authenticatedConnections(fixture)
 
       await openSavedProfile(first, PROFILE_NAME)
 
@@ -558,17 +563,27 @@ test.describe('one ssh connection per host, answered unwatched, surviving the co
       // cwd this pane does not have.
       await expect(first.locator(TREE_ROW).first()).toBeVisible({ timeout: 120_000 })
 
-      // ── CRITERION 1: exactly ONE authenticated connection ───────────────
+      // ── CRITERION 1: ONE connection for the pane and Files ──────────────
       //
       // Read AFTER both consumers have been served, because the number means
       // nothing before that: the pane's shell and Files' SFTP lease are two
       // channels, and this is the far host saying whether they arrived on one
       // connection or two. The rows above are the observable that says Files
       // really got a listing rather than being about to ask.
+      //
+      // TWO AUTHENTICATIONS, and the second is the ask this connection had to
+      // answer (ADR-0105, nocx-1kejz.3): the probe that DISCOVERED the machine
+      // had not answered is a dial of its own, and the pooled reference it took
+      // is released the moment the open returns the refusal — so the retry that
+      // carries the answer authenticates once. The pair still shares: a second
+      // connection for the pane, or one for Files, would make this THREE. The
+      // cost is one successful login, once per machine — the grant is recorded
+      // against the host key, and every later open of every connection to it is
+      // silent.
       expect(
-        authenticatedConnections(fixture),
-        'the far host authenticated more than one connection for one pane and one Files panel: the consumers did not share the helper pool',
-      ).toBe(1)
+        authenticatedConnections(fixture) - authBeforeOpen,
+        'the far host did not serve the pane and its Files panel on ONE connection beyond the probe that asked about this machine (two is the ask; three or more means the consumers did not share the helper pool)',
+      ).toBe(2)
 
       // ── STAGE 2: the runtime answers with no browser client attached ─────
       //
