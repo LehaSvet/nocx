@@ -244,11 +244,12 @@ for (const timing of ['before', 'during', 'after']) {
         return probeDone
       })
       // A real foreground program in raw mode: Node drains each input chunk
-      // without starting a process per byte. Its TTY dimensions report the
-      // size the PTY actually holds, not an inference from the renderer.
+      // without starting a process per byte. Each observation queries the PTY
+      // size once, rather than using Node's cached dimensions or the renderer.
       writeFileSync(
         script,
         String.raw`
+const { execFileSync } = require('node:child_process')
 const { appendFileSync, existsSync, renameSync, writeFileSync } = require('node:fs')
 const gate = ${JSON.stringify(gate)}
 const exit = ${JSON.stringify(exit)}
@@ -257,24 +258,30 @@ const events = ${JSON.stringify(events)}
 const { stdin, stdout } = process
 let switched = false
 let lastSize = ''
-const size = () => {
-  const [cols, rows] = stdout.getWindowSize()
-  return rows + ' ' + cols
-}
-const log = (kind, value = '') => {
-  appendFileSync(events, (Date.now() / 1000).toFixed(6) + ' ' + kind + ' ' + size() + ' ' + value + '\n')
-}
-const recordSize = () => {
-  const current = size()
+// Node's dimensions are cached until SIGWINCH is handled. Query the PTY once
+// per observation, never per byte, so each evidence line names its actual size.
+const observe = (kind, hex = '') => {
+  const current = execFileSync('stty', ['size'], {
+    encoding: 'utf8',
+    stdio: ['inherit', 'pipe', 'inherit'],
+  }).trim()
+  const log = (event, value = '') => {
+    appendFileSync(events, (Date.now() / 1000).toFixed(6) + ' ' + event + ' ' + current + ' ' + value + '\n')
+  }
   writeFileSync(sample + '.tmp', current + '\n')
   renameSync(sample + '.tmp', sample)
+  if (kind === 'SWITCH') log('SWITCH')
   if (switched && current !== lastSize) {
     log('SIZE')
     lastSize = current
   }
+  if (kind === 'BYTE') {
+    log('RETURN', '0:' + hex)
+    log('BYTE', hex)
+  }
 }
-stdout.on('resize', recordSize)
-recordSize()
+stdout.on('resize', () => observe('SIZE'))
+observe('SIZE')
 stdout.write('WAITING-FOR-SWITCH\n')
 process.on('exit', () => {
   if (switched) stdin.setRawMode(false)
@@ -284,14 +291,9 @@ setInterval(() => {
   if (existsSync(exit)) process.exit(0)
   if (switched || !existsSync(gate)) return
   stdin.setRawMode(true)
-  stdin.on('data', (chunk) => {
-    const hex = chunk.toString('hex')
-    log('RETURN', '0:' + hex)
-    log('BYTE', hex)
-  })
+  stdin.on('data', (chunk) => observe('BYTE', chunk.toString('hex')))
   switched = true
-  log('SWITCH')
-  recordSize()
+  observe('SWITCH')
   stdout.write('\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[2J\x1b[5;1HALT-READY')
 }, 10)
 `,
