@@ -106,51 +106,70 @@ async function installTrace(
       }
       return send.call(this, data)
     }
+    // RECORD BEFORE THE PRODUCT READS, or the trace measures the recorder.
+    //
+    // The first version added its own 'message' listener beside the client's,
+    // and listeners run in registration order — so the client handled the
+    // frame first (opening the fence, sending the resize) and the frame was
+    // written to the trace afterwards. Every event that frame CAUSED therefore
+    // looked older than the frame itself: this spec reported input ahead of a
+    // resize that the wire shows 12 ms behind it, and the real ordering was
+    // invisible. Wrapping the client's own listener puts the record first,
+    // which is what "what the socket saw, and then what the pane did about
+    // it" actually means.
     const add = WebSocket.prototype.addEventListener
-    const observed = new WeakSet<WebSocket>()
+    const wrappers = new WeakMap<EventListenerOrEventListenerObject, EventListener>()
+    const observe = (event: Event): void => {
+      const raw = (event as MessageEvent).data
+      if (typeof raw === 'string') {
+        try {
+          const msg = JSON.parse(raw) as { id?: number; result?: unknown; error?: unknown }
+          const size = msg.id === undefined ? undefined : resizes.get(msg.id)
+          if (size) {
+            if ('result' in msg && !msg.error) committed = size
+            record('resize-receipt', { id: msg.id, size, result: msg.result, error: msg.error })
+          }
+        } catch {
+          /* the product owns validation */
+        }
+        return
+      }
+      if (!(raw instanceof ArrayBuffer)) return
+      const bytes = new Uint8Array(raw)
+      if (bytes[0] !== 1 || bytes[1] !== 2) return
+      try {
+        const frame = JSON.parse(new TextDecoder().decode(bytes.subarray(18))) as {
+          revision?: number
+          geometry?: Record<string, unknown>
+          state?: { bufferKind?: string; mouseTracking?: boolean }
+        }
+        record('frame', {
+          revision: frame.revision,
+          geometry: frame.geometry,
+          state: frame.state,
+        })
+      } catch {
+        /* the product owns validation */
+      }
+    }
     WebSocket.prototype.addEventListener = function (
       this: WebSocket,
       type: string,
       listener: EventListenerOrEventListenerObject,
       options?: boolean | AddEventListenerOptions,
     ) {
-      if (!observed.has(this)) {
-        observed.add(this)
-        add.call(this, 'message', (event: Event) => {
-          const raw = (event as MessageEvent).data
-          if (typeof raw === 'string') {
-            try {
-              const msg = JSON.parse(raw) as { id?: number; result?: unknown; error?: unknown }
-              const size = msg.id === undefined ? undefined : resizes.get(msg.id)
-              if (size) {
-                if ('result' in msg && !msg.error) committed = size
-                record('resize-receipt', { id: msg.id, size, result: msg.result, error: msg.error })
-              }
-            } catch {
-              /* the product owns validation */
-            }
-            return
-          }
-          if (!(raw instanceof ArrayBuffer)) return
-          const bytes = new Uint8Array(raw)
-          if (bytes[0] !== 1 || bytes[1] !== 2) return
-          try {
-            const frame = JSON.parse(new TextDecoder().decode(bytes.subarray(18))) as {
-              revision?: number
-              geometry?: Record<string, unknown>
-              state?: { bufferKind?: string; mouseTracking?: boolean }
-            }
-            record('frame', {
-              revision: frame.revision,
-              geometry: frame.geometry,
-              state: frame.state,
-            })
-          } catch {
-            /* the product owns validation */
-          }
-        })
+      if (type !== 'message' || typeof listener !== 'function') {
+        return add.call(this, type, listener, options)
       }
-      return add.call(this, type, listener, options)
+      let wrapped = wrappers.get(listener)
+      if (wrapped === undefined) {
+        wrapped = (event: Event) => {
+          observe(event)
+          return (listener as EventListener)(event)
+        }
+        wrappers.set(listener, wrapped)
+      }
+      return add.call(this, type, wrapped, options)
     }
     // THE FIRST PRESENTED ALTERNATE FRAME, caught when the DOM has it: the
     // programmer's text in the live grid while the live region is fullscreen.
@@ -343,8 +362,29 @@ for (const timing of ['before', 'during', 'after']) {
         )
         // THE ORDER THE SWITCH OWES: the size request first, the person's
         // input behind it.
-        expect(firstResize, 'accepting the switch sends a resize').toBeGreaterThanOrEqual(0)
-        expect(firstInput, 'the early input reaches the session').toBeGreaterThan(firstResize)
+        // WHAT THE SWITCH DID, in the message: a failure here used to say only
+        // "expected > 1, received 0", which names neither the send that beat
+        // the resize nor the method it carried.
+        const shape = postSwitch
+          .slice(0, 8)
+          .map((event) =>
+            event.kind === 'send'
+              ? `${String(event.method)}${
+                  event.method === 'session.intent'
+                    ? `(${String((event.params as { kind?: string }).kind)})`
+                    : ''
+                }`
+              : event.kind,
+          )
+          .join(' → ')
+        expect(
+          firstResize,
+          `accepting the switch sends a resize (socket saw: ${shape})`,
+        ).toBeGreaterThanOrEqual(0)
+        expect(
+          firstInput,
+          `the early input reaches the session (socket saw: ${shape})`,
+        ).toBeGreaterThan(firstResize)
         // …and none of that input may reach the program before a resize
         // APPLIED. A receipt that is not this request's — a superseded or a
         // cancelled answer — is not an application and releases nothing.

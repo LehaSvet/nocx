@@ -19766,6 +19766,42 @@ describe('an alternate-screen switch holds input for its applied grid (nocx-1ebr
     }
   })
 
+  it('holds an intent the mode change itself produces, behind the resize', async () => {
+    // The mode change seats the keyboard surface, and seating it emits a focus
+    // intent. That intent is produced by the switch, so it belongs behind the
+    // resize like everything else the switch produces — which is only true if
+    // the fence is armed BEFORE the mode change, not after it. The real stack
+    // measured the failure this prevents: an intent 3 ms ahead of the request.
+    const { content, session, switchFrame, receipt, teardown } = await switchingPane()
+    try {
+      const input = intentElementOf(content)
+      const scrollback = scrollbackFor(content)
+      /* eslint-disable @typescript-eslint/unbound-method */
+      const enter = scrollback.enterFullscreen
+      /* eslint-enable @typescript-eslint/unbound-method */
+      const seated = vi.spyOn(scrollback, 'enterFullscreen').mockImplementation(() => {
+        enter.call(scrollback)
+        input.dispatchEvent(new FocusEvent('focus'))
+      })
+
+      switchFrame()
+      // The focus intent was produced inside the mode change and did NOT go
+      // out; the resize did.
+      expect(session.intent).not.toHaveBeenCalled()
+      expect(session.resizeApplied).toHaveBeenCalledTimes(1)
+
+      receipt('applied')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('focus', 'in'))
+      expect(seated).toHaveBeenCalledTimes(1)
+      // And in that order on the wire: the resize first, the held intent after.
+      expect(session.resizeApplied.mock.invocationCallOrder[0]).toBeLessThan(
+        session.intent.mock.invocationCallOrder[0],
+      )
+    } finally {
+      teardown()
+    }
+  })
+
   it('presents the pane’s FULLSCREEN fit, not the fit the previous mode had', async () => {
     // THE CASE THE REAL STACK MEASURED, and the one the jsdom-default fixture
     // cannot see: in the normal buffer the live region wears the prose gutter,

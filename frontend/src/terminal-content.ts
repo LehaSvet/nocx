@@ -7094,7 +7094,21 @@ export class TerminalContent extends BasePaneContent {
   // control channel, and AD-6 forbids sniffing the byte stream — so the grid
   // the fence reports is this window's own measurement, taken here.
 
-  /** Open the fence at a switch and ask for the pane's own grid at once. */
+  /**
+   * Open the fence: from this instant the person's input is held.
+   *
+   * ARMING AND SENDING ARE TWO STEPS ON PURPOSE (nocx-1ebrs.10). The fence is
+   * armed BEFORE the mode change, because the layout change itself can produce
+   * intents (the surface it seats takes the keyboard, and a focus intent is an
+   * intent like any other) and those belong behind the resize too. The request
+   * goes out AFTER the mode change has refitted, because entering fullscreen
+   * moves the pane's grid and a report taken before it asks the pty for the
+   * previous layout's width — the stale size this bead is about.
+   *
+   * And the arm comes before the send for a second reason: the receipt for the
+   * request that is about to go out must find a fence to open. A fence armed
+   * after its own request is a fence that can miss its own answer.
+   */
   private _openAlternateScreenFence(): void {
     if (this._fence !== null) return
     // Every release below is an answer from a session, so a pane without one
@@ -7103,7 +7117,6 @@ export class TerminalContent extends BasePaneContent {
     if (this.session === null) return
     this._fence = { held: [], generation: 0, newest: 0, sent: null, deadline: undefined }
     this._switchPresents = true
-    this._requestFenceResize()
   }
 
   /**
@@ -7242,20 +7255,22 @@ export class TerminalContent extends BasePaneContent {
     // ownership. The runtime's frame supplies this state independently.
     this.lifecycle.setBuffer(type)
     if (type === 'alternate') {
-      this.scrollback?.enterFullscreen()
-      // THE FIT FIRST, THEN THE REQUEST (nocx-1ebrs.10). Entering fullscreen
-      // zeroes the prose inset the fit subtracts, so the pane's grid is a
-      // DIFFERENT, wider rectangle from this instant — 199 columns where the
-      // normal-buffer fit had 192, measured on the e2e's page. A request sent
-      // before this refit asks the pty for the previous layout's width, which
-      // is the stale size this bead is about, and the presentation would then
-      // pad the switch frame to that same stale width: the fix reproducing
-      // the defect it was written for. This is the one synchronous refit in a
-      // mode change, and it is here so the fence's first request — and the
-      // fit the paint reads — are both the pane's own grid.
-      this._switchPresents = true
-      this.refitIfResized()
+      // HOLD FIRST, THEN CHANGE, THEN ASK (nocx-1ebrs.10). The mode change
+      // below can produce intents of its own, and they belong behind the
+      // resize like everything else the switch produces; the request has to
+      // wait for the mode change, because entering fullscreen zeroes the prose
+      // inset the fit subtracts — 199 columns where the normal-buffer fit had
+      // 192, measured on the e2e's page. A request sent before that refit asks
+      // the pty for the previous layout's width, which is the stale size this
+      // bead is about, and the presentation would then pad the switch frame to
+      // the same stale width: the fix reproducing the defect it was written
+      // for. This is the one synchronous refit in a mode change, and it exists
+      // so the fence's first request — and the fit the paint reads — are both
+      // the pane's own grid.
       this._openAlternateScreenFence()
+      this.scrollback?.enterFullscreen()
+      this.refitIfResized()
+      this._requestFenceResize()
     } else {
       // Leaving cannot be waited on: the program is not full-screen any more,
       // so the grid the fence was holding for is no longer the one being
