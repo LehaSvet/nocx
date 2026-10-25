@@ -1,6 +1,7 @@
 /** An older installer gate must not own a newly integrated remote pane. */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { once } from 'node:events'
 import path from 'node:path'
 
 import { appReadyForInput, test, expect, resolveBackend, promptReady } from './harness'
@@ -19,6 +20,7 @@ for (const shell of ['bash', 'zsh']) {
       args: ['-legacy-integration', '-shell', shell],
     })
     let profile: string | undefined
+    let shellExited = false
     let endpoint: { port: number; token: string } | undefined
     try {
       // The fixture calls the production installer for the gates, then derives
@@ -83,12 +85,26 @@ for (const shell of ['bash', 'zsh']) {
       const stub = readFileSync(legacyTarget, 'utf8')
       expect(stub).toContain(`neutralised by generation ${manifest.generation}`)
       expect(stub).not.toContain('__nocx_script_version=43')
+      const exitsBefore = fixture.lines().filter((line) => line === 'PTY_EXIT').length
+      await editor.click()
+      await editor.pressSequentially('exit')
+      await editor.press('Enter')
+      await expect
+        .poll(() => fixture.lines().filter((line) => line === 'PTY_EXIT').length)
+        .toBeGreaterThan(exitsBefore)
+      shellExited = true
     } finally {
       try {
         if (profile && endpoint) await rpc(page, endpoint, 'profiles.delete', { id: profile })
       } finally {
-        fixture.proc.kill('SIGKILL')
-        rmSync(home, { recursive: true, force: true })
+        if (fixture.proc.exitCode === null && fixture.proc.signalCode === null) {
+          const stopped = once(fixture.proc, 'exit')
+          fixture.proc.kill('SIGKILL')
+          await stopped
+        }
+        // Never delete a directory its live shell may still be writing.
+        // Preserve it on failure as disposable diagnostic state instead.
+        if (shellExited) rmSync(home, { recursive: true, force: true })
       }
     }
   })

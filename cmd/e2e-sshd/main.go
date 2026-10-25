@@ -953,6 +953,7 @@ func startCommand(ch gossh.Channel, st *sessionState, command string) {
 	go func() {
 		_, _ = io.Copy(ch, master)
 		_ = cmd.Wait()
+		printLine("PTY_EXIT")
 		// A real ssh client terminates only on an explicit exit-status
 		// followed by channel EOF (the journey's `exit` must end the remote
 		// session cleanly and hand the real code to the local shell). The

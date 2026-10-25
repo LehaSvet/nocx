@@ -195,16 +195,24 @@ func TestRemotePublishDoesNotInventLegacyTargets(t *testing.T) {
 func TestInjectedBashStartupPreservesUserExitTrap(t *testing.T) {
 	bash := requireShell(t, "bash")
 	home := t.TempDir()
-	trapped := filepath.Join(home, "exit-trap-ran")
-	if err := os.WriteFile(filepath.Join(home, ".bashrc"), []byte("trap "+ShellQuote("printf preserved > "+ShellQuote(trapped))+" EXIT\n"), 0o600); err != nil {
+	trapped := filepath.Join(home, "quoted ' exit-trap-ran")
+	// All shell-quote classes must survive Bash's trap -p declaration and
+	// our capture without expanding variables or executing the body early.
+	want := `single' double" backslash\ literal$HOME`
+	body := "printf '%s' " + ShellQuote(want) + " > " + ShellQuote(trapped)
+	if err := os.WriteFile(filepath.Join(home, ".bashrc"), []byte("trap "+ShellQuote(body)+" EXIT\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	rc, err := LocalBashRcfile(LaunchOptions{Enhanced: true, SessionID: "preserved-trap"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	runLauncherOnPTY(t, bash, bashArgFor(rc), []string{"HOME=" + home, "TMPDIR=" + t.TempDir()}, "exit")
-	if string(readFileT(t, trapped)) != "preserved" {
+	beforeExit := "if [[ -e " + ShellQuote(trapped) + " ]]; then printf 'TRAP_STATE_%s\\n' EARLY; else printf 'TRAP_STATE_%s\\n' UNRUN; fi"
+	out := runLauncherOnPTY(t, bash, bashArgFor(rc), []string{"HOME=" + home, "TMPDIR=" + t.TempDir()}, beforeExit, "exit")
+	if !strings.Contains(out, "TRAP_STATE_UNRUN") || strings.Contains(out, "TRAP_STATE_EARLY") {
+		t.Fatal("user exit trap ran during capture rather than at exit")
+	}
+	if string(readFileT(t, trapped)) != want {
 		t.Fatal("reserved legacy latch erased user exit trap")
 	}
 }
