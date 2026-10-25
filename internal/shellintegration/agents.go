@@ -131,17 +131,18 @@ func renderScript(raw string, names []string, delivery Delivery) string {
 	}
 	surface := toolSurfaceLocal
 	out := strings.ReplaceAll(raw, agentBlockMarker, agentWrappers(names, ShellBash))
+	// No channel means no orchestration, not no command. Both shells and
+	// delivery paths must run the typed agent without resolving or enrolling.
+	out = strings.ReplaceAll(out, agentUnorchestratedMarker, `command "$__agent" "$@"`+"\n        return $?")
 	if delivery == DeliveryPublished {
 		surface = toolSurfacePublished
 		out = stripAgentLaunchHelpers(out)
-		out = strings.ReplaceAll(out, agentUnorchestratedMarker, `command "$__agent" "$@"`+"\n        return $?")
 		out = strings.ReplaceAll(out, agentLaunchSetupMarker, `__nocx_agent_launch_local=0
         __nocx_agent_launch_valid=1
         __nocx_agent_launch_ticket=`)
 		out = strings.ReplaceAll(out, agentEnrolRefusalMarker, `command "$__agent" "$@"`+"\n        return $?")
 		out = strings.ReplaceAll(out, agentLaunchCancelMarker, "")
 	} else {
-		out = strings.ReplaceAll(out, agentUnorchestratedMarker, "return 1")
 		out = strings.ReplaceAll(out, agentLaunchSetupMarker, agentLaunchSetupLocal)
 		out = strings.ReplaceAll(out, agentEnrolRefusalMarker, agentEnrolRefusalLocal)
 		out = strings.ReplaceAll(out, agentLaunchCancelMarker, "__nocx_agent_launch_cancel")
