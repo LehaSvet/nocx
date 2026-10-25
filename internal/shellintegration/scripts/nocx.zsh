@@ -10,6 +10,7 @@ if [[ -n "${__nocx_loaded:-}" ]]; then
     return 2>/dev/null || exit 0
 fi
 __nocx_loaded=1
+__nocx_script_version=@NOCX_SCRIPT_VERSION@
 
 
 # --- Authenticated lifecycle channel (ADR-0024, docs/lifecycle-protocol.md) ---

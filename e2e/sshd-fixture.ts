@@ -26,6 +26,7 @@
 // the repo root. A tab's cwd is where a dropped file goes, so leaving that to
 // inheritance means uploading into the checkout. The caller states it.
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 
@@ -38,6 +39,8 @@ export interface SshdFixture {
   port: number
   /** Private key file for the user the fixture accepts. */
   userKey: string
+  /** Synthetic account identifier; never copied from the invoking account. */
+  user: string
   /**
    * The RSA user key the fixture minted and also accepts, when it was started
    * with `-rsa-key`, in the OpenSSH encoding.
@@ -136,6 +139,7 @@ export function startSshd(opts: StartSshdOptions): Promise<SshdFixture> {
           host,
           port: Number(port),
           userKey,
+          user: randomUUID().replaceAll('-', ''),
           // Only when the fixture minted one: undefined is "this host accepts
           // no RSA key", which is every caller that predates `-rsa-key`.
           rsaKey: rsaKey === '' ? undefined : rsaKey,
