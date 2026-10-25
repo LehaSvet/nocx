@@ -17419,6 +17419,344 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
     tab.pane.querySelector('.nocx-recovery-notice .ui-status-card__title')?.textContent ?? null
   const cardDesc = (tab: Pane) =>
     tab.pane.querySelector('.nocx-recovery-notice .ui-status-card__desc')?.textContent ?? null
+  const liveCard = (tab: Pane) => tab.pane.querySelector('[data-notice-kind="live-output-gap"]')
+  const liveTitle = (tab: Pane) =>
+    liveCard(tab)?.querySelector('.ui-status-card__title')?.textContent ?? null
+  const liveDesc = (tab: Pane) =>
+    liveCard(tab)?.querySelector('.ui-status-card__desc')?.textContent ?? null
+  const fireGap = (session: SessionFake, start: number, end: number, reason = 'hostWindow') =>
+    session.fireOutputGap({ sessionId: session.sessionId, start, end, reason })
+
+  it('keeps a screenshot-shaped burst of 32 distinct losses in the same single live card', async () => {
+    const { session, hooks } = reclaiming(null)
+    const { tab, teardown } = await mountTerminal(makeClipboard(), {
+      hooks,
+      attachToDocument: true,
+    })
+    try {
+      fireGap(session, 0, 32768)
+      const host = liveCard(tab)
+      const dismiss = host?.querySelector('button[aria-label="Dismiss"]')
+      expect(host).not.toBeNull()
+      expect(dismiss).not.toBeNull()
+      for (let i = 1; i < 32; i++) {
+        fireGap(session, i * 32768, (i + 1) * 32768)
+        expect(tab.pane.querySelectorAll('[data-notice-kind="live-output-gap"]')).toHaveLength(1)
+        expect(liveCard(tab)).toBe(host)
+        expect(liveCard(tab)?.querySelector('button[aria-label="Dismiss"]')).toBe(dismiss)
+      }
+      expect(liveTitle(tab)).toBe('1048576 bytes of live output are missing')
+      expect(tab.pane.querySelectorAll('.nocx-recovery-notice')).toHaveLength(1)
+    } finally {
+      teardown()
+    }
+  })
+
+  it('unions overlaps and duplicates without attributing unknown-only loss to the host', async () => {
+    const { session, hooks } = reclaiming(null)
+    const { tab, teardown } = await mountTerminal(makeClipboard(), {
+      hooks,
+      attachToDocument: true,
+    })
+    try {
+      fireGap(session, 10, 20, 'future-cause')
+      expect(liveTitle(tab)).toBe('10 bytes of live output are missing')
+      expect(liveDesc(tab)).not.toContain('execution host')
+      const host = liveCard(tab)
+
+      // A different reason on already accounted bytes adds neither bytes nor a cause.
+      fireGap(session, 10, 20)
+      expect(liveDesc(tab)).not.toContain('execution host')
+      fireGap(session, 15, 25)
+      fireGap(session, 10, 20, 'future-cause')
+      expect(liveTitle(tab)).toBe('15 bytes of live output are missing')
+      expect(liveDesc(tab)).toContain('execution host')
+      expect(liveDesc(tab)).toContain('unknown cause')
+      expect(liveCard(tab)).toBe(host)
+      expect(tab.pane.querySelectorAll('[data-notice-kind="live-output-gap"]')).toHaveLength(1)
+    } finally {
+      teardown()
+    }
+  })
+
+  it('expires at the original 8000ms deadline even when new bytes arrive at 4000ms', async () => {
+    const { session, hooks } = reclaiming(null)
+    const { tab, teardown } = await mountTerminal(makeClipboard(), {
+      hooks,
+      attachToDocument: true,
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      fireGap(session, 10, 20)
+      const host = liveCard(tab)
+      expect(host).not.toBeNull()
+      await vi.advanceTimersByTimeAsync(4000)
+      fireGap(session, 15, 25)
+      expect(liveTitle(tab)).toBe('15 bytes of live output are missing')
+      expect(liveCard(tab)).toBe(host)
+      await vi.advanceTimersByTimeAsync(3999)
+      fireGap(session, 10, 20)
+      expect(liveCard(tab)).toBe(host)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(liveCard(tab)).toBeNull()
+
+      fireGap(session, 10, 20)
+      fireGap(session, 15, 25)
+      expect(liveCard(tab)).toBeNull()
+      fireGap(session, 30, 35)
+      expect(liveTitle(tab)).toBe('20 bytes of live output are missing')
+      expect(liveCard(tab)).not.toBe(host)
+      expect(tab.pane.querySelectorAll('[data-notice-kind="live-output-gap"]')).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(7999)
+      expect(liveCard(tab)).not.toBeNull()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(liveCard(tab)).toBeNull()
+    } finally {
+      teardown()
+      vi.useRealTimers()
+    }
+  })
+
+  it('dismisses only the live presentation and rearms a cumulative card only for new loss', async () => {
+    const { session, hooks } = reclaiming(null)
+    const { tab, teardown } = await mountTerminal(makeClipboard(), {
+      hooks,
+      attachToDocument: true,
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      fireGap(session, 10, 20)
+      fireGap(session, 15, 25)
+      expect(liveTitle(tab)).toBe('15 bytes of live output are missing')
+      await vi.advanceTimersByTimeAsync(4000)
+      liveCard(tab)!.querySelector<HTMLButtonElement>('button[aria-label="Dismiss"]')!.click()
+      expect(liveCard(tab)).toBeNull()
+      fireGap(session, 10, 20)
+      fireGap(session, 15, 25)
+      expect(liveCard(tab)).toBeNull()
+
+      fireGap(session, 30, 35, 'future-cause')
+      expect(liveTitle(tab)).toBe('20 bytes of live output are missing')
+      expect(liveDesc(tab)).toContain('execution host')
+      expect(liveDesc(tab)).toContain('unknown cause')
+      const remounted = liveCard(tab)
+      // The dismissed card's original deadline must not remove its replacement.
+      await vi.advanceTimersByTimeAsync(4000)
+      expect(liveCard(tab)).toBe(remounted)
+      await vi.advanceTimersByTimeAsync(3999)
+      expect(liveCard(tab)).toBe(remounted)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(liveCard(tab)).toBeNull()
+    } finally {
+      teardown()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps expired live bytes out of later historical recovery revisions', async () => {
+    const { session, hooks } = reclaiming({
+      produced: 60,
+      gaps: [
+        { start: 10, end: 30, reason: 'hostWindow' },
+        { start: 50, end: 60, reason: 'cap' },
+      ],
+    })
+    const { tab, teardown } = await mountTerminal(makeClipboard(), {
+      hooks,
+      attachToDocument: true,
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      fireGap(session, 10, 20)
+      fireGap(session, 15, 25)
+      await vi.advanceTimersByTimeAsync(8000)
+      expect(liveCard(tab)).toBeNull()
+      session.fireRecoveryChanged({
+        produced: 65,
+        gaps: [
+          { start: 10, end: 30, reason: 'hostWindow' },
+          { start: 50, end: 65, reason: 'cap' },
+        ],
+      })
+      expect(tab.pane.querySelectorAll('.nocx-recovery-notice')).toHaveLength(1)
+      expect(cardTitle(tab)).toBe("20 B of this session's output is missing")
+      expect(cardDesc(tab)).toContain('5 B went missing as "hostWindow"')
+      expect(cardDesc(tab)).toContain("the recording's size limit dropped the oldest 15 B")
+      fireGap(session, 10, 20)
+      expect(liveCard(tab)).toBeNull()
+    } finally {
+      teardown()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['rejected', 'pending'] as const)(
+    'expires the live warning at its original deadline while reconnect is %s',
+    async (outcome) => {
+      const client = makeClient()
+      const { content, tab, teardown } = await mountTerminal(
+        makeClipboard(),
+        { attachToDocument: true },
+        client,
+      )
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      let rejectOpening!: (reason: Error) => void
+      const opening = new Promise<SessionFake>((_resolve, reject) => {
+        rejectOpening = reject
+      })
+      let reconnect: Promise<boolean> | undefined
+      try {
+        const session = client._sessions[0]
+        fireGap(session, 10, 20)
+        const notice = liveCard(tab)
+        expect(notice).not.toBeNull()
+        await vi.advanceTimersByTimeAsync(4000)
+        const loseSession = session.onExit.mock.calls[0][0] as (exit: {
+          sessionId: string
+          cause: 'interrupted'
+        }) => void
+        loseSession({ sessionId: session.sessionId, cause: 'interrupted' })
+        client.openSession.mockReturnValueOnce(opening)
+        reconnect = content.reconnect()
+        if (outcome === 'rejected') {
+          rejectOpening(new Error('reconnect refused'))
+          expect(await reconnect).toBe(false)
+        }
+        await vi.advanceTimersByTimeAsync(3999)
+        expect(liveCard(tab)).toBe(notice)
+        await vi.advanceTimersByTimeAsync(1)
+        expect(liveCard(tab)).toBeNull()
+      } finally {
+        rejectOpening(new Error('end pending reconnect'))
+        await reconnect
+        teardown()
+        vi.useRealTimers()
+      }
+    },
+  )
+
+  it('resets the live count and causes on reconnect and ignores the old session and deadline', async () => {
+    const client = makeClient()
+    const { content, tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const timeout = vi.spyOn(globalThis, 'setTimeout')
+    const clearTimeout = vi.spyOn(globalThis, 'clearTimeout')
+    try {
+      const first = client._sessions[0]
+      fireGap(first, 10, 20)
+      const deadlineIndex = timeout.mock.calls.findIndex(([, delay]) => delay === 8000)
+      expect(deadlineIndex).toBeGreaterThanOrEqual(0)
+      const oldDeadline: unknown = timeout.mock.results[deadlineIndex].value
+      await vi.advanceTimersByTimeAsync(4000)
+      const loseSession = first.onExit.mock.calls[0][0] as (exit: {
+        sessionId: string
+        cause: 'interrupted'
+      }) => void
+      loseSession({ sessionId: first.sessionId, cause: 'interrupted' })
+      expect(await content.reconnect()).toBe(true)
+      expect(clearTimeout).toHaveBeenCalledWith(oldDeadline)
+      expect(liveCard(tab)).toBeNull()
+
+      const second = client._sessions[1]
+      fireGap(first, 30, 35)
+      expect(liveCard(tab)).toBeNull()
+      // Reuse old offsets: the ledger as well as the displayed total must reset.
+      fireGap(second, 10, 17, 'future-cause')
+      expect(liveTitle(tab)).toBe('7 bytes of live output are missing')
+      const replacement = liveCard(tab)
+      fireGap(first, 40, 45)
+      expect(liveTitle(tab)).toBe('7 bytes of live output are missing')
+      expect(liveDesc(tab)).not.toContain('execution host')
+      await vi.advanceTimersByTimeAsync(4000)
+      expect(liveCard(tab)).toBe(replacement)
+      await vi.advanceTimersByTimeAsync(3999)
+      expect(liveCard(tab)).toBe(replacement)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(liveCard(tab)).toBeNull()
+    } finally {
+      teardown()
+      timeout.mockRestore()
+      clearTimeout.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancels the live deadline on pane close and refuses later session gaps', async () => {
+    const { session, hooks } = reclaiming(null)
+    const { tab, teardown } = await mountTerminal(makeClipboard(), {
+      hooks,
+      attachToDocument: true,
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const timeout = vi.spyOn(globalThis, 'setTimeout')
+    const clearTimeout = vi.spyOn(globalThis, 'clearTimeout')
+    try {
+      fireGap(session, 10, 20)
+      expect(liveCard(tab)).not.toBeNull()
+      const deadlineIndex = timeout.mock.calls.findIndex(([, delay]) => delay === 8000)
+      expect(deadlineIndex).toBeGreaterThanOrEqual(0)
+      const deadline: unknown = timeout.mock.results[deadlineIndex].value
+      tab.close()
+      expect(clearTimeout).toHaveBeenCalledWith(deadline)
+      expect(liveCard(tab)).toBeNull()
+      fireGap(session, 30, 35)
+      await vi.advanceTimersByTimeAsync(8000)
+      fireGap(session, 40, 45)
+      expect(liveCard(tab)).toBeNull()
+      expect(document.querySelector('[data-notice-kind="live-output-gap"]')).toBeNull()
+    } finally {
+      teardown()
+      timeout.mockRestore()
+      clearTimeout.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('aggregates, dismisses and expires live notices independently in two panes', async () => {
+    const first = reclaiming(null)
+    const second = reclaiming(null)
+    const left = await mountTerminal(makeClipboard(), {
+      hooks: first.hooks,
+      attachToDocument: true,
+    })
+    const right = await mountTerminal(makeClipboard(), {
+      hooks: second.hooks,
+      attachToDocument: true,
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      fireGap(first.session, 10, 20)
+      await vi.advanceTimersByTimeAsync(4000)
+      fireGap(second.session, 10, 30, 'future-cause')
+      fireGap(first.session, 15, 25)
+      expect(liveTitle(left.tab)).toBe('15 bytes of live output are missing')
+      expect(liveTitle(right.tab)).toBe('20 bytes of live output are missing')
+      expect(liveDesc(right.tab)).not.toContain('execution host')
+      const rightHost = liveCard(right.tab)
+      liveCard(left.tab)!.querySelector<HTMLButtonElement>('button[aria-label="Dismiss"]')!.click()
+      expect(liveCard(left.tab)).toBeNull()
+      expect(liveCard(right.tab)).toBe(rightHost)
+      fireGap(first.session, 10, 20)
+      expect(liveCard(left.tab)).toBeNull()
+      await vi.advanceTimersByTimeAsync(4000)
+      expect(liveCard(right.tab)).toBe(rightHost)
+      fireGap(first.session, 30, 35)
+      expect(liveTitle(left.tab)).toBe('20 bytes of live output are missing')
+      await vi.advanceTimersByTimeAsync(4000)
+      expect(liveCard(right.tab)).toBeNull()
+      expect(liveTitle(left.tab)).toBe('20 bytes of live output are missing')
+      await vi.advanceTimersByTimeAsync(4000)
+      expect(liveCard(left.tab)).toBeNull()
+    } finally {
+      left.teardown()
+      right.teardown()
+      vi.useRealTimers()
+    }
+  })
 
   it('tells the user how much of the run is gone and that the size limit took it', async () => {
     const { hooks } = reclaiming({
@@ -17563,7 +17901,7 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
     }
   })
 
-  it('keeps both overlapping live losses distinct, and dismissing one leaves the other and history intact', async () => {
+  it('unions overlapping live losses into one card and dismisses it independently of history', async () => {
     const { session, hooks } = reclaiming({
       produced: 0,
       gaps: [
@@ -17588,13 +17926,18 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
         end: 25,
         reason: 'hostWindow',
       })
+      session.fireOutputGap({
+        sessionId: session.sessionId,
+        start: 10,
+        end: 20,
+        reason: 'hostWindow',
+      })
 
-      let notices = [...tab.pane.querySelectorAll('.nocx-recovery-notice')]
-      expect(notices).toHaveLength(3)
+      const notices = [...tab.pane.querySelectorAll('.nocx-recovery-notice')]
+      expect(notices).toHaveLength(2)
       const titleOf = (notice: Element) =>
         notice.querySelector('.ui-status-card__title')?.textContent ?? ''
-      expect(notices.map(titleOf)).toContain('10 bytes of live output are missing')
-      expect(notices.map(titleOf)).toContain('5 bytes of live output are missing')
+      expect(notices.map(titleOf)).toContain('15 bytes of live output are missing')
       expect(notices.map(titleOf)).toContain("15 B of this session's output is missing")
       const historical = notices.find((notice) =>
         titleOf(notice).includes("of this session's output"),
@@ -17606,17 +17949,12 @@ describe('a reclaimed pane says what is missing (nocx-fz4qa)', () => {
         "the recording's size limit dropped the oldest 10 B",
       )
 
-      const firstLive = notices.find(
-        (notice) => titleOf(notice) === '10 bytes of live output are missing',
-      )!
-      firstLive.querySelector<HTMLButtonElement>('button[aria-label="Dismiss"]')!.click()
-      await vi.waitFor(() =>
-        expect(tab.pane.querySelectorAll('.nocx-recovery-notice')).toHaveLength(2),
-      )
-      notices = [...tab.pane.querySelectorAll('.nocx-recovery-notice')]
-      expect(notices.map(titleOf)).toContain('5 bytes of live output are missing')
-      expect(notices.map(titleOf)).toContain("15 B of this session's output is missing")
-      expect(notices.map(titleOf)).not.toContain('10 bytes of live output are missing')
+      const live = tab.pane.querySelector('[data-notice-kind="live-output-gap"]')!
+      live.querySelector<HTMLButtonElement>('button[aria-label="Dismiss"]')!.click()
+      expect(tab.pane.querySelectorAll('.nocx-recovery-notice')).toHaveLength(1)
+      expect(tab.pane.querySelector('[data-notice-kind="live-output-gap"]')).toBeNull()
+      expect(tab.pane.querySelector('.nocx-recovery-notice')).toBe(historical)
+      expect(titleOf(historical)).toBe("15 B of this session's output is missing")
     } finally {
       teardown()
     }
