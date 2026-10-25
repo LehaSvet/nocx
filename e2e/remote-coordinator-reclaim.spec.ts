@@ -99,7 +99,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 
-import { recoveryAccount } from '../frontend/src/recovery-account'
+import { recoveryAccount, uncoveredGapRanges } from '../frontend/src/recovery-account'
 import { formatBytes } from '../frontend/src/ui/format-bytes'
 import { BASE_URL } from './base-url'
 import {
@@ -178,11 +178,79 @@ function paneForSession(page: Page, sessionId: string) {
   return page.locator(`.pane[data-session-id="${sessionId}"]`)
 }
 
+interface VisibleLiveOutputGap {
+  title: string
+  description: string
+  count: number
+  rect: { x: number; y: number; width: number; height: number }
+}
+
+async function captureFirstVisibleLiveOutputGap(page: Page, sessionId: string): Promise<void> {
+  await page.addInitScript((targetSessionId) => {
+    const captured = window as Window & { __nocxLiveOutputGapReading?: VisibleLiveOutputGap }
+    let scheduled = false
+    const observer = new MutationObserver(schedule)
+    function schedule() {
+      if (scheduled || captured.__nocxLiveOutputGapReading) return
+      scheduled = true
+      requestAnimationFrame(() => {
+        scheduled = false
+        const notices = document.querySelectorAll<HTMLElement>(
+          `.pane[data-session-id="${targetSessionId}"] [data-notice-kind="live-output-gap"]`,
+        )
+        for (const notice of notices) {
+          const rect = notice.getBoundingClientRect()
+          if (
+            rect.width <= 0 ||
+            rect.height <= 0 ||
+            rect.bottom <= 0 ||
+            rect.right <= 0 ||
+            rect.top >= innerHeight ||
+            rect.left >= innerWidth
+          ) {
+            continue
+          }
+          let visible = true
+          for (let node: HTMLElement | null = notice; node; node = node.parentElement) {
+            const style = getComputedStyle(node)
+            if (
+              style.display === 'none' ||
+              style.visibility === 'hidden' ||
+              style.visibility === 'collapse' ||
+              Number(style.opacity) === 0
+            ) {
+              visible = false
+              break
+            }
+          }
+          if (!visible) continue
+          captured.__nocxLiveOutputGapReading = {
+            title: notice.querySelector('.ui-status-card__title')?.textContent ?? '',
+            description: notice.querySelector('.ui-status-card__desc')?.textContent ?? '',
+            count: notices.length,
+            rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          }
+          observer.disconnect()
+          return
+        }
+      })
+    }
+    observer.observe(document, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+    })
+    schedule()
+  }, sessionId)
+}
+
 async function freshClient(
   browser: Browser,
   endpoint: BackendEndpoint,
   label: string,
   onServerFrame?: (frame: string) => void,
+  beforeNavigate?: (page: Page) => Promise<void>,
 ): Promise<Page> {
   // baseURL explicitly: a context made by hand inherits nothing from the
   // config's `use`, so `goto('/')` would have no origin to resolve against.
@@ -201,6 +269,7 @@ async function freshClient(
   // On the failure report from its first byte, and the harness's to close.
   watchClient(page, label)
   await bindEndpoint(page, endpoint)
+  await beforeNavigate?.(page)
   await page.goto('/')
   return page
 }
@@ -310,17 +379,18 @@ interface RemoteGates {
  * The build: one marker a second until told to stop, with a filler burst
  * released by the test and an exit released by the test.
  *
- * POSIX sh, because the pane runs the host's real login shell.
+ * Explicitly exec POSIX sh: the host's real login shell can be fish, whose
+ * syntax does not accept this fixture's assignments, loops or arithmetic.
  *
  * The filler is NUL bytes, which count toward the helper window without
  * flooding the terminal grid. The live-gap case inserts its visible marker
  * after a 256 KiB NUL prefix so the browser can prove later output before it
  * consumes the remaining filler.
  *
- * WHY `exit` AND NOT A SUBSHELL. The status this bead cares about is the
- * SESSION's — the one the helper reports and `ExitOutcome` maps — so the shell
- * itself has to end. A subshell would exercise shell integration instead,
- * which is a different owner answering a different question.
+ * WHY `exec` AND NOT A SUBSHELL. The status this bead cares about is the
+ * SESSION's — the one the helper reports and `ExitOutcome` maps — so replace
+ * the login shell rather than returning to it when the script exits. Its
+ * exit status remains the session's exit status, not merely a command result.
  */
 function longRemoteCommand(
   gates: RemoteGates,
@@ -343,7 +413,7 @@ function longRemoteCommand(
         ].join('; ')
   const filler =
     markerAfterPrefixBytes === undefined ? `head -c ${fillerBytes} /dev/zero` : markerMidFiller
-  return [
+  const script = [
     'i=0',
     `while [ ! -e ${finish} ]; do printf '${MARKER_PREFIX}-%03d\\n' "$i" >> ${marker}`,
     `printf '${MARKER_PREFIX}-%03d\\n' "$i"`,
@@ -352,6 +422,7 @@ function longRemoteCommand(
     'i=$((i+1)); sleep 1; done',
     `exit ${EXIT_CODE}`,
   ].join('; ')
+  return `exec sh -c ${shellQuote(script)}`
 }
 
 function seedKnownHost(backend: VaultBackend, fixture: SshdFixture): void {
@@ -670,32 +741,38 @@ test('a remote helper build survives a fresh coordinator, names what it lost, an
     // lost bytes are never named twice, and the assertion below has to derive
     // the card's number the same way (nocx-zg3k3.14.24).
     const liveOutputGaps: { sessionId: string; start: number; end: number; reason: string }[] = []
-    returned = await freshClient(browser, endpoint, 'returned client', (frame) => {
-      if (typeof frame !== 'string') return
-      let envelope: { method?: unknown; params?: Record<string, unknown> }
-      try {
-        envelope = JSON.parse(frame) as { method?: unknown; params?: Record<string, unknown> }
-      } catch {
-        return
-      }
-      const params = envelope.params
-      if (
-        envelope.method === 'session.outputGap' &&
-        params &&
-        params.sessionId === liveBefore.sessionId &&
-        typeof params.start === 'number' &&
-        typeof params.end === 'number' &&
-        typeof params.reason === 'string'
-      ) {
-        liveOutputGap = {
-          sessionId: params.sessionId as string,
-          start: params.start,
-          end: params.end,
-          reason: params.reason,
+    returned = await freshClient(
+      browser,
+      endpoint,
+      'returned client',
+      (frame) => {
+        if (typeof frame !== 'string') return
+        let envelope: { method?: unknown; params?: Record<string, unknown> }
+        try {
+          envelope = JSON.parse(frame) as { method?: unknown; params?: Record<string, unknown> }
+        } catch {
+          return
         }
-        liveOutputGaps.push(liveOutputGap)
-      }
-    })
+        const params = envelope.params
+        if (
+          envelope.method === 'session.outputGap' &&
+          params &&
+          params.sessionId === liveBefore.sessionId &&
+          typeof params.start === 'number' &&
+          typeof params.end === 'number' &&
+          typeof params.reason === 'string'
+        ) {
+          liveOutputGap = {
+            sessionId: params.sessionId as string,
+            start: params.start,
+            end: params.end,
+            reason: params.reason,
+          }
+          liveOutputGaps.push(liveOutputGap)
+        }
+      },
+      (page) => captureFirstVisibleLiveOutputGap(page, liveBefore.sessionId),
+    )
     const returnedPane = paneForSession(returned, liveBefore.sessionId)
     await expect(returnedPane).toBeVisible({ timeout: 120_000 })
 
@@ -780,16 +857,29 @@ test('a remote helper build survives a fresh coordinator, names what it lost, an
     expect(liveOutputGap!.reason).toBe('hostWindow')
     expect(liveOutputGap!.end).toBeGreaterThan(liveOutputGap!.start)
 
-    const liveNotice = returnedPane
-      .locator('.nocx-recovery-notice')
-      .filter({ hasText: /bytes of live output are missing/i })
-    await expect(liveNotice).toBeVisible({ timeout: 60_000 })
-    await expect(liveNotice.locator('.ui-status-card__title')).toHaveText(
-      `${liveOutputGap!.end - liveOutputGap!.start} bytes of live output are missing`,
+    // The live warning expires after eight seconds; restoration above may
+    // legitimately take longer. Assert what was actually visible on its first
+    // paint, not whether a transient card survived these unrelated waits.
+    const liveReading = await returned.evaluate(
+      () =>
+        (window as Window & { __nocxLiveOutputGapReading?: VisibleLiveOutputGap })
+          .__nocxLiveOutputGapReading ?? null,
     )
-    await expect(liveNotice.locator('.ui-status-card__desc')).toHaveText(
-      "The execution host's output window moved past this tab.",
-    )
+    expect(liveReading, 'no visible live-output warning was captured').not.toBeNull()
+    expect(liveReading!.count).toBe(1)
+    expect(liveReading!.rect.width).toBeGreaterThan(0)
+    expect(liveReading!.rect.height).toBeGreaterThan(0)
+    const covered: Array<{ start: number; end: number }> = []
+    const prefixTitles: string[] = []
+    let missing = 0
+    for (const gap of liveOutputGaps) {
+      const uncovered = uncoveredGapRanges(gap, covered)
+      covered.push(...uncovered)
+      missing += uncovered.reduce((total, range) => total + range.end - range.start, 0)
+      if (missing > 0) prefixTitles.push(`${missing} bytes of live output are missing`)
+    }
+    expect(prefixTitles).toContain(liveReading!.title)
+    expect(liveReading!.description).toBe("The execution host's output window moved past this tab.")
 
     // ── what remains missing, and the SAME number the ledger states ───────
     //

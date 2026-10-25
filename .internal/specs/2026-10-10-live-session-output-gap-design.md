@@ -1,6 +1,6 @@
 # Live session output-gap notification
 
-- **Status:** ready for implementation; numeric-offset ceiling is the coordinator default for 0.6 and may be overruled by the owner.
+- **Status:** implemented, with the bounded pane-local presentation correction below.
 - **Bead:** `nocx-k6p18.29`.
 - **Binding architecture:** AD-6, AD-7, AD-9 and AD-10; ADR-0066, ADR-0073, ADR-0078 and ADR-0081.
 - **Owner decision already given (2026-10-09):** use a separate control-plane `session.outputGap` notification. The gap is a transport fact, not a session effect. Do not add an `outputGap` kind to `session.effect`, and do not rely on offsets added only to binary data frames.
@@ -16,6 +16,23 @@ AD-10 requires a live reader whose cursor falls behind to receive an explicit re
 When a live subscriber crosses a host-window gap, it receives an ordered JSON-RPC `session.outputGap` notification with `sessionId`, `start`, `end`, and `reason`. `sessionId` is the server-minted session ID. `start` and `end` are non-negative JSON integers in the half-open byte range `[start, end)`, each no greater than `9007199254740991` (`Number.MAX_SAFE_INTEGER`); `reason` is the existing gap reason. The notification arrives after all earlier output bytes and before any later output bytes. The browser client resets its `UTF8StreamDecoder`, advances its byte cursor to `end`, and acknowledges that offset before continuing. It does not reset the hidden xterm parser, backend emulator, or screen model.
 
 The live tab shows a warning in its pane that names the exact number of missing bytes and, when known, says the execution host's output window moved past the tab. It does not inject text into the terminal stream.
+
+Presentation correction (`nocx-z5lnt`): each pane has at most one live-output
+warning. It reports the cumulative union of missing byte ranges for the current
+session binding, updating the same card rather than stacking cards. Known
+host-window loss and unknown-cause loss each retain their own explanation;
+mixed loss states both without attributing unknown bytes to the host.
+
+The live card expires 8000 ms after mounting, or can be dismissed once. Updates
+and duplicate ranges never extend that deadline. Expiry and dismissal remove
+presentation only: the complete live ledger continues to exclude those bytes
+from historical recovery loss. A genuinely new range after disappearance
+mounts one new card with the cumulative count and a fresh deadline; duplicates
+cannot resurrect it. Successful rebind and pane disposal cancel the old deadline
+and reset the ledger and account. A failed or pending reconnect retains the
+notice/account and its original expiry deadline, not the closed session binding.
+Historical recovery cards and protocol-error danger toasts retain their
+existing lifetimes.
 
 ### Client interpretation at delivery
 
@@ -72,8 +89,8 @@ The JSON boundary must reject any inbound offset above the ceiling and refuse to
 
 - **Transport contract:** a real WebSocket test forces a host-window hole and validates the actual `session.outputGap` notification against its exact schema. It also proves the order: pre-gap binary data, gap notification, then post-gap binary data. A no-hole case sends no notification.
 - **Frontend stream:** deliver a multi-byte UTF-8 character split by an ordered gap. Verify its prefix is discarded, post-gap bytes are not joined to it, the live cursor jumps to the exact end, and the next acknowledgement names that end plus subsequent received bytes. Deliver an already-crossed gap with `end <= state.offset`; verify the notice appears while the decoder, offset, and acknowledgements do not change. Deliver a gap in neither allowed relation; verify a sticky danger toast is shown, the offset/decoder/ack remain unchanged, and later binary output for that session is stopped.
-- **Visible behavior:** a live pane shows the warning with the exact missing-byte count, does not clear its authoritative screen frame, and dismisses the card without changing the stream. A later distinct gap is reported again.
-- **Browser acceptance:** extend the existing coordinator restart/reclaim flow in `e2e/remote-coordinator-reclaim.spec.ts`. Keep the helper process running while the coordinator is absent until the actual helper window advances past the recorded cursor, then start a fresh coordinator and restore the same pane. Assert the real `session.outputGap` control event for that session with its exact range/reason, the distinct live-notice title (not only the historical recovery card), and later output in the restored pane. Do not use a sleep or add a production pause endpoint solely for this test.
+- **Visible behavior:** a burst of 32 distinct 32768-byte losses produces one stable live card reporting 1048576 missing bytes. Overlapping ranges count once. A fake clock proves expiry at 8000 ms despite an update at 4000 ms, and while a reconnect is rejected or still pending. Dismissal/expiry preserve historical exclusion, duplicates remain silent, and genuinely new loss remounts a cumulative card. Rebind, disposal, and independent panes retain their ownership boundaries. The authoritative screen frame is never cleared.
+- **Browser acceptance:** the coordinator restart/reclaim flow in `e2e/remote-coordinator-reclaim.spec.ts` keeps the helper process running while the coordinator is absent until the actual helper window advances past the recorded cursor, then starts a fresh coordinator and restores the same pane. It asserts the real `session.outputGap` event with exact range/reason and captures the first visibly painted live card before unrelated restoration waits can outlast its deadline. That card's exact count must match a nonempty prefix union of received ranges. Historical ledger, restored block, continuing output, and session exit-status assertions remain separate. Do not use a sleep or add a production pause endpoint solely for this test.
 - **Same-coordinator real-WebSocket acceptance:** while the coordinator remains up, deterministically hold the helper attachment reader (not browser delivery) behind the actual helper window, overflow that window, then release the reader. Assert the real `session.outputGap` arrives with exact `[start,end)` bounds and reason, ordered after preceding output and before later output. Use a test seam at the helper/transport boundary; do not add a production pause endpoint.
 - The contract is generated and checked, the Go DTO conforms, and the over-the-wire tests validate both the attach-hole and same-coordinator notification paths. The Go boundary accepts `9007199254740991` and explicitly rejects `9007199254740992` without truncating or continuing the stream. The worker runs focused checks; the coordinator relies on CI for the full gate.
 - On delivery failure, the test output and structured log identify the session and missing range. A log is not a substitute for the visible warning.

@@ -31,6 +31,7 @@
  * boundary frontend/src/ui/README.md draws.
  */
 
+import { createSignal } from 'solid-js'
 import { render } from 'solid-js/web'
 import { IconButton } from './ui/icon-button'
 import { StatusCard } from './ui/status-card'
@@ -147,31 +148,42 @@ export function mountRecoveryNotice(
   }
 }
 
-/** Mount the same per-pane warning-card surface for a gap crossed while the
- * tab remains live. This is a transport fact, distinct from a reclaim card;
- * offsets remain exact byte counts and the terminal surface is left in place.
- * `unannouncedBytes` is smaller than the event range when it overlaps a live
- * loss already named by an earlier notice. */
+export interface LiveOutputGapAccount {
+  missing: number
+  hostWindow: boolean
+  unknownCause: boolean
+}
+
+export interface LiveOutputGapNoticeHandle {
+  update(account: LiveOutputGapAccount): void
+  dispose(): void
+}
+
+/** One updatable per-pane transport-loss card. The caller owns its lifetime
+ * and cumulative byte account independently of this presentation. */
 export function mountLiveOutputGapNotice(
   target: HTMLElement,
-  gap: SessionOutputGap,
+  initialAccount: LiveOutputGapAccount,
   onDismiss: () => void,
-  unannouncedBytes = gap.end - gap.start,
-): () => void {
+): LiveOutputGapNoticeHandle {
   const host = document.createElement('div')
   host.className = 'nocx-recovery-notice'
+  host.dataset.noticeKind = 'live-output-gap'
   target.insertBefore(host, target.firstChild)
-  const bytes = unannouncedBytes
-  const description =
-    gap.reason === 'hostWindow'
-      ? "The execution host's output window moved past this tab."
-      : 'This output gap has an unknown cause.'
+  const [account, setAccount] = createSignal(initialAccount)
+  const description = () =>
+    [
+      account().hostWindow ? "The execution host's output window moved past this tab." : '',
+      account().unknownCause ? 'Some missing output has an unknown cause.' : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
   const dispose = render(
     () => (
       <StatusCard
         tone="warning"
-        title={`${bytes} bytes of live output are missing`}
-        description={description}
+        title={`${account().missing} bytes of live output are missing`}
+        description={description()}
         action={
           <IconButton ariaLabel="Dismiss" size="sm" onClick={() => onDismiss()}>
             <CloseIcon />
@@ -181,8 +193,11 @@ export function mountLiveOutputGapNotice(
     ),
     host,
   )
-  return () => {
-    dispose()
-    host.remove()
+  return {
+    update: setAccount,
+    dispose: () => {
+      dispose()
+      host.remove()
+    },
   }
 }
