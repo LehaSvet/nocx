@@ -22,8 +22,8 @@ export interface UpdateNoticeController {
   showAvailable: (version: string, notesUrl: string) => void
   showDownloading: () => void
   showPendingRestart: (version: string) => void
-  /** Shows the ADR-0101 held state: an update is installed and a
-   *  protocol-compatible older coordinator is still serving it. The copy
+  /** Retains the held state for windows already attached under ADR-0101;
+   *  new launches take over across Versions (ADR-0104). The copy
    *  names the whole truth — finishing closes the open sessions — and the
    *  action is the person's to press, never forced. */
   showHeldByCoordinator: (version: string) => void

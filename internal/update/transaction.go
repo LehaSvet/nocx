@@ -512,8 +512,9 @@ func (u *updater) certifyPair(ctx context.Context, rec *journalRecord) error {
 
 	if build.Version != rec.ToVersion {
 		if build.Compatible {
-			// The held pair (ADR-0101): the launcher kept this older
-			// coordinator on purpose, the UI reporting against it is
+			// An already attached ADR-0101 pair can still report this
+			// hold; new launches take over across Versions (ADR-0104).
+			// The UI reporting against the older coordinator is
 			// healthy by the act of reporting, and the only thing the
 			// update waits for is the coordinator's turnover. Record the
 			// hold ON the record and reset the launch counter — the

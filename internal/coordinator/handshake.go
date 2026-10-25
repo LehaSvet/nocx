@@ -17,7 +17,8 @@ package coordinator
 
 // ProtocolVersion is the version of the whole window<->coordinator surface:
 // this socket's request/response shapes AND the loopback WS control plane the
-// token it hands out opens, every frame under contracts/ included (ADR-0101).
+// token it hands out opens, every frame under contracts/ included, plus the
+// embedded shell integration and lifecycle wire (ADR-0104).
 // It is deliberately separate from the build version: two builds of the same
 // release may speak it, and one build may not speak another's.
 //
@@ -25,11 +26,11 @@ package coordinator
 // do about a mismatch. That comparison is not here — this package makes the
 // fact available and states nothing about what a client should conclude from
 // it. What keeps this constant honest is the fingerprint committed beside it:
-// testdata/protocol-surface-v<N>.golden is a digest of every contract and of
-// the discovery shapes, so a frame that gains a field fails the tripwire until
-// this number moves and a new golden is written with it (ADR-0101, and
+// testdata/protocol-surface-v<N>.golden covers contracts, discovery shapes,
+// embedded shell integration and lifecycle wire sources. A surface change
+// fails until this number moves and a new golden is written (ADR-0104, and
 // protocol_surface_internal_test.go for the mechanism).
-const ProtocolVersion = 4
+const ProtocolVersion = 5
 
 // RequestHello is the one request this socket answers today. Naming it
 // rather than serving whatever arrives is what lets an unknown request be
