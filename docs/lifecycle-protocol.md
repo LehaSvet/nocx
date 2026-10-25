@@ -618,8 +618,18 @@ authority: it asks nocx to watch a pane the caller is already sitting in.
 
 ### 15.1.1 Launch configuration is resolved separately
 
-The shell sends `agent_launch_resolve` before `agent_enrol`. It names only the agent ID
-and a request ID. The response's `local` field means that local agent-record resolution
+The shell sends `agent_launch_resolve` before `agent_enrol`. It names the agent ID,
+a request ID, and optional `pane_path` and `pane_cwd` resolution context. With context,
+the record command resolves only against the pane's PATH and cwd, never the app's PATH.
+An empty supplied PATH is not an omitted PATH. Failure refuses the launch with its reason;
+there is no app-PATH fallback. An older shell that omits `pane_path` retains its existing
+resolution behavior. Command, arguments and launch environment still come only from the
+record. The digest, approval identity and launch payload all name the resolved absolute
+executable. These additive fields are private to the authenticated shell/coordinator
+channel, not the window/coordinator WebSocket or discovery surface. The coordinator
+supplies its shell scripts, so those two ends move together.
+
+The response's `local` field means that local agent-record resolution
 applies to this invocation; it does not claim that the transport itself is local. The
 backend sets it from the authenticated transport and its own worker-pane enrollment state,
 never from a shell assertion. An ordinary local shell launch resolves the current

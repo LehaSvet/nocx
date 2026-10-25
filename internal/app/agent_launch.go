@@ -212,7 +212,7 @@ func newAgentLaunchService(records *agentrecord.Store, transports *transportRegi
 	return &agentLaunchService{records: records, transports: transports, tickets: tickets}
 }
 
-func (s *agentLaunchService) Resolve(ctx context.Context, binding lifecyclepub.AgentLaunchBinding) (lifecyclepub.AgentLaunchResolution, error) {
+func (s *agentLaunchService) Resolve(ctx context.Context, binding lifecyclepub.AgentLaunchBinding, pane lifecyclepub.AgentLaunchContext) (lifecyclepub.AgentLaunchResolution, error) {
 	if s == nil || s.transports == nil {
 		return lifecyclepub.AgentLaunchResolution{Local: true}, errors.New("local agent launch is unavailable")
 	}
@@ -260,8 +260,20 @@ func (s *agentLaunchService) Resolve(ctx context.Context, binding lifecyclepub.A
 	if entry.Record.Disabled {
 		return refusal("this local agent is disabled")
 	}
-	executable, err := agentapproval.IdentityForExecutable(entry.Record.Command)
+	var executable agentapproval.Executable
+	var err error
+	if pane.Path == nil {
+		// Only an older shell omits context. Preserve its existing resolution
+		// behavior; a supplied (even empty) pane PATH must NEVER fall back to
+		// the GUI PATH and silently approve a different executable.
+		executable, err = agentapproval.IdentityForExecutable(entry.Record.Command)
+	} else {
+		executable, err = agentapproval.IdentityForExecutableInPath(entry.Record.Command, *pane.Path, pane.Cwd)
+	}
 	if err != nil {
+		if pane.Path != nil {
+			return refusal(fmt.Sprintf("the local agent executable could not be resolved in the pane: %s", err))
+		}
 		return refusal("the local agent executable could not be resolved")
 	}
 	argv := make([]string, 1, 1+len(entry.Record.Args))

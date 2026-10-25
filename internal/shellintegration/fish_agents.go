@@ -196,7 +196,13 @@ function __nocx_agent_resolve --argument-names agent
     set -gu __nocx_agent_waiting 1
     __nocx_launch_request_id
     set -gu __nocx_agent_resolve_rid "$__nocx_launch_rid"
-    __nocx_lc_send agent_launch_resolve /request string "$__nocx_agent_resolve_rid" /agent string "$agent"; or return 1
+    set -l pane_path ''
+    set -l pane_separator ''
+    for pane_entry in $PATH
+        set pane_path "$pane_path$pane_separator$pane_entry"
+        set pane_separator :
+    end
+    __nocx_lc_send agent_launch_resolve /request string "$__nocx_agent_resolve_rid" /agent string "$agent" /pane_path string "$pane_path" /pane_cwd string "$PWD"; or return 1
     __nocx_agent_resolve_answer "$__nocx_agent_resolve_rid"
 end
 

@@ -124,6 +124,63 @@ func IdentityForExecutable(command string) (Executable, error) {
 	return IdentityForPath(path)
 }
 
+// IdentityForExecutableInPath resolves using only the pane's search path. A
+// relative PATH entry (including an empty entry) is relative to the pane's cwd,
+// never the coordinator's cwd. Each candidate is made absolute before LookPath
+// checks its executable bit. LookPath therefore cannot consult the app PATH.
+func IdentityForExecutableInPath(command, path, cwd string) (Executable, error) {
+	// Preserve absolute path spelling, including symlinks and parent segments.
+	// Existing approvals use that spelling. Canonicalizing only pane launches
+	// would ask again after restart for the same file (for example on macOS,
+	// where a temporary directory can be reached through a symlink).
+	identity := func(candidate string) (Executable, error) {
+		resolved, err := exec.LookPath(candidate)
+		if err != nil {
+			return Executable{}, err
+		}
+		return IdentityForPath(resolved)
+	}
+	if filepath.IsAbs(command) {
+		return identity(command)
+	}
+	absolute := func(candidate string) (string, error) {
+		if filepath.IsAbs(candidate) {
+			return candidate, nil
+		}
+		if !filepath.IsAbs(cwd) {
+			return "", errors.New("agent approval: pane working directory is unavailable")
+		}
+		return cwd + string(filepath.Separator) + candidate, nil
+	}
+	if strings.ContainsRune(command, filepath.Separator) {
+		candidate, err := absolute(command)
+		if err != nil {
+			return Executable{}, err
+		}
+		return identity(candidate)
+	}
+	if command == "" {
+		return Executable{}, errors.New("agent approval: executable is not on the pane's PATH")
+	}
+	dirs := filepath.SplitList(path)
+	if path == "" {
+		dirs = []string{""} // Like the shell, an empty PATH searches the pane's cwd.
+	}
+	for _, dir := range dirs {
+		candidate, err := absolute(dir + string(filepath.Separator) + command)
+		if dir == "" {
+			candidate, err = absolute(command)
+		}
+		if err != nil {
+			return Executable{}, err
+		}
+		if executable, err := identity(candidate); err == nil {
+			return executable, nil
+		}
+	}
+	return Executable{}, errors.New("agent approval: executable is not on the pane's PATH")
+}
+
 // IdentityForPath returns the absolute path and content digest of one
 // executable. It does not defend against a same-uid process that can replace
 // the approved executable and arrange a matching digest; the runtime pin and
@@ -132,10 +189,17 @@ func IdentityForPath(path string) (Executable, error) {
 	if path == "" {
 		return Executable{}, errors.New("agent approval: executable path is empty")
 	}
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return Executable{}, fmt.Errorf("agent approval: canonical executable path: %w", err)
+	absolute := path
+	if !filepath.IsAbs(absolute) {
+		var err error
+		absolute, err = filepath.Abs(path)
+		if err != nil {
+			return Executable{}, fmt.Errorf("agent approval: absolute executable path: %w", err)
+		}
 	}
+	// Do not lexically clean an absolute path: link/../agent must traverse
+	// the symlink before its parent, exactly as exec does. Keeping the spelling
+	// also lets pane launches reuse approvals issued before a restart.
 	data, err := os.ReadFile(absolute) // #nosec G304 — the path is resolved executable identity.
 	if err != nil {
 		return Executable{}, fmt.Errorf("agent approval: read executable %q: %w", absolute, err)

@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -11,6 +13,7 @@ import (
 	"github.com/shady2k/nocx/internal/agentrecord"
 	"github.com/shady2k/nocx/internal/lifecycle"
 	"github.com/shady2k/nocx/internal/lifecyclepub"
+	"github.com/shady2k/nocx/internal/transport"
 )
 
 func testLaunchBinding(agent string) lifecyclepub.AgentLaunchBinding {
@@ -198,7 +201,7 @@ func TestAgentLaunchServiceReadsCurrentLocalRecordWithoutLeakingIt(t *testing.T)
 	tickets := newAgentLaunchTickets()
 	service := newAgentLaunchService(records, transports, tickets)
 	binding := lifecyclepub.AgentLaunchBinding{Transport: "local-transport", Lane: "lane-1", Domain: "domain-1", Epoch: 1, Agent: "myagent"}
-	resolved, resolveErr := service.Resolve(context.Background(), binding)
+	resolved, resolveErr := service.Resolve(context.Background(), binding, lifecyclepub.AgentLaunchContext{})
 	if resolveErr != nil {
 		t.Fatal(resolveErr)
 	}
@@ -225,7 +228,7 @@ func TestAgentLaunchServiceReadsCurrentLocalRecordWithoutLeakingIt(t *testing.T)
 	if err := records.Save("myagent", updated); err != nil {
 		t.Fatal(err)
 	}
-	next, nextErr := service.Resolve(context.Background(), binding)
+	next, nextErr := service.Resolve(context.Background(), binding, lifecyclepub.AgentLaunchContext{})
 	if nextErr != nil {
 		t.Fatal(nextErr)
 	}
@@ -259,7 +262,7 @@ func TestAgentLaunchServiceReturnsNamesOnlyForRemoteAndRefusesDisabledLocal(t *t
 	tickets := newAgentLaunchTickets()
 	service := newAgentLaunchService(records, transports, tickets)
 	local := lifecyclepub.AgentLaunchBinding{Transport: "local", Lane: "lane-local", Domain: "dom-local", Epoch: 1, Agent: "myagent"}
-	refused, err := service.Resolve(context.Background(), local)
+	refused, err := service.Resolve(context.Background(), local, lifecyclepub.AgentLaunchContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +271,7 @@ func TestAgentLaunchServiceReturnsNamesOnlyForRemoteAndRefusesDisabledLocal(t *t
 	}
 	remote := local
 	remote.Transport, remote.Lane, remote.Domain = "remote", "lane-remote", "dom-remote"
-	remoteResult, err := service.Resolve(context.Background(), remote)
+	remoteResult, err := service.Resolve(context.Background(), remote, lifecyclepub.AgentLaunchContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +303,7 @@ func TestAgentLaunchServiceDoesNotResolveWorkerSpawnCommandAsRecord(t *testing.T
 	service := newAgentLaunchService(records, transports, newAgentLaunchTickets())
 	service.workerLane = func(lane lifecycle.LaneID) bool { return lane == "worker-lane" }
 	binding := lifecyclepub.AgentLaunchBinding{Transport: "local-transport", Lane: "worker-lane", Domain: "domain-1", Epoch: 2, Agent: "myagent"}
-	resolved, err := service.Resolve(context.Background(), binding)
+	resolved, err := service.Resolve(context.Background(), binding, lifecyclepub.AgentLaunchContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +329,7 @@ func TestAgentLaunchServicePromisesNoToolSurfaceOnARemoteTransport(t *testing.T)
 	transports.register("remote-transport", transportKind{local: false})
 	service := newAgentLaunchService(nil, transports, newAgentLaunchTickets())
 	binding := lifecyclepub.AgentLaunchBinding{Transport: "remote-transport", Lane: "worker-lane", Domain: "domain-1", Epoch: 2, Agent: "myagent"}
-	resolved, err := service.Resolve(context.Background(), binding)
+	resolved, err := service.Resolve(context.Background(), binding, lifecyclepub.AgentLaunchContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +346,7 @@ type literalAgentLaunchResolver struct {
 	transports *transportRegistry
 }
 
-func (r literalAgentLaunchResolver) Resolve(_ context.Context, binding lifecyclepub.AgentLaunchBinding) (lifecyclepub.AgentLaunchResolution, error) {
+func (r literalAgentLaunchResolver) Resolve(_ context.Context, binding lifecyclepub.AgentLaunchBinding, _ lifecyclepub.AgentLaunchContext) (lifecyclepub.AgentLaunchResolution, error) {
 	if r.transports != nil {
 		r.transports.register(binding.Transport, transportKind{local: true})
 	}
@@ -354,3 +357,132 @@ func (literalAgentLaunchResolver) InvalidateBinding(lifecyclepub.AgentLaunchBind
 func (literalAgentLaunchResolver) InvalidateDomain(lifecycle.TransportID, lifecycle.LaneID, lifecycle.DomainID) {
 }
 func (literalAgentLaunchResolver) InvalidateTransport(lifecycle.TransportID) {}
+
+// A login shell can find an agent even when the application environment cannot.
+func TestAgentLaunchServiceUsesPanePathAndApprovesResolvedExecutable(t *testing.T) {
+	physicalDir := t.TempDir()
+	paneDir := filepath.Join(t.TempDir(), "agent-bin-link")
+	if err := os.Symlink(physicalDir, paneDir); err != nil {
+		t.Fatal(err)
+	}
+	command := filepath.Join(paneDir, "pane-only-agent")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { //nolint:gosec // executable fixture
+		t.Fatal(err)
+	}
+	shell := exec.Command("/bin/sh", "-c", "command -v pane-only-agent")
+	shell.Env = []string{"PATH=" + paneDir}
+	found, err := shell.Output()
+	if err != nil || strings.TrimSpace(string(found)) != command {
+		t.Fatalf("pane cannot find fixture: %q, %v", found, err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	records, err := agentrecord.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saveErr := records.Save("myagent", agentrecord.Document{Command: "pane-only-agent"}); saveErr != nil {
+		t.Fatal(saveErr)
+	}
+	transports := newTransportRegistry()
+	transports.register("local-transport", transportKind{local: true})
+	tickets := newAgentLaunchTickets()
+	service := newAgentLaunchService(records, transports, tickets)
+	binding := lifecyclepub.AgentLaunchBinding{Transport: "local-transport", Lane: "lane-1", Domain: "domain-1", Epoch: 1, Agent: "myagent"}
+	resolved, err := service.Resolve(context.Background(), binding, lifecyclepub.AgentLaunchContext{Path: &paneDir, Cwd: paneDir})
+	if err != nil || resolved.Ticket == "" {
+		t.Fatalf("pane found the executable but nocx refused it: %+v, %v", resolved, err)
+	}
+	snapshot, err := tickets.Begin(binding, resolved.Ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := agentapproval.IdentityForPath(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.executable != identity || snapshot.argv[0] != identity.Path {
+		t.Fatalf("approval and launch must name the pane's absolute executable: %+v, want %+v", snapshot, identity)
+	}
+	requester := &consentGateRequester{entered: make(chan transport.HostAsk, 1), answer: make(chan bool, 1)}
+	approval := approvalServiceForTest(t, requester)
+	pending := pendingOf(t, approval.ApproveResolved(context.Background(), "pane-custom", "myagent", snapshot.executable))
+	ask := <-requester.entered
+	if ask.Executable != identity.Path || ask.Digest != identity.SHA256 {
+		t.Fatalf("approval asked about %q/%q, want %+v", ask.Executable, ask.Digest, identity)
+	}
+	requester.answer <- true
+	if reason := settledOf(t, pending); reason != "" {
+		t.Fatalf("resolved executable approval failed: %s", reason)
+	}
+	if answer, ok := approval.store.Lookup(identity, agentapproval.Domain{Kind: agentapproval.DomainLocal}, approval.scope); !ok || answer != agentapproval.Granted {
+		t.Fatal("approval was not stored against the resolved absolute path and digest")
+	}
+
+	// A matching name on the GUI PATH must not rescue a failed pane lookup.
+	t.Setenv("PATH", paneDir)
+	missing := t.TempDir()
+	refused, err := service.Resolve(context.Background(), binding, lifecyclepub.AgentLaunchContext{Path: &missing, Cwd: missing})
+	if err != nil || refused.Ticket != "" || refused.Payload != "" || !strings.Contains(refused.Reason, "not on the pane's PATH") {
+		t.Fatalf("failed pane lookup fell back to GUI PATH or hid its reason: %+v, %v", refused, err)
+	}
+	// An older shell omits context; preserve its existing resolution behavior.
+	legacy, err := service.Resolve(context.Background(), binding, lifecyclepub.AgentLaunchContext{})
+	if err != nil || legacy.Ticket == "" {
+		t.Fatalf("older shell resolution changed: %+v, %v", legacy, err)
+	}
+}
+
+// A restored configured worker is launched through a newly integrated pane
+// shell. It carries that shell's PATH/cwd, and must reuse prior consent even
+// when an absolute PATH directory has a symlink spelling.
+func TestPaneAgentLaunchReusesApprovalIssuedBeforeRestart(t *testing.T) {
+	physicalDir := t.TempDir()
+	paneDir := filepath.Join(t.TempDir(), "agent-bin-link")
+	if err := os.Symlink(physicalDir, paneDir); err != nil {
+		t.Fatal(err)
+	}
+	command := filepath.Join(paneDir, "restart-agent")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { //nolint:gosec // executable fixture
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", paneDir)
+	requester := &consentGateRequester{entered: make(chan transport.HostAsk, 1), answer: make(chan bool, 1)}
+	docs := &approvalDocStore{}
+	first := approvalServiceOver(t, docs, requester)
+	pending := pendingOf(t, first.Approve(context.Background(), "pane-custom", "restart-agent"))
+	ask := <-requester.entered
+	requester.answer <- true
+	if reason := settledOf(t, pending); reason != "" {
+		t.Fatal(reason)
+	}
+
+	records, err := agentrecord.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saveErr := records.Save("myagent", agentrecord.Document{Command: "restart-agent"}); saveErr != nil {
+		t.Fatal(saveErr)
+	}
+	transports := newTransportRegistry()
+	transports.register("transport-1", transportKind{local: true})
+	tickets := newAgentLaunchTickets()
+	resolver := newAgentLaunchService(records, transports, tickets)
+	binding := testLaunchBinding("myagent")
+	resolved, err := resolver.Resolve(context.Background(), binding, lifecyclepub.AgentLaunchContext{Path: &paneDir, Cwd: paneDir})
+	if err != nil || resolved.Ticket == "" {
+		t.Fatalf("resolve restored agent: %+v, %v", resolved, err)
+	}
+	snapshot, err := tickets.Begin(binding, resolved.Ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.executable.Path != ask.Executable || snapshot.executable.SHA256 != ask.Digest || snapshot.argv[0] != ask.Executable {
+		t.Fatalf("restore changed the approved executable spelling: %+v, prior %q/%q", snapshot, ask.Executable, ask.Digest)
+	}
+	// Rehydrate the approval service over the same durable document. No new
+	// requester exists: a changed key is a refusal, not an unanswered dialog.
+	restarted := approvalServiceOver(t, docs, nil)
+	if approveErr := restarted.ApproveResolved(context.Background(), "pane-custom", "myagent", snapshot.executable); approveErr != nil {
+		t.Fatalf("restore did not reuse prior consent: %v", approveErr)
+	}
+}

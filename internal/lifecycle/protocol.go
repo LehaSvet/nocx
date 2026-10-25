@@ -402,11 +402,15 @@ type (
 		Reason string `json:"reason,omitempty"`
 	}
 
-	// AgentLaunchResolve requests the current record for an agent ID. It carries
-	// no executable, args or environment; the record store is the sole source.
+	// AgentLaunchResolve requests the current record for an agent ID. The record
+	// store owns command, args and environment. PanePath and PaneCwd describe
+	// only where that command is resolved, on the authenticated shell's host.
+	// A nil PanePath identifies an older shell, not an empty PATH.
 	AgentLaunchResolve struct {
 		RequestID RequestID `json:"request"`
 		Agent     string    `json:"agent"`
+		PanePath  *string   `json:"pane_path,omitempty"`
+		PaneCwd   string    `json:"pane_cwd,omitempty"`
 	}
 
 	// AgentLaunchResolved returns either a local record snapshot and an opaque
