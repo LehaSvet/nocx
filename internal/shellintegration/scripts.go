@@ -329,7 +329,9 @@ var (
 // protected native-startup adapter and Fish-specific generated launch hooks.
 // 66: same-shell lifecycle re-sources retain the authenticated channel and
 // sequence, and agents still run when the channel is unavailable (nocx-5qa8h).
-const version = "66"
+// 67: injected startup reserves the legacy load latch; remote publication
+// neutralises installer targets atomically rather than leaving a stale loader.
+const version = "67"
 
 // ScriptVersion is the integration script version other packages may read.
 // Command discovery puts it in its cache key (internal/commandnames): the
@@ -393,7 +395,7 @@ const gateLineBash = `# nocx terminal shell integration
 [[ -n "$NOCX_SHELL_INTEGRATION" ]] && source "$HOME/.nocx/shell-integration.bash"`
 
 // scripts maps installed filename → embedded script content. Every entry is
-// installed by EnsureInstalled and EnsureInstalledRemote; adding one means
+// installed locally by EnsureInstalled and retired on remote publication; adding one means
 // deciding its markers (scriptMarkers) and bumping `version`, or existing
 // installs never receive it.
 var scripts = map[string]string{

@@ -29,6 +29,9 @@ const zshEnvTemplate = `# nocx launcher zshenv — the .zshenv phase of the logi
 # points at the launcher's transient directory.
 __nocx_bootstrap="${ZDOTDIR}"
 @TRAP@
+# Stand down installer-era loaders throughout all user startup phases. The
+# rcfile releases this historical guard only for the injected current script.
+__nocx_loaded=1
 @CAPSRC@
 # THE LIFECYCLE CHANNEL MOVES OUT OF REACH OF USER CODE (nocx-1ebrs.8).
 #

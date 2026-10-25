@@ -149,6 +149,7 @@ func renderScript(raw string, names []string, delivery Delivery) string {
 	}
 	out = strings.ReplaceAll(out, toolSurfaceMarker, surface)
 	out = strings.ReplaceAll(out, "@NOCX_AGENT_TOKEN_ENV@", panebind.TokenEnvVar)
+	out = strings.ReplaceAll(out, "@NOCX_SCRIPT_VERSION@", version)
 	return stripShellComments(out, ShellBash)
 }
 
