@@ -7,7 +7,7 @@ the filesystem seam and counts calls across publish paths.
 ## Current maximum
 
 - Maximum filesystem-seam calls per publish: **63**.
-- Maximum bytes written per publish: **90,596**.
+- Maximum bytes written per publish: **91,008**.
 - Measured worst path: replacement plus sweep, with the launch carrier absent.
 - Fault position used for the reported worst case: `remove#4`.
 
@@ -78,3 +78,14 @@ in-band address lifetime correction. The archive and client stack are unchanged.
 The worst path remains replacement plus sweep with the launch carrier absent,
 at fault `remove#4`. All functional tests in that CI job passed; its only
 failure was the stale measured-byte constant, updated with this report.
+
+CI run `40226370660`, job `121268634002`, measured the final scripts at
+`452281925`: **91,008 bytes**, still **63 calls**. This is **412 bytes above**
+90,596. The growth is injected shell code (nocx-1kejz.2): startup reserves the
+legacy loader latch, the sourced script records its own version, and Bash
+parses its own quoted trap declarations instead of stripping quotes with text
+replacement. The archive and client stack are unchanged. The worst path remains
+replacement plus sweep with the launch carrier absent, at fault `remove#4`.
+`TestInjectedBashStartupPreservesUserExitTrap` and all other functional tests
+in this job passed; only the stale byte constant failed. This report and the
+constant are updated together from that observed final-tree measurement.
