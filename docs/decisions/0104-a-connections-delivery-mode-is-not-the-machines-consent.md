@@ -90,6 +90,11 @@ given and that it is remembered per machine.
   same host in the vault-key spec asserts the ask does not come again.
 - `git.open` on a `helper` connection whose machine has not answered no longer installs a
   binary: it treats `ConsentRequired` as `Refused` (ADR-0068), and the next connect asks.
+- A carried-over session is not re-adopted over a helper channel while its machine has not
+  answered, because re-adopting one opens that channel (ADR-0034). The pane reads
+  unreconciled and the refusal names the truth — "nocx has not been told", not "this machine
+  no longer consents", which would have been the opposite of what happened to every session
+  opened before this rule.
 - The per-connection `helperConsent` field itself is now unreachable from any surface and is
   read by no decision. Removing it — profile, patch path, backup projection, contracts and
   its tests — is ADR-0034's own unfulfilled consequence and is tracked as `nocx-jxcrt`
