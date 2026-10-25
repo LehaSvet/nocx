@@ -41,6 +41,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -96,7 +97,7 @@ type bundlePublisher interface {
 func (p *helperBundlePublisher) PublishBundle(ctx context.Context, host string, opts ...ssh.ConnectOption) error {
 	lease, err := p.probes.acquire(ctx, host, opts...)
 	if err != nil {
-		return fmt.Errorf("publish the shell integration bundle on %s: %w", host, err)
+		return publishFailure(host, shellintegration.PublishFailureConnection, err)
 	}
 	defer func() { _ = lease.Close() }()
 
@@ -106,15 +107,17 @@ func (p *helperBundlePublisher) PublishBundle(ctx context.Context, host string, 
 	// it had just been handed.
 	home, err := lease.Home(ctx)
 	if err != nil {
-		return fmt.Errorf("publish the shell integration bundle on %s: the far side's home directory could not be read: %w", host, err)
+		return publishFailure(host, shellintegration.PublishFailureHome,
+			fmt.Errorf("the far side's home directory could not be read: %w", err))
 	}
 	if home == "" {
-		return fmt.Errorf("publish the shell integration bundle on %s: the far side named no home directory", host)
+		return publishFailure(host, shellintegration.PublishFailureHome,
+			errors.New("the far side named no home directory"))
 	}
 
 	stream, err := p.channels.openChannel(ctx, proto.ChannelSFTP, host, opts)
 	if err != nil {
-		return fmt.Errorf("publish the shell integration bundle on %s: %w", host, err)
+		return publishFailure(host, shellintegration.PublishFailureFileTransfer, err)
 	}
 	// The stream is closed whatever the publish did: the helper holds a pooled
 	// reference for it, and a channel nobody closes is a connection the helper
@@ -123,18 +126,38 @@ func (p *helperBundlePublisher) PublishBundle(ctx context.Context, host string, 
 
 	client, err := pkgsftp.NewClientPipe(stream, stream)
 	if err != nil {
-		return fmt.Errorf("publish the shell integration bundle on %s: sftp client: %w", host, err)
+		return publishFailure(host, shellintegration.PublishFailureFileTransfer,
+			fmt.Errorf("sftp client: %w", err))
 	}
 	defer func() { _ = client.Close() }()
 
 	if err := p.publish.EnsureInstalledRemote(ctx, shellIntegrationSFTPFS{SFTPFS: ssh.NewSFTPFS(client)}, home); err != nil {
-		return fmt.Errorf("publish the shell integration bundle on %s: %w", host, err)
+		return publishFailure(host, shellintegration.PublishFailureWrite, err)
 	}
 	if p.log != nil {
 		p.log.Info("ssh: shell integration bundle published through this machine's helper",
 			"host", host, "home", home)
 	}
 	return nil
+}
+
+// publishFailure names WHY the bundle did not land, at the step that knows it
+// (nocx-1kejz.4).
+//
+// THE STEP IS THE INFORMATION. "The far side named no home directory" and "the
+// sftp channel was refused" are decided here, in six different branches, and a
+// classifier that read the finished error's text to tell them apart would break
+// the first time somebody reworded a message. So each branch states its own
+// reason and the underlying cause rides beneath it, where the log keeps it.
+//
+// The wrapped text is unchanged in KIND — "publish the shell integration bundle
+// on <host>: …" — because that is the sentence a defect report quotes and a log
+// line a person greps for. What is new is the classified reason after it, which
+// is the half the product may say and the half the raw chain never was
+// (nocx-viil: an SFTP status code and a path are meaningless in a pane).
+func publishFailure(host string, reason shellintegration.PublishFailureReason, cause error) error {
+	return fmt.Errorf("publish the shell integration bundle on %s: %w", host,
+		&shellintegration.PublishFailure{Reason: reason, Cause: cause})
 }
 
 // UninstallBundle removes the integration bundle from the remote account's

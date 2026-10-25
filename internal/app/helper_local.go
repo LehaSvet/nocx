@@ -869,6 +869,13 @@ func (o *localHelperOpener) openHostedOnce(ctx context.Context, cfg session.Conf
 		IntegrationShellVersion: shellVersion,
 		IntegrationStatus:       status,
 		IntegrationReason:       reason,
+		// The bundle's own outcome, and it is NOT part of the integration axis
+		// above (nocx-1kejz.4): a session whose copy did not land may still
+		// integrate from a generation already on the far side, so what the
+		// axis answers is still unknown at this point. The transport carries
+		// this to the pane as its own fact, which is why it rides beside the
+		// axis rather than inside it.
+		PublishFailure: res.PublishFailure,
 	}
 	if remote != nil {
 		out.Host = remote.Host
@@ -1003,10 +1010,19 @@ func (o *localHelperOpener) openSSH(ctx context.Context, spawn hostedSpawn, cfg 
 	//
 	// The FAILURE IS NOT A REFUSAL (design §6.1 step 5, §6.4): a publish that
 	// could not commit leaves any generation already there byte-identical, so
-	// the pane still opens and the far side decides for itself. It is logged
-	// with its own cause rather than reported as this open's error, because
-	// ADR-0004 makes an ordinary usable terminal the one thing no failure path
-	// may suppress.
+	// the pane still opens and the far side decides for itself. It is not
+	// reported as this open's error, because ADR-0004 makes an ordinary usable
+	// terminal the one thing no failure path may suppress.
+	//
+	// AND IT IS NOT SILENT EITHER (nocx-1kejz.4). The design's rule is that a
+	// failed publish decides nothing about the session — it is not a refusal —
+	// and that was read as "so the person need not be told", with a single
+	// slog line as the whole of the record. That is the soft degrade
+	// AGENTS.md refuses by name. So the cause is logged AND its classified
+	// reason rides the open's result out to the pane, which states what was
+	// not delivered and what the tab is doing instead; the design's ordering
+	// and its degrade are both untouched, because telling somebody about an
+	// outcome is not the same act as letting that outcome decide validity.
 	//
 	// KEEP THE CONNECTION ALIVE ACROSS THE PUBLISH AND THE SPAWN
 	// (nocx-xn63t.6.6). publishForPane's own reference is acquired and
@@ -1055,6 +1071,20 @@ func (o *localHelperOpener) openSSH(ctx context.Context, spawn hostedSpawn, cfg 
 			defer func() { _ = hold.Close() }()
 		}
 	}
+	// WHAT THE PERSON IS TOLD WHEN THE COPY DID NOT LAND (nocx-1kejz.4).
+	//
+	// The reason is taken HERE, at the branch that already had to decide
+	// whether this was a refusal or a degrade, and it rides the result out to
+	// the pane. Before it, the failure had exactly one destination — the log
+	// line below — and a person got a tab that behaved as though delivery had
+	// been configured while nocx knew it had not: the soft degrade AGENTS.md
+	// refuses, drawn by us.
+	//
+	// It is a REASON and never the error's text. A publish failure is an SFTP
+	// status code and a path, which is meaningful in a log and meaningless in
+	// a pane (nocx-viil), so the chain stays in the log line below and the
+	// vocabulary in internal/shellintegration is what crosses.
+	publishFailure := shellintegration.PublishFailureNone
 	if perr := o.publishForPane(ctx, cfg); perr != nil {
 		// AND A FAILED PUBLISH NEVER COSTS A SECOND AUTHENTICATION.
 		//
@@ -1078,9 +1108,10 @@ func (o *localHelperOpener) openSSH(ctx context.Context, spawn hostedSpawn, cfg 
 		// THE LOGGER IS OPTIONAL and the failure is not: a test that wires an
 		// opener without one must still get the fail-open behaviour below
 		// rather than a panic, so the log line is guarded rather than assumed.
+		publishFailure = shellintegration.PublishFailureReasonOf(perr)
 		if o.log != nil {
 			o.log.Warn("ssh pane: the shell integration bundle could not be published; the far side may find no generation",
-				"host", cfg.Host, "error", perr)
+				"host", cfg.Host, "reason", publishFailure, "error", perr)
 		}
 	}
 	params := proto.SSHSpawnParams{
@@ -1185,6 +1216,11 @@ func (o *localHelperOpener) openSSH(ctx context.Context, spawn hostedSpawn, cfg 
 	// The launch carried the bearer; this is the only place that learns which
 	// session it was for.
 	o.spawnTokens.record(res.Session.ID(), params.AgentToolToken)
+	// AND THE PANE IS TOLD WHAT DID NOT LAND (nocx-1kejz.4). Attached to a
+	// result that exists, because a pane that never opened has nobody to tell —
+	// and the open's own error, which is the right answer there, is already on
+	// its way back.
+	res.PublishFailure = publishFailure
 	// THE FINGERPRINT THIS SPAWN'S OWN HANDSHAKE JUST VERIFIED, read back by
 	// the storage identity it was resolved under (nocx-y6fh7 items 5, 6): the
 	// coordinator's verifyHostKey reverse handler recorded it moments ago, on

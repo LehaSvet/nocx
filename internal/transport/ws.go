@@ -43,6 +43,7 @@ import (
 	"github.com/shady2k/nocx/internal/profile"
 	"github.com/shady2k/nocx/internal/session"
 	"github.com/shady2k/nocx/internal/settings"
+	"github.com/shady2k/nocx/internal/shellintegration"
 	"github.com/shady2k/nocx/internal/snippet"
 	"github.com/shady2k/nocx/internal/ssh"
 	"github.com/shady2k/nocx/internal/transport/control"
@@ -1223,6 +1224,13 @@ type WSServer struct {
 	// whether the external coordinator can actually reach its tools.
 	toolSurfaceMu sync.Mutex
 	toolSurfaces  map[session.ID]toolSurfaceStatus
+	// publishFailures is the retained "the bundle did not land" fact, one
+	// reason per session (nocx-1kejz.4). Retained for the same reason the tool
+	// surface above is: the open settles before any pane may exist on the
+	// other side of the socket, and a person who reloads the window attaches
+	// to a session whose copy already failed.
+	publishMu       sync.Mutex
+	publishFailures map[session.ID]shellintegration.PublishFailureReason
 	// recoveryMu guards recoveries: the per-session restoration episodes
 	// (ADR-0024 decision 8). The episode opens when a lost fact with a
 	// recovery fence routes to a live session, and is cancelled when the
@@ -1881,6 +1889,18 @@ type HostedSessionOpen struct {
 	IntegrationShellVersion string
 	IntegrationStatus       string
 	IntegrationReason       ssh.RefusalReason
+	// PublishFailure is why this session's integration bundle did not reach
+	// the host, when the opener attempted the copy and it did not land
+	// (nocx-1kejz.4). Empty for a route that publishes nothing and for one
+	// whose copy succeeded.
+	//
+	// IT IS DELIBERATELY NOT IntegrationReason. That field is a fact about the
+	// session — did the shell integrate — and a failed copy settles nothing:
+	// the far side may hold a generation from an earlier publish and integrate
+	// from it perfectly. Carrying it on the axis would answer a question the
+	// axis has not been asked, which is the defect nocx-dvql removed from the
+	// open ack; carried beside it, it stays one fact with one owner.
+	PublishFailure shellintegration.PublishFailureReason
 	// ObserveOutputHoles installs the coordinator's handler for stretches of
 	// this session's output that never crossed the wire — the execution
 	// host's bounded window reclaimed them before this machine could receive
@@ -2031,6 +2051,7 @@ func NewWSServer(logger log.Logger, reg session.Registry, opts ...WSServerOption
 		heartbeatReadWindow:        DefaultHeartbeatReadWindow,
 		domainWaitTimeout:          DefaultDomainConflictWaitTimeout,
 		toolSurfaces:               make(map[session.ID]toolSurfaceStatus),
+		publishFailures:            make(map[session.ID]shellintegration.PublishFailureReason),
 		domainMaxQueue:             DefaultDomainMaxQueue,
 		domainQueueDepth:           DefaultDomainQueueDepth,
 		controlDrainTimeout:        defaultControlDrainTimeout,

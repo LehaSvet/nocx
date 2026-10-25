@@ -43,6 +43,7 @@ import (
 	"github.com/shady2k/nocx/internal/lifecyclechannel"
 	"github.com/shady2k/nocx/internal/log"
 	"github.com/shady2k/nocx/internal/session"
+	"github.com/shady2k/nocx/internal/shellintegration"
 	"github.com/shady2k/nocx/internal/ssh"
 )
 
@@ -124,6 +125,16 @@ type hostedSpawnResult struct {
 	// this is the departure.
 	DetachLifecycle    func()
 	ObserveOutputHoles func(func(lost uint64, reason string))
+	// PublishFailure is why this pane's integration bundle did not reach the
+	// host, when it did not (nocx-1kejz.4). EMPTY for a pane nothing was
+	// published for and for one whose copy landed.
+	//
+	// It rides the RESULT rather than the error because a failed publish is
+	// not this open's failure: the far side keeps any generation it already
+	// had and the pane opens as an ordinary terminal (design §6.1 step 5,
+	// ADR-0004). The result is therefore the only place the fact can be
+	// carried to the party that tells the person.
+	PublishFailure shellintegration.PublishFailureReason
 }
 
 // spawnFunc is the ONE act that differs between the panes this opener hosts:
