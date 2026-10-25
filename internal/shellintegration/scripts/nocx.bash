@@ -1154,7 +1154,12 @@ __nocx_agent_launch_resolve() {
 __nocx_agent_launch_resolve_answer() {
     local __agent="$1" __rid="a-$__nocx_lc_dom-$(( __nocx_agent_n++ ))" __rc
     __nocx_agent_launch_agent="$__agent"
-    __nocx_lc_send agent_launch_resolve ',"request":"'"$__rid"'","agent":"'"$__agent"'"' || return 1
+    local __pane_path __pane_cwd
+    __nocx_lc_json_escape "${PATH-}" || return 1
+    __pane_path="$__nocx_lc_json_escaped"
+    __nocx_lc_json_escape "$PWD" || return 1
+    __pane_cwd="$__nocx_lc_json_escaped"
+    __nocx_lc_send agent_launch_resolve ',"request":"'"$__rid"'","agent":"'"$__agent"'","pane_path":"'"$__pane_path"'","pane_cwd":"'"$__pane_cwd"'"' || return 1
     __nocx_agent_launch_read_answer "$__rid"
     __rc=$?
     (( __rc == 0 )) || return $__rc

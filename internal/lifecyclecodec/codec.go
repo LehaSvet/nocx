@@ -347,10 +347,12 @@ type wireEnvelope struct {
 	Enrolled bool    `json:"enrolled,omitempty"`
 	// Pending is a value for the same reason: absent is "not waiting", so
 	// only a frame that says so holds a shell on a question (nocx-cyhfw).
-	Pending bool    `json:"pending,omitempty"`
-	Reason  *string `json:"reason,omitempty"`
-	Ticket  *string `json:"ticket,omitempty"`
-	Payload *string `json:"payload,omitempty"`
+	Pending  bool    `json:"pending,omitempty"`
+	Reason   *string `json:"reason,omitempty"`
+	Ticket   *string `json:"ticket,omitempty"`
+	Payload  *string `json:"payload,omitempty"`
+	PanePath *string `json:"pane_path,omitempty"`
+	PaneCwd  *string `json:"pane_cwd,omitempty"`
 	// Local is a backend-generated classification, not a caller assertion.
 	Local bool `json:"local"`
 	// ToolSurface is the second, independent classification: this launch runs
@@ -470,6 +472,8 @@ func decodeEnvelope(w *wireEnvelope) (lifecycle.Envelope, error) {
 		env.Event.AgentLaunchResolve = &lifecycle.AgentLaunchResolve{
 			RequestID: lifecycle.RequestID(str(w.Request)),
 			Agent:     str(w.Agent),
+			PanePath:  w.PanePath,
+			PaneCwd:   str(w.PaneCwd),
 		}
 	case lifecycle.KindAgentLaunchResolved:
 		env.Event.AgentLaunchResolved = &lifecycle.AgentLaunchResolved{
@@ -619,6 +623,10 @@ func Encode(w io.Writer, env lifecycle.Envelope) (int, error) {
 		if p := env.Event.AgentLaunchResolve; p != nil {
 			we.Request = new(string(p.RequestID))
 			we.Agent = new(p.Agent)
+			we.PanePath = p.PanePath
+			if p.PaneCwd != "" {
+				we.PaneCwd = new(p.PaneCwd)
+			}
 		}
 	case lifecycle.KindAgentLaunchResolved:
 		if p := env.Event.AgentLaunchResolved; p != nil {

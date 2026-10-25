@@ -13,12 +13,14 @@ type fakeLaunchResolver struct {
 	result       lifecyclepub.AgentLaunchResolution
 	err          error
 	bindings     []lifecyclepub.AgentLaunchBinding
+	contexts     []lifecyclepub.AgentLaunchContext
 	cancelled    []string
 	cancelBounds []lifecyclepub.AgentLaunchBinding
 }
 
-func (r *fakeLaunchResolver) Resolve(_ context.Context, binding lifecyclepub.AgentLaunchBinding) (lifecyclepub.AgentLaunchResolution, error) {
+func (r *fakeLaunchResolver) Resolve(_ context.Context, binding lifecyclepub.AgentLaunchBinding, pane lifecyclepub.AgentLaunchContext) (lifecyclepub.AgentLaunchResolution, error) {
 	r.bindings = append(r.bindings, binding)
+	r.contexts = append(r.contexts, pane)
 	return r.result, r.err
 }
 
@@ -55,7 +57,11 @@ func launchResolveEvent(rid lifecycle.RequestID, agent string) lifecycle.Event {
 func TestLocalLaunchResolutionUsesAuthenticatedBindingAndReturnsData(t *testing.T) {
 	resolver := &fakeLaunchResolver{result: lifecyclepub.AgentLaunchResolution{Local: true, ToolSurface: true, Ticket: "0123456789abcdef0123456789abcdef0123456789A", Payload: "v1\n1\n2f62696e2f6167656e74\n0\n"}}
 	pub, port, handle := establishedLaunchPublisher(t, resolver)
-	mustIngest(t, pub, "T", env("L", handle, 2, launchResolveEvent("r-resolve-0", "myagent")))
+	request := launchResolveEvent("r-resolve-0", "myagent")
+	panePath := "/pane/bin:/usr/bin"
+	request.AgentLaunchResolve.PanePath = &panePath
+	request.AgentLaunchResolve.PaneCwd = "/pane/work"
+	mustIngest(t, pub, "T", env("L", handle, 2, request))
 
 	answer := answerFrom(t, port, lifecycle.KindAgentLaunchResolved).Event.AgentLaunchResolved
 	if answer == nil || !answer.Local || answer.Agent != "myagent" || answer.RequestID != "r-resolve-0" {
@@ -70,6 +76,9 @@ func TestLocalLaunchResolutionUsesAuthenticatedBindingAndReturnsData(t *testing.
 	want := lifecyclepub.AgentLaunchBinding{Transport: "T", Lane: "L", Domain: handle.Domain, Epoch: handle.Epoch, Agent: "myagent"}
 	if len(resolver.bindings) != 1 || resolver.bindings[0] != want {
 		t.Fatalf("resolver binding = %+v, want authenticated binding %+v", resolver.bindings, want)
+	}
+	if len(resolver.contexts) != 1 || resolver.contexts[0].Path == nil || *resolver.contexts[0].Path != panePath || resolver.contexts[0].Cwd != "/pane/work" {
+		t.Fatalf("pane resolution context was lost: %+v", resolver.contexts)
 	}
 }
 

@@ -12,6 +12,8 @@ func TestAgentLaunchEventsRoundTripDataFields(t *testing.T) {
 	ticket := "0123456789abcdef0123456789abcdef0123456789A"
 	cases := []lifecycle.Event{
 		{Kind: lifecycle.KindAgentLaunchResolve, AgentLaunchResolve: &lifecycle.AgentLaunchResolve{RequestID: "r-launch-1", Agent: "myagent"}},
+		{Kind: lifecycle.KindAgentLaunchResolve, AgentLaunchResolve: &lifecycle.AgentLaunchResolve{RequestID: "r-pane", Agent: "myagent", PanePath: new("/pane/bin:/usr/bin"), PaneCwd: "/pane/work"}},
+		{Kind: lifecycle.KindAgentLaunchResolve, AgentLaunchResolve: &lifecycle.AgentLaunchResolve{RequestID: "r-empty-path", Agent: "myagent", PanePath: new(""), PaneCwd: "/pane/work"}},
 		{Kind: lifecycle.KindAgentLaunchResolved, AgentLaunchResolved: &lifecycle.AgentLaunchResolved{RequestID: "r-launch-1", Agent: "myagent", Local: true, ToolSurface: true, Ticket: ticket, Payload: "v1\n2\n2f62696e2f6167656e74\n"}},
 		{Kind: lifecycle.KindAgentLaunchResolved, AgentLaunchResolved: &lifecycle.AgentLaunchResolved{RequestID: "r-launch-2", Agent: "myagent", Local: false}},
 		// The worker-literal classification: no record, and a surface, in one

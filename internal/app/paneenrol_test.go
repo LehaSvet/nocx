@@ -445,7 +445,7 @@ func TestWorkerLaunchPredicateResolvesPaneAndHandsOffEnrolment(t *testing.T) {
 	resolver := newAgentLaunchService(records, transports, newAgentLaunchTickets())
 	resolver.workerLane = paneEnrol.isWorkerLaunch
 	binding := testLaunchBinding("claude")
-	resolved, resolveErr := resolver.Resolve(ctx, binding)
+	resolved, resolveErr := resolver.Resolve(ctx, binding, lifecyclepub.AgentLaunchContext{})
 	if resolveErr != nil {
 		t.Fatal(resolveErr)
 	}

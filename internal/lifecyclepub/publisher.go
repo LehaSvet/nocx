@@ -374,10 +374,17 @@ type AgentLaunchResolution struct {
 	Reason      string
 }
 
+// AgentLaunchContext is resolution input, not part of the ticket's authority
+// binding. A shell cannot choose its transport, lane, domain or epoch here.
+type AgentLaunchContext struct {
+	Path *string
+	Cwd  string
+}
+
 // AgentLaunchResolver owns the agent-record lookup and ticket lifecycle.
 // Cancel is idempotent and best effort; it receives the authenticated binding.
 type AgentLaunchResolver interface {
-	Resolve(ctx context.Context, binding AgentLaunchBinding) (AgentLaunchResolution, error)
+	Resolve(ctx context.Context, binding AgentLaunchBinding, pane AgentLaunchContext) (AgentLaunchResolution, error)
 	Cancel(binding AgentLaunchBinding, ticket string)
 	InvalidateBinding(binding AgentLaunchBinding)
 	InvalidateDomain(transport lifecycle.TransportID, lane lifecycle.LaneID, domain lifecycle.DomainID)
@@ -694,7 +701,7 @@ func (p *Publisher) answerAgentLaunchResolve(ctx context.Context, transport life
 			ans.Local = true
 			ans.ToolSurface = false
 			ans.Reason = "local agent launch resolution is not wired"
-		} else if resolved, err := p.agentLaunchResolver.Resolve(ctx, binding); err != nil {
+		} else if resolved, err := p.agentLaunchResolver.Resolve(ctx, binding, AgentLaunchContext{Path: req.PanePath, Cwd: req.PaneCwd}); err != nil {
 			ans.Local = true
 			ans.ToolSurface = false
 			ans.Reason = "the local agent record could not be resolved"

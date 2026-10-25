@@ -779,6 +779,11 @@ func agentWrapperRunsTheResolvedRecordArgsAndEnvironment(t *testing.T, start nes
 		t.Fatalf("type configured agent: %v", err)
 	}
 	resolve := waitForEvent(t, k, "agent_launch_resolve")
+	panePath, pathOK := resolve.Body["pane_path"].(string)
+	paneCwd, cwdOK := resolve.Body["pane_cwd"].(string)
+	if !pathOK || panePath == "" || !cwdOK || !filepath.IsAbs(paneCwd) {
+		t.Fatalf("shell omitted pane resolution context: %+v", resolve.Body)
+	}
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && !hasEvent(k, "agent_enrol") {
 		time.Sleep(25 * time.Millisecond)
