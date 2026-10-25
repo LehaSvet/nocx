@@ -314,3 +314,29 @@ func TestGeometryCommitDoesNotRepairARewrittenOutputPrefix(t *testing.T) {
 		}
 	}
 }
+
+// A cursor above rewritten output must not make the prefix's shorter visible
+// suffix look unchanged and allow reflow to bless the rows below that cursor.
+func TestGeometryCommitChecksThePrefixBelowTheCursor(t *testing.T) {
+	s, rs := streamSession(t, harnessGeometry(80, 24))
+	if err := s.Ingest([]byte("$ cmd\r\n$ cmd\r\n$ cmd\r\n" + outputMarkerFixed)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Ingest([]byte("\x1b[1A\x1b[2KUP\x1b[1A")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CommitGeometry(harnessGeometry(100, 24)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Ingest([]byte("\x1b[2B")); err != nil {
+		t.Fatal(err)
+	}
+	nonce := obsNonce(0x7a)
+	s.Completed(s.Incarnation(), nonce, 0)
+	if err := s.Ingest([]byte(fenceFor(0x7a))); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedRowsFor(t, rs, nonce); strings.Join(got, "|") != "UP" {
+		t.Fatalf("stored %q, want exactly UP: output below the parked cursor was rewritten", got)
+	}
+}

@@ -180,8 +180,14 @@ func (s *Session) refreshOutputPrefixesLocked() {
 		}
 		y, err := pin.ActiveRow()
 		top := boundaryRowsTop(scr)
+		if err != nil || y < top || y > len(scr.Lines) {
+			return outputPrefixBasis{}
+		}
+		// Eligibility covers the whole prefix, even when a program parked
+		// its cursor above a row it rewrote. The closing-screen slice ends
+		// at that cursor and would silently clamp away the changed row.
 		return outputPrefixBasis{
-			Standing: err == nil && outputPrefixStands(boundaryRowsThatLeave(scr), max(y-top, 0), prefix),
+			Standing: outputPrefixStands(scr.Lines[top:y], y-top, prefix),
 			Row:      y,
 			Top:      top,
 		}
