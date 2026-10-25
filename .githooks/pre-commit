@@ -203,13 +203,33 @@ fi
 # on cgo rather than on anything the author wrote. Computed the same way
 # the Makefile computes WAILS_PLATFORM_TAGS, and empty off Linux, where
 # the default path already resolves.
+#
+# A CAP ON BOTH AXES, and both are deliberate (nocx-h9gsl). Measured during a
+# commit on 2026-10-25: this run reached 1.8 GB RSS and about 248% CPU on a
+# 12 GB box that several agent worktrees share, which is enough to starve every
+# other session committing on it. So the run gets a soft heap bound and a
+# bounded number of analysed packages at once:
+#   GOMEMLIMIT      the Go runtime collects harder as the heap approaches it and
+#                   slows down instead of dying, so this is a bound and not a
+#                   kill switch; the Makefile's lint leg carries the same kind of
+#                   bound for the merged-tree gate (GOLANGCI_GOMEMLIMIT,
+#                   nocx-n7yrq), and its probe is where the soft-limit reasoning
+#                   comes from.
+#   --concurrency   how many packages are typechecked at once; it changes the
+#                   CPU and the peak, never which packages or linters run.
+# Neither changes what is checked: same ./... scope, same build tags, same
+# linters, same failure semantics. Both are overridable for a run that wants
+# more speed or less memory, without editing this file:
+#   NOCX_LINT_GOMEMLIMIT=1500MiB NOCX_LINT_CONCURRENCY=4 git commit ...
 if [ "$RUN_GO" = 1 ]; then
     GOLANGCI_TAGS=""
     if [ "$(go env GOOS)" = "linux" ] && pkg-config --exists webkit2gtk-4.1 2>/dev/null; then
         GOLANGCI_TAGS="--build-tags=gtk3"
     fi
     # shellcheck disable=SC2086 # GOLANGCI_TAGS must word-split away when empty.
-    host_gate "golangci-lint" golangci-lint run $GOLANGCI_TAGS ./...
+    GOMEMLIMIT="${NOCX_LINT_GOMEMLIMIT:-1GiB}" \
+        host_gate "golangci-lint" \
+        golangci-lint run --concurrency "${NOCX_LINT_CONCURRENCY:-2}" $GOLANGCI_TAGS ./...
 else
     ok "golangci-lint — skipped (no Go changes staged)"
 fi

@@ -141,6 +141,10 @@ type observationOpen struct {
 	// only while they still read as that, never output that overwrote them
 	// in place (outputPrefixStandsLocked, nocx-2v80t.7).
 	OutputPrefix []emulator.Row
+	// OutputPrefixBasis is refreshed by refreshOutputPrefixesLocked after
+	// ingest and before resize, and carried through splits and parking.
+	// reflowOutputPrefixesLocked consumes its last primary-screen evidence.
+	OutputPrefixBasis outputPrefixBasis
 }
 
 // takeObservationScreenLocked reads one instant of the emulator. It assumes
@@ -603,6 +607,7 @@ func (s *Session) parkObservationLocked(nonce FenceNonce) {
 		OutputScreenAnchor:   o.OutputScreenAnchor,
 		OutputStartTrack:     o.OutputStartTrack,
 		OutputPrefix:         o.OutputPrefix,
+		OutputPrefixBasis:    o.OutputPrefixBasis,
 	}
 }
 
@@ -1051,6 +1056,7 @@ func (s *Session) sightEraseDisplayLocked() {
 	}
 	releaseTrack(o.OutputStartTrack)
 	o.OutputStartTrack, o.OutputPrefix = nil, nil
+	o.OutputPrefixBasis = outputPrefixBasis{}
 	o.OutputStartRow, o.OutputMarkDeparted = 0, s.screenDepartedRows
 	o.OutputStartStreamRow = s.departedRows
 }
@@ -1238,7 +1244,8 @@ func (s *Session) outputStartSkipLocked(pin emulator.RowTrack, prefix []emulator
 //
 // Compared row by row against the prefix's tail at the same positions, which
 // is what skip already assumes: when a commit re-laid the rows the prefix
-// tail no longer lines up, and the answer is zero, as before this function.
+// tail no longer lines up unless the standing prefix was repaired at the
+// commit (reflowOutputPrefixesLocked).
 func untouchedPrefixRows(rows []emulator.Row, skip int, prefix []emulator.Row) int {
 	skip = min(skip, len(rows))
 	if skip > len(prefix) {
@@ -1261,9 +1268,9 @@ func sameRowText(a, b emulator.Row) bool {
 // outputPrefixStands says the first skip rows of a closing screen are still
 // the tail of the prefix the output mark saw — the rows that have not left
 // yet, however a commit re-laid them. It compares logical lines, not rows: a
-// reflow splits and joins rows but keeps each line's cells, so a line's text
-// is the same at any width once only its end is trimmed. A prefix that no
-// longer stands was rewritten in place — an erase and the command's own
+// reflow splits and joins rows; a commit repairs the standing prefix from
+// its pin so changes to the visible top still compare at the same geometry.
+// A prefix that no longer stands was rewritten in place — an erase and the command's own
 // output over it (nocx-2v80t.7) — and none of those rows is the prefix.
 func outputPrefixStands(rows []emulator.Row, skip int, prefix []emulator.Row) bool {
 	if skip > len(rows) {
@@ -1387,6 +1394,8 @@ type observationCapture struct {
 	OutputStartTrack emulator.RowTrack
 	// OutputPrefix goes with the pin, for the same reason.
 	OutputPrefix []emulator.Row
+	// OutputPrefixBasis travels with the pin, including an undone split.
+	OutputPrefixBasis outputPrefixBasis
 	// OutputSkip is the closing screen's cut, measured from the pin at the
 	// split — the instant Closing was read — so no later commit can move it.
 	OutputSkip int
@@ -1432,6 +1441,7 @@ func (s *Session) splitObservationAtFenceLocked(rebase FenceNonce) *observationC
 		OutputScreenAnchor:   o.OutputScreenAnchor,
 		OutputStartTrack:     o.OutputStartTrack,
 		OutputPrefix:         o.OutputPrefix,
+		OutputPrefixBasis:    o.OutputPrefixBasis,
 	}
 	if scr, ok := s.takeObservationScreenLocked(); ok {
 		cap.Closing = scr
@@ -1583,6 +1593,7 @@ func (s *Session) returnObservationCaptureLocked(cap *observationCapture) {
 			OutputScreenAnchor:   cap.OutputScreenAnchor,
 			OutputStartTrack:     cap.OutputStartTrack,
 			OutputPrefix:         cap.OutputPrefix,
+			OutputPrefixBasis:    cap.OutputPrefixBasis,
 		}
 		return
 	}
@@ -1600,6 +1611,7 @@ func (s *Session) returnObservationCaptureLocked(cap *observationCapture) {
 	releaseTrack(o.OutputStartTrack)
 	o.OutputStartTrack = cap.OutputStartTrack
 	o.OutputPrefix = cap.OutputPrefix
+	o.OutputPrefixBasis = cap.OutputPrefixBasis
 }
 
 func cloneObservationRows(rows []emulator.Row) []emulator.Row {

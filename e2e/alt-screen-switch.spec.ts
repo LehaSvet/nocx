@@ -400,22 +400,50 @@ for (const timing of ['before', 'during', 'after']) {
         // variant failed intermittently on the release runner: the probe's
         // intent could land between the later resize's send and its answer,
         // and the assertion called that a painted-frame release.
+        // …but the receipt that RELEASES the fence need not belong to the
+        // switch's own request (nocx-u1dts). In the "during the resize"
+        // variant the viewport changes while the switch is being accepted: the
+        // fence sends its resize and the settle timer sends a second one, so
+        // the first is superseded (-32013) and the fence opens on the SECOND
+        // request's applied receipt. Requiring the first request's receipt
+        // failed a variant in which the product behaved exactly as designed.
+        //
+        // THE GUARANTEE IS UNCHANGED: no input may reach the program before an
+        // applied receipt released the fence, whatever request carried it.
         const switchResizeId = postSwitch[firstResize].id
-        const switchReceipt = postSwitch.findIndex(
+        const fenceRelease = postSwitch.findIndex(
           (event, index) =>
             index > firstResize &&
             event.kind === 'resize-receipt' &&
-            event.id === switchResizeId &&
             'result' in event &&
             !event.error,
         )
-        expect(switchReceipt, "the switch's own resize applied").toBeGreaterThan(firstResize)
+        expect(fenceRelease, 'an applied resize receipt released the switch fence').toBeGreaterThan(
+          firstResize,
+        )
         expect(
           postSwitch
-            .slice(firstResize + 1, switchReceipt)
+            .slice(firstResize + 1, fenceRelease)
             .filter((event) => event.kind === 'send' && event.method === 'session.intent'),
-          'no input may reach the program between the switch resize and its applied receipt',
+          'no input may reach the program between the switch resize and the applied receipt that released it',
         ).toHaveLength(0)
+        // And when the switch's own request was superseded, say so explicitly
+        // rather than tolerating it: the release belongs to a newer request and
+        // the earlier one was answered without a result.
+        if (postSwitch[fenceRelease].id !== switchResizeId) {
+          const superseded = postSwitch.findIndex(
+            (event, index) =>
+              index > firstResize &&
+              index < fenceRelease &&
+              event.kind === 'resize-receipt' &&
+              event.id === switchResizeId &&
+              ('error' in event || !('result' in event)),
+          )
+          expect(
+            superseded,
+            'a superseded switch resize is answered, not silently dropped',
+          ).toBeGreaterThan(firstResize)
+        }
         const pointerReports: string[] = []
         for (const event of postSwitch) {
           if (event.kind !== 'send' || event.method !== 'session.intent') continue

@@ -1,9 +1,11 @@
 package sessionruntime
 
 import (
+	"context"
 	"sort"
 
 	"github.com/shady2k/nocx/internal/emulator"
+	"github.com/shady2k/nocx/internal/log"
 )
 
 // A GEOMETRY COMMIT RE-LAYS THE ROWS THE BOUNDARY BOOKKEEPING NAMES
@@ -24,9 +26,9 @@ import (
 // [emulator.RowTrack] pins the window and the output mark already hold, which
 // follow their rows through the reflow — never by re-matching text.
 
-// reflowBoundaryLocked brings the suppression windows up to the geometry
-// just committed. The output mark needs nothing here: its cut is read from
-// its pin when the closing screen is read (outputStartSkipLocked).
+// reflowBoundaryLocked brings the suppression windows and output prefixes
+// up to the geometry just committed. The pin locates the cut, but the prefix
+// must describe that same geometry for outputPrefixStands (nocx-l3evv).
 //
 // While the alternate screen holds the pane the primary's rows were re-laid
 // out too, but no pin on them can be located (RowTrack.ActiveRow answers
@@ -39,6 +41,7 @@ func (s *Session) reflowBoundaryLocked() {
 		return
 	}
 	s.reflowOwed = false
+	s.reflowOutputPrefixesLocked()
 	s.pendingScreen = s.reflowWindowLocked(s.pendingScreen)
 	// A capture holding its sighting's window keeps the window it replaced,
 	// to put back if nobody authenticates the fence; that one names the same
@@ -144,4 +147,91 @@ func (s *Session) logicalLineLocked(y int) (first, last int) {
 		last++
 	}
 	return first, last
+}
+
+// outputPrefixBasis is the last observable primary-screen eligibility and
+// its coordinates. refreshOutputPrefixesLocked writes it; sightEraseDisplayLocked
+// clears it. Transfers between an open observation and a capture preserve it.
+type outputPrefixBasis struct {
+	Standing bool
+	Row      int
+	Top      int
+}
+
+// refreshOutputPrefixesLocked remembers the last primary-screen check before
+// a resize. Alternate-screen reads cannot confirm primary pins and leave the
+// last check alone, so a commit there can pay its repair when primary returns.
+//
+// Limitation (nocx-7epsi, follow-up to nocx-l3evv): a rewrite followed by
+// 1049h in one sub-feed leaves no observable primary state: its pins now
+// answer ErrUnsupported. A primary rewrite in the sub-feed restoring it also
+// precedes the owed repair's first readable screen. Retaining the last
+// eligibility fixes the unchanged-prefix P0, but cannot detect those rewrites.
+// An emulator transition observation must close this gap, not a raw byte
+// sniff. A changed boundary top still declines repair conservatively.
+func (s *Session) refreshOutputPrefixesLocked() {
+	scr, ok := s.takeObservationScreenLocked()
+	if !ok || scr.AltScreen {
+		return
+	}
+	check := func(pin emulator.RowTrack, prefix []emulator.Row) outputPrefixBasis {
+		if pin == nil {
+			return outputPrefixBasis{}
+		}
+		y, err := pin.ActiveRow()
+		top := boundaryRowsTop(scr)
+		if err != nil || y < top || y > len(scr.Lines) {
+			return outputPrefixBasis{}
+		}
+		// Eligibility covers the whole prefix, even when a program parked
+		// its cursor above a row it rewrote. The closing-screen slice ends
+		// at that cursor and would silently clamp away the changed row.
+		return outputPrefixBasis{
+			Standing: outputPrefixStands(scr.Lines[top:y], y-top, prefix),
+			Row:      y,
+			Top:      top,
+		}
+	}
+	if o := s.observation; o != nil {
+		o.OutputPrefixBasis = check(o.OutputStartTrack, o.OutputPrefix)
+	}
+	for _, e := range s.rendezvous {
+		if c := e.captured; c != nil {
+			c.OutputPrefixBasis = check(c.OutputStartTrack, c.OutputPrefix)
+		}
+	}
+}
+
+// reflowOutputPrefixesLocked repairs only prefixes that stood before the
+// reflow. Re-reading a rewritten prefix would bless the command's own output
+// as old content and hide it. A capture's frozen Closing and OutputSkip stay
+// untouched; its prefix is for a possible return to the open interval.
+func (s *Session) reflowOutputPrefixesLocked() {
+	scr, ok := s.takeObservationScreenLocked()
+	if !ok || scr.AltScreen {
+		return
+	}
+	repair := func(pin emulator.RowTrack, prefix []emulator.Row, basis outputPrefixBasis) []emulator.Row {
+		top := boundaryRowsTop(scr)
+		if !basis.Standing || pin == nil || basis.Top != top || basis.Row < basis.Top {
+			return prefix
+		}
+		y, err := pin.ActiveRow()
+		if err != nil || y < top || y > len(scr.Lines) {
+			return prefix
+		}
+		log.From(context.Background()).Debug("reflowed output prefix",
+			"session", s.inc.Session, "generation", s.inc.Generation,
+			"prior_pin_row", basis.Row, "pin_row", y, "boundary_top", top,
+			"prior_prefix_rows", len(prefix), "prefix_rows", y-top)
+		return cloneObservationRows(scr.Lines[top:y])
+	}
+	if o := s.observation; o != nil {
+		o.OutputPrefix = repair(o.OutputStartTrack, o.OutputPrefix, o.OutputPrefixBasis)
+	}
+	for _, e := range s.rendezvous {
+		if c := e.captured; c != nil {
+			c.OutputPrefix = repair(c.OutputStartTrack, c.OutputPrefix, c.OutputPrefixBasis)
+		}
+	}
 }
