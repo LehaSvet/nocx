@@ -12,11 +12,10 @@ import (
 
 // Stopping an incompatible coordinator: the sharp end of D4.
 //
-// A1 may kill the old coordinator and lose its sessions — graceful,
-// session-preserving handover is A2. What A1 may not do is be quiet about
-// it, which is why the launcher announces the loss BEFORE it calls in here
-// (launcher.go) rather than after: a stop that then fails must still leave
-// the person told what was attempted.
+// Protocol-incompatibility replacement retains its existing notice. A
+// wire-compatible Version takeover (ADR-0104) logs without that notice:
+// coordinator shutdown detaches helper-owned sessions, never ends them.
+// Only the coordinator process is signalled here, not any helper daemon.
 
 // Stopper ends a running coordinator. An interface because the launcher's
 // refusal path has to be testable without putting a process on the machine

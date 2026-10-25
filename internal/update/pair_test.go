@@ -86,15 +86,11 @@ func assertNotFinalised(t *testing.T, installPath, jp string) {
 // Acceptance 1 — the sequence, end to end
 // ---------------------------------------------------------------------------
 
-// TestReportHealthy_OldCompatibleCoordinator_HoldsTheUpdateWithoutRollback
-// is ADR-0101's held state, end to end. The bundle was swapped, the window
-// restarted on the new version, and the coordinator that outlived the window
-// is an OLDER one this window's launcher deliberately kept — protocol
-// compatible, version different. Health is refused as a CERTIFICATION (the
-// new server has not run), but the pair is held, not wrong: the journal
-// records the hold, the launch counter resets, and no number of further
-// launches rolls a build whose UI keeps proving itself healthy against a
-// coordinator the accepted decision told it to keep.
+// The ADR-0101 held-pair safeguard remains for already attached windows.
+// New launchers take over across Version differences (ADR-0104), but a
+// health report from a pre-existing pair must still preserve rollback until
+// the installed coordinator runs. This is updater acceptance, not permission
+// for the current launcher to reuse an older Version.
 func TestReportHealthy_OldCompatibleCoordinator_HoldsTheUpdateWithoutRollback(t *testing.T) {
 	ctx := context.Background()
 	installPath, jp := pendingUpdate(t, "0.1.0", "0.2.0")
@@ -187,12 +183,8 @@ func TestReportHealthy_NoHealthReport_RollsBackAfterThreeLaunches(t *testing.T) 
 	}
 }
 
-// TestReportHealthy_AnIncompatibleCoordinator_IsStillAMismatch: the held
-// state is for a coordinator this build's launcher would USE (ADR-0101). A
-// coordinator the window itself would have refused — the probe says
-// incompatible — keeps the old refusal and the old fail-closed counter: that
-// pair cannot occur through the launcher, so if it occurs at all something
-// is wrong, and the rollback stays armed.
+// An incompatible attached pair remains a mismatch (ADR-0104): preserved
+// legacy held-pair handling never certifies a peer with the wrong protocol.
 func TestReportHealthy_AnIncompatibleCoordinator_IsStillAMismatch(t *testing.T) {
 	ctx := context.Background()
 	installPath, jp := pendingUpdate(t, "0.1.0", "0.2.0")

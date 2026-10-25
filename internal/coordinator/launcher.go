@@ -9,17 +9,19 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"github.com/shady2k/nocx/internal/log"
 )
 
-// The launcher: find the coordinator, raise one when there is none, refuse
-// one that is not ours.
+// The launcher: find the coordinator, raise one when there is none, take
+// over across Version changes, and refuse incompatible same-Version peers.
 //
 // It is the client-side counterpart of [Server] and it lives in the same
 // package for the reason the client does — one owner for one protocol. What
 // it adds over the client is the three decisions the protocol itself does
 // not make: whether to spawn, how long to wait, and whether a running
-// daemon is one this build can use — a question the PROTOCOL answers, not
-// the build (design §4, D4; ADR-0101).
+// daemon is one this build can use. Protocol mismatch replaces loudly;
+// Version change takes over without ending helper sessions (ADR-0104).
 
 const (
 	// DefaultReadyTimeout bounds the wait for a spawned daemon to answer
@@ -95,9 +97,8 @@ type Announcer interface {
 type LauncherConfig struct {
 	// Dir is the runtime directory — see [RuntimeDir]. Must be absolute.
 	Dir string
-	// Self is this build's identity. Its Protocol is the one field a
-	// running daemon's hello is judged by (ADR-0101); the Version and
-	// Commit travel for the record the log keeps of a kept coordinator.
+	// Self is this build's identity. Protocol and Version must match a
+	// reused coordinator (ADR-0104). Commit differences keep nightly reuse.
 	Self ClientIdentity
 	// Client asks the discovery socket who is serving it.
 	Client Discoverer
@@ -125,9 +126,13 @@ type Launch struct {
 	Hello Hello
 	// Spawned reports that this launcher raised the daemon.
 	Spawned bool
-	// Replaced reports that an incompatible coordinator was stopped to
-	// make room for it, and therefore that sessions were lost.
+	// Replaced reports the existing same-Version protocol-incompatibility
+	// replacement path, which carries NoticeSessionsLost. It does not
+	// describe a Version takeover.
 	Replaced bool
+	// TakenOver reports a Version change with compatible wire protocol.
+	// Only the coordinator stopped; helper sessions were not ended.
+	TakenOver bool
 }
 
 // Launcher finds or raises the coordinator for one runtime directory.
@@ -162,6 +167,8 @@ func NewLauncher(cfg LauncherConfig) (*Launcher, error) {
 		return nil, errors.New("coordinator: no announcer")
 	case cfg.Logger == nil:
 		return nil, errors.New("coordinator: no logger")
+	case cfg.Self.Version == "":
+		return nil, errors.New("coordinator: no version stated for this build")
 	case cfg.Self.Protocol == 0:
 		// A launcher that did not state its protocol version could not be
 		// told it is mismatched, and would then accept any daemon at all.
@@ -184,12 +191,18 @@ func NewLauncher(cfg LauncherConfig) (*Launcher, error) {
 //
 // Three outcomes, in the order they are tried: a compatible daemon is
 // already running and is used as it is; nothing is running and one is
-// raised; something incompatible is running and is replaced, loudly.
+// raised; a wire-incompatible one is replaced loudly. A different Version
+// takes over silently while helper sessions survive (ADR-0104).
 func (l *Launcher) Launch(ctx context.Context) (Launch, error) {
 	sighting, err := l.cfg.Client.Hello(ctx)
 	switch {
 	case err == nil:
-		if incompat := l.incompatibility(sighting.Hello); incompat != "" {
+		// Version must precede Protocol: a compatibility bump accompanying an
+		// upgrade must not claim helper sessions were lost (ADR-0104).
+		if sighting.Hello.Build.Version != l.cfg.Self.Version {
+			return l.takeover(ctx, sighting)
+		}
+		if incompat := incompatibilityWith(l.cfg.Self.Protocol, sighting.Hello); incompat != "" {
 			return l.replace(ctx, sighting, incompat)
 		}
 		l.cfg.Logger.Info("coordinator: found a running coordinator",
@@ -220,29 +233,23 @@ func (l *Launcher) Launch(ctx context.Context) (Launch, error) {
 
 // incompatibility returns why the running daemon cannot be used, or "".
 //
-// The PROTOCOL alone is compared (ADR-0101): it is the one compatibility
-// boundary between a window and a coordinator, covering the discovery
-// socket and the WS control plane its token opens. A build whose Version
-// or Commit differs is exactly what an update leaves behind — the daemon
-// keeps running the code it was started from while the bundle beside it
-// moved — and under ADR-0097's nightly scheme it is the ordinary case,
-// not the exception. Stopping such a coordinator killed every live
-// session on every nightly restart, which is the rule ADR-0101 retires;
-// the update health gate (update/pair.go) still asks its own question of
-// the pair and keeps the rollback armed when it must.
-//
-// The build difference is observable, not actionable: the log line on the
-// found-running path carries version, commit and protocol, so a mixed
-// pair is a fact a person can read out of the log rather than one the
-// launcher acts on.
+// Protocol and Version must match; Commit is deliberately absent so nightly
+// restarts keep their coordinator (ADR-0104). The wire-only predicate remains
+// separate because the updater must describe an already attached pair, even
+// when an older window attached it under the previous reuse policy.
 func (l *Launcher) incompatibility(h Hello) string {
-	return incompatibilityWith(l.cfg.Self.Protocol, h)
+	if why := incompatibilityWith(l.cfg.Self.Protocol, h); why != "" {
+		return why
+	}
+	if h.Build.Version != l.cfg.Self.Version {
+		return fmt.Sprintf("it runs version %q and this build runs %q", h.Build.Version, l.cfg.Self.Version)
+	}
+	return ""
 }
 
-// incompatibilityWith is the one compatibility decision, stated once for
-// every asker in this package: the launcher's replacement path and the
-// probe the updater's health gate reads both go through it, so the two can
-// never disagree about one coordinator (ADR-0101).
+// incompatibilityWith owns wire compatibility, shared by the launcher and
+// the updater's probe. Wire compatibility alone no longer grants reuse
+// across a Version change (ADR-0104).
 func incompatibilityWith(selfProtocol int, h Hello) string {
 	if h.Protocol != selfProtocol {
 		return fmt.Sprintf("it speaks discovery protocol %d and this build speaks %d",
@@ -277,10 +284,29 @@ func (l *Launcher) replace(ctx context.Context, sighting Sighting, why string) (
 		"runningCommit", sighting.Hello.Build.Commit,
 		"runningProtocol", sighting.Hello.Protocol,
 	)
+	return l.restart(ctx, sighting, false)
+}
+
+// takeover changes the coordinator version, not the helper session lifetime.
+// The current helper generation receives new panes; persisted bindings retain
+// their old generation for readoption. No session-loss notice belongs here.
+func (l *Launcher) takeover(ctx context.Context, sighting Sighting) (Launch, error) {
+	log.From(ctx).Info("coordinator: taking over from a different version",
+		"pid", sighting.PID,
+		"runningVersion", sighting.Hello.Build.Version,
+		"expectedVersion", l.cfg.Self.Version,
+		"protocol", sighting.Hello.Protocol,
+	)
+	return l.restart(ctx, sighting, true)
+}
+
+// restart only stops the coordinator. Stop returns after it releases the
+// single discovery socket/lock; helper daemons are not targets of this call.
+func (l *Launcher) restart(ctx context.Context, sighting Sighting, takeover bool) (Launch, error) {
 	if err := l.cfg.Stopper.Stop(ctx, sighting); err != nil {
 		return Launch{}, NewLaunchFailure(
 			FailureIncompatible,
-			fmt.Sprintf("The incompatible coordinator at %s could not be stopped.", l.socket),
+			fmt.Sprintf("The coordinator at %s could not be stopped for restart.", l.socket),
 			"Stop the other or older nocx coordinator, then retry.",
 			err,
 		)
@@ -289,12 +315,8 @@ func (l *Launcher) replace(ctx context.Context, sighting Sighting, why string) (
 	if err != nil {
 		return Launch{}, err
 	}
-	// The daemon that came up must speak our protocol. Without this check
-	// a replacement that lost a race — to another window, to a stale
-	// binary on the path — would be accepted silently even though it
-	// cannot serve this window. Its BUILD is not asked: a protocol-
-	// compatible replacement of any commit is exactly what ADR-0101 says
-	// this window uses.
+	// Verify both Version and Protocol, including a race won by another
+	// launcher. A matching protocol must not leave new panes on old code.
 	if incompat := l.incompatibility(hello); incompat != "" {
 		return Launch{}, NewLaunchFailure(
 			FailureIncompatible,
@@ -303,7 +325,7 @@ func (l *Launcher) replace(ctx context.Context, sighting Sighting, why string) (
 			fmt.Errorf("coordinator replacement is incompatible: %s", incompat),
 		)
 	}
-	return Launch{Hello: hello, Spawned: spawned, Replaced: true}, nil
+	return Launch{Hello: hello, Spawned: spawned, Replaced: !takeover, TakenOver: takeover}, nil
 }
 
 // raise takes the spawn lock, re-checks, spawns and waits for readiness.
@@ -444,6 +466,11 @@ func (l *Launcher) waitReady(ctx context.Context, spawned Spawned) (Hello, error
 
 		sighting, err := l.cfg.Client.Hello(ctx)
 		if err == nil {
+			if why := l.incompatibility(sighting.Hello); why != "" {
+				return Hello{}, NewLaunchFailure(FailureIncompatible,
+					"The started coordinator does not match this build.", serverBinaryRemedy(),
+					fmt.Errorf("coordinator readiness is incompatible: %s", why))
+			}
 			l.cfg.Logger.Info("coordinator: the coordinator we started is serving",
 				"pid", spawned.PID,
 				"socket", l.socket,

@@ -410,17 +410,10 @@ func TestASpawnThatDiesBeforeAnsweringReportsItsExit(t *testing.T) {
 
 // --- 4 & 5. an incompatible coordinator is refused, replaced, and said ---
 
-// TestABuildDifferenceAloneKeepsTheRunningCoordinator pins the accepted
-// update-coordinator compatibility rule (ADR-0101): a coordinator whose
-// protocol this build speaks is USED, whatever its Version or Commit. A
-// build difference is exactly what an update leaves behind — the daemon
-// kept running the old code while the bundle beside it moved — and under
-// ADR-0097's nightly scheme it is the ordinary case, not the exception.
-// Only a protocol difference replaces; that is the test after this one.
-func TestABuildDifferenceAloneKeepsTheRunningCoordinator(t *testing.T) {
+// Same-Version/different-Commit reuse is unchanged for nightlies (ADR-0104).
+func TestACommitDifferenceAloneKeepsTheRunningCoordinator(t *testing.T) {
 	for name, running := range map[string]coordinator.Build{
 		"a newer commit of the same version": {Version: testVersion, Commit: "0123456789abcdef"},
-		"an older version and commit":        {Version: "0.0.1", Commit: "0ldc0de"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := shortDir(t)
@@ -457,8 +450,8 @@ func TestABuildDifferenceAloneKeepsTheRunningCoordinator(t *testing.T) {
 			if got.Spawned {
 				t.Error("the launcher raised a daemon over a compatible one")
 			}
-			if got.Replaced {
-				t.Error("the launcher replaced a coordinator it can use")
+			if got.Replaced || got.TakenOver {
+				t.Error("the launcher stopped a coordinator it can use")
 			}
 			if got.Hello.WSToken != testToken || got.Hello.Build != running {
 				t.Errorf("the launcher did not hand back the running coordinator: %+v", got.Hello)
@@ -477,10 +470,10 @@ func TestABuildDifferenceAloneKeepsTheRunningCoordinator(t *testing.T) {
 }
 
 // TestACommitOnlyUpdateKeepsTheLiveSessionAcrossARestart is the leaf's
-// acceptance, on real processes: the window before an update raises the
-// coordinator, the update moves the window's build to a newer commit, and
-// the restarted window must land on the SAME coordinator — same address,
-// same token, so the sessions it is running are the ones that survive.
+// reuse acceptance, on real discovery processes: a window restarts onto a
+// newer commit and must land on the SAME coordinator, same address and token.
+// Live helper-session survival across a Version takeover is asserted separately
+// through App.Shutdown and startup/readoption, not this discovery-only fixture.
 func TestACommitOnlyUpdateKeepsTheLiveSessionAcrossARestart(t *testing.T) {
 	dir := shortDir(t)
 	spawner := realSpawner(t, dir)
@@ -533,7 +526,7 @@ func TestACommitOnlyUpdateKeepsTheLiveSessionAcrossARestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the restarted window: %v", err)
 	}
-	if second.Spawned || second.Replaced {
+	if second.Spawned || second.Replaced || second.TakenOver {
 		t.Errorf("the restarted window spawned=%v replaced=%v; it must reuse the running coordinator",
 			second.Spawned, second.Replaced)
 	}
@@ -549,6 +542,101 @@ func TestACommitOnlyUpdateKeepsTheLiveSessionAcrossARestart(t *testing.T) {
 	}
 	if notices := announcer.all(); len(notices) != 0 {
 		t.Errorf("sessions were reported lost although none were: %+v", notices)
+	}
+}
+
+// A Version change is a takeover even with exactly the same protocol.
+// Helpers are outside the launcher's stop interface; no session-loss notice
+// can be emitted on this path, including its failure paths.
+func TestAVersionChangeTakesOverWithoutASessionsLostNotice(t *testing.T) {
+	for _, scenario := range []struct {
+		version  string
+		protocol int
+	}{
+		{"0.0.1", coordinator.ProtocolVersion},
+		{"999.0.0", coordinator.ProtocolVersion},
+		{"0.0.1", coordinator.ProtocolVersion - 1},
+	} {
+		t.Run(fmt.Sprintf("%s/protocol-%d", scenario.version, scenario.protocol), func(t *testing.T) {
+			old := coordinator.Sighting{PID: 777, Hello: coordinator.Hello{
+				Build:    coordinator.Build{Version: scenario.version, Commit: "old"},
+				Protocol: scenario.protocol,
+			}}
+			fresh := coordinator.Sighting{Hello: coordinator.Hello{
+				Build:    coordinator.Build{Version: testVersion, Commit: testCommit},
+				Protocol: coordinator.ProtocolVersion, WSAddress: testAddr, WSToken: testToken,
+			}}
+			stopper := &recordingStopper{}
+			announcer := &recordingAnnouncer{}
+			spawner := &countingSpawner{body: func() (coordinator.Spawned, error) {
+				if stopper.count() != 1 {
+					t.Error("the current coordinator started before the old one stopped")
+				}
+				return coordinator.Spawned{PID: 778, Command: "current"}, nil
+			}}
+			l := newLauncher(t, coordinator.LauncherConfig{
+				Dir: shortDir(t), Stopper: stopper, Announcer: announcer, Spawner: spawner,
+				Client: &scriptedDiscoverer{replies: []reply{
+					{sighting: old}, {err: coordinator.ErrNoCoordinator}, {sighting: fresh},
+				}},
+			})
+			got, err := l.Launch(context.Background())
+			if err != nil {
+				t.Fatalf("Launch: %v", err)
+			}
+			if !got.TakenOver || !got.Spawned || got.Replaced {
+				t.Errorf("takeover result = %+v, want spawned takeover, not session-losing replacement", got)
+			}
+			if got.Hello.Build.Version != testVersion || spawner.spawns() != 1 || stopper.count() != 1 {
+				t.Errorf("takeover did not select the current coordinator: %+v", got)
+			}
+			if notices := announcer.all(); len(notices) != 0 {
+				t.Errorf("takeover must be silent, got notices %+v", notices)
+			}
+		})
+	}
+}
+
+func TestAVersionTakeoverFailureDoesNotAnnounceSessionLoss(t *testing.T) {
+	for _, failure := range []string{"stop", "spawn", "wrong version", "wrong protocol"} {
+		t.Run(failure, func(t *testing.T) {
+			old := coordinator.Sighting{PID: 777, Hello: coordinator.Hello{
+				Build: coordinator.Build{Version: "old"}, Protocol: coordinator.ProtocolVersion,
+			}}
+			fresh := coordinator.Sighting{Hello: coordinator.Hello{
+				Build: coordinator.Build{Version: testVersion}, Protocol: coordinator.ProtocolVersion,
+			}}
+			stopper := &recordingStopper{}
+			spawner := &countingSpawner{}
+			switch failure {
+			case "stop":
+				stopper.err = errors.New("stop refused")
+			case "spawn":
+				spawner.body = func() (coordinator.Spawned, error) {
+					return coordinator.Spawned{}, errors.New("spawn refused")
+				}
+			case "wrong version":
+				fresh.Hello.Build.Version = "still old"
+			case "wrong protocol":
+				fresh.Hello.Protocol++
+			}
+			announcer := &recordingAnnouncer{}
+			l := newLauncher(t, coordinator.LauncherConfig{
+				Dir: shortDir(t), Stopper: stopper, Spawner: spawner, Announcer: announcer,
+				Client: &scriptedDiscoverer{replies: []reply{
+					{sighting: old}, {err: coordinator.ErrNoCoordinator}, {sighting: fresh},
+				}},
+			})
+			if _, err := l.Launch(context.Background()); err == nil {
+				t.Fatal("takeover accepted a failed restart")
+			}
+			if failure == "stop" && spawner.spawns() != 0 {
+				t.Fatal("spawned beside a coordinator whose stop failed")
+			}
+			if notices := announcer.all(); len(notices) != 0 {
+				t.Errorf("failed takeover must not claim sessions ended: %+v", notices)
+			}
+		})
 	}
 }
 
@@ -753,6 +841,7 @@ func TestNewLauncherRefusesAnIncompleteConfiguration(t *testing.T) {
 		"no announcer":        func(c *coordinator.LauncherConfig) { c.Announcer = nil },
 		"no logger":           func(c *coordinator.LauncherConfig) { c.Logger = nil },
 		"no protocol version": func(c *coordinator.LauncherConfig) { c.Self.Protocol = 0 },
+		"no build version":    func(c *coordinator.LauncherConfig) { c.Self.Version = "" },
 	}
 	for name, break_ := range cases {
 		t.Run(name, func(t *testing.T) {
