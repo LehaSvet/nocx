@@ -7,7 +7,7 @@ the filesystem seam and counts calls across publish paths.
 ## Current maximum
 
 - Maximum filesystem-seam calls per publish: **63**.
-- Maximum bytes written per publish: **89,930**.
+- Maximum bytes written per publish: **90,596**.
 - Measured worst path: replacement plus sweep, with the launch carrier absent.
 - Fault position used for the reported worst case: `remove#4`.
 
@@ -66,6 +66,15 @@ The growth is the Bash/zsh same-owner lifecycle guard and Bash's idempotent
 hook captures (nocx-5qa8h). The archive and client stack are unchanged. The
 worst path and maximum of 63 filesystem calls are unchanged.
 
-This records that CI snapshot, not an inferred final value. The subsequent
-fork-send ownership guard changes the scripts again; its exact byte footprint
-awaits the next CI run, which must update this report and the constant together.
+The next CI run (`40188458844`) measured the fork-send ownership guard at
+**90,434 bytes**, still **63 calls**. That is the footprint of `6fafa80a9`,
+not of the later in-band correction.
+
+CI run `40189752017`, job `121158149486`, then measured the corrected scripts
+at `bab4ae8eb`: **90,596 bytes**, still **63 calls**. This supersedes both
+snapshots above: **+2,384 bytes** over v0.7.0's 88,212. All growth is shell
+script code: the idempotence guard, ownership predicate, fork isolation and
+in-band address lifetime correction. The archive and client stack are unchanged.
+The worst path remains replacement plus sweep with the launch carrier absent,
+at fault `remove#4`. All functional tests in that CI job passed; its only
+failure was the stale measured-byte constant, updated with this report.
