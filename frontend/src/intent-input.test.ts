@@ -92,6 +92,72 @@ describe('a physical key and committed text stay distinguishable', () => {
     expect(intents).toEqual([{ kind: 'text', payload: 'a' }])
   })
 
+  // WebKit may report the physical key before it resolves the character
+  // after a CapsLock layout switch. Only the committed text belongs to the
+  // program, even when the new layout differs from the physical key's name.
+  it.each(['t', 'е'])('sends only committed %s after an unidentified layout-switch key', (text) => {
+    const { input, intents } = makeInput()
+    const unresolved = keydown('KeyT', { key: 'Unidentified', keyCode: 0 })
+
+    input.element.dispatchEvent(unresolved)
+    expect(intents).toEqual([])
+    expect(unresolved.defaultPrevented).toBe(false)
+
+    input.element.dispatchEvent(keydown('KeyT', { key: text }))
+    input.element.dispatchEvent(inputEvent(text, 'insertText'))
+
+    expect(intents).toEqual([{ kind: 'text', payload: text }])
+  })
+
+  it('sends a plain t as one text intent without a layout-switch prelude', () => {
+    const { input, intents } = makeInput()
+
+    input.element.dispatchEvent(keydown('KeyT', { key: 't' }))
+    input.element.dispatchEvent(inputEvent('t', 'insertText'))
+
+    expect(intents).toEqual([{ kind: 'text', payload: 't' }])
+  })
+
+  it.each([
+    ['KeyT', 'Unidentified', {}],
+    ['Digit1', 'Unidentified', {}],
+    ['Quote', 'Unidentified', {}],
+    ['KeyT', '', {}],
+    ['Digit1', 'Process', {}],
+    ['KeyT', 'Unidentified', { shiftKey: true }],
+    ['KeyT', 'Unidentified', { altKey: true }],
+  ] as const)(
+    'does not guess text from physical %s with unresolved key %s',
+    (code, key, modifiers) => {
+      const { input, intents } = makeInput()
+      const event = keydown(code, { key, ...modifiers })
+
+      input.element.dispatchEvent(event)
+
+      expect(intents).toEqual([])
+      expect(event.defaultPrevented).toBe(false)
+    },
+  )
+
+  it.each([
+    ['KeyC', 'c', { ctrlKey: true }, 'Ctrl+c'],
+    ['KeyC', 'Unidentified', { ctrlKey: true }, 'Ctrl+c'],
+    ['KeyC', 'Unidentified', { metaKey: true }, 'Super+c'],
+    ['ArrowLeft', 'ArrowLeft', {}, 'left'],
+    ['ArrowRight', 'ArrowRight', {}, 'right'],
+    ['ArrowUp', 'ArrowUp', {}, 'up'],
+    ['ArrowDown', 'ArrowDown', {}, 'down'],
+    ['Enter', 'Enter', {}, 'enter'],
+  ] as const)('preserves %s key intent with key %s', (code, key, modifiers, payload) => {
+    const { input, intents } = makeInput()
+    const event = keydown(code, { key, ...modifiers })
+
+    input.element.dispatchEvent(event)
+
+    expect(intents).toEqual([{ kind: 'key', payload }])
+    expect(event.defaultPrevented).toBe(true)
+  })
+
   // Shift is a modifier on the same physical key, and what the person produced
   // is the shifted character. Sending "Shift+a" as a key would ask the runtime
   // to derive a character from a key — exactly what the key/text split exists
