@@ -360,7 +360,11 @@ func (literalAgentLaunchResolver) InvalidateTransport(lifecycle.TransportID) {}
 
 // A login shell can find an agent even when the application environment cannot.
 func TestAgentLaunchServiceUsesPanePathAndApprovesResolvedExecutable(t *testing.T) {
-	paneDir := t.TempDir()
+	physicalDir := t.TempDir()
+	paneDir := filepath.Join(t.TempDir(), "agent-bin-link")
+	if err := os.Symlink(physicalDir, paneDir); err != nil {
+		t.Fatal(err)
+	}
 	command := filepath.Join(paneDir, "pane-only-agent")
 	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { //nolint:gosec // executable fixture
 		t.Fatal(err)
@@ -392,11 +396,7 @@ func TestAgentLaunchServiceUsesPanePathAndApprovesResolvedExecutable(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	absoluteCommand, err := filepath.EvalSymlinks(command)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity, err := agentapproval.IdentityForPath(absoluteCommand)
+	identity, err := agentapproval.IdentityForPath(command)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,5 +429,60 @@ func TestAgentLaunchServiceUsesPanePathAndApprovesResolvedExecutable(t *testing.
 	legacy, err := service.Resolve(context.Background(), binding, lifecyclepub.AgentLaunchContext{})
 	if err != nil || legacy.Ticket == "" {
 		t.Fatalf("older shell resolution changed: %+v, %v", legacy, err)
+	}
+}
+
+// A restored configured worker is launched through a newly integrated pane
+// shell. It carries that shell's PATH/cwd, and must reuse prior consent even
+// when an absolute PATH directory has a symlink spelling.
+func TestPaneAgentLaunchReusesApprovalIssuedBeforeRestart(t *testing.T) {
+	physicalDir := t.TempDir()
+	paneDir := filepath.Join(t.TempDir(), "agent-bin-link")
+	if err := os.Symlink(physicalDir, paneDir); err != nil {
+		t.Fatal(err)
+	}
+	command := filepath.Join(paneDir, "restart-agent")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { //nolint:gosec // executable fixture
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", paneDir)
+	requester := &consentGateRequester{entered: make(chan transport.HostAsk, 1), answer: make(chan bool, 1)}
+	docs := &approvalDocStore{}
+	first := approvalServiceOver(t, docs, requester)
+	pending := pendingOf(t, first.Approve(context.Background(), "pane-custom", "restart-agent"))
+	ask := <-requester.entered
+	requester.answer <- true
+	if reason := settledOf(t, pending); reason != "" {
+		t.Fatal(reason)
+	}
+
+	records, err := agentrecord.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saveErr := records.Save("myagent", agentrecord.Document{Command: "restart-agent"}); saveErr != nil {
+		t.Fatal(saveErr)
+	}
+	transports := newTransportRegistry()
+	transports.register("transport-1", transportKind{local: true})
+	tickets := newAgentLaunchTickets()
+	resolver := newAgentLaunchService(records, transports, tickets)
+	binding := testLaunchBinding("myagent")
+	resolved, err := resolver.Resolve(context.Background(), binding, lifecyclepub.AgentLaunchContext{Path: &paneDir, Cwd: paneDir})
+	if err != nil || resolved.Ticket == "" {
+		t.Fatalf("resolve restored agent: %+v, %v", resolved, err)
+	}
+	snapshot, err := tickets.Begin(binding, resolved.Ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.executable.Path != ask.Executable || snapshot.executable.SHA256 != ask.Digest || snapshot.argv[0] != ask.Executable {
+		t.Fatalf("restore changed the approved executable spelling: %+v, prior %q/%q", snapshot, ask.Executable, ask.Digest)
+	}
+	// Rehydrate the approval service over the same durable document. No new
+	// requester exists: a changed key is a refusal, not an unanswered dialog.
+	restarted := approvalServiceOver(t, docs, nil)
+	if approveErr := restarted.ApproveResolved(context.Background(), "pane-custom", "myagent", snapshot.executable); approveErr != nil {
+		t.Fatalf("restore did not reuse prior consent: %v", approveErr)
 	}
 }

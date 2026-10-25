@@ -17,11 +17,7 @@ func TestIdentityForExecutableInPanePath(t *testing.T) {
 	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { //nolint:gosec // executable fixture
 		t.Fatal(err)
 	}
-	canonical, err := filepath.EvalSymlinks(command)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, err := IdentityForPath(canonical)
+	want, err := IdentityForPath(command)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,11 +86,7 @@ func TestPanePathFollowsSymlinksBeforeParentComponents(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "bin", "agent"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil { //nolint:gosec // executable fixture
 		t.Fatal(err)
 	}
-	canonical, err := filepath.EvalSymlinks(command)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, err := IdentityForPath(canonical)
+	want, err := IdentityForPath(command)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +97,7 @@ func TestPanePathFollowsSymlinksBeforeParentComponents(t *testing.T) {
 		{"../bin/agent", ""},
 	} {
 		got, err := IdentityForExecutableInPath(tc.command, tc.path, link)
+		want.Path = link + "/../bin/agent"
 		if err != nil || got != want {
 			t.Fatalf("command=%q PATH=%q: %+v, %v, want %+v", tc.command, tc.path, got, err, want)
 		}

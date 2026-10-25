@@ -126,19 +126,15 @@ func IdentityForExecutable(command string) (Executable, error) {
 
 // IdentityForExecutableInPath resolves using only the pane's search path. A
 // relative PATH entry (including an empty entry) is relative to the pane's cwd,
-// never the coordinator's cwd. Each candidate is made absolute and symlinks
-// are resolved before LookPath checks its executable bit. LookPath therefore
-// cannot consult the application PATH.
+// never the coordinator's cwd. Each candidate is made absolute before LookPath
+// checks its executable bit. LookPath therefore cannot consult the app PATH.
 func IdentityForExecutableInPath(command, path, cwd string) (Executable, error) {
-	// Preserve parent components until the filesystem has followed symlinks.
-	// filepath.Join/Abs would clean link/../bin lexically, possibly selecting
-	// a different executable than the pane's shell would run.
+	// Preserve absolute path spelling, including symlinks and parent segments.
+	// Existing approvals use that spelling. Canonicalizing only pane launches
+	// would ask again after restart for the same file (for example on macOS,
+	// where a temporary directory can be reached through a symlink).
 	identity := func(candidate string) (Executable, error) {
-		resolved, err := filepath.EvalSymlinks(candidate)
-		if err != nil {
-			return Executable{}, err
-		}
-		resolved, err = exec.LookPath(resolved)
+		resolved, err := exec.LookPath(candidate)
 		if err != nil {
 			return Executable{}, err
 		}
@@ -193,10 +189,17 @@ func IdentityForPath(path string) (Executable, error) {
 	if path == "" {
 		return Executable{}, errors.New("agent approval: executable path is empty")
 	}
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return Executable{}, fmt.Errorf("agent approval: canonical executable path: %w", err)
+	absolute := path
+	if !filepath.IsAbs(absolute) {
+		var err error
+		absolute, err = filepath.Abs(path)
+		if err != nil {
+			return Executable{}, fmt.Errorf("agent approval: absolute executable path: %w", err)
+		}
 	}
+	// Do not lexically clean an absolute path: link/../agent must traverse
+	// the symlink before its parent, exactly as exec does. Keeping the spelling
+	// also lets pane launches reuse approvals issued before a restart.
 	data, err := os.ReadFile(absolute) // #nosec G304 — the path is resolved executable identity.
 	if err != nil {
 		return Executable{}, fmt.Errorf("agent approval: read executable %q: %w", absolute, err)
