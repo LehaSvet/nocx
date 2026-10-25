@@ -385,29 +385,40 @@ for (const timing of ['before', 'during', 'after']) {
           firstInput,
           `the early input reaches the session (socket saw: ${shape})`,
         ).toBeGreaterThan(firstResize)
-        // …and none of that input may reach the program before a resize
-        // APPLIED. A receipt that is not this request's — a superseded or a
-        // cancelled answer — is not an application and releases nothing.
-        let applied: Record<string, unknown> | null = null
-        let latestResize: unknown = null
+        // …and none of that input may reach the program before the switch's
+        // OWN resize applied. A receipt that is not that request's — a
+        // superseded or a cancelled answer — is not an application and
+        // releases nothing.
+        //
+        // THE WINDOW IS THE SWITCH'S, NOT EVERY RESIZE THAT FOLLOWS
+        // (nocx-bz3qu). The fence opens when the buffer becomes alternate and
+        // closes on the applied receipt for the resize the switch sent; a
+        // window widened later sends an ordinary resize that gates nothing,
+        // and the product never promised otherwise. This spec used to clear
+        // `applied` on EVERY resize send and then require an applied receipt
+        // before every later intent — which is why the "after the resize"
+        // variant failed intermittently on the release runner: the probe's
+        // intent could land between the later resize's send and its answer,
+        // and the assertion called that a painted-frame release.
+        const switchResizeId = postSwitch[firstResize].id
+        const switchReceipt = postSwitch.findIndex(
+          (event, index) =>
+            index > firstResize &&
+            event.kind === 'resize-receipt' &&
+            event.id === switchResizeId &&
+            'result' in event &&
+            !event.error,
+        )
+        expect(switchReceipt, "the switch's own resize applied").toBeGreaterThan(firstResize)
+        expect(
+          postSwitch
+            .slice(firstResize + 1, switchReceipt)
+            .filter((event) => event.kind === 'send' && event.method === 'session.intent'),
+          'no input may reach the program between the switch resize and its applied receipt',
+        ).toHaveLength(0)
         const pointerReports: string[] = []
         for (const event of postSwitch) {
-          if (event.kind === 'send' && event.method === 'resize') {
-            latestResize = event.id
-            applied = null
-          }
-          if (
-            event.kind === 'resize-receipt' &&
-            event.id === latestResize &&
-            'result' in event &&
-            !event.error
-          )
-            applied = event.size as Record<string, unknown>
           if (event.kind !== 'send' || event.method !== 'session.intent') continue
-          expect(
-            applied,
-            'input must follow the latest APPLIED resize receipt, not a painted frame',
-          ).not.toBeNull()
           const params = event.params as { kind: string; payload: string }
           if (params.kind !== 'mouse') continue
           const report = Buffer.from(params.payload, 'base64').toString()
