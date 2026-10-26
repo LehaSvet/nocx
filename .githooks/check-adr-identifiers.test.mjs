@@ -116,6 +116,23 @@ test('a file no citation could name is refused, and the name it needs is printed
   }
 })
 
+test('a heading that names a different identifier than the filename is refused', () => {
+  // The defect INDEX.md records twice: 0036 was headed ADR-0039 and 0037 was
+  // headed ADR-0040, so a reader following the heading cited another record.
+  const dir = fixture({
+    'INDEX.md': '# Architecture decision records\n',
+    'k3f9a2bc-the-first-decision.md': record('m7p1q4tz'),
+  })
+  try {
+    const { status, stderr } = run(dir)
+    assert.equal(status, 1, `a heading and a filename named two records:\n${stderr}`)
+    assert.match(stderr, /k3f9a2bc-the-first-decision\.md/)
+    assert.match(stderr, /m7p1q4tz/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('the untouched tree passes, legacy numbers and all', () => {
   const { status, stderr } = run(decisions)
   assert.equal(status, 0, stderr)

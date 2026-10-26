@@ -87,10 +87,11 @@ has seen only their own side of the collision.
   needs a network round trip to write a file.
 - **A date prefix, `2026-10-26-<slug>.md`.** It is unique to the DAY. Two records on one day
   collide, which is exactly when two branches tend to add one.
-- **A four-character draw**, the smallest that would fit `ADR-k3f9a`. Twenty bits puts the
-  chance of a pair among ten thousand records at about 4.5 in 100 — a collision every couple
-  of years of this repository's output, each one a renumber of the kind this record exists to
-  end. Eight characters is a fifth of the length of a bead id and enough to stop mattering.
+- **A four-character draw**, which is the smallest that would fit `ADR-k3f9a`-shaped ids.
+  Twenty bits is 1,048,576 identifiers, and ten thousand records give about 48 collisions
+  expected among them — a collision about every other time this repository reaches ten
+  thousand records, each one a renumber of the kind this record exists to end. Eight symbols
+  is short enough to type from a citation and long enough to stop mattering.
 - **Refusing a unique legacy number.** It would refuse `0106`, the updater pull request's
   record, which is a record on the same footing as `0001`. Retroactive refusal is also
   exactly the renumbering this record exists to end.
@@ -125,8 +126,10 @@ record and following its citations, and no such case has happened.
   can resolve.
 - `.githooks/adr-records.mjs` is the one place that decides what a record's file name is,
   and it is what both the check and the tests read.
-- `INDEX.md` is sorted by date and one test holds it there, including the 9 rows this
-  decision moved to their date slot (0007, 0010, 0011, 0023, 0026, 0039, 0046, 0057, 0060).
+- `INDEX.md` is sorted by date and one test holds it there, including the eight rows this
+  decision moved to their date slot (0007, 0010, 0011, 0026, 0039, 0046, 0057, 0060) and
+  0009, which moved later because its own `Date:` line says 2026-09-05 rather than the July
+  2026-07-24 the decision it records was taken on.
 - The four repaired numbers, the renumbers and the two files that disagreed with their own
   filenames stay written down in `INDEX.md`. They are history, not procedure, and the next
   person should read them as the reason this record exists rather than as an instruction.

@@ -15,7 +15,10 @@
  *   - two records with the same identifier, naming EVERY file that holds it, so
  *     the reader sees both sides of the collision and not the one they staged;
  *   - a file in the directory whose name is neither a drawn identifier nor a
- *     legacy number, which is a record no citation can name.
+ *     legacy number, which is a record no citation can name;
+ *   - a record whose heading names another identifier than its filename, which
+ *     is the defect that put `ADR-0039` and `ADR-0040` at the top of files named
+ *     0036 and 0037: a reader following the heading cited a different record.
  *
  * It accepts a unique legacy number, deliberately. The numbers are retired, not
  * banned: `0106` is a record the updater pull request adds, and it is a record
@@ -26,11 +29,17 @@
  * The directory is a parameter because the tests drive the check over a
  * fixture; every caller in the repository omits it.
  */
-import { readdirSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { DECISIONS_DIR, INDEX_FILE, NAME_RULE, readIdentifier } from './adr-records.mjs'
+import {
+  DECISIONS_DIR,
+  INDEX_FILE,
+  NAME_RULE,
+  readHeadingIdentifier,
+  readIdentifier,
+} from './adr-records.mjs'
 
 /** Every problem in one directory, each message naming the files it is about. */
 export function findProblems(dir) {
@@ -48,6 +57,13 @@ export function findProblems(dir) {
     const files = holders.get(read.identifier) ?? []
     files.push(path)
     holders.set(read.identifier, files)
+
+    const headed = readHeadingIdentifier(readFileSync(path, 'utf8'))
+    if (headed !== read.identifier) {
+      problems.push(
+        `${path} is headed ADR-${headed ?? '(none)'} and its filename says ${read.identifier} — the heading and the filename must name one record`,
+      )
+    }
   }
 
   for (const [identifier, files] of holders) {
