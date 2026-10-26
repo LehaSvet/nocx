@@ -1,9 +1,5 @@
 import './style.css'
-import {
-  GetUpdateState,
-  ReportHealthy,
-  SetUpdateChannel,
-} from '../bindings/github.com/shady2k/nocx/wailsapp'
+import { ReportHealthy, SetUpdateChannel } from '../bindings/github.com/shady2k/nocx/wailsapp'
 import { render } from 'solid-js/web'
 import { Show, createSignal, untrack } from 'solid-js'
 import App from './App'
@@ -218,22 +214,9 @@ function main(): void {
   // Window-owned update state outlives every connection-scoped sidebar.
   const updateController = createUpdateController()
 
-  // A pair already attached under ADR-0101 can still be held; new launches
-  // take over across Versions (ADR-0104). That retained held state is the one
-  // startup state the strip must say aloud with its action: the update is
-  // installed, the kept coordinator is still serving it, and finishing
-  // means a full restart that closes the open sessions. Anything less than
-  // held stays quiet here — an ordinary pending restart has not yet had
-  // this run's health report, and a strip that guesses early would tell a
-  // healthy restart to restart again.
-  void GetUpdateState()
-    .then((state) => {
-      if (state.HeldByOlderCoordinator) updateController.showHeldByCoordinator(state.Version)
-    })
-    .catch(() => {
-      // The strip is not load-bearing: a failed read leaves it hidden,
-      // and the state is re-read on the next launch.
-    })
+  // A retained coordinator needs an explicit full restart, with its session
+  // warning. Ordinary pending startup stays quiet until health is known.
+  void updateController.restore()
 
   const clipboard = createClipboardAccess()
   const gate = new ClipboardGate()

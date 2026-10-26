@@ -39,6 +39,121 @@ function mountIndicator(controller: ReturnType<typeof createUpdateController>) {
 }
 
 describe('shared update offer', () => {
+  it.each(['throw', 'string'])('keeps held update retryable after a %s refusal', async (shape) => {
+    const raw = 'stop failed /private/state Errno 5'
+    const finish = vi
+      .fn<() => Promise<void>>()
+      .mockImplementationOnce(() => {
+        if (shape === 'throw') throw new Error(raw)
+        // Deliberately exercise a non-Error rejection from a native boundary.
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        return Promise.reject(raw)
+      })
+      .mockResolvedValue(undefined)
+    const controller = createUpdateController({ finish })
+    render(() => <ToastHost />)
+    mountIndicator(controller)
+    controller.showHeldByCoordinator('2.0.0')
+    fireEvent.click(screen.getByRole('button', { name: 'Update available' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Restart now' }))
+    await vi.waitFor(() =>
+      expect(document.querySelector('.ui-toast[data-level="danger"]')).not.toBeNull(),
+    )
+    expect(screen.getByRole('status').textContent).not.toMatch(/\/|Errno/)
+    expect(logWarn).toHaveBeenCalledWith('update action failed', { error: raw })
+    controller.showAvailable('2.0.1', NOTES)
+    fireEvent.click(screen.getByRole('button', { name: 'Update available' }))
+    expect(screen.getByRole('status').textContent).toContain('2.0.0 installed')
+    fireEvent.click(screen.getByRole('button', { name: 'Restart now' }))
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledTimes(2))
+  })
+
+  it.each(['held-first', 'check-first'])(
+    'reads held startup through the startup seam: %s',
+    async (order) => {
+      const controller = createUpdateController({ finish: vi.fn() })
+      render(() => <ToastHost />)
+      mountIndicator(controller)
+      if (order === 'check-first') controller.showAvailable('2.0.1', NOTES)
+      await controller.restore({
+        getState: () => Promise.resolve({ HeldByOlderCoordinator: true, Version: '2.0.0' }),
+      })
+      if (order === 'held-first') controller.showAvailable('2.0.1', NOTES)
+      fireEvent.click(screen.getByRole('button', { name: 'Update available' }))
+      expect(screen.getByRole('status').textContent).toContain('2.0.0 installed')
+      expect(screen.getByRole('status').textContent).toContain('closes open sessions')
+      expect(screen.getAllByRole('button', { name: 'Restart now' })).toHaveLength(1)
+      expect(screen.queryByRole('button', { name: /^Install/ })).toBeNull()
+    },
+  )
+
+  it('leaves ordinary pending startup quiet and logs a failed state read', async () => {
+    const controller = createUpdateController()
+    render(() => <ToastHost />)
+    mountIndicator(controller)
+    await controller.restore({
+      getState: () => Promise.resolve({ HeldByOlderCoordinator: false, Version: '2.0.0' }),
+    })
+    expect(screen.queryByRole('button', { name: 'Update available' })).toBeNull()
+    const error = new Error('state read failed /private/state')
+    await controller.restore({ getState: () => Promise.reject(error) })
+    expect(logWarn).toHaveBeenCalledWith('reading update state failed', { error: error.message })
+    expect(screen.queryByRole('button', { name: 'Update available' })).toBeNull()
+  })
+
+  it('keeps a held coordinator visible across checks and finishes only once, with the session warning', async () => {
+    let resolve!: () => void
+    const finish = vi.fn(
+      () =>
+        new Promise<void>((r) => {
+          resolve = r
+        }),
+    )
+    const apply = vi.fn()
+    const restart = vi.fn()
+    const controller = createUpdateController({ apply, restart, finish })
+    render(() => <ToastHost />)
+    const first = mountIndicator(controller)
+    controller.showHeldByCoordinator('2.0.0')
+    controller.showAvailable('2.0.1', NOTES)
+    first.handle.destroy()
+    first.bar.remove()
+    first.panel.remove()
+    mountIndicator(controller)
+    fireEvent.click(screen.getByRole('button', { name: 'Update available' }))
+    expect(screen.getByRole('status').textContent).toContain('2.0.0 installed')
+    expect(screen.getByRole('status').textContent).toContain('closes open sessions')
+    expect(screen.queryByRole('button', { name: /^Install/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Restart now' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Update available' }))
+    expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull()
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledTimes(1))
+    expect(apply).not.toHaveBeenCalled()
+    expect(restart).not.toHaveBeenCalled()
+    resolve()
+  })
+
+  it('explains a refused held finish without losing the installed version or retry', async () => {
+    const error = new Error('stop failed /private/state Errno 5')
+    const finish = vi.fn().mockRejectedValueOnce(error).mockResolvedValue(undefined)
+    const controller = createUpdateController({ finish })
+    render(() => <ToastHost />)
+    mountIndicator(controller)
+    controller.showAvailable('2.0.1', NOTES)
+    controller.showHeldByCoordinator('2.0.0')
+    fireEvent.click(screen.getByRole('button', { name: 'Update available' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Restart now' }))
+    await vi.waitFor(() =>
+      expect(document.querySelector('.ui-toast[data-level="danger"]')).not.toBeNull(),
+    )
+    expect(screen.getByRole('status').textContent).not.toMatch(/\/|Errno/)
+    expect(logWarn).toHaveBeenCalledWith('update action failed', { error: error.message })
+    fireEvent.click(screen.getByRole('button', { name: 'Update available' }))
+    expect(screen.getByRole('status').textContent).toContain('2.0.0 installed')
+    fireEvent.click(screen.getByRole('button', { name: 'Restart now' }))
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledTimes(2))
+  })
+
   it.each([
     [
       'announcement',
