@@ -1,8 +1,9 @@
 # Backlog integration
 
 Maintained by `setup-shady2k-skills`. The installed checks carry setup protocol
-0.51.0 after this update lands. Setup task nocx-fs95y owns the proof evidence
-and any unperformed checks. Protocol 0.46.0 was installed by nocx-q8yjf.25,
+0.56.0 after this update lands. Setup task nocx-gkpwp owns the proof evidence
+and any unperformed checks; protocol 0.51.0 was installed by nocx-fs95y.
+Protocol 0.46.0 was installed by nocx-q8yjf.25,
 whose record — with nocx-q8yjf.26–.28 and root nocx-nl23a — the published
 export carries but this tracker's database has lost, so `br` cannot show them.
 Protocol 0.44.0 was installed by nocx-q8yjf.24. A branch alone is not an
@@ -166,15 +167,21 @@ keeps every later change.
   `list` omits edges/comments; full `show` over the historical queue was too slow. It
   maps statuses, emits `holder` (assignee), `createdAt` and stored acceptance criteria,
   drops tombstones, and reads the submitted, implemented and accepted-stage records
-  above. Provenance edges are dropped; only `blocks` gates. Its own test:
+  above. Provenance edges are dropped; only `blocks` gates. It also emits
+  `landed`: the commits reachable from both the judged revision (HEAD for the
+  staged copy and the working tree) and `origin/main`, else `main`, whose header
+  names a task, parsed by `commit-links.mjs`'s `linkedIds` — the commit check's own
+  parser. That list turns on the gate's `merged-but-open`; a branch's own commits
+  are not on it, and a checkout with no main branch is refused rather than given an
+  empty list. Its own test:
   `node --test .githooks/backlog-gate/adapter.test.mjs`.
 - **Rules:** `check.mjs`, `check-commits.mjs`, `check-docs.mjs`,
-  `check-present.mjs` and `check-product.mjs`, with `time-format.mjs` and
-  `document-format.mjs`, in [`.githooks/backlog-gate/`](../../.githooks/backlog-gate/).
+  `check-present.mjs` and `check-product.mjs`, with `time-format.mjs`,
+  `document-format.mjs`, `regular-file.mjs` and `argv.mjs`, in [`.githooks/backlog-gate/`](../../.githooks/backlog-gate/).
   These are byte-for-byte copies of the plugin files under
   `skills/backlog/setup-shady2k-skills/` at source commit
-  `a8441dfe9c6c4d62524a0b53457ca63dd817baa4` (plugin 0.121.0, setup protocol
-  0.51.0), never edited here. Compare each copy with that source. Run all five `--selftest`
+  `3fca4e833c56d708a95156a5a716d66492c9cc39` (plugin 0.126.0, setup protocol
+  0.56.0), never edited here. Compare each copy with that source. Run all five `--selftest`
   commands from the plugin directory, where their fixtures live; `check.mjs`
   additionally takes `--config <repo>/.githooks/backlog-gate/config.json` for
   portability.
