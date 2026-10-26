@@ -147,6 +147,10 @@ jobs:
               .beads/*|docs/*|.internal/*|.githooks/backlog-gate/*) ;;
               .githooks/pre-commit|.githooks/commit-msg|.githooks/pre-merge-commit|.githooks/pre-push) ;;
               scripts/connect-clone.sh) ;;
+              # The decision-record checks read documents and no code, and the
+              # job that runs them always runs (ci-backlog), so a change to them
+              # owes that job and not the product suites (nocx-hyh2p).
+              .githooks/adr-*.mjs|.githooks/check-adr-identifiers*) ;;
               scripts/install/*) product=true ;;
               */*) product=true ;;
               *.md) ;;
@@ -909,6 +913,21 @@ jobs:
             echo "introduced by $GITHUB_REF at $(git rev-parse --short HEAD)"
             node "$gate/commit-links.mjs" "$@"
           fi
+
+      # A decision record's identifier is DRAWN, never counted, so two branches
+      # cannot take one identifier between them (nocx-hyh2p). The check is here
+      # rather than in a job of its own because this job always runs: it reads
+      # documents and no code, and a docs-only change owes it whether or not it
+      # owes the product suites — the same reason the classifier above marks its
+      # files supporting.
+      - name: Decision records have unique identifiers
+        run: |
+          set -eu
+          node --test .githooks/adr-identifier.test.mjs \
+            .githooks/adr-records.test.mjs \
+            .githooks/adr-citations.test.mjs \
+            .githooks/check-adr-identifiers.test.mjs
+          node .githooks/check-adr-identifiers.mjs
 
       - name: Product documents at the checked revision
         env:

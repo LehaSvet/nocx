@@ -481,10 +481,21 @@ how two agents ship two answers to one question.
    The owner's rule, 2026-09-10. An ADR is evidence of what was decided and why, at a
    date — edit it and the evidence is gone, while every citation written against it now
    points at a decision nobody took. The index already carries the spelling
-   (`Superseded by ADR-NNNN`, and `Accepted (§7 superseded by ADR-0027)` where only a
+   (`Superseded by ADR-zv62fyqg`, and `Accepted (§7 superseded by ADR-0027)` where only a
    section moved), so this costs one row. The new record names what it supersedes and
    why the old answer stopped holding; citations elsewhere — `contracts/`, code
-   comments, protocol docs — move to the new number in the same commit.
+   comments, protocol docs — move to the new identifier in the same commit.
+
+   **A new record's identifier is drawn, never counted** — `node .githooks/adr-identifier.mjs`
+   prints one, the file becomes `docs/decisions/<identifier>-<slug>.md`, and `INDEX.md`
+   takes the row in its date slot. A number is what two branches used to take from under each other, and the
+   renumber that repaired it stranded every citation written in between
+   ([ADR-zv62fyqg](docs/decisions/zv62fyqg-a-new-records-identifier-is-drawn-never-counted.md)).
+   Records 0001–0105 keep the numbers and filenames they were written with: an accepted
+   record is never edited, and a citation to a number has to go on resolving. So both
+   spellings are live — a supersession written before the draw still names a number
+   (`Superseded by ADR-0049`) — and what a reader needs is the record the citation
+   points at, never the era it was written in.
 
    This overrules the practice visible in the tree: ADR-0024 carries two `## Amendment`
    sections written into the record itself. Do not copy them. They are what the rule

@@ -69,7 +69,7 @@ import { mountWindowGeometry } from './window-geometry'
 import type { ApprovalFacts } from './client-host'
 import { mountRunCommandHandler } from './run-command'
 import { bootstrapTheme, reconcileThemeFromGo } from './renderers/theme-bootstrap'
-import { bootstrapPlatform } from './platform'
+import { bootstrapPlatform, currentPlatform } from './platform'
 import {
   QuickConnectController,
   ActionsQuickConnectProvider,
@@ -217,7 +217,21 @@ function main(): void {
 
   // A retained coordinator needs an explicit full restart, with its session
   // warning. Ordinary pending startup stays quiet until health is known.
-  void updateController.restore()
+  // A failed state read is a soft degrade and it must be visible in the app —
+  // but only in a window where an updater can exist at all: a browser or the
+  // e2e stand has none, and a warning there is noise (and one e2e spec tripped
+  // over exactly that). `currentPlatform()` is the repository's own fact for
+  // "is this the packaged app".
+  void updateController.restore({
+    onFailure: () => {
+      if (currentPlatform() === 'web') return
+      showToast({
+        level: 'warning',
+        message:
+          'nocx could not read the update state this launch — open Settings and check there if you expect a new release.',
+      })
+    },
+  })
 
   const clipboard = createClipboardAccess()
   const gate = new ClipboardGate()

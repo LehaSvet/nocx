@@ -462,10 +462,16 @@ describe('shared update offer', () => {
     render(() => <ToastHost />)
     mountIndicator(controller)
 
-    await controller.restore({ getState: () => Promise.reject(new Error('socket closed')) })
+    const onFailure = vi.fn()
+    await controller.restore({
+      getState: () => Promise.reject(new Error('socket closed')),
+      onFailure,
+    })
 
+    // The controller reports; the composition root decides what a person sees
+    // (the desktop window says it in a warning toast, a browser stand has no
+    // updater to warn about — review, nocx-1ebrs.66.1.1).
     expect(logWarn).toHaveBeenCalledWith('reading update state failed', expect.anything())
-    const toast = document.querySelector('.ui-toast[data-level="warning"]')
-    expect(toast?.textContent).toContain('could not read the update state')
+    expect(onFailure).toHaveBeenCalledWith('socket closed')
   })
 })

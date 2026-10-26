@@ -38,7 +38,11 @@ export interface UpdateController {
   apply: () => Promise<void>
   showHeldByCoordinator: (version: string) => void
   restore: (deps?: {
-    getState: () => Promise<{ HeldByOlderCoordinator: boolean; Version: string }>
+    getState?: () => Promise<{ HeldByOlderCoordinator: boolean; Version: string }>
+    /** Called when the read failed. The composition root decides whether a
+     *  person is told (the desktop window warns; a browser stand has no
+     *  updater to warn about). */
+    onFailure?: (reason: string) => void
   }) => Promise<void>
 }
 
@@ -170,9 +174,15 @@ export function createUpdateController(deps: UpdateControllerDeps = {}): UpdateC
       }
     },
     showHeldByCoordinator,
-    restore: async (deps = { getState: () => GetUpdateState() }) => {
+    restore: async (
+      deps: {
+        getState?: () => Promise<{ HeldByOlderCoordinator: boolean; Version: string }>
+        onFailure?: (reason: string) => void
+      } = {},
+    ) => {
+      const getState = deps.getState ?? (() => GetUpdateState())
       try {
-        const restored = await deps.getState()
+        const restored = await getState()
         if (!restored.HeldByOlderCoordinator) return
         showHeldByCoordinator(restored.Version)
       } catch (error) {
@@ -184,11 +194,12 @@ export function createUpdateController(deps: UpdateControllerDeps = {}): UpdateC
         log.warn('reading update state failed', {
           error: error instanceof Error ? error.message : String(error),
         })
-        showToast({
-          level: 'warning',
-          message:
-            'nocx could not read the update state this launch — open Settings and check there if you expect a new release.',
-        })
+        // The COMPOSITION ROOT decides whether this is worth a person's
+        // attention: in a browser or the e2e stand there is no updater at
+        // all, so a warning there is noise a spec then trips over. The
+        // desktop window passes a callback that says it; anything else
+        // leaves the log as the record.
+        deps.onFailure?.(error instanceof Error ? error.message : String(error))
       }
     },
   }
