@@ -19,7 +19,7 @@ package session
 // everything that changes the terminal or its model: output ingest, runtime
 // replies, client frames, intents and resize. It never blocks on I/O itself:
 // reading happens either through a raw, non-blocking read(2) loop
-// (internal/pty's RawReadUntilAgain, for a local PTY) with a SEPARATE
+// (internal/pty's RawReadChunk, for a local PTY) with a SEPARATE
 // readiness goroutine that consumes nothing, or — for a Process with no such
 // seam, today's SSH channels among them — a plain blocking reader goroutine
 // that hands chunks back to this one, the same shape internal/pty's old pump
@@ -119,6 +119,12 @@ type pendingIntent struct {
 	admittedID sessionruntime.IntentID
 }
 
+// The interactive lane relaxes draining only for truly unconditional input.
+// A token, check or precondition always requires the actual read barrier.
+func (pi *pendingIntent) requiresReadBarrier() bool {
+	return !pi.Interactive || pi.Token.ID != (TokenID{}) || pi.Check != nil || pi.Intent.Precondition != nil
+}
+
 // ownerItem is one thing waiting for its turn at the commit point.
 type ownerItem struct {
 	kind    ownerItemKind
@@ -131,7 +137,8 @@ type ownerItem struct {
 	// done is buffered(1): resolve never blocks on a caller that stopped
 	// listening, and a reply (itemReply) carries none — nothing submitted it
 	// through submit, and nothing is waiting on it.
-	done chan ownerResult
+	done      chan ownerResult
+	queueSlot bool
 }
 
 // ownerResult is what became of one item.
@@ -172,25 +179,18 @@ const (
 	// once crossed, moves an incarnation's completeness to lost-ingest
 	// rather than growing without bound.
 	replyReserveBytes = 64 << 10
-	// intentQueueMax bounds the owner's whole ordered queue — client frames
-	// and intents alike, a simplification this task makes deliberately: the
-	// spec draws a different bound for intents specifically ("busy") from
-	// client frames ("today's lease backpressure"), and one channel serving
-	// both is the cheapest thing that keeps either bound meaningful without
-	// two queues claiming to order the same items (AGENTS.md, "two surfaces
-	// may never own the same input"). Revisit if a schedule ever needs the
-	// two bounds to differ.
+	// intentQueueMax bounds ordinary submitted work across incoming,
+	// pending and in-flight items. Access bumps stay bounded by incoming
+	// alone; emulator replies have their own byte reserve.
 	intentQueueMax = 64
 )
 
-// rawReader is the local-PTY read seam (internal/pty.LocalPty, spec §5.2): a
-// readiness half that consumes nothing and a raw non-blocking read(2) loop
-// that delivers everything available in one call. A Process without it — an
-// SSH channel today — is read through runReaderGoroutine instead, the
-// blocking shape internal/pty's old pump used.
+// rawReader splits readiness from bounded, owner-only reads. A data read is
+// not a barrier: only an actual EAGAIN establishes that all currently readable
+// output has been ingested. Processes without this seam use the SSH fallback.
 type rawReader interface {
 	WaitReadable(ctx context.Context) error
-	RawReadUntilAgain(buf []byte, deliver func([]byte)) (eof bool, err error)
+	RawReadChunk(buf []byte) (n int, barrier bool, err error)
 }
 
 // writeInterrupter unblocks a write in flight (spec §5.7): a local PTY's
@@ -248,6 +248,7 @@ type sessionOwner struct {
 	log  *slog.Logger
 
 	incoming      chan ownerItem
+	queueUsed     atomic.Int64
 	closingSignal chan struct{}
 	closeOnce     sync.Once
 	stopped       chan struct{}
@@ -330,7 +331,12 @@ type sessionOwner struct {
 	// rawReader Process only (run creates it, and starts runReadiness, only
 	// then); nil otherwise, which makes the read on it in run's own select
 	// block forever — exactly like a case that is not there.
-	readableCh chan struct{}
+	readableCh       chan struct{}
+	readRearm        chan struct{}
+	readNotified     bool
+	localReadPending bool
+	readBuf          [pageSize]byte
+	readEndErr       error
 }
 
 // newSessionOwner builds the owner over a process that already exists and a
@@ -397,7 +403,8 @@ func (o *sessionOwner) run() {
 	// already returned.
 	var readinessEnded chan error
 	if rr, ok := o.proc.(rawReader); ok {
-		o.readableCh = make(chan struct{}, 1)
+		o.readableCh = make(chan struct{})
+		o.readRearm = make(chan struct{}, 1)
 		readinessEnded = make(chan error, 1)
 		go o.runReadiness(rr, o.readableCh, readinessEnded)
 	} else {
@@ -417,8 +424,27 @@ func (o *sessionOwner) run() {
 	// more" — the same trick readableCh and readEvents already rely on for
 	// a Process that never uses them.
 	closingSignal := o.closingSignal
+	detachSignal := o.detachSignal
+	readMore := make(chan struct{})
+	close(readMore)
 
 	for {
+		// Shutdown and detach are checked between every bounded read, before
+		// offering another input item to the writer.
+		select {
+		case <-closingSignal:
+			closingSignal = nil
+			if !o.closing {
+				o.beginClosing()
+			}
+		default:
+		}
+		select {
+		case <-detachSignal:
+			detachSignal = nil
+			o.performDetach()
+		default:
+		}
 		if o.closing && o.eofSeen && !o.writerBusy && o.inFlight == nil && len(o.pending) == 0 {
 			close(o.writeReq)
 			return
@@ -442,21 +468,28 @@ func (o *sessionOwner) run() {
 		// o.incoming first, unconditionally, closes that gap: every item
 		// already sent is dispatched (and any bump's sweep already run)
 		// before this iteration ever asks whether the writer is free.
-		for drained := false; !drained; {
+		for remaining := intentQueueMax; remaining > 0; remaining-- {
 			select {
 			case it := <-o.incoming:
 				o.dispatchIncoming(it)
 			default:
-				drained = true
+				remaining = 0
 			}
 		}
-		// What the drain queued must be offered to a free writer before this
-		// iteration blocks: the select below may otherwise wait on an event
-		// that never comes while the writer is idle and pending is not.
-		o.advance()
+		o.expirePending()
+		if len(o.incoming) == 0 {
+			// Refilled incoming may contain a priority revocation. Delay
+			// only writer advancement, never the event turn below: reads,
+			// write completions and lifecycle work must still progress.
+			o.advance()
+		}
 		if o.closing && o.eofSeen && !o.writerBusy && o.inFlight == nil && len(o.pending) == 0 {
 			close(o.writeReq)
 			return
+		}
+		var continueRead <-chan struct{}
+		if o.localReadPending {
+			continueRead = readMore
 		}
 
 		select {
@@ -468,6 +501,9 @@ func (o *sessionOwner) run() {
 		case it := <-o.incoming:
 			o.dispatchIncoming(it)
 		case <-o.readableCh:
+			o.readNotified = true
+			o.drainLocal()
+		case <-continueRead:
 			o.drainLocal()
 		case err := <-readinessEnded:
 			readinessEnded = nil
@@ -476,10 +512,10 @@ func (o *sessionOwner) run() {
 			o.handleReadEvent(ev)
 		case res := <-o.writeRes:
 			o.completeWrite(res)
-		case <-o.detachSignal:
+		case <-detachSignal:
+			detachSignal = nil
 			o.performDetach()
 		}
-		o.advance()
 	}
 }
 
@@ -590,57 +626,42 @@ func (o *sessionOwner) interruptWriter() {
 	}
 }
 
-// drainLocal is the commit point's drain step (spec §5.3.1) for a local PTY:
-// read to EAGAIN, ingesting every chunk as it arrives, without blocking. It
-// is a no-op once EOF has been seen, and a no-op for a Process with no raw
-// read seam — that Process is read by runReaderGoroutine instead, which
-// delivers through readEvents rather than through this call.
-//
-// It calls RawReadUntilAgain unconditionally, with no handshake against the
-// readiness goroutine first (nocx-6q1uh.18): the two no longer share
-// anything to contend over. RawReadUntilAgain reads through the master
-// *os.File's own SyscallConn, exactly as before; runReadiness's WaitReadable
-// (below) now polls a SEPARATE dup fd for a real local PTY
-// (internal/pty.LocalPty), one unix.Poll blocks on directly rather than
-// through Go's runtime poller — so a readiness wait parked on an idle
-// program holds no lock this call could ever need. See WaitReadable's own
-// doc (internal/pty) for why the previous shape — both halves going through
-// the same *os.File — deadlocked the merged-tree gate for 8+ minutes, and
-// why a prior interrupt-and-wait handshake (fd99a9d1) did not fix it: it
-// kept both goroutines serialised through the very call this rewrite
-// removes from the read side entirely.
-func (o *sessionOwner) drainLocal() {
+// drainLocal performs one read quantum and ingests it losslessly. False means
+// work remains, NOT that the screen is current. Only EAGAIN (or an ended read
+// side) lets a checked head proceed. The reusable buffer is owned by run alone.
+func (o *sessionOwner) drainLocal() bool {
 	if o.eofSeen {
-		return
+		return true
 	}
 	rr, ok := o.proc.(rawReader)
 	if !ok {
-		return
+		return true
 	}
-	buf := make([]byte, pageSize)
-	eof, err := rr.RawReadUntilAgain(buf, o.ingestOne)
-	if eof || err != nil {
+	n, barrier, err := rr.RawReadChunk(o.readBuf[:])
+	if n > 0 {
+		o.ingestOne(o.readBuf[:n])
+	}
+	o.localReadPending = !barrier && err == nil
+	if err != nil {
 		o.finishRead(err)
+	} else if barrier && o.readEndErr != nil {
+		o.finishRead(o.readEndErr)
 	}
+	if barrier && o.readNotified {
+		o.readNotified = false
+		select {
+		case o.readRearm <- struct{}{}:
+		default:
+		}
+	}
+	return barrier || o.eofSeen
 }
 
-// runReadiness is the readiness half spec §5.2 splits from reading, for a
-// Process whose master supports it: it consumes nothing, ever — every read
-// is this owner's own, through drainLocal — and it exists only to wake the
-// owner when there is something to drain. It never calls RawReadUntilAgain
-// and never blocks the owner's own goroutine: WaitReadable is free to park
-// for as long as the program stays silent, because nothing else needs what
-// it might be holding (nocx-6q1uh.18 — see drainLocal's own doc for what
-// used to be true and no longer is).
-//
-// Report-and-look-again, dropping a signal the owner has not yet caught up
-// to (a full readableCh) rather than pausing for anything: there is no
-// handshake left to wait for, so this goroutine's only job between calls is
-// to notice whether readCtx has ended. Any error from WaitReadable — readCtx
-// ending, or the PTY closed under it (os.ErrClosed) — is this goroutine's cue
-// to return, and it says so on ended rather than returning silently
-// (nocx-mrfe5): nothing will signal readableCh again, so an owner still
-// waiting for EOF must hear that from here or wait forever.
+// runReadiness permits one outstanding notification. It rearms only when the
+// owner reaches EAGAIN; a continuous producer therefore wakes the owner without
+// spinning poll(2) while that owner is busy ingesting or handling input. The
+// acknowledgement carries no PTY read lock, and opportunistic head reads may
+// establish the barrier just as ordinary readable notifications can.
 func (o *sessionOwner) runReadiness(rr rawReader, readableCh chan<- struct{}, ended chan<- error) {
 	for {
 		if err := rr.WaitReadable(o.readCtx); err != nil {
@@ -649,7 +670,15 @@ func (o *sessionOwner) runReadiness(rr rawReader, readableCh chan<- struct{}, en
 		}
 		select {
 		case readableCh <- struct{}{}:
-		default:
+		case <-o.readCtx.Done():
+			ended <- o.readCtx.Err()
+			return
+		}
+		select {
+		case <-o.readRearm:
+		case <-o.readCtx.Done():
+			ended <- o.readCtx.Err()
+			return
 		}
 	}
 }
@@ -664,10 +693,11 @@ func (o *sessionOwner) runReadiness(rr rawReader, readableCh chan<- struct{}, en
 // (nocx-mrfe5): the last drain could have answered EAGAIN just before the
 // master closed, and nothing was left to ask again.
 func (o *sessionOwner) readinessEnded(err error) {
-	o.drainLocal()
-	if !o.eofSeen {
-		o.finishRead(err)
+	o.readEndErr = err
+	if o.readEndErr == nil {
+		o.readEndErr = io.EOF
 	}
+	o.drainLocal()
 }
 
 // runReaderGoroutine is the fallback for a Process with no raw read seam —
@@ -765,6 +795,7 @@ func (o *sessionOwner) finishRead(err error) {
 		return
 	}
 	o.eofSeen = true
+	o.localReadPending = false
 	if err != nil && !errors.Is(err, io.EOF) {
 		o.log.Warn("session output ended", "err", err)
 	}
@@ -796,18 +827,59 @@ func (o *sessionOwner) finishRead(err error) {
 func (o *sessionOwner) advance() {
 	for !o.writerBusy && len(o.pending) > 0 {
 		it := o.pending[0]
+		if it.kind == itemIntent && o.refuseExpiredIntent(it) {
+			o.pending = o.pending[1:]
+			continue
+		}
+		barrier := o.drainLocal()
+		if it.kind == itemIntent && it.intent.requiresReadBarrier() && !barrier {
+			// Keep the head in place. Later input must not overtake a
+			// conditional write while it waits for a genuine read barrier.
+			return
+		}
 		o.pending = o.pending[1:]
 		o.processHead(it)
 	}
 }
 
-// processHead is the commit point (spec §5.3): an opportunistic extra drain
-// so validation sees the freshest possible screen, then the item's own
-// handling. A reply and a client frame are unconditional bytes; a resize
-// asks the runtime to commit a geometry; an intent is validated and encoded
-// through Session.Commit before anything is handed to the writer.
+// expirePending also runs when admission keeps refilling incoming or the
+// writer is occupied, independently of whether a write may advance this turn.
+func (o *sessionOwner) expirePending() {
+	// Deadlines must settle even behind an occupied writer. Refusal writes
+	// no bytes, so removing expired items does not reorder surviving input.
+	kept := o.pending[:0]
+	for _, it := range o.pending {
+		if it.kind != itemIntent || !o.refuseExpiredIntent(it) {
+			kept = append(kept, it)
+		}
+	}
+	o.pending = kept
+}
+
+// refuseExpiredIntent runs between read quanta, never against the screen.
+// Caller cancellation deliberately does not cancel an admitted wire intent
+// (intent_ops.go, D11); shutdown and access bumps retain their existing paths.
+func (o *sessionOwner) refuseExpiredIntent(it ownerItem) bool {
+	pi := it.intent
+	var err error
+	if pi.CommitBy != 0 && o.nowMono() > pi.CommitBy {
+		err = errCommitDeadline
+	} else if pi.Token.ID != (TokenID{}) && o.tokens != nil && o.tokens.now().After(pi.Token.ExpiresAt) {
+		err = ErrExpired
+	}
+	if err == nil {
+		return false
+	}
+	res := ownerResult{State: sessionruntime.IntentStateRefused, Err: err}
+	o.recordTokenOutcome(pi, res)
+	o.resolve(it, res)
+	return true
+}
+
+// processHead handles an item only after advance's bounded drain. Checked
+// intents require the genuine EAGAIN barrier; interactive/unconditional input
+// can proceed after a data quantum and encodes against the ingested modes.
 func (o *sessionOwner) processHead(it ownerItem) {
-	o.drainLocal()
 	switch it.kind {
 	case itemReply, itemClientFrame:
 		o.writeStart(it, it.payload)
@@ -845,13 +917,16 @@ func (o *sessionOwner) processHead(it ownerItem) {
 // re-checks the deadline, alone, right before ever calling Admit (spec
 // §7.2: "refuses AT RECEIPT and AT THE COMMIT POINT").
 func (o *sessionOwner) commitIntent(it ownerItem) {
+	if o.refuseExpiredIntent(it) {
+		return
+	}
 	// A session with no read barrier (spec §5.2 — today, an SSH channel: a
 	// blocking reader may be holding bytes this owner has not ingested yet)
 	// cannot prove the screen a check function is about to read is the
 	// screen right now, so every intent on it is refused before Admit is
 	// ever asked. Reads and snapshots are unaffected: they read whatever
 	// has already been ingested, not "as of this instant".
-	if !it.intent.Interactive && !o.hasReadBarrier() {
+	if it.intent.requiresReadBarrier() && !o.hasReadBarrier() {
 		o.resolve(it, ownerResult{State: sessionruntime.IntentStateRefused, Err: ErrNoReadBarrier})
 		return
 	}
@@ -1047,6 +1122,9 @@ func (o *sessionOwner) finishNeverOffered(it ownerItem, fence sessionruntime.Fen
 // carries no done channel, because nothing submitted it through submit and
 // nothing is waiting on it.
 func (o *sessionOwner) resolve(it ownerItem, res ownerResult) {
+	if it.queueSlot {
+		o.queueUsed.Add(-1)
+	}
 	if it.done != nil {
 		it.done <- res
 	}
@@ -1100,12 +1178,26 @@ func (o *sessionOwner) submit(it ownerItem) (<-chan ownerResult, error) {
 		return nil, errOwnerClosing
 	default:
 	}
+	// One bound spans incoming, pending and in-flight ordinary work. Moving
+	// an item into pending must not refund admission while a checked head
+	// waits. Access bumps never join pending: incoming's own finite capacity
+	// bounds them without letting saturated input prevent revocation.
+	if it.kind != itemAccessBump {
+		if o.queueUsed.Add(1) > intentQueueMax {
+			o.queueUsed.Add(-1)
+			return nil, errBusy
+		}
+		it.queueSlot = true
+	}
 	done := make(chan ownerResult, 1)
 	it.done = done
 	select {
 	case o.incoming <- it:
 		return done, nil
 	default:
+		if it.queueSlot {
+			o.queueUsed.Add(-1)
+		}
 		return nil, errBusy
 	}
 }
