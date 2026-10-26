@@ -92,7 +92,7 @@ import {
   type DisposableRoot,
   VaultBackend,
 } from './harness'
-import { startSshd, type SshdFixture } from './sshd-fixture'
+import { assertSshdReady, startSshd, type SshdFixture } from './sshd-fixture'
 import { readStand } from './stand'
 
 const test = base
@@ -495,6 +495,12 @@ test.describe('one ssh connection per host, answered unwatched, surviving the co
       // different things in two runs.
       const authBeforeOpen = authenticatedConnections(fixture)
 
+      // Seeding used short-lived control sockets. The vault correctly seals
+      // ten seconds after the last client leaves, which can happen while the
+      // first browser loads. Restore the same prerequisite as after restart,
+      // now that this browser is attached, before asking it to read a password.
+      await unsealIfSealed(endpoint)
+      await assertSshdReady(fixture)
       await openSavedProfile(first, PROFILE_NAME)
 
       // THE CONNECT-TIME ASK IS OWED BY A HELPER-MODE CONNECTION TOO (ADR-0105,
