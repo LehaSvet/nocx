@@ -37,6 +37,9 @@ export function createUpdateController(deps: UpdateControllerDeps = {}): UpdateC
   const finishUpdate = deps.finish ?? (() => FinishPendingUpdate())
   const restartWindow = deps.restart ?? (() => RestartWindow())
   let toastId: number | null = null
+  // Per-run memory, never localStorage: both Later and the kit close button
+  // silence the announcement, not the persistent indicator.
+  const announced = new Set<string>()
 
   const present = (options: ToastOptions): void => {
     if (toastId !== null) dismissToast(toastId)
@@ -56,7 +59,7 @@ export function createUpdateController(deps: UpdateControllerDeps = {}): UpdateC
   const finish = (): void => {
     void Promise.resolve().then(finishUpdate).catch(fail)
   }
-  const showOffer = (): void => {
+  const showOffer = (installLabel = 'Install'): void => {
     const current = state()
     switch (current.kind) {
       case 'hidden':
@@ -66,7 +69,7 @@ export function createUpdateController(deps: UpdateControllerDeps = {}): UpdateC
           message: `nocx ${current.version} is available`,
           link: { label: 'Release notes', href: current.notesUrl },
           actions: [
-            { label: 'Install', variant: 'primary', onClick: () => void apply() },
+            { label: installLabel, variant: 'primary', onClick: () => void apply() },
             { label: 'Later', onClick: () => {} },
           ],
         })
@@ -115,6 +118,10 @@ export function createUpdateController(deps: UpdateControllerDeps = {}): UpdateC
       if (current.kind === 'downloading' || current.kind === 'pending' || current.kind === 'held')
         return
       setState({ kind: 'available', version, notesUrl })
+      if (!announced.has(version)) {
+        announced.add(version)
+        showOffer('Install now')
+      }
     },
     showHeldByCoordinator: (version) => {
       setState({ kind: 'held', version })

@@ -36,6 +36,55 @@ function mountIndicator(controller: ReturnType<typeof createUpdateController>) {
 }
 
 describe('shared update offer', () => {
+  it('announces once per version even after Later or dismiss, while the indicator stays findable', () => {
+    const controller = createUpdateController({ apply: vi.fn() })
+    render(() => <ToastHost />)
+    mountIndicator(controller)
+    controller.showAvailable('2.0.0', NOTES)
+    expect(screen.getAllByRole('button', { name: 'Install now' })).toHaveLength(1)
+    expect(document.querySelectorAll('.ui-toast')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Later' }))
+    controller.showAvailable('2.0.0', NOTES)
+    expect(document.querySelectorAll('.ui-toast')).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Update available' }))
+    expect(screen.getAllByRole('button', { name: /^Install$/ })).toHaveLength(1)
+    controller.showAvailable('2.0.1', NOTES)
+    expect(document.querySelectorAll('.ui-toast')).toHaveLength(1)
+    expect(screen.getByRole('status').textContent).toContain('2.0.1')
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss notification' }))
+    controller.showAvailable('2.0.1', NOTES)
+    controller.showAvailable('2.0.0', NOTES)
+    expect(document.querySelectorAll('.ui-toast')).toHaveLength(0)
+  })
+
+  it('the announcement uses the same single-flight apply and keeps replacement progress after the kit action dismisses', async () => {
+    let resolve!: () => void
+    const apply = vi.fn(
+      () =>
+        new Promise<void>((r) => {
+          resolve = r
+        }),
+    )
+    const restart = vi.fn()
+    const controller = createUpdateController({ apply, restart })
+    render(() => <ToastHost />)
+    mountIndicator(controller)
+    controller.showAvailable('2.0.0', NOTES)
+    fireEvent.click(screen.getByRole('button', { name: 'Install now' }))
+    expect(screen.getByRole('status').textContent).toContain('Downloading nocx 2.0.0')
+    fireEvent.click(screen.getByRole('button', { name: 'Update available' }))
+    await controller.apply()
+    controller.showAvailable('2.0.1', NOTES)
+    expect(apply).toHaveBeenCalledTimes(1)
+    expect(document.querySelectorAll('.ui-toast')).toHaveLength(1)
+    resolve()
+    await vi.waitFor(() =>
+      expect(screen.getByRole('status').textContent).toContain('2.0.0 installed'),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Restart now' }))
+    await vi.waitFor(() => expect(restart).toHaveBeenCalledTimes(1))
+  })
+
   it('opens one offer beside Settings without taking tab space and applies once across sidebar rebuilds', async () => {
     let resolve!: () => void
     const apply = vi.fn(

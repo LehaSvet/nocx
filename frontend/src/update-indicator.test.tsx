@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render } from '@solidjs/testing-library'
 import { createSignal, type Component } from 'solid-js'
 import { mountSidebar, type SidebarAction, type SidebarViewDescriptor } from './sidebar'
-import { createUpdateToast } from './update-toast'
+import { createUpdateController } from './update-controller'
 import { ToastHost } from './ui/toast'
 
 const TestIcon: Component = () => <svg data-test-icon="1" />
@@ -29,13 +29,14 @@ describe('activity bar update indicator', () => {
     const panel = document.createElement('div')
     document.body.append(bar, panel)
     const [available] = createSignal(true)
-    const toast = createUpdateToast({ apply: vi.fn() })
+    const controller = createUpdateController({ apply: vi.fn() })
+    controller.showAvailable('2.0.0', 'https://example.com/releases/2.0.0')
     render(() => <ToastHost />)
     mountSidebar(bar, panel, views, [settings], null, undefined, undefined, undefined, undefined, {
       title: 'Update available',
       icon: TestIcon,
       available,
-      onActivate: () => toast.showAvailable('2.0.0', 'https://example.com/releases/2.0.0'),
+      onActivate: controller.showOffer,
     })
 
     const bottomZone = bar.querySelector('[aria-label="Actions"]')
@@ -51,7 +52,7 @@ describe('activity bar update indicator', () => {
     expect(document.body.querySelectorAll('button').length).toBeGreaterThan(2)
     expect(
       [...document.body.querySelectorAll('button')].filter(
-        (button) => button.textContent?.trim() === 'Install now',
+        (button) => button.textContent?.trim() === 'Install',
       ),
     ).toHaveLength(1)
   })
