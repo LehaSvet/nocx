@@ -32,7 +32,7 @@ for f in pre-commit commit-msg pre-merge-commit pre-push; do
     [ -r ".githooks/$f" ] || need ".githooks/$f is missing or unreadable"
 done
 for f in adapter.mjs check.mjs check-present.mjs check-docs.mjs check-product.mjs \
-    check-commits.mjs time-format.mjs document-format.mjs merge-gate.mjs commit-links.mjs config.json; do
+    check-commits.mjs time-format.mjs document-format.mjs regular-file.mjs argv.mjs merge-gate.mjs commit-links.mjs config.json; do
     [ -r "$gate/$f" ] || need "$gate/$f is missing or unreadable"
 done
 [ -r .beads/issues.jsonl ] || need ".beads/issues.jsonl is missing or unreadable"
