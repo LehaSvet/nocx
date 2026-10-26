@@ -1,6 +1,6 @@
 # ADR-zv62fyqg — A new decision record's identifier is drawn, never counted
 
-- **Status:** Accepted
+- **Status:** Accepted (owner decision, 2026-10-26 on `nocx-hyh2p`)
 - **Date:** 2026-10-26
 - **Supersedes:** the numbering practice stated by "Numbering, as it actually is" in
   [INDEX.md](INDEX.md) and by "Adding one" there — "take the next free number" — and the
@@ -40,9 +40,9 @@ is the whole reason to change the scheme.
 is `docs/decisions/<identifier>-<slug>.md`, and the heading is `# ADR-<identifier> — <title>`.
 
 **The shape is eight symbols of Crockford base32, lower case:**
-`0123456789abcdefghjkmnpqrstvwxyz`. Forty bits. `i`, `l`, `o` and `u` are out, so an
-identifier read off a screen and typed back is the identifier that was meant, and no
-identifier collides with a digit or with a vowel it resembles.
+`0123456789abcdefghjkmnpqrstvwxyz`. Forty bits. `i`, `l`, `o` and `u` are out of the
+alphabet, so `1` and `l` and `i` are never the same symbol, `0` and `o` never are either, and
+an identifier read off a screen and typed back is the identifier that was meant.
 
 **An all-digit draw is discarded and drawn again.** Eight symbols can spell `01234567`, and
 that is the one shape a person cannot tell from the numbered era in a citation; the rule
@@ -87,11 +87,11 @@ has seen only their own side of the collision.
   needs a network round trip to write a file.
 - **A date prefix, `2026-10-26-<slug>.md`.** It is unique to the DAY. Two records on one day
   collide, which is exactly when two branches tend to add one.
-- **A four-character draw**, which is the smallest that would fit `ADR-k3f9a`-shaped ids.
-  Twenty bits is 1,048,576 identifiers, and ten thousand records give about 48 collisions
-  expected among them — a collision about every other time this repository reaches ten
-  thousand records, each one a renumber of the kind this record exists to end. Eight symbols
-  is short enough to type from a citation and long enough to stop mattering.
+- **A five-character draw**, the shape `ADR-k3f9a` that the bead proposed. Twenty-five bits
+  is 33.5 million identifiers, and ten thousand records give about 1.5 collisions expected
+  among them — a collision most times this repository reaches ten thousand records, each one
+  a renumber of the kind this record exists to end. Eight symbols is short enough to type
+  back from a citation and long enough to stop mattering.
 - **Refusing a unique legacy number.** It would refuse `0106`, the updater pull request's
   record, which is a record on the same footing as `0001`. Retroactive refusal is also
   exactly the renumbering this record exists to end.
@@ -100,8 +100,8 @@ has seen only their own side of the collision.
 
 Two independent draws collide with probability 2^-40 per pair. Over N records that is about
 N²/2^41: 10,000 records give 4.5 × 10^-5 — a collision is expected once in about 22,000
-repositories' worth of this one's history. The identifier's own document says that, because
-"it is random, so it is safe" is not an argument.
+repositories' worth of this one's history. The arithmetic is written down here because "it is
+random, so it is safe" is not an argument, and the number is what a reader should weigh.
 
 What the draw PROVES is narrower and is the thing that matters: neither branch consults
 anything the other can see, so the two cannot agree by construction the way they did on the
