@@ -36,6 +36,32 @@ function mountIndicator(controller: ReturnType<typeof createUpdateController>) {
 }
 
 describe('shared update offer', () => {
+  it.each(['announcement', 'indicator'])(
+    'opens %s release notes through the synchronous opener and explains refusal',
+    async (route) => {
+      const open = vi.fn<(url: string) => Promise<void>>().mockResolvedValue(undefined)
+      const controller = createUpdateController({ apply: vi.fn() })
+      render(() => <ToastHost openUrl={open} />)
+      mountIndicator(controller)
+      controller.showAvailable('2.0.0', NOTES)
+      if (route === 'indicator')
+        fireEvent.click(screen.getByRole('button', { name: 'Update available' }))
+      const link = screen.getByRole('link', { name: 'Release notes' })
+      fireEvent.click(link)
+      expect(open).toHaveBeenCalledWith(NOTES)
+      expect(screen.getByRole('status').textContent).toContain('2.0.0')
+      open.mockRejectedValueOnce(new Error('browser refused /private/path Errno 13'))
+      fireEvent.click(link)
+      await vi.waitFor(() =>
+        expect(screen.getByRole('status').textContent).toContain(
+          'The browser could not be opened.',
+        ),
+      )
+      expect(screen.getByRole('status').textContent).not.toContain('/private/path')
+      expect(document.querySelector('.ui-toast[data-level="danger"]')).not.toBeNull()
+    },
+  )
+
   it('announces once per version even after Later or dismiss, while the indicator stays findable', () => {
     const controller = createUpdateController({ apply: vi.fn() })
     render(() => <ToastHost />)

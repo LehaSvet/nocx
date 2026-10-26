@@ -192,7 +192,19 @@ function main(): void {
   // only adds a notch, so a frame without it is correct on every platform that
   // does not need one, and blocking first paint on an IPC round trip is not.
   void bootstrapPlatform()
-  render(() => <App />, document.getElementById('app')!)
+  render(
+    () => (
+      <App
+        openUrl={(url) => terminalLinkUrlOpener.open(url)}
+        onOpenUrlError={(error) =>
+          log.warn('opening browser failed', {
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      />
+    ),
+    document.getElementById('app')!,
+  )
   // The window's pet, over the whole shell so the tab strip's underside is
   // terrain like any block edge. One animal per window: it is an ornament of
   // the window, not of whichever pane happens to be in front.
