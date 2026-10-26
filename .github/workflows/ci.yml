@@ -817,6 +817,24 @@ jobs:
         with:
           node-version: '24'
 
+      # br itself, pinned by version and checksum: the export has to be one
+      # br imports, and the adapter the gate reads it through is lenient
+      # (nocx-8t2lo). 0.7.0 is the version the tracker is written with.
+      - name: Install br
+        run: |
+          set -eu
+          url=https://github.com/Dicklesworthstone/beads_rust/releases/download/v0.7.0/br-0.7.0-linux_musl_amd64.tar.gz
+          curl -fsSL -o "$RUNNER_TEMP/br.tgz" "$url"
+          echo "283e2f3b4eb1b573362578cdf82287928e6c024b6464fe781373358b72ff825d  $RUNNER_TEMP/br.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/br.tgz" -C "$RUNNER_TEMP/bin" br
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: The tracker export imports into br
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .githooks/check-tracker-import.sh "${HEAD_SHA:-HEAD}"
+
       - name: The backlog is still a queue
         env:
           # Through the environment rather than into the script: an expression
