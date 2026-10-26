@@ -35,19 +35,6 @@ func (p *darwinPlatform) Preflight(ctx context.Context, installPath string) erro
 		return errors.New("this is a development build; self-update is not available — use a release build or run wails dev for local development")
 	}
 
-	// A translocated bundle runs from a read-only randomised path and
-	// cannot replace itself. The user must move it to /Applications
-	// (or any stable writable location) first.
-	if strings.Contains(installPath, "AppTranslocation") {
-		return fmt.Errorf(
-			"nocx is running from a translocated path (%s). "+
-				"This happens when the app is launched directly from a DMG or download "+
-				"without being moved to a stable location first. "+
-				"Move nocx to /Applications (or any writable directory) and try again.",
-			installPath,
-		)
-	}
-
 	// The containing directory must be writable so the update
 	// transaction can create its staging directory and perform the
 	// atomic exchange.

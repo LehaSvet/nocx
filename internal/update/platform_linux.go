@@ -59,7 +59,7 @@ func (p *linuxPlatform) Preflight(_ context.Context, installPath string) error {
 	// AppImage can be placed and the atomic exchange can proceed.
 	dir := filepath.Dir(installPath)
 	if err := unix.Access(dir, unix.W_OK); err != nil {
-		return fmt.Errorf("install directory %s is not writable — cannot stage or apply an update: %w", dir, err)
+		return fmt.Errorf("install directory %s is not writable — move the AppImage to a directory you can write to, launch it there, and try again: %w", dir, err)
 	}
 
 	return nil

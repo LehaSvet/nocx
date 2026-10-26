@@ -127,10 +127,11 @@ type UpdaterConfig struct {
 	// (internal/version.Version).
 	CurrentVersion string
 
-	// InstallPath is the absolute filesystem path to the currently
-	// installed bundle — the .app directory on darwin, the AppImage
-	// file on linux.
+	// InstallPath is the destination bundle, independent of the running copy.
 	InstallPath string
+
+	// StateDir holds the profile's update lock and transaction journal.
+	StateDir string
 
 	// Coordinator answers which backend build is actually serving this
 	// client. [Updater.ReportHealthy] refuses to finalise without it:
@@ -155,6 +156,7 @@ type updater struct {
 	keyring        []ed25519.PublicKey
 	currentVersion string
 	installPath    string
+	stateDir       string
 	coordinator    CoordinatorProbe
 	httpClient     *http.Client
 	log            log.Logger
@@ -171,14 +173,14 @@ func NewUpdater(cfg UpdaterConfig) Updater {
 	if l == nil {
 		l = log.NewSlogAdapter(nil) // uses slog.Default()
 	}
-	// The lock file lives next to the install path (same directory).
-	lockPath := filepath.Join(filepath.Dir(cfg.InstallPath), ".nocx-update.lock")
+	lockPath := filepath.Join(cfg.StateDir, ".nocx-update.lock")
 	return &updater{
 		platform:       cfg.Platform,
 		fetcher:        cfg.Fetcher,
 		keyring:        cfg.Keyring,
 		currentVersion: cfg.CurrentVersion,
 		installPath:    cfg.InstallPath,
+		stateDir:       cfg.StateDir,
 		coordinator:    cfg.Coordinator,
 		httpClient:     hc,
 		log:            l,
