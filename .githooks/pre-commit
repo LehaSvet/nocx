@@ -378,18 +378,34 @@ host_gate "eslint (root)" npm run lint
 # commit ACTUALLY TOUCHES; the whole tree is checked where the whole tree is
 # available. The summary this hook prints at its end says so in as many words.
 #
-# MEASURED, one hook at a time, both runs on the same staged frontend change and
-# the same machine (the measurement took the run's machine-wide commit lock
-# first). Peak resident memory of the hook's WHOLE process tree, sampled every
-# 25 ms — `Maximum resident set size` from `time -v` is the direct child only,
-# which is the bash hook at 4 MB, so it cannot answer this question:
+# MEASURED, one hook run at a time, the same staged change in both rows (one
+# comment line in frontend/src/about-client.ts), on this 12 GB machine shared
+# with every other agent session. `time -v` cannot answer this question: its
+# `Maximum resident set size` is the DIRECT child's, and the hook's direct child
+# is this bash script at 4 MB while the memory lives two levels down in node. So
+# the numbers are the peak resident memory of the hook's whole process tree,
+# sampled every 25 ms by scripts/measure-hook-memory.py:
 #
-#   hook, one frontend commit staged   peak tree RSS   peak process
-#   `cd frontend && npm run lint`        2159 MB        2123 MB (eslint .)
+#   hook, one frontend file staged         before         after
+#   peak of the whole tree (tree RSS)      2284 MB        1219 MB
+#   peak single process                    2199 MB        1138 MB
+#                                          (eslint .)     (tsc --noEmit)
+#   the frontend's typed eslint itself     2199 MB         651 MB
+#   wall clock                             111 s           63 s
 #
-#   ... `eslint <staged files>` — the second row is the same measurement after
-#   this change; the command that produced it is in the pull request and in the
-#   commit message of the commit that wrote it here.
+# Reproduce either row from the worktree root — the second row is this file as
+# it stands, the first is `git show <before>:.githooks/pre-commit > /tmp/old-pre-commit`
+# and that path given as the command:
+#
+#   python3 scripts/measure-hook-memory.py .githooks/pre-commit
+#
+# WHAT THE REMAINING PEAK IS, and why the lock is not thereby redundant: it is
+# `tsc --noEmit`, which answers about the project and cannot be scoped to a file
+# — so two hooks still cost 2.4 GB together on a 12 GB box. They take turns.
+# The repo-root `eslint .` every commit runs stayed OUTSIDE the lock on purpose:
+# measured at 690 MB and 4.6 s for a docs-only staged change (the whole hook,
+# 770 MB), which is not what starves a commit — and making every tracker commit
+# queue behind a sixty-second frontend lint is how a hook teaches --no-verify.
 if [ "$RUN_FE" = 1 ]; then
     GATE_LOCK_NAME=frontend
     if [ -f "$PWD/scripts/gate-lock.sh" ]; then
