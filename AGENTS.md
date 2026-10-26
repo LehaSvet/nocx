@@ -908,7 +908,8 @@ changed.
 - **Frontend:** TypeScript, CodeMirror 6 for the editor. The live grid is painted from the
   session runtime's screen frames by the client's cell model and painter
   ([ADR-0072](docs/decisions/0072-xterm-is-removed-first-and-the-interval-record-follows-the-cell-model.md));
-  xterm.js remains only as the invisible input layer until `nocx-zg3k3.8` removes it.
+  xterm.js is gone from the build (`nocx-zg3k3.8`); `frontend/src/xterm-absence.test.ts`
+  keeps it out.
 - **Desktop shell:** Wails v3 (macOS first).
 - **Transport:** one WebSocket — raw **binary** data plane + **JSON-RPC 2.0** control plane
   (AD-1).
