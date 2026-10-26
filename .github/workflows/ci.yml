@@ -925,6 +925,7 @@ jobs:
           set -eu
           node --test .githooks/adr-identifier.test.mjs \
             .githooks/adr-records.test.mjs \
+            .githooks/adr-citations.test.mjs \
             .githooks/check-adr-identifiers.test.mjs
           node .githooks/check-adr-identifiers.mjs
 

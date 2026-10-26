@@ -112,8 +112,8 @@ record and following its citations, and no such case has happened.
 
 ## What a person does now
 
-1. `node .githooks/adr-identifier.mjs` prints an identifier, e.g. `k3f9a2bc`.
-2. Write `docs/decisions/k3f9a2bc-<slug>.md`, headed `# ADR-k3f9a2bc — <title>`.
+1. `node .githooks/adr-identifier.mjs` prints an identifier.
+2. Write `docs/decisions/<identifier>-<slug>.md`, headed `# ADR-<identifier> — <title>`.
 3. Add the row to `INDEX.md` in the date slot its `Date:` line belongs in, in the same
    commit.
 4. Commit. Pre-commit refuses the commit if that identifier already names a record, and
@@ -126,6 +126,9 @@ record and following its citations, and no such case has happened.
   can resolve.
 - `.githooks/adr-records.mjs` is the one place that decides what a record's file name is,
   and it is what both the check and the tests read.
+- `.githooks/adr-citations.test.mjs` reads every tracked document and refuses a citation
+  that names no record, so renaming a record — the one thing this decision promised never to
+  do — fails rather than quietly stranding the citations written against it.
 - `INDEX.md` is sorted by date and one test holds it there, including the eight rows this
   decision moved to their date slot (0007, 0010, 0011, 0026, 0039, 0046, 0057, 0060) and
   0009, which moved later because its own `Date:` line says 2026-09-05 rather than the July
