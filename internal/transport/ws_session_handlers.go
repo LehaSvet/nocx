@@ -1174,6 +1174,21 @@ func answerOperationRefusal(r Responder, req jsonrpcRequest, err error) {
 	_ = r.TryError(req.ID, RPCError{Code: -32603, Message: err.Error()})
 }
 
+// orderedBySession binds ordering to the protocol's authoritative sessionId,
+// never a tab/window/connection identity or a caller-selected queue name.
+// connMethods validates before admission so malformed requests cannot
+// allocate key state.
+// Ownership is still checked when the queued handler runs: a preceding detach
+// or a concurrent ownership transfer may have changed it since admission.
+func orderedBySession(spec methodSpec) methodSpec {
+	spec.key = func(raw json.RawMessage) string {
+		var target closeParams
+		_ = json.Unmarshal(raw, &target) // already validated by connMethods
+		return target.SessionID
+	}
+	return spec
+}
+
 // sessionSpecs declares the session-plane control methods. open and attach
 // need the connection as identity (subscriber registration); resize and close
 // need connState (session ownership); ack is ingress-critical and never
@@ -1217,14 +1232,15 @@ func (s *WSServer) sessionSpecs(lane control.Admission, sessionGate, configGate 
 	immediate := control.ImmediateSubmission{}
 	openSub := s.operationQueue("open")
 	sessionSub := s.operationQueue("session")
-	// resize and close share an ORDERED submission (control package): the
-	// resize enqueue's arrival order is load-bearing for the coalescing
-	// lane, and a close admitted after a resize on the same socket must
-	// observe the resize's enqueue first — the same-socket ordering the
-	// read loop used to provide by running everything inline. The ordered
-	// worker preserves submission order; the bound refuses under a flood
-	// with the saturation contract like any admission-backed method.
-	ordered := control.NewOrderedSubmission("session-ops", 32)
+	// Completion ordering belongs to a session, not the whole server. All
+	// sockets share this scheduler: a blocked intent holds only its own
+	// session's FIFO. The 32 slots count running AND queued work, bounding
+	// active key workers as well as pending work. Inflight tracking makes
+	// Stop cancel and drain admitted tasks before session teardown.
+	ordered := &inflightSubmission{
+		inflight: &s.inflight,
+		inner:    control.NewKeyedOrderedSubmission("session-ops", 32),
+	}
 	// The instance identity is read ONCE, here, where the registry is: a
 	// handler judging a claim needs the value, never the registry.
 	instance := s.instanceIdentity()
@@ -1233,22 +1249,22 @@ func (s *WSServer) sessionSpecs(lane control.Admission, sessionGate, configGate 
 			h := openHandlers{opener: s.opener, sess: s, log: s.log, intents: s.paneIntentSource}
 			return func(ctx context.Context, req jsonrpcRequest) { h.handleOpen(ctx, w, r, state, req) }
 		}),
-		reg(ordered, "detach", params(validateCloseRaw), func(w *wsConn, state *connState, r Responder) handlerFunc {
+		orderedBySession(reg(ordered, "detach", params(validateCloseRaw), func(w *wsConn, state *connState, r Responder) handlerFunc {
 			h := sessionOpsHandlers{ops: sessionOps, r: r, instance: instance, conn: w, machine: s}
 			return func(ctx context.Context, req jsonrpcRequest) { h.handleDetach(ctx, state, req) }
-		}),
-		reg(ordered, "session.intent", params(validateSessionIntentRaw), func(w *wsConn, state *connState, r Responder) handlerFunc {
+		})),
+		orderedBySession(reg(ordered, "session.intent", params(validateSessionIntentRaw), func(w *wsConn, state *connState, r Responder) handlerFunc {
 			h := sessionIntentHandler{source: s.paneIntentSource, r: r, state: state}
 			return func(ctx context.Context, req jsonrpcRequest) { h.handle(ctx, req) }
-		}),
-		reg(ordered, "resize", params(validateResizeRaw), func(w *wsConn, state *connState, r Responder) handlerFunc {
+		})),
+		orderedBySession(reg(ordered, "resize", params(validateResizeRaw), func(w *wsConn, state *connState, r Responder) handlerFunc {
 			h := sessionOpsHandlers{ops: sessionOps, r: r, instance: instance, machine: s}
 			return func(ctx context.Context, req jsonrpcRequest) { h.handleResize(ctx, state, req) }
-		}),
-		reg(ordered, "close", params(validateCloseRaw), func(w *wsConn, state *connState, r Responder) handlerFunc {
+		})),
+		orderedBySession(reg(ordered, "close", params(validateCloseRaw), func(w *wsConn, state *connState, r Responder) handlerFunc {
 			h := sessionOpsHandlers{ops: sessionOps, r: r, instance: instance, machine: s}
 			return func(ctx context.Context, req jsonrpcRequest) { h.handleClose(ctx, state, req) }
-		}),
+		})),
 		reg(sessionSub, "attach", params(validateAttachRaw), func(w *wsConn, state *connState, r Responder) handlerFunc {
 			h := sessionOpsHandlers{ops: sessionOps, r: r, instance: instance, machine: s, intents: s.paneIntentSource}
 			return func(ctx context.Context, req jsonrpcRequest) { h.handleAttach(ctx, w, r, state, req) }
