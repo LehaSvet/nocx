@@ -314,6 +314,12 @@ keeps every later change.
   `node --test .githooks/backlog-gate/merge-gate.test.mjs`.
 
 - **JSON report:** add `--json` to the `check.mjs` line.
+- **The export imports into br:** [`check-tracker-import.sh`](../../.githooks/check-tracker-import.sh)
+  hands the staged export (or the export at a revision) to an empty scratch `br` tracker and
+  asks for its import plan. The adapter above parses leniently, so an export `br` refuses
+  as a whole once passed every check and broke `br` for everyone who pulled (nocx-dpbgx).
+  Pre-commit runs it beside the backlog gate; CI's `ci-backlog` installs `br` 0.7.0 by
+  checksum and runs it on the tip (nocx-8t2lo).
 - **Commit-link check:** [`commit-links.mjs`](../../.githooks/backlog-gate/commit-links.mjs)
   parses messages and calls `check-commits.mjs`. `--message <file>` checks a pending
   message; tasks come from the export `br where` names, which is the database's own view,

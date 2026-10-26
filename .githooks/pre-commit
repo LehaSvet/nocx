@@ -395,7 +395,7 @@ if [ "${#CHANGED[@]}" -gt 0 ]; then
     RUN_BACKLOG=0
     for f in "${CHANGED[@]}"; do
         case "$f" in
-            .beads/issues.jsonl|.githooks/backlog-gate/*) RUN_BACKLOG=1 ;;
+            .beads/issues.jsonl|.githooks/backlog-gate/*|.githooks/check-tracker-import.sh) RUN_BACKLOG=1 ;;
         esac
     done
 fi
@@ -480,6 +480,9 @@ backlog_gate() {
 }
 
 if [ "$RUN_BACKLOG" = 1 ]; then
+    # The gate's adapter reads the export leniently; br does not, and br is
+    # what every pull and every `make init` feeds it to (nocx-8t2lo).
+    host_gate "tracker export imports into br" .githooks/check-tracker-import.sh
     host_gate "backlog gate" backlog_gate
 else
     ok "backlog gate — skipped (the backlog export is not staged)"
