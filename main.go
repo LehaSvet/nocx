@@ -1405,9 +1405,16 @@ func (w *WailsApp) stopKeptCoordinator(ctx context.Context) (bool, error) {
 func newWindowUpdater(executable, stateDir string, cfg update.UpdaterConfig) (update.Updater, string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, "", fmt.Errorf("resolve update home: %w", err)
+		log.From(context.Background()).Warn("update home resolution failed", "error", err)
+		return nil, "", errors.New("cannot find your home folder — check your account settings and try again")
 	}
-	target, err := update.ResolveInstallTarget(runtime.GOOS, executable, os.Getenv("APPIMAGE"), home, update.ProbeInstallDirectory)
+	target, err := update.ResolveInstallTarget(runtime.GOOS, executable, os.Getenv("APPIMAGE"), home, func(dir string) error {
+		probeErr := update.ProbeInstallDirectory(dir)
+		if probeErr != nil {
+			log.From(context.Background()).Warn("update install directory probe failed", "path", dir, "error", probeErr)
+		}
+		return probeErr
+	})
 	if err != nil {
 		return nil, "", err
 	}

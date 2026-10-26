@@ -2,7 +2,6 @@ package update
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -12,16 +11,14 @@ import (
 func ResolveInstallTarget(goos, executable, appImage, home string, probe func(string) error) (string, error) {
 	switch goos {
 	case "darwin":
-		var failures []error
 		candidates := []string{"/Applications", filepath.Join(home, "Applications")}
 		for _, dir := range candidates {
 			if err := probe(dir); err != nil {
-				failures = append(failures, err)
 				continue
 			}
 			return filepath.Join(dir, "nocx.app"), nil
 		}
-		return "", fmt.Errorf("cannot install the update; allow writes to Applications and try again: %w", errors.Join(failures...))
+		return "", errors.New("cannot install the update; allow writes to Applications and try again")
 	case "linux":
 		if appImage != "" {
 			return appImage, nil

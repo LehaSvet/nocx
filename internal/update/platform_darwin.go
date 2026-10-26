@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/shady2k/nocx/internal/log"
 	"github.com/shady2k/nocx/internal/version"
 	"golang.org/x/sys/unix"
 )
@@ -40,7 +41,8 @@ func (p *darwinPlatform) Preflight(ctx context.Context, installPath string) erro
 	// atomic exchange.
 	dir := filepath.Dir(installPath)
 	if err := unix.Access(dir, unix.W_OK); err != nil {
-		return fmt.Errorf("install directory %s is not writable — cannot stage or apply an update: %w", dir, err)
+		log.From(ctx).Warn("update install directory is not writable", "path", dir, "error", err)
+		return errors.New("the Applications folder is not writable — allow writes to Applications and try again")
 	}
 
 	return nil
