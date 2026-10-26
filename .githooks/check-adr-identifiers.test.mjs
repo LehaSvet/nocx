@@ -15,11 +15,13 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+
+import { readIdentifier } from './adr-records.mjs'
 
 const check = fileURLToPath(new URL('./check-adr-identifiers.mjs', import.meta.url))
 const decisions = fileURLToPath(new URL('../docs/decisions', import.meta.url))
@@ -115,6 +117,23 @@ test('a file no citation could name is refused, and the name it needs is printed
 })
 
 test('the untouched tree passes, legacy numbers and all', () => {
+  const { status, stderr } = run(decisions)
+  assert.equal(status, 0, stderr)
+})
+
+test('the record that changed the scheme is accepted by the scheme it checks', () => {
+  // Named rather than discovered: a test that accepts whatever file happens to
+  // be in the directory passes on the day the record is deleted.
+  const changed = 'zv62fyqg-a-new-records-identifier-is-drawn-never-counted.md'
+  assert.ok(existsSync(join(decisions, changed)), `${changed} is missing`)
+  assert.equal(readIdentifier(changed)?.legacy, false, `${changed} carries a number, not a draw`)
+
+  // Beside a legacy record in the same directory, because the pair is the
+  // property: one directory holds both shapes and the check accepts both.
+  const legacy = '0001-xterm-js-as-vt-frontend.md'
+  assert.ok(existsSync(join(decisions, legacy)), `${legacy} is missing`)
+  assert.equal(readIdentifier(legacy)?.legacy, true)
+
   const { status, stderr } = run(decisions)
   assert.equal(status, 0, stderr)
 })
