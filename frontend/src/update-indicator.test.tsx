@@ -24,6 +24,47 @@ afterEach(() => {
 })
 
 describe('activity bar update indicator', () => {
+  it('adds a reactive update indicator to the existing roving toolbar without changing its panel', () => {
+    const bar = document.createElement('div')
+    const panel = document.createElement('div')
+    document.body.append(bar, panel)
+    const [available, setAvailable] = createSignal(false)
+    const onActivate = vi.fn()
+    const handle = mountSidebar(
+      bar,
+      panel,
+      views,
+      [settings],
+      null,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        title: 'Update available',
+        icon: TestIcon,
+        level: () => 'neutral',
+        available,
+        onActivate,
+      },
+    )
+    expect(bar.querySelector('[aria-label="Update available"]')).toBeNull()
+    setAvailable(true)
+    const indicator = bar.querySelector<HTMLButtonElement>('[aria-label="Update available"]')!
+    expect(indicator.getAttribute('tabindex')).toBe('-1')
+    expect(bar.querySelectorAll('button:not([tabindex="-1"])')).toHaveLength(1)
+    const toolbar = bar.querySelector('[role="toolbar"]')!
+    const collapsed = panel.classList.contains('collapsed')
+    const panelText = panel.textContent
+    fireEvent.keyDown(toolbar, { key: 'End' })
+    expect(document.activeElement).toBe(indicator)
+    fireEvent.keyDown(toolbar, { key: 'Enter' })
+    expect(onActivate).toHaveBeenCalledTimes(1)
+    expect(panel.classList.contains('collapsed')).toBe(collapsed)
+    expect(panel.textContent).toBe(panelText)
+    handle.destroy()
+  })
+
   it('shows an available update beside Settings and exposes one Install control when activated', () => {
     const bar = document.createElement('div')
     const panel = document.createElement('div')
@@ -35,6 +76,7 @@ describe('activity bar update indicator', () => {
     mountSidebar(bar, panel, views, [settings], null, undefined, undefined, undefined, undefined, {
       title: 'Update available',
       icon: TestIcon,
+      level: () => 'neutral',
       available,
       onActivate: controller.showOffer,
     })

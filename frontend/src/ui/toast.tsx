@@ -68,7 +68,7 @@ export interface ToastOptions {
    */
   duration?: number
   /** An inline link after the message, e.g. the release notes an update
-   *  toast names. Off-site pages open in their own tab. */
+   *  toast names. The host hands it to its injected URL opener. */
   link?: ToastLink
   /** Actions after the message, in order. A toast with actions should be
    *  raised sticky (`duration: 0`): one that dismisses itself takes its own

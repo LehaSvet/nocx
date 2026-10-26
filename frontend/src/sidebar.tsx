@@ -9,14 +9,12 @@
  *   Bottom zone — global actions (e.g. Settings gear).  An action opens a tab
  *                and never touches the panel.
  *
- * THE BOTTOM ZONE TAKES ONE KIND OF ENTRY, and that is the whole contract.
- * It was briefly widened to a second — an INDICATOR that opened its own
- * popover and touched neither the panel nor the tabs — for the operations
- * list (nocx-hbdw4).  The widening went back with the thing it was for
- * (nocx-hbdw4.1): "I cannot see that something is running" is answered by an
- * ICON, which a view already has, while a LIST is a place somebody goes to
- * look on purpose, and in this shell such places open the panel.  A widened
- * contract nobody uses is worse than one that was never widened.
+ * The bottom zone deliberately has two typed entry kinds: global actions
+ * and one optional indicator. The previous operations-list indicator was
+ * removed (nocx-hbdw4.1); the updater now needs a persistent status beside
+ * Settings without taking tab space (nocx-1ebrs.66.1.5). The bar draws the
+ * icon and level; activation opens the one kit offer owned outside this
+ * connection-scoped sidebar. It never selects a view or changes the panel.
  *
  * WHAT A VIEW'S ICON MAY CARRY is the half of that which stayed, because it
  * is what lets the TOP zone answer the complaint at all: a count and an
@@ -47,6 +45,7 @@ import { createAppStore, type AppActions, type AppState } from './state'
 import { IconButton } from './ui/icon-button'
 import { Badge } from './ui/badge'
 import { ProgressBar } from './ui/progress-bar'
+import { StatusDot, type StatusDotTone } from './ui/status-dot'
 import type { ActiveOrigin } from './pane-content'
 import {
   SIDEBAR_WIDTH_MAX,
@@ -159,6 +158,7 @@ export interface SidebarIndicator {
   readonly title: string
   readonly icon: Component
   readonly available: () => boolean
+  readonly level: () => StatusDotTone
   readonly onActivate: () => void
 }
 
@@ -585,11 +585,14 @@ function SidebarSolid(props: SidebarSolidProps) {
           <IconButton
             size="lg"
             data-update-indicator
+            tabIndex={tabbableId() === null ? 0 : -1}
             title={props.indicator?.title ?? 'Update available'}
             ariaLabel={props.indicator?.title ?? 'Update available'}
             onClick={() => props.indicator?.onActivate()}
           >
-            <Dynamic component={props.indicator?.icon} />
+            <StatusDot tone={props.indicator?.level() ?? 'neutral'} accessibleName="Update status">
+              <Dynamic component={props.indicator?.icon} />
+            </StatusDot>
           </IconButton>
         </Show>
       </div>

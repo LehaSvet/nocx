@@ -2,6 +2,7 @@ import { createSignal } from 'solid-js'
 import {
   ApplyUpdate,
   FinishPendingUpdate,
+  GetUpdateState,
   RestartWindow,
 } from '../bindings/github.com/shady2k/nocx/wailsapp'
 import { showToast, dismissToast, type ToastOptions } from './ui/toast'
@@ -14,6 +15,7 @@ type UpdateState =
   | { kind: 'downloading'; version: string }
   | { kind: 'pending'; version: string }
   | { kind: 'held'; version: string }
+  | { kind: 'finishing'; version: string }
   | {
       kind: 'error'
       message: string
@@ -35,6 +37,9 @@ export interface UpdateController {
   showOffer: () => void
   apply: () => Promise<void>
   showHeldByCoordinator: (version: string) => void
+  restore: (deps?: {
+    getState: () => Promise<{ HeldByOlderCoordinator: boolean; Version: string }>
+  }) => Promise<void>
 }
 
 /** One owner for update state and its one kit surface. The sidebar is rebuilt
@@ -67,6 +72,8 @@ export function createUpdateController(deps: UpdateControllerDeps = {}): UpdateC
   const restart = (): void => {
     const current = state()
     if (current.kind !== 'pending') return
+    setState({ kind: 'finishing', version: current.version })
+    showOffer()
     void Promise.resolve()
       .then(restartWindow)
       .catch((error: unknown) => fail(error, current))
@@ -74,6 +81,8 @@ export function createUpdateController(deps: UpdateControllerDeps = {}): UpdateC
   const finish = (): void => {
     const current = state()
     if (current.kind !== 'held') return
+    setState({ kind: 'finishing', version: current.version })
+    showOffer()
     void Promise.resolve()
       .then(finishUpdate)
       .catch((error: unknown) => fail(error, current))
@@ -94,6 +103,9 @@ export function createUpdateController(deps: UpdateControllerDeps = {}): UpdateC
             { label: 'Later', onClick: () => {} },
           ],
         })
+        return
+      case 'finishing':
+        present({ message: `Finishing the update to nocx ${current.version}…` })
         return
       case 'downloading':
         present({ message: `Downloading nocx ${current.version}…` })
@@ -127,13 +139,25 @@ export function createUpdateController(deps: UpdateControllerDeps = {}): UpdateC
       fail(error, current)
     }
   }
+  const showHeldByCoordinator = (version: string): void => {
+    setState({ kind: 'held', version })
+    // A late startup read must retire any announcement already showing.
+    if (toastId !== null) dismissToast(toastId)
+    toastId = null
+  }
   return {
     state,
     showOffer,
     apply,
     showAvailable: (version, notesUrl) => {
       const current = state()
-      if (current.kind === 'downloading' || current.kind === 'pending' || current.kind === 'held')
+      if (
+        current.kind === 'downloading' ||
+        current.kind === 'pending' ||
+        current.kind === 'held' ||
+        current.kind === 'finishing' ||
+        (current.kind === 'error' && current.retry.kind !== 'available')
+      )
         return
       setState({ kind: 'available', version, notesUrl })
       if (!announced.has(version)) {
@@ -141,8 +165,17 @@ export function createUpdateController(deps: UpdateControllerDeps = {}): UpdateC
         showOffer('Install now')
       }
     },
-    showHeldByCoordinator: (version) => {
-      setState({ kind: 'held', version })
+    showHeldByCoordinator,
+    restore: async (deps = { getState: () => GetUpdateState() }) => {
+      try {
+        const restored = await deps.getState()
+        if (!restored.HeldByOlderCoordinator) return
+        showHeldByCoordinator(restored.Version)
+      } catch (error) {
+        log.warn('reading update state failed', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
     },
   }
 }
