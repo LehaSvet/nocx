@@ -1,6 +1,6 @@
 {
   "strength": "block-new",
-  "currentMilestone": "v0-7",
+  "currentMilestone": "v0-8",
   "milestoneLabels": ["v0-5", "v0-6", "v0-7", "v0-8"],
   "areaLabels": [
     "transport",
@@ -37,7 +37,7 @@
   "ideaLabels": ["idea"],
   "ideaTitlePrefixes": ["Brainstorming:", "Brainstorm:"],
   "findingLabels": ["finding"],
-  "findingBudget": 55,
+  "findingBudget": 10,
   "staleDays": 14,
   "holdDays": 2,
   "bulkCluster": 20,
