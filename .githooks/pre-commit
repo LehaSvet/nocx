@@ -116,10 +116,10 @@ host_gate() {
     ok "$_label"
 }
 gate=.githooks/backlog-gate
-if [ ! -r "$gate/check-product.mjs" ]; then
+if [ ! -r "$gate/check-product.mjs" ] || [ ! -r "$gate/argv.mjs" ] || [ ! -r "$gate/regular-file.mjs" ]; then
     if [ -e "$gate/config.json" ] ||
         git cat-file -e "HEAD:$gate/config.json" 2>/dev/null; then
-        printf 'check-product.mjs is missing or unreadable; run make connect\n' >&2
+        printf 'check-product.mjs, argv.mjs or regular-file.mjs is missing or unreadable; run make connect\n' >&2
         exit 1
     fi
     printf 'product-document check is not configured in this tree\n' >&2
@@ -423,7 +423,7 @@ backlog_gate() {
     _gate=.githooks/backlog-gate
     # A missing input refuses by name: without time-format.mjs check.mjs dies
     # on a module import, which says nothing about how to repair the clone.
-    for _f in adapter.mjs check.mjs time-format.mjs merge-gate.mjs config.json; do
+    for _f in adapter.mjs check.mjs time-format.mjs regular-file.mjs argv.mjs merge-gate.mjs config.json; do
         if [ ! -f "$_gate/$_f" ]; then
             printf '%s is missing from this checkout; run make connect\n' "$_gate/$_f"
             return 2

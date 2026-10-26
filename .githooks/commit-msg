@@ -27,7 +27,7 @@ if ! command -v node >/dev/null 2>&1; then
     printf 'commit-msg: node is not on PATH; run make connect\n' >&2
     exit 1
 fi
-for f in adapter.mjs check-commits.mjs config.json; do
+for f in adapter.mjs check-commits.mjs check.mjs time-format.mjs regular-file.mjs argv.mjs config.json; do
     if [ ! -r "$gate/$f" ]; then
         printf 'commit-msg: %s is missing or unreadable; run make connect\n' "$gate/$f" >&2
         exit 1

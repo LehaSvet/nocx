@@ -32,6 +32,15 @@
  *           is how three brainstorms were rescued into the work queue.
  *   holder  the assignee, or null. A released leaf has its assignee cleared.
  *
+ * LANDED is the main line at the judged revision: every commit reachable from
+ * both that revision and the main branch (origin/main, else main) whose header
+ * names a task, read by commit-links.mjs's linkedIds — the commit check's own
+ * parser, so the gate and the commit check cannot read one message two ways.
+ * The intersection, not the revision's whole history: a branch's own commits
+ * have not landed, and a leaf its worker still holds is not merged-but-open.
+ * A checkout with neither branch is refused rather than given an empty list,
+ * which would switch the rule off without saying so.
+ *
  * SUBMITTED AND IMPLEMENTED are br statuses, declared in .beads/policy.yaml,
  * which also makes br refuse a transition into either without a comment
  * written in the same transaction. That comment carries the record:
@@ -62,6 +71,8 @@
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
+
+import { linkedIds } from './commit-links.mjs'
 
 const TYPES = new Set(['epic', 'task', 'bug', 'chore'])
 const STATUS = {
@@ -163,6 +174,36 @@ export function readExport(at, exportPath = '.beads/issues.jsonl') {
     .filter(Boolean)
     .map((l) => JSON.parse(l))
 }
+const MAIN_REFS = ['refs/remotes/origin/main', 'refs/heads/main']
+
+// The main-line commits at `revision` that name a task, newest first.
+export function landed(revision, cwd = '.') {
+  const git = (...args) =>
+    execFileSync('git', ['-C', cwd, ...args], {
+      encoding: 'utf8',
+      maxBuffer: 1 << 30,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  const main = MAIN_REFS.find((ref) => {
+    try {
+      git('rev-parse', '-q', '--verify', `${ref}^{commit}`)
+      return true
+    } catch {
+      return false
+    }
+  })
+  if (!main) throw new Error(`no main line: neither ${MAIN_REFS.join(' nor ')} exists here`)
+  const base = git('merge-base', `${revision}^{commit}`, main).trim()
+  const out = []
+  for (const entry of git('log', '--format=%H%x00%B%x1e', base).split('\x1e')) {
+    const [id, message] = entry.replace(/^\n/, '').split('\x00')
+    if (!message) continue
+    const taskIds = linkedIds(message)
+    if (taskIds.length) out.push({ id, taskIds })
+  }
+  return out
+}
+
 function nativeRows(checkout) {
   const options = { cwd: checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }
   const flags = ['--no-auto-import', '--no-auto-flush']
@@ -396,6 +437,8 @@ function main() {
           generatedAt: new Date().toISOString(),
           source: `beads ${exportPath}${at ? ` @ ${at}` : ' (working tree)'}`,
           issues,
+          // The staged copy and the working tree are judged against HEAD.
+          landed: landed(at && at !== ':0' ? at : 'HEAD'),
         },
         null,
         2,

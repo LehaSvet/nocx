@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { contextualReady, normalize } from './adapter.mjs'
+import { contextualReady, landed, normalize } from './adapter.mjs'
 
 const row = (comments, status = 'in_progress') => ({
   id: 'nocx-a',
@@ -338,4 +338,73 @@ test('same-stage consumers require the integrated revision in their checkout', (
   assert.deepEqual(contextualReady(rows, 'f.stage', repo.path), ['f.independent'])
   git('update-ref', 'HEAD', unmerged)
   assert.deepEqual(contextualReady(rows, 'f.stage', repo.path), ['f.consumer', 'f.independent'])
+})
+
+function mainLine() {
+  const path = mkdtempSync(join(tmpdir(), 'adapter-landed-'))
+  const git = (...args) => execFileSync('git', ['-C', path, ...args], { encoding: 'utf8' }).trim()
+  git('init', '-q', '-b', 'main')
+  git('config', 'user.email', 'adapter-test@example.invalid')
+  git('config', 'user.name', 'Adapter Test')
+  const commit = (message) => {
+    git('commit', '-q', '--allow-empty', '-m', message)
+    return git('rev-parse', 'HEAD')
+  }
+  return { path, git, commit }
+}
+
+test('landed lists the main-line commits that name a task, read by the commit check parser', (t) => {
+  const repo = mainLine()
+  t.after(() => rmSync(repo.path, { recursive: true, force: true }))
+  repo.commit('chore: the first commit names nothing')
+  const delivered = repo.commit(
+    'fix(ui): deliver it (nocx-a) (nocx-b)\n\nrefers to (nocx-c) in the body',
+  )
+  repo.git('switch', '-q', '-c', 'feature')
+  const branch = repo.commit('fix(ui): still on a branch (nocx-d)')
+  // The branch's own commit is not on the main line, whichever side is judged.
+  assert.deepEqual(landed('HEAD', repo.path), [{ id: delivered, taskIds: ['nocx-a', 'nocx-b'] }])
+  assert.deepEqual(landed(branch, repo.path), landed(delivered, repo.path))
+  // Once it reaches main, it has landed.
+  repo.git('switch', '-q', 'main')
+  repo.git('merge', '-q', '--ff-only', 'feature')
+  assert.deepEqual(
+    landed('HEAD', repo.path).map(({ id }) => id),
+    [branch, delivered],
+  )
+})
+
+test('landed refuses a checkout with no main line instead of reporting nothing landed', (t) => {
+  const repo = mainLine()
+  t.after(() => rmSync(repo.path, { recursive: true, force: true }))
+  repo.commit('chore: on main (nocx-a)')
+  repo.git('branch', '-m', 'main', 'trunk')
+  assert.throws(() => landed('HEAD', repo.path), /no main line/)
+})
+
+test('the gate reports an open leaf a landed commit names, and clears once it closes', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'adapter-merged-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const config = join(dir, 'config.json')
+  writeFileSync(config, JSON.stringify({ strength: 'report' }))
+  const gate = (status) => {
+    const backlog = {
+      issues: normalize([
+        { ...nativeIssue('nocx-a', 'task', status), updated_at: new Date().toISOString() },
+      ]),
+      landed: [{ id: 'abc1234', taskIds: ['nocx-a'] }],
+    }
+    const checked = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL('./check.mjs', import.meta.url)), '--config', config, '--json', '-'],
+      { input: JSON.stringify(backlog), encoding: 'utf8' },
+    )
+    assert.equal(checked.status, 0, checked.stderr)
+    return JSON.parse(checked.stdout).results.find(({ id }) => id === 'merged-but-open').violations
+  }
+  assert.deepEqual(
+    gate('open').map(({ id, note }) => [id, note]),
+    [['nocx-a', 'still open, and the commit abc1234 on the main line names it']],
+  )
+  assert.deepEqual(gate('closed'), [])
 })
