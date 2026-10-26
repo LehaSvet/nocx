@@ -181,3 +181,37 @@ func TestRecoveryUsesJournalTargetAfterSelectionChanges(t *testing.T) {
 		})
 	}
 }
+
+func TestFirstInstallInterruptedBeforeRename(t *testing.T) {
+	for _, staged := range []bool{false, true} {
+		t.Run(fmt.Sprint(staged), func(t *testing.T) {
+			target := filepath.Join(t.TempDir(), "nocx.AppImage")
+			jp := testJournalPath(t, target)
+			rec := &journalRecord{TxID: "first", InstallPath: target, FromVersion: "0.1.0", ToVersion: "0.2.0"}
+			extract := extractionDir(target, rec.TxID)
+			if err := os.MkdirAll(extract, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if staged {
+				makeMinimalAppImage(t, swapPath(target))
+				var err error
+				rec.NewBundleID, err = statBundleID(swapPath(target))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := writeJournal(jp, rec); err != nil {
+				t.Fatal(err)
+			}
+			u := NewUpdater(UpdaterConfig{Platform: newFakePlatform(), InstallPath: target, StateDir: filepath.Dir(jp)})
+			if err := u.Reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{target, swapPath(target), extract, jp} {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("interrupted first install left %s: %v", path, err)
+				}
+			}
+		})
+	}
+}
