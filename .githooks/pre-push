@@ -7,7 +7,7 @@ if [ ! -e "$gate/config.json" ] && [ ! -e "$gate/commit-links.mjs" ] &&
     printf 'pre-push: this tree has never configured the backlog integration; not checked here\n' >&2
     exit 0
 fi
-for f in adapter.mjs check.mjs time-format.mjs merge-gate.mjs check-commits.mjs commit-links.mjs config.json; do
+for f in adapter.mjs check.mjs time-format.mjs regular-file.mjs argv.mjs merge-gate.mjs check-commits.mjs commit-links.mjs config.json; do
     if [ ! -r "$gate/$f" ]; then
         printf 'pre-push: %s is missing or unreadable; run make connect\n' "$gate/$f" >&2
         exit 2

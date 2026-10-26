@@ -814,6 +814,18 @@ Co-Authored-By: ...
 - **No bead for it?** Then there is no task — file one through `/shady2k-skills:to-backlog`
   before the commit, not after it. **Trivial?** It
   still had a reason, and it is the one nobody can explain in six months.
+- **A commit that only moves other tasks names the bookkeeping, not them.** Deferring,
+  relabelling, reparenting or publishing a task is not its work, so the header names the
+  charter, grooming or setup task doing it, and the moved ids go in the body. Since setup
+  0.56.0 the gate's `merged-but-open` reads any main-line commit naming a leaf as its
+  delivery. Measured 2026-10-26: `627a7dd20` named `nocx-1ebrs.35.2` while deferring it;
+  undeferred for v0-8, the task read as landed, the charter was refused, and the work had
+  to move to a fresh id (`nocx-1ebrs.66.1.3`) because a pushed commit cannot be rewritten.
+- **Every release updates the README** (owner, 2026-10-26): its status line names the
+  released version and links that version's notes in `docs/release-notes/`, and any install
+  or feature text the release changed is changed with it. The README still said `v0.6.1`
+  after 0.7.0, 0.7.1 and 0.7.2 had shipped. The promotion refuses a version the README's
+  status line does not name (`nocx-1ebrs.35.3`).
 
 **Enforced since 2026-09-19** by `.githooks/commit-msg` and CI's `ci-backlog`, and
 also before publishing by `.githooks/pre-push`, through
@@ -908,7 +920,8 @@ changed.
 - **Frontend:** TypeScript, CodeMirror 6 for the editor. The live grid is painted from the
   session runtime's screen frames by the client's cell model and painter
   ([ADR-0072](docs/decisions/0072-xterm-is-removed-first-and-the-interval-record-follows-the-cell-model.md));
-  xterm.js remains only as the invisible input layer until `nocx-zg3k3.8` removes it.
+  xterm.js is gone from the build (`nocx-zg3k3.8`); `frontend/src/xterm-absence.test.ts`
+  keeps it out.
 - **Desktop shell:** Wails v3 (macOS first).
 - **Transport:** one WebSocket — raw **binary** data plane + **JSON-RPC 2.0** control plane
   (AD-1).
