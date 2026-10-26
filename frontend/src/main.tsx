@@ -53,6 +53,7 @@ import { createApiWorkbenchServices, nativePickers } from './api/api-client'
 import { createUpdateCheck } from './update-check'
 import { startUpdateSchedule } from './update-schedule'
 import { createUpdateController } from './update-controller'
+import { shouldAnnounceUpdateStateFailure } from './update-degrade'
 import { mountConnectionOverlay, type ConnectionOverlayState } from './ui/connection-overlay'
 import { IconButton } from './ui/icon-button'
 import {
@@ -223,8 +224,8 @@ function main(): void {
   // over exactly that). `currentPlatform()` is the repository's own fact for
   // "is this the packaged app".
   void updateController.restore({
-    onFailure: () => {
-      if (currentPlatform() === 'web') return
+    onFailure: (reason) => {
+      if (!shouldAnnounceUpdateStateFailure(reason, currentPlatform())) return
       showToast({
         level: 'warning',
         message:
