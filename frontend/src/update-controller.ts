@@ -6,6 +6,7 @@ import {
 } from '../bindings/github.com/shady2k/nocx/wailsapp'
 import { showToast, dismissToast, type ToastOptions } from './ui/toast'
 import { log } from './log'
+import { updateFailureMessage } from './update-failure'
 
 type UpdateState =
   | { kind: 'hidden' }
@@ -13,7 +14,14 @@ type UpdateState =
   | { kind: 'downloading'; version: string }
   | { kind: 'pending'; version: string }
   | { kind: 'held'; version: string }
-  | { kind: 'error'; message: string }
+  | {
+      kind: 'error'
+      message: string
+      retry:
+        | { kind: 'available'; version: string; notesUrl: string }
+        | { kind: 'held'; version: string }
+        | { kind: 'pending'; version: string }
+    }
 
 export interface UpdateControllerDeps {
   apply?: () => Promise<void>
@@ -45,21 +53,34 @@ export function createUpdateController(deps: UpdateControllerDeps = {}): UpdateC
     if (toastId !== null) dismissToast(toastId)
     toastId = showToast({ ...options, duration: 0 })
   }
-  const fail = (error: unknown): void => {
-    log.warn('update action failed', { error })
-    setState({
-      kind: 'error',
-      message: 'The update could not finish. Try again, or install the latest release manually.',
+  const fail = (
+    error: unknown,
+    retry: Extract<UpdateState, { kind: 'available' | 'held' | 'pending' }>,
+  ): void => {
+    log.warn('update action failed', {
+      error: error instanceof Error ? error.message : String(error),
     })
-    showOffer()
+    const message = updateFailureMessage(error)
+    setState({ kind: 'error', message, retry })
+    present({ level: 'danger', message })
   }
   const restart = (): void => {
-    void Promise.resolve().then(restartWindow).catch(fail)
+    const current = state()
+    if (current.kind !== 'pending') return
+    void Promise.resolve()
+      .then(restartWindow)
+      .catch((error: unknown) => fail(error, current))
   }
   const finish = (): void => {
-    void Promise.resolve().then(finishUpdate).catch(fail)
+    const current = state()
+    if (current.kind !== 'held') return
+    void Promise.resolve()
+      .then(finishUpdate)
+      .catch((error: unknown) => fail(error, current))
   }
   const showOffer = (installLabel = 'Install'): void => {
+    const before = state()
+    if (before.kind === 'error') setState(before.retry)
     const current = state()
     switch (current.kind) {
       case 'hidden':
@@ -91,9 +112,6 @@ export function createUpdateController(deps: UpdateControllerDeps = {}): UpdateC
           actions: [{ label: 'Restart now', variant: 'primary', onClick: finish }],
         })
         return
-      case 'error':
-        present({ level: 'danger', message: current.message })
-        return
     }
   }
   const apply = async (): Promise<void> => {
@@ -106,7 +124,7 @@ export function createUpdateController(deps: UpdateControllerDeps = {}): UpdateC
       setState({ kind: 'pending', version: current.version })
       showOffer()
     } catch (error) {
-      fail(error)
+      fail(error, current)
     }
   }
   return {
