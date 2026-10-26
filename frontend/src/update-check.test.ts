@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createUpdateCheck } from './update-check'
-import type { UpdateNoticeController } from './update-notice'
+import type { UpdateController } from './update-controller'
 
 const NOTES_URL = 'https://example.com/releases/0.7.0'
 const checkForUpdate = vi.fn<() => Promise<unknown>>()
@@ -28,11 +28,7 @@ vi.mock('../bindings/github.com/shady2k/nocx/wailsapp', () => ({
 function fakeNotice() {
   return {
     showAvailable: vi.fn(),
-    showDownloading: vi.fn(),
-    showPendingRestart: vi.fn(),
-    showHeldByCoordinator: vi.fn(),
-    showError: vi.fn(),
-  } satisfies UpdateNoticeController
+  } satisfies Pick<UpdateController, 'showAvailable'>
 }
 
 beforeEach(() => {

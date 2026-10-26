@@ -55,11 +55,17 @@ import { SurfaceRegistry, SURFACE_ID_SETTINGS } from './surface-registry'
 import { apiSidebarAction, registerApiSurface } from './api'
 import { createApiWorkbenchServices, nativePickers } from './api/api-client'
 import { createUpdateCheck } from './update-check'
-import { mountUpdateNotice } from './update-notice'
-import { createUpdateToast } from './update-toast'
+import { createUpdateController } from './update-controller'
 import { mountConnectionOverlay, type ConnectionOverlayState } from './ui/connection-overlay'
 import { IconButton } from './ui/icon-button'
-import { BellIcon, CheckCircleIcon, PlugIcon, RefreshIcon, SettingsIcon } from './ui/icons'
+import {
+  BellIcon,
+  CheckCircleIcon,
+  ArrowDownIcon,
+  PlugIcon,
+  RefreshIcon,
+  SettingsIcon,
+} from './ui/icons'
 import { SettingsObserver } from './settings-observer'
 import { mountClientHost } from './client-host'
 import { mountWindowGeometry } from './window-geometry'
@@ -197,8 +203,8 @@ function main(): void {
   const activityBar = document.getElementById('activitybar')!
   const sidebarPanel = document.getElementById('sidebar')!
 
-  // Update notice — renders inline in the tab bar, right-aligned.
-  const notice = mountUpdateNotice(bar)
+  // Window-owned update state outlives every connection-scoped sidebar.
+  const updateController = createUpdateController()
 
   // A pair already attached under ADR-0101 can still be held; new launches
   // take over across Versions (ADR-0104). That retained held state is the one
@@ -210,7 +216,7 @@ function main(): void {
   // healthy restart to restart again.
   void GetUpdateState()
     .then((state) => {
-      if (state.HeldByOlderCoordinator) notice.showHeldByCoordinator(state.Version)
+      if (state.HeldByOlderCoordinator) updateController.showHeldByCoordinator(state.Version)
     })
     .catch(() => {
       // The strip is not load-bearing: a failed read leaves it hidden,
@@ -1547,6 +1553,12 @@ function main(): void {
       () => activeOrigin(),
       sidebarWidthCtrl,
       () => activeSurfaceType() === SURFACE_SETTINGS,
+      {
+        title: 'Update available',
+        icon: ArrowDownIcon,
+        available: () => updateController.state().kind !== 'hidden',
+        onActivate: updateController.showOffer,
+      },
     )
   }
 
@@ -1893,22 +1905,8 @@ function main(): void {
   // The channel the bridge last applied, so the observer only re-checks on a
   // real change. Starts at the default; the first resolve corrects it.
   let lastChannel = 'stable'
-  // The actionable announcement (nocx-1ebrs.54): the check's finding fans
-  // out to BOTH presenters at this one composition point — the strip stays
-  // as the quiet persistent marker a dismissed update remains findable in,
-  // and the toast's Restart now starts the installed app before this window
-  // quits. The new process resolves the compatible coordinator and keeps its
-  // live sessions (nocx-1ebrs.53).
-  const updateToast = createUpdateToast()
-  const updateCheck = createUpdateCheck(
-    {
-      showAvailable: (version, notesUrl) => {
-        notice.showAvailable(version, notesUrl)
-        updateToast.showAvailable(version, notesUrl)
-      },
-    },
-    updateChannelBridge,
-  )
+  // One finding enters the window-owned offer, never separate presenters.
+  const updateCheck = createUpdateCheck(updateController, updateChannelBridge)
   void updateCheck.run()
   const DAY_MS = 24 * 60 * 60 * 1000
   setInterval(() => void updateCheck.run(), DAY_MS)
