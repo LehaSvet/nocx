@@ -281,6 +281,33 @@ else
     ok "log-context ratchet — skipped (no Go changes staged)"
 fi
 
+# --- 3e. decision records: one identifier, one record (nocx-hyh2p) ---------
+# A number was chosen from a counter only the author's own branch could see, so
+# two branches open at once took the same one and the merge renumbered a record
+# after citations to it had been written — four such pairs repaired in
+# nocx-yjvg5, three more in nocx-jp0h3. New records DRAW their identifier
+# instead (ADR-k3f9a-style), which needs no coordination, and this check is what
+# keeps the draw honest: a collision refuses the commit rather than reaching
+# main and being found by the reader of a citation.
+#
+# Scoped to a staged change under docs/decisions/, which is where a record can
+# appear. The check wants the WHOLE directory and not the staged files: a
+# collision is a property of the set, and a staged file read alone cannot see
+# the record it collides with.
+RUN_ADR=0
+if [ "${#CHANGED[@]}" -gt 0 ]; then
+    for f in "${CHANGED[@]}"; do
+        case "$f" in
+            docs/decisions/*) RUN_ADR=1 ;;
+        esac
+    done
+fi
+if [ "$RUN_ADR" = 1 ]; then
+    host_gate "decision record identifiers" node .githooks/check-adr-identifiers.mjs
+else
+    ok "decision record identifiers — skipped (no docs/decisions/ changes staged)"
+fi
+
 # --- 4. prettier (always) ---------------------------------------------------
 # From the REPOSITORY ROOT, which is what the comment here always claimed and
 # `cd frontend` always made false: the root carries its own .prettierrc.json,

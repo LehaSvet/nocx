@@ -65,6 +65,25 @@ test('a draw does not consult a counter', async () => {
   )
 })
 
+test('a draw that comes out all digits is never used as an identifier', async () => {
+  const { drawIdentifier } = await import(generator)
+
+  // The first eight symbols spell `01234567`, which is a number and could be
+  // read as a legacy identifier; the draw must discard it and take the next.
+  const queue = [...'01234567', ...'k3f9a2bc']
+  assert.equal(
+    drawIdentifier(() => queue.shift()),
+    'k3f9a2bc',
+  )
+
+  const draws = Array.from({ length: 2000 }, () => drawIdentifier())
+  assert.deepEqual(
+    draws.filter((id) => /^\d+$/.test(id)),
+    [],
+    'an all-digit draw reached a caller',
+  )
+})
+
 test('an identifier is eight Crockford base32 symbols, lower case', async () => {
   const { drawIdentifier, IDENTIFIER_PATTERN } = await import(generator)
 
