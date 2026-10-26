@@ -31,6 +31,7 @@ function mountIndicator(controller: ReturnType<typeof createUpdateController>) {
     {
       title: 'Update available',
       icon: () => <svg />,
+      level: () => 'neutral',
       available: () => controller.state().kind !== 'hidden',
       onActivate: controller.showOffer,
     },

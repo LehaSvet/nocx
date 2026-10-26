@@ -1551,6 +1551,18 @@ function main(): void {
       {
         title: 'Update available',
         icon: ArrowDownIcon,
+        level: () => {
+          switch (updateController.state().kind) {
+            case 'error':
+              return 'error'
+            case 'held':
+              return 'warning'
+            case 'pending':
+              return 'ok'
+            default:
+              return 'neutral'
+          }
+        },
         available: () => updateController.state().kind !== 'hidden',
         onActivate: updateController.showOffer,
       },
