@@ -814,6 +814,13 @@ Co-Authored-By: ...
 - **No bead for it?** Then there is no task — file one through `/shady2k-skills:to-backlog`
   before the commit, not after it. **Trivial?** It
   still had a reason, and it is the one nobody can explain in six months.
+- **A commit that only moves other tasks names the bookkeeping, not them.** Deferring,
+  relabelling, reparenting or publishing a task is not its work, so the header names the
+  charter, grooming or setup task doing it, and the moved ids go in the body. Since setup
+  0.56.0 the gate's `merged-but-open` reads any main-line commit naming a leaf as its
+  delivery. Measured 2026-10-26: `627a7dd20` named `nocx-1ebrs.35.2` while deferring it;
+  undeferred for v0-8, the task read as landed, the charter was refused, and the work had
+  to move to a fresh id (`nocx-1ebrs.66.1.3`) because a pushed commit cannot be rewritten.
 
 **Enforced since 2026-09-19** by `.githooks/commit-msg` and CI's `ci-backlog`, and
 also before publishing by `.githooks/pre-push`, through
