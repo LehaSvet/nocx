@@ -821,6 +821,11 @@ Co-Authored-By: ...
   delivery. Measured 2026-10-26: `627a7dd20` named `nocx-1ebrs.35.2` while deferring it;
   undeferred for v0-8, the task read as landed, the charter was refused, and the work had
   to move to a fresh id (`nocx-1ebrs.66.1.3`) because a pushed commit cannot be rewritten.
+- **Every release updates the README** (owner, 2026-10-26): its status line names the
+  released version and links that version's notes in `docs/release-notes/`, and any install
+  or feature text the release changed is changed with it. The README still said `v0.6.1`
+  after 0.7.0, 0.7.1 and 0.7.2 had shipped. The promotion refuses a version the README's
+  status line does not name (`nocx-1ebrs.35.3`).
 
 **Enforced since 2026-09-19** by `.githooks/commit-msg` and CI's `ci-backlog`, and
 also before publishing by `.githooks/pre-push`, through
