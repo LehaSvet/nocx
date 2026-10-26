@@ -56,11 +56,17 @@ import { apiSidebarAction, registerApiSurface } from './api'
 import { createApiWorkbenchServices, nativePickers } from './api/api-client'
 import { createUpdateCheck } from './update-check'
 import { startUpdateSchedule } from './update-schedule'
-import { mountUpdateNotice } from './update-notice'
-import { createUpdateToast } from './update-toast'
+import { createUpdateController } from './update-controller'
 import { mountConnectionOverlay, type ConnectionOverlayState } from './ui/connection-overlay'
 import { IconButton } from './ui/icon-button'
-import { BellIcon, CheckCircleIcon, PlugIcon, RefreshIcon, SettingsIcon } from './ui/icons'
+import {
+  BellIcon,
+  CheckCircleIcon,
+  ArrowDownIcon,
+  PlugIcon,
+  RefreshIcon,
+  SettingsIcon,
+} from './ui/icons'
 import { SettingsObserver } from './settings-observer'
 import { mountClientHost } from './client-host'
 import { mountWindowGeometry } from './window-geometry'
@@ -187,7 +193,19 @@ function main(): void {
   // only adds a notch, so a frame without it is correct on every platform that
   // does not need one, and blocking first paint on an IPC round trip is not.
   void bootstrapPlatform()
-  render(() => <App />, document.getElementById('app')!)
+  render(
+    () => (
+      <App
+        openUrl={(url) => terminalLinkUrlOpener.open(url)}
+        onOpenUrlError={(error) =>
+          log.warn('opening browser failed', {
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      />
+    ),
+    document.getElementById('app')!,
+  )
   // The window's pet, over the whole shell so the tab strip's underside is
   // terrain like any block edge. One animal per window: it is an ornament of
   // the window, not of whichever pane happens to be in front.
@@ -198,8 +216,8 @@ function main(): void {
   const activityBar = document.getElementById('activitybar')!
   const sidebarPanel = document.getElementById('sidebar')!
 
-  // Update notice — renders inline in the tab bar, right-aligned.
-  const notice = mountUpdateNotice(bar)
+  // Window-owned update state outlives every connection-scoped sidebar.
+  const updateController = createUpdateController()
 
   // A pair already attached under ADR-0101 can still be held; new launches
   // take over across Versions (ADR-0104). That retained held state is the one
@@ -211,7 +229,7 @@ function main(): void {
   // healthy restart to restart again.
   void GetUpdateState()
     .then((state) => {
-      if (state.HeldByOlderCoordinator) notice.showHeldByCoordinator(state.Version)
+      if (state.HeldByOlderCoordinator) updateController.showHeldByCoordinator(state.Version)
     })
     .catch(() => {
       // The strip is not load-bearing: a failed read leaves it hidden,
@@ -1548,6 +1566,12 @@ function main(): void {
       () => activeOrigin(),
       sidebarWidthCtrl,
       () => activeSurfaceType() === SURFACE_SETTINGS,
+      {
+        title: 'Update available',
+        icon: ArrowDownIcon,
+        available: () => updateController.state().kind !== 'hidden',
+        onActivate: updateController.showOffer,
+      },
     )
   }
 
@@ -1894,22 +1918,10 @@ function main(): void {
   // The channel the bridge last applied, so the observer only re-checks on a
   // real change. Starts at the default; the first resolve corrects it.
   let lastChannel = 'stable'
-  // The actionable announcement (nocx-1ebrs.54): the check's finding fans
-  // out to BOTH presenters at this one composition point — the strip stays
-  // as the quiet persistent marker a dismissed update remains findable in,
-  // and the toast's Restart now starts the installed app before this window
-  // quits. The new process resolves the compatible coordinator and keeps its
-  // live sessions (nocx-1ebrs.53).
-  const updateToast = createUpdateToast()
-  const updateCheck = createUpdateCheck(
-    {
-      showAvailable: (version, notesUrl) => {
-        notice.showAvailable(version, notesUrl)
-        updateToast.showAvailable(version, notesUrl)
-      },
-    },
-    updateChannelBridge,
-  )
+  // One finding enters the window-owned offer, never separate presenters
+  // (nocx-1ebrs.66.1.5): the controller owns the state, the activity-bar
+  // indicator is its persistent place and the kit toast its announcement.
+  const updateCheck = createUpdateCheck(updateController, updateChannelBridge)
   // WHEN the check runs (nocx-1ebrs.66.1.1): startup, on wake from sleep and on
   // window focus — at most once an hour — plus every four hours. It used to be
   // startup and every 24 hours, so a window kept open for days could sit

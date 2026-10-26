@@ -23,7 +23,12 @@ import { ToastHost } from './ui/toast'
  * No reactive state: the shell skeleton is static. All lifecycle and wiring
  * lives in the imperative bootstrap in main.ts.
  */
-const App: Component = () => {
+interface AppProps {
+  openUrl?: (url: string) => Promise<void>
+  onOpenUrlError?: (error: unknown) => void
+}
+
+const App: Component<AppProps> = (props) => {
   return (
     <>
       <div id="tabbar" class="tabbar" />
@@ -68,7 +73,7 @@ const App: Component = () => {
           the pane that raised it — and because two hosts would show every toast
           twice. It is fixed and empty until something is raised, so it costs no
           layout. */}
-      <ToastHost />
+      <ToastHost openUrl={props.openUrl} onOpenUrlError={props.onOpenUrlError} />
     </>
   )
 }

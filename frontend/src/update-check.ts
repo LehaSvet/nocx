@@ -16,7 +16,7 @@ import { createSignal, type Accessor } from 'solid-js'
 
 import { CheckForUpdate } from '../bindings/github.com/shady2k/nocx/wailsapp'
 import { log } from './log'
-import type { UpdateNoticeController } from './update-notice'
+import type { UpdateController } from './update-controller'
 
 /** The persisted setting's road into the window (nocx-1ebrs.35.1, ADR-0097):
  *  the channel is stored by the backend's settings store, and the check runs
@@ -57,7 +57,7 @@ export interface UpdateCheckController {
 }
 
 export function createUpdateCheck(
-  notice: Pick<UpdateNoticeController, 'showAvailable'>,
+  notice: Pick<UpdateController, 'showAvailable'>,
   channel?: UpdateChannelBridge,
 ): UpdateCheckController {
   const [error, setError] = createSignal<string | null>(null)

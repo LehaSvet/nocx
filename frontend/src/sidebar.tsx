@@ -154,6 +154,14 @@ export interface SidebarViewDescriptor {
   readonly status?: () => SidebarViewStatus | null
 }
 
+/** A reactive indicator in the bottom zone, owned by the composition root. */
+export interface SidebarIndicator {
+  readonly title: string
+  readonly icon: Component
+  readonly available: () => boolean
+  readonly onActivate: () => void
+}
+
 /** An action button in the bottom zone (global actions, never opens panel). */
 export interface SidebarAction {
   readonly id: string
@@ -307,6 +315,7 @@ interface SidebarSolidProps {
   panel: HTMLElement
   views: readonly SidebarViewDescriptor[]
   actions: readonly SidebarAction[]
+  indicator?: SidebarIndicator
   persistence: SidebarPersistence | null
   state: AppState
   storeActions: AppActions
@@ -572,6 +581,17 @@ function SidebarSolid(props: SidebarSolidProps) {
             </IconButton>
           )}
         </For>
+        <Show when={props.indicator?.available()}>
+          <IconButton
+            size="lg"
+            data-update-indicator
+            title={props.indicator?.title ?? 'Update available'}
+            ariaLabel={props.indicator?.title ?? 'Update available'}
+            onClick={() => props.indicator?.onActivate()}
+          >
+            <Dynamic component={props.indicator?.icon} />
+          </IconButton>
+        </Show>
       </div>
     </div>
   )
@@ -626,6 +646,7 @@ export function mountSidebar(
   getActiveOrigin?: () => ActiveOrigin | null,
   resize?: SidebarWidthController,
   getActivePaneIsSettings?: () => boolean,
+  indicator?: SidebarIndicator,
 ): SidebarHandle {
   const activeProfileId = getActiveProfileId ?? (() => null)
   const activeOrigin = getActiveOrigin ?? (() => null)
@@ -666,6 +687,7 @@ export function mountSidebar(
         panel={panel}
         views={views}
         actions={actions}
+        indicator={indicator}
         persistence={persistence ?? null}
         state={state}
         storeActions={storeActions}
