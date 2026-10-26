@@ -9,6 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/shady2k/nocx/internal/helper/proto"
+	"github.com/shady2k/nocx/internal/log/logtest"
 	"github.com/shady2k/nocx/internal/session"
 )
 
@@ -188,4 +189,195 @@ func TestSessionOrderingSaturationRemainsNonblockingAndValidatesBeforeAdmission(
 	responses := collectResponses(t, conn, []int{200, 201}, 5*time.Second)
 	assertResponseError(t, responses[200], 200, -32004)
 	assertResponseError(t, responses[201], 201, -32602)
+}
+
+// Hold only the teardown boundary, never the production dispatcher or gates.
+// The legacy override keeps this regression red if close returns to EndSession.
+type heldEndSessionRegistry struct {
+	session.Registry
+	mu      sync.Mutex
+	heldID  session.ID
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *heldEndSessionRegistry) hold(id session.ID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.heldID = id
+}
+
+func (r *heldEndSessionRegistry) holds(id session.ID) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return id == r.heldID
+}
+
+func (r *heldEndSessionRegistry) wait(id session.ID) {
+	if r.holds(id) {
+		r.once.Do(func() { close(r.entered) })
+		<-r.release
+	}
+}
+
+func (r *heldEndSessionRegistry) EndSession(id session.ID) error {
+	r.wait(id)
+	return r.Registry.EndSession(id)
+}
+
+func (r *heldEndSessionRegistry) PrepareEndSession(id session.ID) (session.Session, func() error, error) {
+	sess, complete, err := r.Registry.PrepareEndSession(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !r.holds(id) {
+		return sess, complete, nil
+	}
+	return sess, func() error {
+		r.wait(id)
+		return complete()
+	}, nil
+}
+
+func TestSlowSessionCloseDoesNotStallOtherSessionsOverTheWire(t *testing.T) {
+	for _, method := range []string{"resize", "close", "detach"} {
+		t.Run(method, func(t *testing.T) {
+			for _, separateSocket := range []bool{false, true} {
+				name := "same_socket"
+				if separateSocket {
+					name = "different_socket"
+				}
+				t.Run(name, func(t *testing.T) {
+					ctx, logger := logtest.New(t)
+					reg := &heldEndSessionRegistry{
+						Registry: session.New(logger, &activeFactory{}),
+						entered:  make(chan struct{}),
+						release:  make(chan struct{}),
+					}
+					ws := NewWSServer(logger, reg)
+					if err := ws.Start(ctx); err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = ws.Stop(ctx) })
+					var releaseOnce sync.Once
+					release := func() { releaseOnce.Do(func() { close(reg.release) }) }
+					// Cleanup is LIFO: unblock teardown before stopping the server,
+					// even if a response assertion fails while A is held.
+					t.Cleanup(release)
+
+					ownerA := connectWS(t, ws)
+					t.Cleanup(func() { _ = ownerA.Close() })
+					sidA := openSessionOnConn(t, ws, ownerA, 1)
+					sessA, err := reg.Get(session.ID(sidA))
+					if err != nil {
+						t.Fatal(err)
+					}
+					identityA := sessA.Identity()
+					ownerB := ownerA
+					if separateSocket {
+						ownerB = connectWS(t, ws)
+						t.Cleanup(func() { _ = ownerB.Close() })
+					}
+					sidB := openSessionOnConn(t, ws, ownerB, 2)
+					sessB, err := reg.Get(session.ID(sidB))
+					if err != nil {
+						t.Fatal(err)
+					}
+					reg.hold(session.ID(sidA))
+					if err = ownerA.WriteMessage(websocket.TextMessage, mustMarshal(map[string]any{
+						"jsonrpc": "2.0", "id": 10, "method": "close", "params": map[string]any{"sessionId": sidA},
+					})); err != nil {
+						t.Fatalf("write A close: %v", err)
+					}
+					select {
+					case <-reg.entered:
+					case <-time.After(5 * time.Second):
+						t.Fatal("A close never reached teardown")
+					}
+
+					if method == "resize" {
+						sendResizeRaw(t, ownerB, sidB, 100, 30, 20)
+					} else if err = ownerB.WriteMessage(websocket.TextMessage, mustMarshal(map[string]any{
+						"jsonrpc": "2.0", "id": 20, "method": method, "params": map[string]any{"sessionId": sidB},
+					})); err != nil {
+						t.Fatalf("write B %s: %v", method, err)
+					}
+					// Keep any early A response in the shared inbox until release.
+					responseB, err := awaitFrame(ownerB, time.Now().Add(5*time.Second), isResponseTo(20))
+					if err != nil {
+						t.Fatalf("read B %s response while A is held: %v", method, err)
+					}
+					assertResponseOK(t, responseB, 20)
+					switch method {
+					case "resize":
+						if got := sessB.EffectiveSize(); got.Cols != 100 || got.Rows != 30 {
+							t.Fatalf("B resize acknowledged without applying its size: %+v", got)
+						}
+					case "close":
+						if _, err := reg.Get(session.ID(sidB)); err == nil {
+							t.Fatal("B close acknowledged but B remains in the registry")
+						}
+					case "detach":
+						if _, err := reg.Get(session.ID(sidB)); err != nil {
+							t.Fatalf("B detach ended its session: %v", err)
+						}
+						sendResizeRaw(t, ownerB, sidB, 101, 31, 21)
+						detachedResize, err := awaitFrame(ownerB, time.Now().Add(5*time.Second), isResponseTo(21))
+						if err != nil {
+							t.Fatalf("read detached B resize response: %v", err)
+						}
+						assertResponseError(t, detachedResize, 21, -32602)
+					}
+					select {
+					case <-reg.release:
+						t.Fatal("test released A before B completed")
+					default:
+					}
+					if _, err := reg.Get(session.ID(sidA)); err == nil {
+						t.Fatal("A remains attachable while its teardown is held")
+					}
+
+					// A fresh socket must see an absent identity, not a duplicate
+					// attachment refusal on the closing session's current owner.
+					claimant := connectWS(t, ws)
+					t.Cleanup(func() { _ = claimant.Close() })
+					raw := jsonrpcCallWithID(t, claimant, "attach", map[string]any{
+						"sessionId": sidA, "instanceId": identityA.InstanceID, "sessionEpoch": identityA.Epoch, "offset": 0,
+					}, 30)
+					assertResponseError(t, raw, 30, -32602)
+					var refused struct {
+						Error struct {
+							Data struct {
+								Reason string `json:"reason"`
+							} `json:"data"`
+						} `json:"error"`
+					}
+					if err := json.Unmarshal(raw, &refused); err != nil || refused.Error.Data.Reason != reasonUnknownSession {
+						t.Fatalf("attach did not report A as unknown: %s (decode error %v)", raw, err)
+					}
+
+					// Repeated close is admitted while the first close is held;
+					// same-session FIFO may defer its answer until teardown ends.
+					if err := ownerA.WriteMessage(websocket.TextMessage, mustMarshal(map[string]any{
+						"jsonrpc": "2.0", "id": 11, "method": "close", "params": map[string]any{"sessionId": sidA},
+					})); err != nil {
+						t.Fatalf("write repeated A close: %v", err)
+					}
+					release()
+					for _, id := range []int{10, 11} {
+						response, err := awaitFrame(ownerA, time.Now().Add(5*time.Second), isResponseTo(id))
+						if err != nil {
+							t.Fatalf("read A close response %d: %v", id, err)
+						}
+						if id == 10 {
+							assertResponseOK(t, response, id)
+						} else {
+							assertResponseError(t, response, id, -32602)
+						}
+					}
+				})
+			}
+		})
+	}
 }

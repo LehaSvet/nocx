@@ -719,13 +719,11 @@ func (h sessionOpsHandlers) handleResize(ctx context.Context, state *connState, 
 	}
 }
 
-// handleClose closes a session: the resize lane's terminal gate first (a
-// close must never queue behind a dead resize), then the registry close
-// through the session operation, then the transport teardown (rings,
-// bindings, discovery — migration map, close finding). The git/files
-// binding teardown is shared transport lifecycle, not a handler capability:
-// it also runs on AD-9 disconnect via monitorExit, and the registries are
-// their own exclusion.
+// handleClose retires the registry identity, cancels the resize lane and marks
+// the expected exit, then completes process and transport teardown. The session
+// gate covers retirement only; slow helper I/O retains the execution lane, never
+// whole-domain exclusion. The git/files binding teardown also runs on AD-9
+// disconnect via monitorExit; those registries own their exclusion.
 func (h sessionOpsHandlers) handleClose(ctx context.Context, state *connState, req jsonrpcRequest) {
 	var params closeParams
 	if err := json.Unmarshal(req.Params, &params); err != nil || params.SessionID == "" {
@@ -741,57 +739,36 @@ func (h sessionOpsHandlers) handleClose(ctx context.Context, state *connState, r
 		return
 	}
 
-	op, err := h.ops.ForSession(sid)
+	op, err := h.ops.ForSessionEnd(sid)
 	if err != nil {
 		resp := newJSONRPCError(req.ID, -32602, "Invalid params: unknown sessionId")
 		_ = respond(h.r, resp)
 		return
 	}
-	err = op.Run(ctx, func(ctx context.Context, svc capability.SessionService) error {
-		// Close is terminal for the session's resize lane: from here, queued
-		// and in-flight resizes are cancelled and nothing new may reach the
-		// session. Runs BEFORE the teardown below, and never waits for the
-		// lane's worker — the one operation that can unblock a dead resize
-		// must not queue behind it.
+	sess, err := op.Run(ctx, func(session.Session) {
+		// The ID is already retired, so another attach cannot claim it.
+		// Cancel resizes and mark the expected exit before process teardown
+		// wakes monitorExit. Neither step waits for a resize worker.
 		h.machine.closeLane(sid)
-
-		sess, gerr := svc.Get(sid)
-		if gerr != nil {
-			// The session is already gone from the registry; the transport
-			// teardown still runs (idempotent).
-			h.machine.closeSession(sid, nil)
-			state.remove(sid)
-			result, _ := json.Marshal(map[string]any{})
-			resp := newJSONRPCResult(req.ID, result)
-			_ = respond(h.r, resp)
-			return nil
-		}
-		// The end is the user's own doing, and the session layer cannot
-		// see that: a forced teardown records no shell report, so the exit
-		// it produces reads as ExitInterrupted like any dropped connection.
-		// Marked BEFORE the registry close, because the registry close is
-		// what wakes monitorExit — which takes the marker and files
-		// nothing. Not marked on the branch above: the session is already
-		// out of the registry there, so no exit of ours is coming and the
-		// entry would have nothing to clear it.
 		h.machine.markCloseRequested(sid)
-		// EndSession, not Close: a caller that asked this session to close by
-		// id knows nobody will ever attach to it again, so a helper-hosted
-		// session releases its reserved window budget here rather than only
-		// detaching (nocx-isjh4, closer 1's other door — the layout chain's
-		// own close runs through WSServer.closeSessionsForPanes).
-		_ = svc.EndSession(sid)
-		h.machine.closeSession(sid, sess)
-		state.remove(sid)
-
-		result, _ := json.Marshal(map[string]any{})
-		resp := newJSONRPCResult(req.ID, result)
-		_ = respond(h.r, resp)
-		return nil
 	})
-	if err != nil {
+	if capability.IsRefused(err) {
 		answerOperationRefusal(h.r, req, err)
+		return
 	}
+	if sess == nil {
+		// Another terminal path removed the session after ForSessionEnd.
+		// Transport teardown still completes idempotently, as before.
+		h.machine.closeLane(sid)
+	} else if err != nil {
+		log.From(ctx).Warn("session teardown failed after retirement", "session_id", sid, "err", err)
+	}
+	h.machine.closeSession(sid, sess)
+	state.remove(sid)
+
+	result, _ := json.Marshal(map[string]any{})
+	resp := newJSONRPCResult(req.ID, result)
+	_ = respond(h.r, resp)
 }
 
 // handleDetach drops this connection's attachment without ending the
