@@ -372,6 +372,11 @@ host_gate "eslint (root)" npm run lint
 #   lint:fixture-check      the negative fixtures, each a rule proven to fire
 #   contracts:check         the generated wire types against contracts/
 #
+# Section 5b's `tsc --noEmit` over the e2e suite is OUTSIDE this lock, and it is
+# named here rather than left to be discovered: it runs only when e2e/ changes
+# and it was not measured. If a future measurement says it matters, it belongs
+# in the same section.
+#
 # AND NOTHING DROPS OUT OF SIGHT. CI's ci-frontend job runs `npm run lint` over
 # the whole frontend and `npm run typecheck`, and so do `make root-ci`,
 # `make frontend-ci` and the merged-tree gate. This hook checks the files a
