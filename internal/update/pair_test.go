@@ -48,7 +48,7 @@ func pendingUpdate(t *testing.T, from, to string) (installPath, jp string) {
 	swap := swapPath(installPath)
 	makeMinimalAppImage(t, swap)
 
-	jp = journalPath(installPath)
+	jp = testJournalPath(t, installPath)
 	rec := &journalRecord{
 		TxID:           to,
 		InstallPath:    installPath,
@@ -99,9 +99,7 @@ func TestReportHealthy_OldCompatibleCoordinator_HoldsTheUpdateWithoutRollback(t 
 	u := NewUpdater(UpdaterConfig{
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
-		CurrentVersion: "0.2.0",
-		InstallPath:    installPath,
-		Coordinator:    kept,
+		CurrentVersion: "0.2.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"), Coordinator: kept,
 	})
 
 	for launch := 1; launch <= 5; launch++ {
@@ -149,9 +147,7 @@ func TestReportHealthy_NoHealthReport_RollsBackAfterThreeLaunches(t *testing.T) 
 	u := NewUpdater(UpdaterConfig{
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
-		CurrentVersion: "0.2.0",
-		InstallPath:    installPath,
-		// A coordinator probe exists and would answer; the build never
+		CurrentVersion: "0.2.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"), // A coordinator probe exists and would answer; the build never
 		// gets far enough to report health through it.
 		Coordinator: &stubProbe{build: CoordinatorBuild{Version: "0.2.0"}},
 	})
@@ -192,9 +188,7 @@ func TestReportHealthy_AnIncompatibleCoordinator_IsStillAMismatch(t *testing.T) 
 	u := NewUpdater(UpdaterConfig{
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
-		CurrentVersion: "0.2.0",
-		InstallPath:    installPath,
-		Coordinator:    &stubProbe{build: CoordinatorBuild{Version: "0.1.0", Compatible: false}},
+		CurrentVersion: "0.2.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"), Coordinator: &stubProbe{build: CoordinatorBuild{Version: "0.1.0", Compatible: false}},
 	})
 
 	err := u.ReportHealthy(ctx)
@@ -235,8 +229,7 @@ func TestStateWithNothingInFlight(t *testing.T) {
 	u := NewUpdater(UpdaterConfig{
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
-		CurrentVersion: "0.2.0",
-		InstallPath:    installPath,
+		CurrentVersion: "0.2.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"),
 	})
 
 	if state := u.State(context.Background()); state.Pending {
@@ -255,9 +248,7 @@ func TestReportHealthy_MatchingPair_Finalises(t *testing.T) {
 	u := NewUpdater(UpdaterConfig{
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
-		CurrentVersion: "0.2.0",
-		InstallPath:    installPath,
-		Coordinator:    probe,
+		CurrentVersion: "0.2.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"), Coordinator: probe,
 	})
 
 	if err := u.ReportHealthy(context.Background()); err != nil {
@@ -281,9 +272,7 @@ func TestReportHealthy_NewerCoordinator_IsAlsoRefused(t *testing.T) {
 	u := NewUpdater(UpdaterConfig{
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
-		CurrentVersion: "0.2.0",
-		InstallPath:    installPath,
-		Coordinator:    &stubProbe{build: CoordinatorBuild{Version: "0.3.0"}},
+		CurrentVersion: "0.2.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"), Coordinator: &stubProbe{build: CoordinatorBuild{Version: "0.3.0"}},
 	})
 
 	if err := u.ReportHealthy(context.Background()); !errors.Is(err, ErrPairMismatch) {
@@ -304,9 +293,7 @@ func TestReportHealthy_PreRestartBuildCannotCertifyItself(t *testing.T) {
 	u := NewUpdater(UpdaterConfig{
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
-		CurrentVersion: "0.1.0", // the build that applied the update
-		InstallPath:    installPath,
-		Coordinator:    probe,
+		CurrentVersion: "0.1.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"), Coordinator: probe,
 	})
 
 	err := u.ReportHealthy(context.Background())
@@ -333,8 +320,7 @@ func TestReportHealthy_NoProbe_Refuses(t *testing.T) {
 	u := NewUpdater(UpdaterConfig{
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
-		CurrentVersion: "0.2.0",
-		InstallPath:    installPath,
+		CurrentVersion: "0.2.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"),
 		// Coordinator deliberately absent.
 	})
 
@@ -355,9 +341,7 @@ func TestReportHealthy_ProbeFails_Refuses(t *testing.T) {
 	u := NewUpdater(UpdaterConfig{
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
-		CurrentVersion: "0.2.0",
-		InstallPath:    installPath,
-		Coordinator:    &stubProbe{err: boom},
+		CurrentVersion: "0.2.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"), Coordinator: &stubProbe{err: boom},
 	})
 
 	err := u.ReportHealthy(context.Background())
@@ -385,9 +369,7 @@ func TestReportHealthy_NoTransaction_AsksNothing(t *testing.T) {
 	u := NewUpdater(UpdaterConfig{
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
-		CurrentVersion: "0.2.0",
-		InstallPath:    installPath,
-		Coordinator:    probe,
+		CurrentVersion: "0.2.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"), Coordinator: probe,
 	})
 
 	if err := u.ReportHealthy(context.Background()); err != nil {

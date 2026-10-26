@@ -81,17 +81,15 @@ type journalRecord struct {
 
 const journalSchemaVersion = 1
 
-// journalPath returns the path to the journal file for the given
-// install path. The journal lives in the same directory as the
-// installed bundle.
-func journalPath(installPath string) string {
-	return filepath.Join(filepath.Dir(installPath), ".nocx-update-journal.json")
+// journalPath returns the transaction journal in the profile's data directory.
+func journalPath(stateDir string) string {
+	return filepath.Join(stateDir, ".nocx-update-journal.json")
 }
 
 // readJournal reads and parses the journal, or returns nil if the
 // journal file does not exist.
 func readJournal(path string) (*journalRecord, error) {
-	f, err := os.Open(path) //nolint:gosec // path is constructed from installPath (caller-controlled)
+	f, err := os.Open(path) //nolint:gosec // path is constructed from the configured profile state directory
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
