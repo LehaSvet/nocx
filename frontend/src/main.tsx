@@ -55,6 +55,7 @@ import { SurfaceRegistry, SURFACE_ID_SETTINGS } from './surface-registry'
 import { apiSidebarAction, registerApiSurface } from './api'
 import { createApiWorkbenchServices, nativePickers } from './api/api-client'
 import { createUpdateCheck } from './update-check'
+import { startUpdateSchedule } from './update-schedule'
 import { mountUpdateNotice } from './update-notice'
 import { createUpdateToast } from './update-toast'
 import { mountConnectionOverlay, type ConnectionOverlayState } from './ui/connection-overlay'
@@ -1859,11 +1860,11 @@ function main(): void {
     }
   })
 
-  // Check for updates, at startup and every 24 hours. One controller owns
-  // the outcome for both (nocx-1ebrs.36): an available update reaches the
-  // notice, a failure is kept with its cause — logged at warn and shown in
-  // Settings > About — instead of vanishing in a silent catch the way
-  // 0.6.0's did.
+  // One controller owns the outcome of every check (nocx-1ebrs.36): an
+  // available update reaches the notice, a failure is kept with its cause —
+  // logged at warn and shown in Settings > About — instead of vanishing in a
+  // silent catch the way 0.6.0's did. When the checks happen is
+  // update-schedule.ts.
   // The channel bridge (nocx-1ebrs.35.1): the setting is stored by the
   // backend's settings store, the check runs in the window — the renderer
   // hands the stored value across on every check, so no window-side copy of
@@ -1909,9 +1910,12 @@ function main(): void {
     },
     updateChannelBridge,
   )
-  void updateCheck.run()
-  const DAY_MS = 24 * 60 * 60 * 1000
-  setInterval(() => void updateCheck.run(), DAY_MS)
+  // WHEN the check runs (nocx-1ebrs.66.1.1): startup, on wake from sleep and on
+  // window focus — at most once an hour — plus every four hours. It used to be
+  // startup and every 24 hours, so a window kept open for days could sit
+  // through a whole release; the schedule module owns the rule and the wake
+  // signal it listens to (the pane wake reporter reads the same owner).
+  void startUpdateSchedule({ check: () => updateCheck.run() })
 
   // ── Vault dialogs ────────────────────────────────────────────────────
   // Mounted at the app level so they float over every page, not just Settings.
