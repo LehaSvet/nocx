@@ -48,7 +48,13 @@ describe('the composer draws the terminal block cursor', () => {
     const ed = new CommandEditor({ submit: vi.fn(), cancel: vi.fn() })
     ed.mount(container)
     ed.show() // focuses the input, which is the state a prompt is in
-    teardown.push(() => container.remove())
+    // Disposed, not only detached: focusing arms a CM6 timer that a removed
+    // container leaves running, and it reaches for the window after jsdom is
+    // gone (nocx-oeuro). The case at the end of this describe proves it.
+    teardown.push(() => {
+      ed.dispose()
+      container.remove()
+    })
     return { ed, view: viewOf(ed) }
   }
 
@@ -134,6 +140,44 @@ describe('the composer draws the terminal block cursor', () => {
     // arrives in this state", not "this many milliseconds later".
     await vi.waitFor(() => expect(blockOn(view)).toBeNull())
   })
+
+  it('a disposed composer leaves no timer that reaches for a window jsdom has torn down (nocx-oeuro)', () => {
+    // Why the teardown above disposes: focusing arms a CM6 focus timer, and a
+    // file that ends before it fires had it run after jsdom was gone, failing
+    // ci-frontend with every test green. The timers are faked from before the
+    // focus so the pending one is held here, and the window's frame API is
+    // taken away the way the end of the environment takes it away.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const fire = (dispose: boolean): void => {
+        const container = document.createElement('div')
+        document.body.appendChild(container)
+        const ed = new CommandEditor({ submit: vi.fn(), cancel: vi.fn() })
+        ed.mount(container)
+        ed.show()
+        // Focused, and CM6 not yet told: its focus timer is pending. The
+        // measure mount() scheduled is flushed now, so the timer's update has
+        // to ask the window for a fresh frame — the call that failed in CI.
+        ;(viewOf(ed) as unknown as { measure: () => void }).measure()
+        if (dispose) ed.dispose()
+        const gone = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => {
+          throw new TypeError('this.win.requestAnimationFrame is not a function')
+        })
+        try {
+          vi.runAllTimers()
+        } finally {
+          gone.mockRestore()
+          if (!dispose) ed.dispose()
+          container.remove()
+        }
+      }
+      // Detaching alone leaves the timer armed: the failure, reproduced.
+      expect(() => fire(false)).toThrow(/requestAnimationFrame/)
+      expect(() => fire(true)).not.toThrow()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('the caret holds still while keys are arriving', () => {
@@ -167,6 +211,7 @@ describe('the caret holds still while keys are arriving', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     teardown.push(() => {
       vi.useRealTimers()
+      ed.dispose()
       container.remove()
     })
     return { ed, view: viewOf(ed) }
