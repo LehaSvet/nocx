@@ -42,8 +42,10 @@ import (
 	"github.com/shady2k/nocx/internal/log"
 	"github.com/shady2k/nocx/internal/pty"
 	"github.com/shady2k/nocx/internal/session"
+	"github.com/shady2k/nocx/internal/shellintegration"
 	"github.com/shady2k/nocx/internal/ssh"
 	"github.com/shady2k/nocx/internal/storage/storagetest"
+	"github.com/shady2k/nocx/internal/transport"
 )
 
 // paneInstaller is the injected `ssh.RemoteInstaller` — the value the resolver
@@ -87,10 +89,12 @@ func (p *paneInstaller) calls() (hosts []string, spawnsAlreadyAskedFor []int) {
 type paneStand struct {
 	opener *localHelperOpener
 	daemon *fakeLocalEndpoint
-	// logs collects what the opener said. It is the surface a publish failure
-	// has on this route, and the design says so in as many words (§6.1: the
-	// publish's result "stays a LOG and never an input to which command is
-	// emitted") — the far side is what names the refusal in the product.
+	// logs collects what the opener said. It is ONE of the two surfaces a
+	// publish failure has: the design keeps the failure out of the open's
+	// error (a failed publish decides nothing about the session — §6.1 step
+	// 5), so the log carries the cause, and since nocx-1kejz.4 the open's own
+	// RESULT carries the classified reason out to the pane. Those are the two
+	// halves, and both are asserted below.
 	logs *bytes.Buffer
 }
 
@@ -123,13 +127,10 @@ func startPaneStand(t *testing.T) *paneStand {
 	}
 }
 
-// openSSH opens one ssh pane through this machine's helper, with the installer
-// (or its absence) a caller names.
-func (s *paneStand) openSSH(t *testing.T, mode string, installer ssh.RemoteInstaller) error {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	opened, selected, err := s.opener.OpenHosted(ctx, session.Config{
+// sshConfig is the destination one test's ssh pane opens, with the installer
+// (or its absence) the caller names.
+func (s *paneStand) sshConfig(mode string, installer ssh.RemoteInstaller) session.Config {
+	return session.Config{
 		Kind: session.KindRemote,
 		Host: "host.example",
 		Remote: &ssh.ConnectConfig{
@@ -145,13 +146,30 @@ func (s *paneStand) openSSH(t *testing.T, mode string, installer ssh.RemoteInsta
 			Shell:              "bash",
 			RemoteInstaller:    installer,
 		},
-	}, "")
-	if err == nil {
-		_ = opened.Session.Close()
 	}
+}
+
+// openSSHOnce opens one ssh pane through this machine's helper and answers
+// with everything the open reported about it.
+func (s *paneStand) openSSHOnce(t *testing.T, cfg session.Config) (transport.HostedSessionOpen, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	opened, selected, err := s.opener.OpenHosted(ctx, cfg, "")
 	if !selected {
 		t.Fatalf("this machine's opener declined an ssh pane (selected=false), which ADR-0057 forbids: " +
 			"a destination it owns is always its own, including when it cannot be served")
+	}
+	return opened, err
+}
+
+// openSSH opens one ssh pane through this machine's helper, with the installer
+// (or its absence) a caller names, and answers only whether it worked.
+func (s *paneStand) openSSH(t *testing.T, mode string, installer ssh.RemoteInstaller) error {
+	t.Helper()
+	opened, err := s.openSSHOnce(t, s.sshConfig(mode, installer))
+	if err == nil {
+		_ = opened.Session.Close()
 	}
 	return err
 }
@@ -238,20 +256,36 @@ func TestAPaneWithNoInstallerOpensWithoutAPublish(t *testing.T) {
 // named — and the pane STILL OPENS. That is §6.1 step 5's contract read the
 // right way round: a failed publish leaves any generation already on the far
 // host byte-identical, so it is not a refusal, and ADR-0004 makes an ordinary
-// usable terminal the one thing no failure path may suppress. What the failure
-// does is reach the record with its own name, which is what the log carries.
+// usable terminal the one thing no failure path may suppress.
+//
+// AND THE PANE IS TOLD (nocx-1kejz.4). Before it, the failure's whole
+// destination was the log line asserted below — a soft degrade the product
+// contradicted, drawn by nocx itself. The reason now rides the open's result,
+// classified at the step that failed, and this is where that is read off the
+// result the transport actually receives rather than off the vocabulary.
 func TestAPaneOpensEvenWhenItsPublishFailed(t *testing.T) {
 	stand := startPaneStand(t)
-	cause := errors.New(
-		"publish the shell integration bundle on host.example: the far side named no home directory")
+	cause := &shellintegration.PublishFailure{
+		Reason: shellintegration.PublishFailureHome,
+		Cause:  errors.New("the far side named no home directory"),
+	}
 	installer := &paneInstaller{daemon: stand.daemon, err: cause}
 
-	if err := stand.openSSH(t, "script", installer); err != nil {
+	opened, err := stand.openSSHOnce(t, stand.sshConfig("script", installer))
+	if err != nil {
 		t.Fatalf("a failed publish refused the pane: %v — an un-integrated terminal is what §6.1 step 5 "+
 			"promises instead, and a pane nobody can use is not a visible degrade", err)
 	}
+	defer func() { _ = opened.Session.Close() }()
 	if got := stand.daemon.spawned(); got != 1 {
 		t.Fatalf("the daemon was asked to spawn %d sessions, want 1", got)
+	}
+
+	// THE PANE'S HALF: the classified reason, on the result, for the party that
+	// tells the person. A log line nobody reads is what this replaces.
+	if got := opened.PublishFailure; got != shellintegration.PublishFailureHome {
+		t.Fatalf("the open reported publish failure %q, want %q — the pane cannot say what did not "+
+			"land if the opener keeps the reason to itself", got, shellintegration.PublishFailureHome)
 	}
 
 	// The failure is NAMED, not swallowed: the log carries the cause, so the
@@ -261,7 +295,42 @@ func TestAPaneOpensEvenWhenItsPublishFailed(t *testing.T) {
 		t.Fatalf("the publish failure produced no record naming the host and its cause; the log was %q",
 			logged)
 	}
-	t.Logf("MEASURED the fail-open publish: pane opened, and the record names the cause")
+	t.Logf("MEASURED the fail-open publish: pane opened, result names %q, and the log carries the cause",
+		opened.PublishFailure)
+}
+
+// TestAPublishFailureWithNoClassificationIsStillReported is the fail-open rule
+// every closed vocabulary in this repo carries: a cause nobody typed — a third
+// party's installer, a step added elsewhere — is still a pane that did not get
+// its copy, and "nocx cannot say why" is worth more than a second silence.
+// Neither direction may be a blank: an unmapped cause reads as `unknown`, and a
+// landing copy reads as nothing at all, which is the pair this test pins.
+func TestAPublishFailureWithNoClassificationIsStillReported(t *testing.T) {
+	stand := startPaneStand(t)
+
+	untyped := &paneInstaller{daemon: stand.daemon, err: errors.New("something nobody classified")}
+	opened, err := stand.openSSHOnce(t, stand.sshConfig("script", untyped))
+	if err != nil {
+		t.Fatalf("a failed publish refused the pane: %v", err)
+	}
+	defer func() { _ = opened.Session.Close() }()
+	if got := opened.PublishFailure; got != shellintegration.PublishFailureUnknown {
+		t.Fatalf("an unclassified publish failure reported %q, want %q: a cause with no name is still "+
+			"a copy that did not land", got, shellintegration.PublishFailureUnknown)
+	}
+
+	// …and the other end: a copy that LANDED says nothing, which is what keeps
+	// every healthy ssh pane quiet.
+	landed := &paneInstaller{daemon: stand.daemon}
+	ok, err := stand.openSSHOnce(t, stand.sshConfig("script", landed))
+	if err != nil {
+		t.Fatalf("opening an ssh pane whose publish succeeds: %v", err)
+	}
+	defer func() { _ = ok.Session.Close() }()
+	if got := ok.PublishFailure; got != shellintegration.PublishFailureNone {
+		t.Fatalf("a successful publish reported %q, want no failure at all — a healthy pane must say "+
+			"nothing", got)
+	}
 }
 
 // TestASSHPaneStillOpensWhenTheKeepAliveLeaseCannotBeAcquired is the paired

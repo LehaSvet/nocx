@@ -481,6 +481,11 @@ type AttachedSession struct {
 	// refused as behind.
 	pendingReset          int
 	pendingLifecycleReset int
+	// firstOutputObs observes the first nonempty PTY read, not arrival on
+	// the connection. firstOutputSeen keeps registration from rearming it.
+	// Both guarded by mu; the observer fires outside it.
+	firstOutputObs  func()
+	firstOutputSeen bool
 	// holeObs is the coordinator's observer for a hole in this session's
 	// output — see OnOutputHole. Guarded by mu; fired outside it.
 	holeObs func(lost uint64, reason string)
@@ -795,6 +800,17 @@ func (a *AttachedSession) applyReset(r proto.SessionReset) {
 // streamLifecycle is the SessionReset.Stream value naming the lifecycle
 // carrier; empty names the PTY output stream.
 const streamLifecycle = "lifecycle"
+
+// OnFirstOutput registers an observer for the first nonempty PTY read.
+// Register before handing the attachment to a reader. The observer runs once,
+// on the reader's goroutine before Read returns, outside the attachment mutex.
+// Delivery, lifecycle reads and reset-only reads do not observe PTY output.
+// Registering again does not rearm an observation that has already fired.
+func (a *AttachedSession) OnFirstOutput(f func()) {
+	a.mu.Lock()
+	a.firstOutputObs = f
+	a.mu.Unlock()
+}
 
 // OnOutputHole installs the observer for a stretch of this session's output
 // that never reached this coordinator, and it is the seam the durable record
@@ -1140,6 +1156,18 @@ func (a *AttachedSession) Read(p []byte) (int, error) {
 				Session:    proto.HostSessionID{Generation: a.generation, Session: proto.SessionHex(a.session)},
 				Offset:     offset,
 			}, offset)
+		}
+	}
+	if n > 0 {
+		a.mu.Lock()
+		var obs func()
+		if !a.firstOutputSeen {
+			a.firstOutputSeen = true
+			obs = a.firstOutputObs
+		}
+		a.mu.Unlock()
+		if obs != nil {
+			obs()
 		}
 	}
 	// Checked on every Read, not only when it moves the cursor: a caller

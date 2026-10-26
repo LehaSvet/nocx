@@ -26,7 +26,9 @@
 // the repo root. A tab's cwd is where a dropped file goes, so leaving that to
 // inheritance means uploading into the checkout. The caller states it.
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
+import { createConnection } from 'node:net'
 import path from 'node:path'
 
 import type { Page } from '@playwright/test'
@@ -38,6 +40,8 @@ export interface SshdFixture {
   port: number
   /** Private key file for the user the fixture accepts. */
   userKey: string
+  /** Synthetic account identifier; never copied from the invoking account. */
+  user: string
   /**
    * The RSA user key the fixture minted and also accepts, when it was started
    * with `-rsa-key`, in the OpenSSH encoding.
@@ -136,6 +140,7 @@ export function startSshd(opts: StartSshdOptions): Promise<SshdFixture> {
           host,
           port: Number(port),
           userKey,
+          user: randomUUID().replaceAll('-', ''),
           // Only when the fixture minted one: undefined is "this host accepts
           // no RSA key", which is every caller that predates `-rsa-key`.
           rsaKey: rsaKey === '' ? undefined : rsaKey,
@@ -150,6 +155,46 @@ export function startSshd(opts: StartSshdOptions): Promise<SshdFixture> {
     reject(new Error(`e2e-sshd exited early (${code}): ${lines.join('|')}`))
   })
   return promise
+}
+
+/** Prove the fixture still serves SSH immediately before a caller opens it.
+ * READY proves startup, not that a later stage left the listener alive. Read
+ * the server's banner without authenticating, so connection-count assertions
+ * still count only the product's authenticated connections. */
+export async function assertSshdReady(fixture: SshdFixture): Promise<void> {
+  const { proc, host, port } = fixture
+  if (proc.exitCode !== null || proc.signalCode !== null || proc.killed) {
+    throw new Error(
+      `e2e-sshd is not running: exit=${proc.exitCode}, signal=${proc.signalCode}, killed=${proc.killed}`,
+    )
+  }
+  await new Promise<void>((resolve, reject) => {
+    const socket = createConnection({ host, port })
+    let banner = ''
+    const finish = (error?: Error) => {
+      proc.off('exit', exited)
+      socket.removeAllListeners()
+      socket.destroy()
+      if (error) reject(error)
+      else resolve()
+    }
+    const exited = (code: number | null, signal: NodeJS.Signals | null) =>
+      finish(new Error(`e2e-sshd exited during readiness: exit=${code}, signal=${signal}`))
+    proc.once('exit', exited)
+    socket.setTimeout(10_000, () => finish(new Error('e2e-sshd did not send an SSH banner')))
+    socket.on('error', (error) => finish(new Error(`e2e-sshd readiness failed: ${error.message}`)))
+    socket.on('end', () => finish(new Error('e2e-sshd closed before its SSH banner')))
+    socket.on('data', (chunk: Buffer) => {
+      banner += chunk.toString()
+      if (
+        banner
+          .split('\n')
+          .slice(0, -1)
+          .some((line) => line.startsWith('SSH-2.0-'))
+      )
+        finish()
+    })
+  })
 }
 
 /**

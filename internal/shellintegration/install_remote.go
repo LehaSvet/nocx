@@ -46,11 +46,19 @@ func (s *Impl) EnsureInstalledOverPipe(_ context.Context, fs FS, remoteHome stri
 
 func (s *Impl) publishRemote(fs FS, remoteHome, event string) error {
 	root := path.Join(remoteHome, dirName)
-	res, err := NewPublisher(s.log, fs, root).Publish(launchBundle(s.agentNames()))
+	publisher := NewPublisher(s.log, fs, root)
+	res, err := publisher.Publish(launchBundle(s.agentNames()))
 	if err != nil {
 		s.log.Info("remote bundle publish refused",
 			"root", root, "error", err)
 		return fmt.Errorf("shellintegration: remote publish: %w", err)
+	}
+	// Retirement is separate from manifest activation: an inert target cannot
+	// create a mixed generation, and failure does not invalidate a committed
+	// bundle. A fresh bounded attempt gives this fixed-size cleanup its own
+	// deadline rather than inheriting time spent publishing the bundle.
+	if err := publisher.attempt().retireLegacyScripts(res.Generation); err != nil {
+		return fmt.Errorf("shellintegration: retire legacy remote loader: %w", err)
 	}
 	s.log.Info(event,
 		"root", root, "version", res.Version, "generation", res.Generation,

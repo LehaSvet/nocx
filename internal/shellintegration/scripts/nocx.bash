@@ -10,6 +10,7 @@ if [[ -n "${__nocx_loaded:-}" ]]; then
     return 2>/dev/null || exit 0
 fi
 __nocx_loaded=1
+__nocx_script_version=@NOCX_SCRIPT_VERSION@
 
 
 # --- Authenticated lifecycle channel (ADR-0024, docs/lifecycle-protocol.md) ---
@@ -1963,8 +1964,19 @@ else
     PROMPT_COMMAND='__nocx_prompt_command'
 fi
 
+# Decode only the shell-quoted declaration produced by Bash's own trap -p.
+# Removing its outer quotes leaves embedded single quotes escaped as source,
+# not as the handler body; chaining then changes quoted paths and arguments.
+# set -- parses that trusted declaration without executing the quoted body.
+__nocx_trap_body() {
+    [[ -n "$1" ]] || return 0
+    eval "set -- ${1#trap -- }"
+    builtin printf '%s' "$1"
+}
+
 # Save the original DEBUG trap so we can chain to it after our preexec hook.
-__nocx_current_debug="$(trap -p DEBUG 2>/dev/null | sed "s/^trap -- '//;s/' DEBUG$//")"
+__nocx_current_debug="$(trap -p DEBUG 2>/dev/null)"
+__nocx_current_debug="$(__nocx_trap_body "$__nocx_current_debug")"
 if [[ "$__nocx_current_debug" != '__nocx_preexec_wrapper' ]]; then
     __nocx_old_debug="$__nocx_current_debug"
 fi
@@ -2259,7 +2271,8 @@ fi
 # time captured at spawn, read back via `ps -o lstart=` at exit. A reaped
 # child's PID may have been reused — a reused PID has a different start time,
 # so it is never killed.
-__nocx_current_exit="$(trap -p EXIT 2>/dev/null | sed "s/^trap -- '//;s/' EXIT$//")"
+__nocx_current_exit="$(trap -p EXIT 2>/dev/null)"
+__nocx_current_exit="$(__nocx_trap_body "$__nocx_current_exit")"
 if [[ "$__nocx_current_exit" != '__nocx_exit_cleanup' ]]; then
     __nocx_old_exit="$__nocx_current_exit"
 fi

@@ -253,9 +253,12 @@ import (
 // CI run 40189752017 measured 90596 bytes (+2384 over 88212), still 63
 // calls, for lifecycle idempotence, fork ownership and the in-band address
 // lifetime correction (nocx-5qa8h). Archive and client stack are unchanged.
+// CI run 40226370660 measured 91008 bytes (+412), still 63 calls, at
+// 452281925: the reserved loader latch, sourced version marker and Bash's
+// shell-decoded trap capture (nocx-1kejz.2).
 const (
 	measuredMaxPublishCalls = 63
-	measuredMaxPublishBytes = 90596
+	measuredMaxPublishBytes = 91008
 
 	// measuredMaxBoundedResidue is the same figure for the worst attempt
 	// that is still inside the residue bounds the design asks P3 to enforce

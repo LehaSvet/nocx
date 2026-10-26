@@ -178,11 +178,26 @@ async function openProfileAndWaitForItsPane(
   browser: Browser,
   ep: BackendEndpoint,
   profileName: string,
+  /** Whether this open still owes the connect-time ask. The answer is keyed by
+   *  the MACHINE's host-key fingerprint (ADR-0034), so two connections to one
+   *  host ask once between them — the second open here is silent, and the pane
+   *  it produces is the proof that nothing was asked. */
+  answerAsk: boolean,
 ): Promise<string> {
   const page = await freshClient(browser, ep)
   await promptReady(page)
   const before = (await liveSessions(ep)).map((s) => s.sessionId)
   await openSavedProfile(page, profileName)
+  if (answerAsk) {
+    // A helper-mode connection is asked even though it names the helper as its
+    // METHOD: the deployment is the machine's permission, not the
+    // connection's choice (ADR-0105, nocx-1kejz.3).
+    const helperAsk = page.getByRole('dialog').filter({ hasText: 'Choose how nocx connects' })
+    await expect(helperAsk).toBeVisible({ timeout: 30_000 })
+    await helperAsk.getByRole('radio', { name: 'Helper' }).click()
+    await helperAsk.getByRole('button', { name: 'Continue' }).click()
+    await expect(helperAsk).not.toBeVisible()
+  }
 
   const activePane = page.locator('.pane.active')
   let opened = ''
@@ -253,7 +268,7 @@ test.describe('a vault-held key opens a pane through the helper', () => {
       // -512. With the helper's signer unable to be asked for an algorithm,
       // this was `ssh-rsa`, the host refused it, and no pane appeared.
       const beforeRsa = authenticatedConnections(fixture)
-      await openProfileAndWaitForItsPane(browser, endpoint, RSA_PROFILE)
+      await openProfileAndWaitForItsPane(browser, endpoint, RSA_PROFILE, true)
       expect(
         authenticatedConnections(fixture),
         'the far host did not authenticate the RSA-keyed pane',
@@ -265,7 +280,11 @@ test.describe('a vault-held key opens a pane through the helper', () => {
       // case isolates the algorithm. A green RSA with a red ed25519 would mean
       // the harness broke rather than the product.
       const beforeEd = authenticatedConnections(fixture)
-      await openProfileAndWaitForItsPane(browser, endpoint, ED25519_PROFILE)
+      // The same machine, a second connection, and NOTHING is asked: the
+      // first open's answer was recorded against this host's fingerprint, which
+      // is what "asked once per machine" means. A dialog here would fail the
+      // wait below, so the pane is the assertion.
+      await openProfileAndWaitForItsPane(browser, endpoint, ED25519_PROFILE, false)
       expect(
         authenticatedConnections(fixture),
         'the far host did not authenticate the ed25519-keyed pane',

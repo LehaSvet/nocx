@@ -563,6 +563,13 @@ export function signalUndeliveredHandler(client: ClientFake): (params: unknown) 
   return notificationHandler(client, 'session.signalUndelivered')
 }
 
+/** The session.publishFailed handler (nocx-1kejz.4): the backend's word that
+ *  this pane's shell-integration bundle was not copied to the host. Tests
+ *  describe the fact body; the framing is this helper's. */
+export function publishFailedHandler(client: ClientFake): (params: unknown) => void {
+  return notificationHandler(client, 'session.publishFailed')
+}
+
 /** The lifecycle.changed handler with the wire's server-authoritative session
  *  address. Tests describe the fact body; this helper supplies the exact
  *  transport envelope that routes it to the mounted tab. */

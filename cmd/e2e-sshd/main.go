@@ -96,14 +96,33 @@ func main() {
 	}
 }
 
+// fixtureLoginShell affects the account shell advertised to remote launchers,
+// not the explicit interpreter that executes the SSH command itself.
+var fixtureLoginShell string
+
 func run() error {
+	flag.StringVar(&fixtureLoginShell, "shell", "", "account shell advertised to the remote launcher")
 	banner := flag.String("banner", "", "sshd banner sent before authentication")
 	password := flag.String("password", "", "require password auth; accepts exactly this password and refuses every key")
 	rsaKey := flag.Bool("rsa-key", false, "mint an RSA user key, accept it beside the ed25519 one, and print RSAKEY=<path>: the credential shape whose key TYPE is not the algorithm a modern sshd negotiates (nocx-1ebrs.17)")
 	algorithms := flag.String("pubkey-algorithms", modernPubkeyAlgorithms,
 		"the signature algorithms this host accepts for a public key, comma separated: its PubkeyAcceptedAlgorithms. The default is a modern sshd's, which EXCLUDES ssh-rsa (SHA-1)")
 	repo := flag.String("repo", "", "seed a git repository at this path for the git acceptance spec: an initial commit, an untracked file whose name has a space, a quote, a leading dash and a newline, and a pre-commit hook that writes a marker outside the repository and prints more than one packet of output; the fixture chdirs into it, so a shell this process serves directly starts inside the repository — a helper-hosted shell does not: the far nocx-helper spawns it and starts it in the login user's home, like any real sshd's login shell")
+	legacyIntegration := flag.Bool("legacy-integration", false, "plant an installer-era loader with retired accept semantics and production rc gates")
 	flag.Parse()
+	if fixtureLoginShell != "" {
+		resolved, err := exec.LookPath(fixtureLoginShell)
+		if err != nil {
+			return fmt.Errorf("fixture account shell: %w", err)
+		}
+		fixtureLoginShell = resolved
+	}
+
+	if *legacyIntegration {
+		if err := plantLegacyIntegration(accountHome()); err != nil {
+			return err
+		}
+	}
 
 	if *repo != "" {
 		// Normalized to an absolute path before chdir and print: the REPO=
@@ -823,6 +842,9 @@ func handleSession(ch gossh.Channel, reqs <-chan *gossh.Request) {
 // shell by exec'ing bash, and a decision it makes is a decision it should
 // publish.
 func sessionEnv(shell string) []string {
+	if fixtureLoginShell != "" {
+		shell = fixtureLoginShell
+	}
 	env := make([]string, 0, len(os.Environ())+2)
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "SHELL=") || strings.HasPrefix(kv, "TERM=") {
@@ -931,6 +953,7 @@ func startCommand(ch gossh.Channel, st *sessionState, command string) {
 	go func() {
 		_, _ = io.Copy(ch, master)
 		_ = cmd.Wait()
+		printLine("PTY_EXIT")
 		// A real ssh client terminates only on an explicit exit-status
 		// followed by channel EOF (the journey's `exit` must end the remote
 		// session cleanly and hand the real code to the local shell). The

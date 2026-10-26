@@ -72,6 +72,13 @@ import {
 import { mountIntegrationNotice } from './integration/notice'
 import { mountIntegrationWaiting } from './integration/waiting'
 import { mountToolSurfaceNotice } from './tool-surface-notice'
+import {
+  mountPublishNotice,
+  subscribePublishFailed,
+  type PublishFailureReason,
+  type PublishNoticeHandle,
+} from './publish-notice'
+import type { SessionPublishFailed } from './generated/session.publishFailed'
 import type { SessionEffect } from './generated/session.effect'
 import type { SessionOutputGap } from './generated/session.outputGap'
 import {
@@ -1694,6 +1701,20 @@ export class TerminalContent extends BasePaneContent {
   private _toolSurface: SessionToolSurfaceChanged | null = null
   private _toolSurfaceUnsub: (() => void) | null = null
   private _toolSurfaceNoticeDispose: (() => void) | null = null
+  /** The subscription to the backend's "this pane's integration bundle was not
+   *  copied" fact (nocx-1kejz.4), installed with the session and dropped with
+   *  it. */
+  private _publishFailureUnsub: (() => void) | null = null
+  /** The ONE card that states that fact. A handle rather than a boolean because
+   *  a later attempt that fails for a different cause REWORDS it: one pane, one
+   *  statement, however many reconnects it took to get there (the bound
+   *  nocx-z5lnt set for live output loss). */
+  private _publishNotice: PublishNoticeHandle | null = null
+  /** A card this person already closed for the CURRENT binding. Dismissal is
+   *  "not now": the fact is replayed on a reattach and must not come back as
+   *  though it were news. It resets with the session, like the recovery
+   *  card's own flag. */
+  private _publishNoticeDismissed = false
   /** The disposer for the mounted degraded-session card, when one is up. */
   private _noticeDispose: (() => void) | null = null
   /** The disposer for the waiting card, mounted for exactly as long as the
@@ -4600,6 +4621,12 @@ export class TerminalContent extends BasePaneContent {
       this._toolSurfaceUnsub = null
       this._dropToolSurfaceNotice()
       this._toolSurface = null
+      this._publishFailureUnsub?.()
+      this._publishFailureUnsub = null
+      this._dropPublishNotice()
+      // The dismissal belonged to the session that is going away: the new one
+      // either copied the bundle or has its own failure to report.
+      this._publishNoticeDismissed = false
       // The old session's seam reader goes with it: the new bind registers
       // its own under the new session id, and a stale one would read the
       // pane's CURRENT model for a session that no longer exists.
@@ -4865,6 +4892,12 @@ export class TerminalContent extends BasePaneContent {
 
     this._dropRecoveryNotice()
     this._dropLiveOutputGapNotice()
+    // The previous binding's delivery fact is not the new one's: a rebind is a
+    // new session whose own publish either landed (nothing to say) or did not
+    // (its own notification, on its own id). Left standing, the old card would
+    // describe a copy that this open may well have made.
+    this._dropPublishNotice()
+    this._publishNoticeDismissed = false
     this._recoveryNoticeDismissedForSession = false
     this._liveOutputGaps = []
     this._liveOutputGapAccount = { missing: 0, hostWindow: false, unknownCause: false }
@@ -4971,6 +5004,14 @@ export class TerminalContent extends BasePaneContent {
     this._toolSurfaceUnsub = subscribeToolSurfaceChanged(this.client.dispatcher, (fact) => {
       if (fact.sessionId !== session.sessionId) return
       this._applyToolSurface(fact)
+    })
+    // The bundle's delivery outcome, subscribed here for the same reason: the
+    // backend settles it while the open is being answered and replays it on
+    // attach, so the listener has to exist before the attach reply lands
+    // (nocx-1kejz.4).
+    this._publishFailureUnsub = subscribePublishFailed(this.client.dispatcher, (fact) => {
+      if (fact.sessionId !== session.sessionId) return
+      this._applyPublishFailure(fact)
     })
     // The statement is OBSERVED: until the first marker arrives, an auto
     // session honestly reads "Native input" — the launcher may be
@@ -6712,6 +6753,43 @@ export class TerminalContent extends BasePaneContent {
     if (!this._toolSurfaceNoticeDispose) return
     this._toolSurfaceNoticeDispose()
     this._toolSurfaceNoticeDispose = null
+    this.scheduleLiveResize()
+  }
+
+  /** State the delivery failure the backend reported for this pane
+   *  (nocx-1kejz.4).
+   *
+   *  ONE CARD, REWORDED. The backend emits the fact at most once per session,
+   *  but a pane that reconnects opens a new session, so a host that refuses
+   *  every copy produces one fact per attempt. Each lands here: the first
+   *  mounts the card, the rest reword it — so the person reads the current
+   *  cause once, not a column of them (the bound nocx-z5lnt set for repeated
+   *  live-loss notices, applied to the same job).
+   *
+   *  A card this person closed stays closed for this binding. It is replayed on
+   *  a reattach, and a dismissed card that came back would be the product
+   *  treating its own replay as news.
+   */
+  private _applyPublishFailure(fact: SessionPublishFailed): void {
+    if (this._disposed || this._sessionExited) return
+    const reason: PublishFailureReason = fact.reason
+    if (this._publishNotice) {
+      this._publishNotice.update(reason)
+      return
+    }
+    if (this._publishNoticeDismissed) return
+    if (!this._paneTarget) return
+    this._publishNotice = mountPublishNotice(this._paneTarget, reason, () => {
+      this._publishNoticeDismissed = true
+      this._dropPublishNotice()
+    })
+    this.scheduleLiveResize()
+  }
+
+  private _dropPublishNotice(): void {
+    if (!this._publishNotice) return
+    this._publishNotice.dispose()
+    this._publishNotice = null
     this.scheduleLiveResize()
   }
 
@@ -9237,6 +9315,9 @@ export class TerminalContent extends BasePaneContent {
     this._toolSurfaceUnsub = null
     this._toolSurfaceNoticeDispose?.()
     this._toolSurfaceNoticeDispose = null
+    this._publishFailureUnsub?.()
+    this._publishFailureUnsub = null
+    this._dropPublishNotice()
     this._noticeDispose?.()
     this._noticeDispose = null
     this._integrationWaitingDispose?.()

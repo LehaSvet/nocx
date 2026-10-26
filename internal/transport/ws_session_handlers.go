@@ -21,6 +21,7 @@ import (
 	"github.com/shady2k/nocx/internal/lifecycle"
 	"github.com/shady2k/nocx/internal/log"
 	"github.com/shady2k/nocx/internal/session"
+	"github.com/shady2k/nocx/internal/shellintegration"
 	"github.com/shady2k/nocx/internal/ssh"
 	"github.com/shady2k/nocx/internal/transport/control"
 	"github.com/shady2k/nocx/internal/vault"
@@ -83,6 +84,11 @@ type sessionMachine interface {
 	// replayToolSurface re-sends the retained tool-surface launch result on
 	// reattach, alongside the other session-scoped state projections.
 	replayToolSurface(sid session.ID)
+	// replayPublishFailure re-sends the retained "the integration bundle did
+	// not reach this host" fact on reattach (nocx-1kejz.4). A state and not a
+	// transition, like the two above it: the copy failed once, before this
+	// subscriber existed, and no later event will ever mention it again.
+	replayPublishFailure(sid session.ID)
 	// replayPaneObservation re-sends an enrolled pane's current
 	// classification on reattach (nocx-szb40.3). Beside replayIntegration
 	// and for the identical reason: only changes are pushed, so a renderer
@@ -121,6 +127,11 @@ type openMachine interface {
 	sessionAwaitsIntegration(sid session.ID) bool
 	emitIntegration(sid session.ID)
 	replayToolSurface(sid session.ID)
+	// recordPublishFailure retains and emits the open's own publish outcome
+	// (nocx-1kejz.4). Beside emitIntegration because it is the other fact this
+	// open settles: the axis says what the session is, this says what nocx
+	// could not deliver to it.
+	recordPublishFailure(sid session.ID, reason shellintegration.PublishFailureReason)
 	// resendScreen is sessionMachine's, for the same install on this path.
 	resendScreen(ctx context.Context, sid session.ID)
 }
@@ -549,6 +560,13 @@ func (h openHandlers) handleOpen(ctx context.Context, wconn *wsConn, r Responder
 	// broadcast right after the open result was lost 4 runs in 300 under
 	// -race.
 	h.sess.replayToolSurface(sess.ID())
+	// The publish's own outcome, from the opener that attempted it
+	// (nocx-1kejz.4). After the ack and after the subscriber above, like every
+	// other session-scoped fact (AD-7); retained, so a renderer that attaches
+	// later is told too.
+	if hosted != nil {
+		h.sess.recordPublishFailure(sess.ID(), hosted.PublishFailure)
+	}
 
 	// Stored forwards (nocx-wzc4.5): replay the profile's configured
 	// forwards onto the connection. Deliberately ASYNC and only after the
@@ -1062,6 +1080,7 @@ func (h sessionOpsHandlers) handleAttach(ctx context.Context, wconn *wsConn, r R
 		h.machine.replayLifecycleFacts(sid)
 		h.machine.replayIntegration(sid)
 		h.machine.replayToolSurface(sid)
+		h.machine.replayPublishFailure(sid)
 		h.machine.replayPaneObservation(sid)
 		sidBytes, _ := session.IDToBytes(sid)
 		if gapQueued {

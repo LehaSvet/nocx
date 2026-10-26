@@ -58,6 +58,11 @@ esac
 @ENV@
 @EARLYTOKEN@
 
+# Reserve the historical load guard before any user startup. Keep the public
+# activation marker: terminal-wrapper guards need it to avoid re-execing us.
+# An installer-era gate may still source its old file, but that file returns
+# before defining hooks or opening a lifecycle channel.
+__nocx_loaded=launcher
 @LOGINPHASE@
 # User startup — first, and it wins.
 if [[ -f "${HOME}/.bashrc" ]]; then
@@ -73,7 +78,7 @@ set +e +x
 # older integration mid-rc. Rewind its captures so the fresh install below
 # chains to the user's original traps and PROMPT_COMMAND, not to our own
 # wrappers.
-if [[ -n "${__nocx_loaded:-}" ]]; then
+if [[ -n "${__nocx_loaded:-}" && "${__nocx_loaded}" != launcher ]]; then
     if [[ -n "${__nocx_old_debug:-}" ]]; then
         trap "${__nocx_old_debug}" DEBUG
     else

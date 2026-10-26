@@ -49,6 +49,7 @@ import {
   integrationHandler,
   lifecycleHandler,
   signalUndeliveredHandler,
+  publishFailedHandler,
   historyRecordedHandler,
   blockClosedHandler,
   type ClipboardFake,
@@ -3077,6 +3078,143 @@ describe('the pane while shell integration is starting (nocx-ui8q6.1)', () => {
       typeIntoPane(content, 'z')
       await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'z'))
       expect(session.send).not.toHaveBeenCalled()
+    } finally {
+      teardown()
+    }
+  })
+})
+
+// The bundle's delivery outcome is its own fact on the wire
+// (session.publishFailed, contracts/session.publishFailed.schema.json): a
+// copy that did not land is not a refusal, so it cannot ride the integration
+// axis, and it must not be confined to a log — the soft degrade AGENTS.md
+// refuses by name.
+describe('a pane whose integration bundle was not copied says so (nocx-1kejz.4)', () => {
+  const noticeIn = (tab: { pane: HTMLElement }): Element | null =>
+    tab.pane.querySelector('.nocx-publish-notice')
+
+  const failed = (sessionId: string, reason: string): Record<string, unknown> => ({
+    sessionId,
+    instanceId: 'instance-1',
+    sessionEpoch: 1,
+    reason,
+  })
+
+  it('states what failed and what the tab is doing instead, above the terminal', async () => {
+    const client = makeClient()
+    const { content, tab, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    try {
+      expect(noticeIn(tab)).toBeNull()
+
+      publishFailedHandler(client)(failed(client._sessions[0].sessionId, 'home-unavailable'))
+
+      const notice = noticeIn(tab)
+      expect(notice).not.toBeNull()
+      expect(tab.pane.querySelectorAll('.nocx-publish-notice')).toHaveLength(1)
+      expect(notice!.querySelector('.ui-status-card__title')?.textContent).toBe(
+        'Shell integration was not copied',
+      )
+      const description = notice!.querySelector('.ui-status-card__desc')?.textContent ?? ''
+      expect(description).toContain('home directory')
+      expect(description).toContain('whatever copy of the integration the host already had')
+      // …and the terminal is still there, below the card: a message about the
+      // session must not hide the session.
+      expect(
+        notice!.compareDocumentPosition(scrollbackFor(content).scrollbackLayout) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy()
+    } finally {
+      teardown()
+    }
+  })
+
+  // The bound, and the reason it is needed: a host that refuses every copy
+  // reports a failure per attempt, and a pane that retried a handful of times
+  // must not answer with a wall of cards (the rule nocx-z5lnt set for repeated
+  // live-loss notices).
+  it('keeps one statement when the same failure repeats or its cause changes', async () => {
+    const client = makeClient()
+    const { tab, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    try {
+      const sessionId = client._sessions[0].sessionId
+      publishFailedHandler(client)(failed(sessionId, 'write-refused'))
+      publishFailedHandler(client)(failed(sessionId, 'write-refused'))
+      publishFailedHandler(client)(failed(sessionId, 'connection-failed'))
+
+      expect(tab.pane.querySelectorAll('.nocx-publish-notice')).toHaveLength(1)
+      expect(tab.pane.querySelectorAll('.ui-status-card')).toHaveLength(1)
+      const description = noticeIn(tab)!.querySelector('.ui-status-card__desc')?.textContent ?? ''
+      expect(description).toContain('did not stay up')
+      expect(description).not.toContain('refused the files')
+    } finally {
+      teardown()
+    }
+  })
+
+  // The other half of the regression: a publish that landed says nothing at
+  // all. Healthy ssh panes are the overwhelming majority, and a card on each
+  // of them would be a card nobody reads.
+  it('says nothing when the bundle was copied', async () => {
+    const client = makeClient()
+    const { content, tab, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    try {
+      // The only thing the backend sends on success is silence; the axis fact
+      // that follows is a different fact and must not raise this card.
+      integrationHandler(client)({
+        sessionId: client._sessions[0].sessionId,
+        status: 'integrated',
+        shell: '/bin/zsh',
+      })
+      expect(noticeIn(tab)).toBeNull()
+      expect(scrollbackFor(content).scrollbackLayout.textContent).not.toContain(
+        'Shell integration was not copied',
+      )
+    } finally {
+      teardown()
+    }
+  })
+
+  it('leaves the pane usable: the keys still reach the session', async () => {
+    const client = makeClient()
+    const { content, tab, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    try {
+      publishFailedHandler(client)(failed(client._sessions[0].sessionId, 'write-refused'))
+      const session = sessionOf(content)
+      session.intent.mockClear()
+      session.send.mockClear()
+      typeIntoPane(content, 'l', 's')
+      await vi.waitFor(() => expect(session.intent).toHaveBeenCalledWith('text', 'l'))
+      expect(session.intent).toHaveBeenCalledWith('text', 's')
+      expect(session.send).not.toHaveBeenCalled()
+      expect(noticeIn(tab)).not.toBeNull()
+    } finally {
+      teardown()
+    }
+  })
+
+  // The fact is replayed on every attach (transport's replayPublishFailure),
+  // which is what makes a reloaded window learn it at all. It must therefore
+  // not resurrect a card the person closed: a replay is not news.
+  it('does not bring back a card the person closed', async () => {
+    const client = makeClient()
+    // In the document: the kit's buttons take their clicks through Solid's
+    // delegated listener, which is on the document, so a pane outside it can
+    // be rendered but not pressed.
+    const { tab, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    try {
+      const sessionId = client._sessions[0].sessionId
+      publishFailedHandler(client)(failed(sessionId, 'write-refused'))
+      tab.pane
+        .querySelector<HTMLButtonElement>('.nocx-publish-notice button[aria-label="Dismiss"]')
+        ?.click()
+      expect(noticeIn(tab)).toBeNull()
+
+      publishFailedHandler(client)(failed(sessionId, 'write-refused'))
+      expect(noticeIn(tab)).toBeNull()
     } finally {
       teardown()
     }

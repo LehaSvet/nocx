@@ -111,6 +111,7 @@ type Option func(*options)
 
 type options struct {
 	helloTimeout time.Duration
+	setupTimeout time.Duration
 	lossReporter LossReporter
 	frameScope   FrameScope
 }
@@ -159,6 +160,15 @@ func WithHelloTimeout(d time.Duration) Option {
 	return func(o *options) { o.helloTimeout = d }
 }
 
+// WithSetupTimeout gives a newly spawned stream a separate setup budget.
+// ObserveShellOutput replaces it with the unchanged hello budget when the
+// first post-bootstrap PTY bytes are read. An accepted hello cancels either
+// phase, including when the protocol arrives before any terminal output.
+// Without this option, a stream retains its immediate hello deadline.
+func WithSetupTimeout(d time.Duration) Option {
+	return func(o *options) { o.setupTimeout = d }
+}
+
 // WithLossReporter registers the sink for an adapter loss or a listener
 // expectation timeout. Nil (the default) reports nowhere and the loss is still
 // logged.
@@ -183,6 +193,7 @@ type Adapter struct {
 	dec               *lifecyclecodec.Decoder
 
 	helloTimeout time.Duration
+	setupTimeout time.Duration
 	// openedAt is when this transport was constructed, so the established
 	// line can say how long the far side took to authenticate — the number a
 	// hello-timeout is measured against.
@@ -197,8 +208,12 @@ type Adapter struct {
 	// detached check and the frame's scope, its ingest and its store — so a
 	// Detach that takes it knows no frame is half-applied and none will
 	// start (ADR-0077).
-	applying sync.Mutex
-	timer    *time.Timer
+	applying         sync.Mutex
+	timer            *time.Timer
+	timerEpoch       uint64
+	handshakeDone    bool
+	handshakeExpired bool
+	helloStarted     bool
 	// pumpDone is closed when the pump goroutine ends — the observable a
 	// test waits on to know the pump's own end-of-stream has run.
 	pumpDone chan struct{}
@@ -234,7 +249,7 @@ func NewStream(logger log.Logger, k Kernel, conn io.ReadWriteCloser, opts ...Opt
 		log: logger, kernel: k,
 		id:   lifecycle.TransportID("tpt-" + tptHex),
 		lane: lifecycle.LaneID("lane-" + laneHex),
-		conn: conn, helloTimeout: o.helloTimeout, report: o.lossReporter,
+		conn: conn, helloTimeout: o.helloTimeout, setupTimeout: o.setupTimeout, report: o.lossReporter,
 		scope:    o.frameScope,
 		openedAt: time.Now(),
 	}
@@ -256,10 +271,10 @@ func NewStream(logger log.Logger, k Kernel, conn io.ReadWriteCloser, opts ...Opt
 	}
 	a.domain, a.epoch = h.Domain, h.Epoch
 	a.capability, a.recovery, a.recoveryEpisodeID = h.Capability, h.Recovery, h.RecoveryEpisodeID
-	t := time.AfterFunc(a.helloTimeout, func() { a.lose(LossHelloTimeout) })
-	a.mu.Lock()
-	a.timer = t
-	a.mu.Unlock()
+	if o.setupTimeout <= 0 {
+		a.helloStarted = true
+		a.armHandshakeTimer(a.helloTimeout)
+	}
 	a.pumpDone = make(chan struct{})
 	go a.pump()
 	return a, nil
@@ -326,7 +341,8 @@ func NewAdoptedStream(logger log.Logger, k AdoptingKernel, conn io.ReadWriteClos
 		lane: adopt.Lane, domain: adopt.Domain, epoch: adopt.Epoch,
 		capability: capability, recovery: recovery, recoveryEpisodeID: adopt.RecoveryEpisodeID,
 		conn: conn, helloTimeout: o.helloTimeout, report: o.lossReporter,
-		scope: o.frameScope,
+		scope:         o.frameScope,
+		handshakeDone: true,
 	}
 	a.dec = lifecyclecodec.NewDecoder(conn, lifecyclecodec.Config{}, a.reportGap)
 	if bindErr := k.BindTransport(a.id, a); bindErr != nil {
@@ -441,7 +457,7 @@ func (a *Adapter) TransportID() lifecycle.TransportID {
 // addressed to the parent, which reads it exactly like an accept.
 func (a *Adapter) Send(env lifecycle.Envelope) error {
 	a.mu.Lock()
-	if a.closed {
+	if a.closed || a.handshakeExpired {
 		a.mu.Unlock()
 		return ErrClosed
 	}
@@ -449,16 +465,18 @@ func (a *Adapter) Send(env lifecycle.Envelope) error {
 		_ = deadline.SetWriteDeadline(time.Now().Add(writeTimeout))
 	}
 	_, err := lifecyclecodec.Encode(a.conn, env)
+	if err == nil && env.Event.Kind == lifecycle.KindAccept {
+		a.stopHelloTimerLocked()
+	}
 	a.mu.Unlock()
 	if err != nil {
 		a.log.Debug("lifecycle outbound send failed", "kind", env.Event.Kind, "error", err)
 		return err
 	}
 	// The accept reached the shell: the handshake is complete, and ONLY
-	// now does the hello bound stop (decision 9). The accept is gated on
-	// the renderer's acknowledgement, so a publication/ack failure leaves
-	// the timer running and the domain times out — it must never sit
-	// Established forever.
+	// now does either handshake bound stop (decision 9). The publisher
+	// flushes accept after committing its frame (ADR-0062); a failed write
+	// leaves the timer running rather than Established forever.
 	if env.Event.Kind == lifecycle.KindAccept {
 		// SAID, because only the FAILURE was. A channel that integrated
 		// logged nothing at all, so "did this pane ever authenticate, and how
@@ -468,7 +486,6 @@ func (a *Adapter) Send(env lifecycle.Envelope) error {
 		a.log.Info("lifecycle channel established",
 			"transport", a.id, "lane", a.lane, "domain", a.domain,
 			"after_ms", time.Since(a.openedAt).Milliseconds())
-		a.stopHelloTimer()
 	}
 	return nil
 }
@@ -568,9 +585,69 @@ func (a *Adapter) lose(cause LossCause) {
 	})
 }
 
+// BeginSetup starts the configured setup budget immediately before spawn.
+// Construction must precede spawn to mint its identity, but tool preparation
+// between those acts is not time a shell has been given to start.
+func (a *Adapter) BeginSetup() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.setupTimeout <= 0 || a.timer != nil || a.closed || a.handshakeDone || a.helloStarted {
+		return
+	}
+	a.armHandshakeTimerLocked(a.setupTimeout)
+}
+
+// ObserveShellOutput is the first PTY byte, not a protocol sniff. The
+// helper forwards PTY reads only after bootstrapDone, so the shell has had
+// the terminal by this point. A silent setup stays bounded by its own timer;
+// a banner without a hello gets the ordinary hello budget. Either phase ends
+// on accept. The adapter alone owns the deadline and its cancellation.
+func (a *Adapter) ObserveShellOutput() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed || a.handshakeDone || a.helloStarted {
+		return
+	}
+	a.helloStarted = true
+	a.armHandshakeTimerLocked(a.helloTimeout)
+}
+
+func (a *Adapter) armHandshakeTimer(d time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.armHandshakeTimerLocked(d)
+}
+
+func (a *Adapter) armHandshakeTimerLocked(d time.Duration) {
+	if a.timer != nil {
+		a.timer.Stop()
+	}
+	a.timerEpoch++
+	epoch := a.timerEpoch
+	a.timer = time.AfterFunc(d, func() {
+		a.mu.Lock()
+		if a.closed || a.handshakeDone || a.timerEpoch != epoch {
+			a.mu.Unlock()
+			return
+		}
+		// Claim expiry under the same lock as a phase change or accept.
+		// A stopped setup callback can never end the newer hello interval.
+		a.handshakeDone = true
+		a.handshakeExpired = true
+		a.mu.Unlock()
+		a.lose(LossHelloTimeout)
+	})
+}
+
 func (a *Adapter) stopHelloTimer() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.stopHelloTimerLocked()
+}
+
+func (a *Adapter) stopHelloTimerLocked() {
+	a.handshakeDone = true
+	a.timerEpoch++
 	if a.timer != nil {
 		a.timer.Stop()
 		a.timer = nil
