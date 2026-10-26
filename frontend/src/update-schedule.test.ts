@@ -243,7 +243,13 @@ describe('the composition root', () => {
   // window could keep the 24-hour interval that made the bead and every test
   // above would still pass — the failure AGENTS.md calls "a reachable read
   // path hiding an unreachable write path".
+  // Comments are stripped first: a mutation that comments the call out must fail
+  // this test, and a match against the raw source would pass on
+  // `// void startUpdateSchedule(...)` — the mutation a reviewer plants to
+  // falsify an assertion of exactly this shape.
   const mainSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'main.tsx'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|\s)\/\/[^\n]*/g, '$1')
 
   it('runs the check through the schedule, not through an interval of its own', () => {
     expect(mainSource).toContain('startUpdateSchedule(')

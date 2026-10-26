@@ -39,8 +39,30 @@ const FAILURES: readonly { pattern: RegExp; message: string }[] = [
   },
 ]
 
+/**
+ * Two refusals whose backend sentence is a STATEMENT rather than a remedy:
+ * "self-update is not available" and "not a distributed AppImage build" say
+ * what cannot happen and leave the person with nothing to do (review,
+ * nocx-1ebrs.66.1.1). These keep the backend's own words and add the step.
+ * They are matched before the plain refusals because both start with one.
+ */
+const REFUSAL_REMEDIES: readonly { match: string; message: string }[] = [
+  {
+    match: 'this is a development build; self-update is not available',
+    message:
+      'this is a development build; self-update is not available — run a release build, or use the package manager that installed nocx',
+  },
+  {
+    match: 'this is not a distributed AppImage build',
+    message:
+      'this is not a distributed AppImage build — download the AppImage from the releases page, or use the package manager that installed nocx',
+  },
+]
+
 export function updateFailureMessage(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error)
+  const remedied = REFUSAL_REMEDIES.find((row) => text.includes(row.match))
+  if (remedied) return remedied.message
   const refusal = REFUSALS.find((message) => text.includes(message))
   if (refusal) return refusal
   return (

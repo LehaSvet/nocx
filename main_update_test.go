@@ -10,8 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
+	"github.com/shady2k/nocx/internal/coordinator"
 	"github.com/shady2k/nocx/internal/log/logtest"
 	"github.com/shady2k/nocx/internal/storage"
 	"github.com/shady2k/nocx/internal/storage/storagetest"
@@ -27,7 +29,7 @@ func TestWindowUpdaterUsesAppImageTarget(t *testing.T) {
 			t.Setenv("APPIMAGE", appImage)
 			_, logger := logtest.New(t)
 			executable := "/tmp/.mount_nocx/usr/bin/nocx"
-			_, target, err := newWindowUpdater(executable, t.TempDir(), update.UpdaterConfig{Platform: update.NewPlatform(), Logger: logger})
+			_, target, err := newWindowUpdater(executable, t.TempDir(), update.UpdaterConfig{Platform: update.NewPlatform(), Coordinator: coordinator.NewLaunchProbe(), Logger: logger})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -77,7 +79,7 @@ func TestWindowUpdaterInstallsAndRestartsSelectedTarget(t *testing.T) {
 	defer server.Close()
 	sum := sha256.Sum256(payload)
 	_, logger := logtest.New(t)
-	updater, selected, err := newWindowUpdater(running, paths.DataDir(), update.UpdaterConfig{Platform: update.NewPlatform(), CurrentVersion: "0.1.0", Logger: logger})
+	updater, selected, err := newWindowUpdater(running, paths.DataDir(), update.UpdaterConfig{Platform: update.NewPlatform(), CurrentVersion: "0.1.0", Coordinator: coordinator.NewLaunchProbe(), Logger: logger})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,5 +116,21 @@ func TestWindowUpdaterInstallsAndRestartsSelectedTarget(t *testing.T) {
 	}
 	if restarted != target {
 		t.Fatalf("restarted %q; want %q", restarted, target)
+	}
+}
+
+// TestWindowUpdaterRefusesWithoutTheLaunchProbe is the regression the dead-code
+// ratchet caught on the branch that added this test (nocx-1ebrs.66.1.1): the
+// startup path stopped constructing the probe, nothing failed, and only a
+// reachability check saw it. A window updater without a probe certifies nothing,
+// so every update would swap and roll back. It must refuse at construction.
+func TestWindowUpdaterRefusesWithoutTheLaunchProbe(t *testing.T) {
+	_, logger := logtest.New(t)
+	_, _, err := newWindowUpdater("", t.TempDir(), update.UpdaterConfig{Platform: update.NewPlatform(), Logger: logger})
+	if err == nil {
+		t.Fatal("a window updater without the launch probe must be refused: nothing could certify an update without it")
+	}
+	if !strings.Contains(err.Error(), "launch probe") {
+		t.Fatalf("the refusal must name the probe, got %q", err)
 	}
 }

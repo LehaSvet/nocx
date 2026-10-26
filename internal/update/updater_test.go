@@ -333,6 +333,56 @@ func TestReconcile_NoRecord_ManagedDebris(t *testing.T) {
 	}
 }
 
+// TestReconcile_AdoptsLegacyJournalBesideTheInstallPath is the upgrade path the
+// placement split created (review, nocx-1ebrs.66.1.1): a build from before
+// ADR-0106 kept its journal beside the installed bundle, so a transaction that
+// was in flight when the person upgraded must be settled by the new build
+// rather than read as unmanaged debris.
+func TestReconcile_AdoptsLegacyJournalBesideTheInstallPath(t *testing.T) {
+	dir := t.TempDir()
+	installPath := filepath.Join(dir, "nocx.AppImage")
+	makeMinimalAppImage(t, installPath)
+
+	oldID, err := statBundleID(installPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Where the previous layout wrote it: beside the install path.
+	legacy := filepath.Join(dir, ".nocx-update-journal.json")
+	rec := &journalRecord{
+		TxID:        "0.2.0",
+		InstallPath: installPath,
+		OldBundleID: oldID, // the exchange never happened
+		FromVersion: "0.1.0",
+		ToVersion:   "0.2.0",
+	}
+	if err := writeJournal(legacy, rec); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := filepath.Join(dir, "state")
+	u := NewUpdater(UpdaterConfig{
+		Platform:       newFakePlatform(),
+		CurrentVersion: "0.1.0",
+		InstallPath:    installPath,
+		StateDir:       stateDir,
+	})
+
+	if err := u.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile must adopt the journal the previous layout left: %v", err)
+	}
+
+	// Settled, not stranded: the state directory's copy is gone with the
+	// transaction, and the old file does not linger beside the install path.
+	if _, err := os.Stat(journalPath(stateDir)); !os.IsNotExist(err) {
+		t.Fatalf("the adopted journal survived reconciliation (stat error %v)", err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("the journal beside the install path was not removed after adoption (stat error %v)", err)
+	}
+}
+
 func TestReconcile_ExchangeDidNotHappen_OldIDMatches(t *testing.T) {
 	dir := t.TempDir()
 	installPath := filepath.Join(dir, "nocx.AppImage")

@@ -120,8 +120,12 @@ export function createUpdateController(deps: UpdateControllerDeps = {}): UpdateC
       case 'held':
         present({
           level: 'warning',
-          message: `nocx ${current.version} installed — finish the update: restart nocx fully (closes open sessions)`,
-          actions: [{ label: 'Restart now', variant: 'primary', onClick: finish }],
+          // The words say what the action does (review, nocx-1ebrs.66.1.1):
+          // finishing stops the coordinator this window has outlived and
+          // QUITS — it does not relaunch, so calling it a restart told the
+          // person to expect a window that would not appear.
+          message: `nocx ${current.version} installed — close nocx and open it again to finish (this closes open sessions)`,
+          actions: [{ label: 'Close nocx', variant: 'primary', onClick: finish }],
         })
         return
     }
@@ -172,8 +176,18 @@ export function createUpdateController(deps: UpdateControllerDeps = {}): UpdateC
         if (!restored.HeldByOlderCoordinator) return
         showHeldByCoordinator(restored.Version)
       } catch (error) {
+        // The log keeps the cause; the PERSON gets the fact. A failed read
+        // leaves the indicator hidden, which reads as "no update" from a
+        // window that never looked — the soft degrade AGENTS.md says must be
+        // visible in the product and not only in a log (review,
+        // nocx-1ebrs.66.1.1).
         log.warn('reading update state failed', {
           error: error instanceof Error ? error.message : String(error),
+        })
+        showToast({
+          level: 'warning',
+          message:
+            'nocx could not read the update state this launch — open Settings and check there if you expect a new release.',
         })
       }
     },

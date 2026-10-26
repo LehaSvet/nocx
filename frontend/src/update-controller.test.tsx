@@ -56,7 +56,7 @@ describe('shared update offer', () => {
     mountIndicator(controller)
     controller.showHeldByCoordinator('2.0.0')
     fireEvent.click(screen.getByRole('button', { name: 'Update available' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Restart now' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close nocx' }))
     await vi.waitFor(() =>
       expect(document.querySelector('.ui-toast[data-level="danger"]')).not.toBeNull(),
     )
@@ -65,7 +65,7 @@ describe('shared update offer', () => {
     controller.showAvailable('2.0.1', NOTES)
     fireEvent.click(screen.getByRole('button', { name: 'Update available' }))
     expect(screen.getByRole('status').textContent).toContain('2.0.0 installed')
-    fireEvent.click(screen.getByRole('button', { name: 'Restart now' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close nocx' }))
     await vi.waitFor(() => expect(finish).toHaveBeenCalledTimes(2))
   })
 
@@ -83,7 +83,7 @@ describe('shared update offer', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Update available' }))
       expect(screen.getByRole('status').textContent).toContain('2.0.0 installed')
       expect(screen.getByRole('status').textContent).toContain('closes open sessions')
-      expect(screen.getAllByRole('button', { name: 'Restart now' })).toHaveLength(1)
+      expect(screen.getAllByRole('button', { name: 'Close nocx' })).toHaveLength(1)
       expect(screen.queryByRole('button', { name: /^Install/ })).toBeNull()
     },
   )
@@ -125,9 +125,9 @@ describe('shared update offer', () => {
     expect(screen.getByRole('status').textContent).toContain('2.0.0 installed')
     expect(screen.getByRole('status').textContent).toContain('closes open sessions')
     expect(screen.queryByRole('button', { name: /^Install/ })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Restart now' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close nocx' }))
     fireEvent.click(screen.getByRole('button', { name: 'Update available' }))
-    expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Close nocx' })).toBeNull()
     await vi.waitFor(() => expect(finish).toHaveBeenCalledTimes(1))
     expect(apply).not.toHaveBeenCalled()
     expect(restart).not.toHaveBeenCalled()
@@ -143,7 +143,7 @@ describe('shared update offer', () => {
     controller.showAvailable('2.0.1', NOTES)
     controller.showHeldByCoordinator('2.0.0')
     fireEvent.click(screen.getByRole('button', { name: 'Update available' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Restart now' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close nocx' }))
     await vi.waitFor(() =>
       expect(document.querySelector('.ui-toast[data-level="danger"]')).not.toBeNull(),
     )
@@ -151,7 +151,7 @@ describe('shared update offer', () => {
     expect(logWarn).toHaveBeenCalledWith('update action failed', { error: error.message })
     fireEvent.click(screen.getByRole('button', { name: 'Update available' }))
     expect(screen.getByRole('status').textContent).toContain('2.0.0 installed')
-    fireEvent.click(screen.getByRole('button', { name: 'Restart now' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close nocx' }))
     await vi.waitFor(() => expect(finish).toHaveBeenCalledTimes(2))
   })
 
@@ -455,5 +455,17 @@ describe('shared update offer', () => {
     await vi.waitFor(() =>
       expect(screen.getByRole('status').textContent).toContain('2.0.0 installed'),
     )
+  })
+
+  it('says a failed startup-state read out loud, not only in the log (review, .66.1.1)', async () => {
+    const controller = createUpdateController()
+    render(() => <ToastHost />)
+    mountIndicator(controller)
+
+    await controller.restore({ getState: () => Promise.reject(new Error('socket closed')) })
+
+    expect(logWarn).toHaveBeenCalledWith('reading update state failed', expect.anything())
+    const toast = document.querySelector('.ui-toast[data-level="warning"]')
+    expect(toast?.textContent).toContain('could not read the update state')
   })
 })

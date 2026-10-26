@@ -86,6 +86,14 @@ func journalPath(stateDir string) string {
 	return filepath.Join(stateDir, ".nocx-update-journal.json")
 }
 
+// legacyJournalPath is where a build from before the placement split kept the
+// journal: beside the installed bundle, which on Linux inside an AppImage is a
+// read-only mount. It is read once, adopted into the state directory and then
+// removed on a best effort — see reconcileLocked.
+func legacyJournalPath(installPath string) string {
+	return filepath.Join(filepath.Dir(installPath), ".nocx-update-journal.json")
+}
+
 // readJournal reads and parses the journal, or returns nil if the
 // journal file does not exist.
 func readJournal(path string) (*journalRecord, error) {

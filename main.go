@@ -482,6 +482,15 @@ func (w *WailsApp) ServiceStartup(ctx context.Context, _ application.ServiceOpti
 	if err != nil {
 		w.logger.Warn("cannot determine executable path", "error", err)
 	}
+	// The pair probe (D4). This window's backend is another process, so the
+	// only honest answer to "which coordinator is serving me" is the one the
+	// discovery handshake gives — and that answer does not exist yet, because
+	// the updater has to Reconcile before the launcher runs (see
+	// coordinator.LaunchProbe). So it is constructed empty here and attached
+	// after the launch below. Until it is attached it refuses to certify,
+	// which is the direction to fail in; once it is attached it must exist,
+	// or the window would certify nothing and every update would roll back.
+	w.probe = coordinator.NewLaunchProbe()
 	fetch := update.NewGitHubManifestFetcher(nil)
 	updatePaths, updatePathsErr := storage.NewAppPaths()
 	if updatePathsErr == nil {
@@ -1403,6 +1412,17 @@ func (w *WailsApp) stopKeptCoordinator(ctx context.Context) (bool, error) {
 // newWindowUpdater is the single owner of desktop update placement. Restart
 // retains this destination rather than deriving it from the running copy.
 func newWindowUpdater(executable, stateDir string, cfg update.UpdaterConfig) (update.Updater, string, error) {
+	// THE PROBE IS NOT OPTIONAL, and refusing here is what stops a wiring
+	// regression from being invisible (nocx-1ebrs.66.1.1). Without it the
+	// updater cannot certify the pair after an exchange, so every update would
+	// download, swap and then roll back — and the only trace would be a log
+	// line. This call exists because the dead-code ratchet found exactly that:
+	// a change removed `w.probe = coordinator.NewLaunchProbe()` from the
+	// startup path, nothing failed, and only CI's reachability check noticed
+	// that no caller was left.
+	if cfg.Coordinator == nil {
+		return nil, "", errors.New("the window updater needs the launch probe: without it no update can ever be certified")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		log.From(context.Background()).Warn("update home resolution failed", "error", err)

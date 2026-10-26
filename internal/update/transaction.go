@@ -263,6 +263,25 @@ func (u *updater) reconcileLocked(ctx context.Context) error {
 		return fmt.Errorf("reconcile: journal is unreadable or corrupt at %s: %w — remove this file manually to recover", jp, err)
 	}
 	if rec == nil {
+		// A transaction begun by a build that kept its journal beside the
+		// install path is still a transaction: the placement split moved the
+		// journal into the profile's data directory (ADR-0106), and an update
+		// that was in flight when the person upgraded must be settled rather
+		// than read as debris. Adoption is read-then-write, so a read-only
+		// install directory costs nothing: the old copy is removed on a best
+		// effort, and the state directory's copy is authoritative from here.
+		legacy := legacyJournalPath(u.installPath)
+		if lrec, lerr := readJournal(legacy); lerr == nil && lrec != nil {
+			if werr := writeJournal(jp, lrec); werr != nil {
+				return fmt.Errorf("reconcile: adopt the journal at %s: %w", legacy, werr)
+			}
+			_ = deleteJournal(legacy)
+			u.log.Info("reconcile: adopted a journal left by the previous layout",
+				"fromVersion", lrec.FromVersion, "toVersion", lrec.ToVersion)
+			rec = lrec
+		}
+	}
+	if rec == nil {
 		swap, backup := swapPath(u.installPath), backupPath(u.installPath)
 		if u.pathExists(swap) || u.pathExists(backup) {
 			return fmt.Errorf("reconcile: no journal but managed debris exists at %s and/or %s — these files may hold a rollback copy. Remove them by hand if they are stale, or consult the README rollback procedures.", swap, backup)
