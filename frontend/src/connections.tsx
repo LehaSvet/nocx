@@ -20,6 +20,7 @@ import { Stack } from './ui/stack'
 import { Tabs } from './ui/tabs'
 import type { FootprintClient } from './footprint-client'
 import { FootprintSection } from './footprint-section'
+import { t } from './i18n/locale-model'
 import { EmptyState } from './ui/empty-state'
 import { Field } from './ui/field'
 import { FileInput } from './ui/file-input'
@@ -491,7 +492,7 @@ export function ConnectionsView(props: ConnectionsViewProps) {
       log.error('Failed to load connections', { message })
       showToast({
         level: 'danger',
-        message: `Could not load connections: ${message}. The list may be out of date`,
+        message: `${t('connections.load.failedHead', 'Could not load connections:')} ${message}${t('connections.load.failedTail', '. The list may be out of date')}`,
       })
     }
   }
@@ -604,7 +605,7 @@ export function ConnectionsView(props: ConnectionsViewProps) {
           log.error('Failed to persist the password binding', { message })
           showToast({
             level: 'danger',
-            message: `The password was stored but this connection was not updated to use it: ${message}. Save Connection to retry.`,
+            message: `${t('connections.password.bindingFailedHead', 'The password was stored but this connection was not updated to use it:')} ${message}${t('connections.password.bindingFailedTail', '. Save Connection to retry.')}`,
           })
         }
       }
@@ -617,13 +618,19 @@ export function ConnectionsView(props: ConnectionsViewProps) {
         log.warn('Password save cancelled: the vault prompt was closed', {})
         showToast({
           level: 'warning',
-          message: 'Password was not saved — the vault prompt was cancelled.',
+          message: t(
+            'connections.password.cancelled',
+            'Password was not saved — the vault prompt was cancelled.',
+          ),
         })
         return
       }
       const message = (err as Error).message
       log.error('Failed to save password', { message })
-      showToast({ level: 'danger', message: `Could not save the password: ${message}` })
+      showToast({
+        level: 'danger',
+        message: `${t('connections.password.saveFailedHead', 'Could not save the password:')} ${message}`,
+      })
     }
     const mint = (async (): Promise<SecretEntry | undefined> => {
       try {
@@ -763,7 +770,10 @@ export function ConnectionsView(props: ConnectionsViewProps) {
     const source = importSource()
     const file = importFile()
     if (source !== 'sshConfig' && !file) {
-      showToast({ level: 'warning', message: 'Choose a file to import' })
+      showToast({
+        level: 'warning',
+        message: t('connections.import.chooseFile', 'Choose a file to import'),
+      })
       return
     }
 
@@ -773,7 +783,10 @@ export function ConnectionsView(props: ConnectionsViewProps) {
         case 'sshConfig': {
           const { profilesImported, skipped } = await props.client.importSSHConfig()
           if (profilesImported === 0 && skipped === 0) {
-            showToast({ level: 'info', message: 'No SSH config aliases to import' })
+            showToast({
+              level: 'info',
+              message: t('connections.import.nothingToImport', 'No SSH config aliases to import'),
+            })
           } else if (skipped > 0) {
             // Sticky: "12 imported" alone reads as everything, and the
             // skipped ones are the part the user may want to go look at.
@@ -781,13 +794,13 @@ export function ConnectionsView(props: ConnectionsViewProps) {
               level: 'warning',
               duration: 0,
               message:
-                `Imported ${profilesImported} connections from ~/.ssh/config, ` +
-                `${skipped} skipped (name or host already saved)`,
+                `${t('connections.import.importedFromSsh', 'Imported connections from ~/.ssh/config:')} ${profilesImported}, ` +
+                `${t('connections.import.skippedHead', 'skipped (name or host already saved):')} ${skipped}`,
             })
           } else {
             showToast({
               level: 'success',
-              message: `Imported ${profilesImported} connections from ~/.ssh/config`,
+              message: `${t('connections.import.importedFromSsh', 'Imported connections from ~/.ssh/config:')} ${profilesImported}`,
             })
           }
           break
@@ -809,7 +822,10 @@ export function ConnectionsView(props: ConnectionsViewProps) {
     } catch (err) {
       const message = (err as Error).message
       log.error('Import failed', { source, message })
-      showToast({ level: 'danger', message: `Import failed: ${message}` })
+      showToast({
+        level: 'danger',
+        message: `${t('connections.import.failedHead', 'Import failed:')} ${message}`,
+      })
     } finally {
       setImportBusy(false)
     }
@@ -830,7 +846,7 @@ export function ConnectionsView(props: ConnectionsViewProps) {
       setPreviewResult(null)
       showToast({
         level: 'success',
-        message: `Imported ${result.profilesImported} connections, ${result.groupsImported} groups`,
+        message: `${t('connections.import.importedProfilesHead', 'Imported connections:')} ${result.profilesImported}, ${t('connections.import.importedGroupsHead', 'groups:')} ${result.groupsImported}`,
       })
       await loadAll()
     }
@@ -844,7 +860,10 @@ export function ConnectionsView(props: ConnectionsViewProps) {
         if (err instanceof VaultOperationCancelledError) return
         const message = (err as Error).message
         log.error('Tabby import failed', { message })
-        showToast({ level: 'danger', message: `Tabby import failed: ${message}` })
+        showToast({
+          level: 'danger',
+          message: `${t('connections.import.tabbyFailedHead', 'Tabby import failed:')} ${message}`,
+        })
       }
     } else {
       try {
@@ -852,7 +871,10 @@ export function ConnectionsView(props: ConnectionsViewProps) {
       } catch (err) {
         const message = (err as Error).message
         log.error('Tabby import failed', { message })
-        showToast({ level: 'danger', message: `Tabby import failed: ${message}` })
+        showToast({
+          level: 'danger',
+          message: `${t('connections.import.tabbyFailedHead', 'Tabby import failed:')} ${message}`,
+        })
       }
     }
   }
@@ -940,7 +962,10 @@ export function ConnectionsView(props: ConnectionsViewProps) {
           if (err instanceof VaultOperationCancelledError) return
           const message = (err as Error).message
           log.error('Failed to save key material for group defaults', { message })
-          showToast({ level: 'danger', message: `Could not save the key: ${message}` })
+          showToast({
+            level: 'danger',
+            message: `${t('connections.toasts.saveKeyFailedHead', 'Could not save the key:')} ${message}`,
+          })
           return
         }
         const saved = result!
@@ -983,7 +1008,10 @@ export function ConnectionsView(props: ConnectionsViewProps) {
       }
       closeGroupEditor()
       await loadAll()
-      showToast({ level: 'success', message: `Saved group "${draft.name}"` })
+      showToast({
+        level: 'success',
+        message: `${t('connections.toasts.savedGroup', 'Saved group')} "${draft.name}"`,
+      })
     } catch (err) {
       if (
         err instanceof RpcError &&
@@ -994,14 +1022,20 @@ export function ConnectionsView(props: ConnectionsViewProps) {
       ) {
         const detail = (err as Error).message
         setGroupKeyTextError(detail)
-        showToast({ level: 'danger', message: `Could not save the key: ${detail}` })
+        showToast({
+          level: 'danger',
+          message: `${t('connections.toasts.saveKeyFailedHead', 'Could not save the key:')} ${detail}`,
+        })
         log.error('Invalid key material in group defaults', { message: detail })
         setGroupApplyBusy(false)
         return
       }
       const message = (err as Error).message
       log.error('Failed to save group', { message })
-      showToast({ level: 'danger', message: `Could not save group: ${message}` })
+      showToast({
+        level: 'danger',
+        message: `${t('connections.toasts.saveGroupFailedHead', 'Could not save group:')} ${message}`,
+      })
     } finally {
       setGroupApplyBusy(false)
     }
@@ -1022,7 +1056,10 @@ export function ConnectionsView(props: ConnectionsViewProps) {
       const message = (err as Error).message
       log.error('Failed to compute delete impact', { message })
       setDeleteImpact(null)
-      showToast({ level: 'danger', message: `Could not preview deletion: ${message}` })
+      showToast({
+        level: 'danger',
+        message: `${t('connections.toasts.previewDeleteFailedHead', 'Could not preview deletion:')} ${message}`,
+      })
     } finally {
       setDeleteBusy(false)
     }
@@ -1038,11 +1075,17 @@ export function ConnectionsView(props: ConnectionsViewProps) {
       setDeleteGroupId(null)
       setDeleteImpact(null)
       await loadAll()
-      showToast({ level: 'success', message: 'Group deleted' })
+      showToast({
+        level: 'success',
+        message: t('connections.toasts.groupDeleted', 'Group deleted'),
+      })
     } catch (err) {
       const message = (err as Error).message
       log.error('Failed to delete group', { message })
-      showToast({ level: 'danger', message: `Could not delete group: ${message}` })
+      showToast({
+        level: 'danger',
+        message: `${t('connections.toasts.deleteGroupFailedHead', 'Could not delete group:')} ${message}`,
+      })
     } finally {
       setDeleteBusy(false)
     }
@@ -1534,7 +1577,10 @@ export function ConnectionsView(props: ConnectionsViewProps) {
           } catch (err) {
             const message = (err as Error).message
             log.error('Failed to save the key passphrase binding', { message })
-            showToast({ level: 'danger', message: `Could not save the passphrase: ${message}` })
+            showToast({
+              level: 'danger',
+              message: `${t('connections.toasts.savePassphraseFailedHead', 'Could not save the passphrase:')} ${message}`,
+            })
             return
           }
           return handleTest(bound)
@@ -1563,7 +1609,10 @@ export function ConnectionsView(props: ConnectionsViewProps) {
     } catch (err) {
       const message = (err as Error).message
       log.error('Connection test failed', { profileId: profile.id, message })
-      showToast({ level: 'danger', message: `Test failed: ${message}` })
+      showToast({
+        level: 'danger',
+        message: `${t('connections.toasts.testFailedHead', 'Test failed:')} ${message}`,
+      })
     } finally {
       setProbeBusy((prev) => {
         const next = new Set(prev)
@@ -1589,7 +1638,10 @@ export function ConnectionsView(props: ConnectionsViewProps) {
     } catch (err) {
       const message = (err as Error).message
       log.error('Failed to trust host key', { host: pending.evidence.host, message })
-      showToast({ level: 'danger', message: `Could not trust the host key: ${message}` })
+      showToast({
+        level: 'danger',
+        message: `${t('connections.toasts.trustHostKeyFailedHead', 'Could not trust the host key:')} ${message}`,
+      })
     } finally {
       setHostKeyBusy(false)
     }
@@ -1641,7 +1693,10 @@ export function ConnectionsView(props: ConnectionsViewProps) {
   function handleQuickConnect() {
     const q = quickConnectValue().trim()
     if (!q) {
-      showToast({ level: 'warning', message: 'Enter a host, alias, or connection string' })
+      showToast({
+        level: 'warning',
+        message: t('connections.toasts.enterHost', 'Enter a host, alias, or connection string'),
+      })
       return
     }
 
@@ -1665,7 +1720,7 @@ export function ConnectionsView(props: ConnectionsViewProps) {
     if (!parsed.options.host && hadAtOrColon) {
       showToast({
         level: 'warning',
-        message: `Could not parse "${q}": try "user@host:port" or "ssh://user@host:port"`,
+        message: `${t('connections.toasts.parseFailedHead', 'Could not parse')} "${q}": ${t('connections.toasts.parseFailedTail', 'try "user@host:port" or "ssh://user@host:port"')}`,
       })
     }
 
@@ -1897,13 +1952,19 @@ export function ConnectionsView(props: ConnectionsViewProps) {
           // PEM-encrypted key needing conversion.
           const detail = (err as Error).message
           setProfileKeyTextError(detail)
-          showToast({ level: 'danger', message: `Could not save the key: ${detail}` })
+          showToast({
+            level: 'danger',
+            message: `${t('connections.toasts.saveKeyFailedHead', 'Could not save the key:')} ${detail}`,
+          })
           log.error('Invalid key material', { message: detail })
           return
         }
         const message = (err as Error).message
         log.error('Failed to save key material', { message })
-        showToast({ level: 'danger', message: `Could not save the key: ${message}` })
+        showToast({
+          level: 'danger',
+          message: `${t('connections.toasts.saveKeyFailedHead', 'Could not save the key:')} ${message}`,
+        })
         return
       }
       const saved = result!
@@ -1977,11 +2038,17 @@ export function ConnectionsView(props: ConnectionsViewProps) {
         await loadAll()
         void loadSessionStatuses()
         void loadEffective([saved.id])
-        showToast({ level: 'success', message: `Saved "${saved.name}"` })
+        showToast({
+          level: 'success',
+          message: `${t('connections.toasts.saved', 'Saved')} "${saved.name}"`,
+        })
       } catch (err) {
         const message = (err as Error).message
         log.error('Failed to save', { message })
-        showToast({ level: 'danger', message: `Could not save the connection: ${message}` })
+        showToast({
+          level: 'danger',
+          message: `${t('connections.toasts.saveFailedHead', 'Could not save the connection:')} ${message}`,
+        })
       }
       return
     }
@@ -2006,11 +2073,17 @@ export function ConnectionsView(props: ConnectionsViewProps) {
           await loadAll()
           await loadEffective([saved.id])
           void loadSessionStatuses()
-          showToast({ level: 'success', message: `Saved "${saved.name}"` })
+          showToast({
+            level: 'success',
+            message: `${t('connections.toasts.saved', 'Saved')} "${saved.name}"`,
+          })
         } catch (err) {
           const message = (err as Error).message
           log.error('Failed to save', { message })
-          showToast({ level: 'danger', message: `Could not save the connection: ${message}` })
+          showToast({
+            level: 'danger',
+            message: `${t('connections.toasts.saveFailedHead', 'Could not save the connection:')} ${message}`,
+          })
         }
         return
 
@@ -2034,11 +2107,17 @@ export function ConnectionsView(props: ConnectionsViewProps) {
             : props.client.patchProfile({ id: profile.id, set: route.patchSet }))
           setEffectiveData((prev) => ({ ...prev, [profile.id]: eff }))
           closeDialog()
-          showToast({ level: 'success', message: `Saved "${profile.name}"` })
+          showToast({
+            level: 'success',
+            message: `${t('connections.toasts.saved', 'Saved')} "${profile.name}"`,
+          })
         } catch (err) {
           const message = (err as Error).message
           log.error('Failed to save', { message })
-          showToast({ level: 'danger', message: `Could not save the connection: ${message}` })
+          showToast({
+            level: 'danger',
+            message: `${t('connections.toasts.saveFailedHead', 'Could not save the connection:')} ${message}`,
+          })
         }
         return
     }
@@ -2063,11 +2142,17 @@ export function ConnectionsView(props: ConnectionsViewProps) {
       closeDialog()
       await loadAll()
       void loadSessionStatuses()
-      showToast({ level: 'success', message: `Deleted "${profile.name}"` })
+      showToast({
+        level: 'success',
+        message: `${t('connections.toasts.deleted', 'Deleted')} "${profile.name}"`,
+      })
     } catch (err) {
       const message = (err as Error).message
       log.error('Failed to delete profile', { message })
-      showToast({ level: 'danger', message: `Could not delete "${profile.name}": ${message}` })
+      showToast({
+        level: 'danger',
+        message: `${t('connections.toasts.deleteFailedHead', 'Could not delete')} "${profile.name}": ${message}`,
+      })
     }
   }
 
@@ -2128,8 +2213,8 @@ export function ConnectionsView(props: ConnectionsViewProps) {
           <>
             <IconButton
               size="sm"
-              title="Edit"
-              ariaLabel={`Edit ${p.name}`}
+              title={t('connections.actions.edit', 'Edit')}
+              ariaLabel={`${t('connections.actions.edit', 'Edit')} ${p.name}`}
               onClick={() => openEditDialog(p)}
             >
               <PencilIcon />
@@ -2139,20 +2224,22 @@ export function ConnectionsView(props: ConnectionsViewProps) {
               size="sm"
               disabled={isTesting()}
               onClick={() => void handleTest(p)}
-              ariaLabel={`Test connection to ${p.name}`}
+              ariaLabel={`${t('connections.actions.testConnectionTo', 'Test connection to')} ${p.name}`}
             >
               <CheckCircleIcon />
-              {isTesting() ? 'Testing...' : 'Test'}
+              {isTesting()
+                ? t('connections.actions.testing', 'Testing...')
+                : t('connections.actions.test', 'Test')}
             </Button>
             <Button
               variant="ghost"
               size="sm"
-              title="Connect"
-              ariaLabel={`Connect to ${p.name}`}
+              title={t('connections.actions.connect', 'Connect')}
+              ariaLabel={`${t('connections.actions.connectTo', 'Connect to')} ${p.name}`}
               onClick={() => props.onConnect?.(p)}
             >
               <PlugIcon />
-              Connect
+              {t('connections.actions.connect', 'Connect')}
             </Button>
           </>
         }
@@ -2192,8 +2279,12 @@ export function ConnectionsView(props: ConnectionsViewProps) {
         >
           <IconButton
             size="sm"
-            title={collapsed() ? 'Expand group' : 'Collapse group'}
-            ariaLabel={`${collapsed() ? 'Expand' : 'Collapse'} group ${node.name}`}
+            title={
+              collapsed()
+                ? `${t('connections.group.expand', 'Expand')} ${t('connections.group.groupWord', 'group')}`
+                : `${t('connections.group.collapse', 'Collapse')} ${t('connections.group.groupWord', 'group')}`
+            }
+            ariaLabel={`${collapsed() ? t('connections.group.expand', 'Expand') : t('connections.group.collapse', 'Collapse')} ${t('connections.group.groupWord', 'group')} ${node.name}`}
             aria-expanded={!collapsed()}
             onClick={toggleCollapse}
           >
@@ -2203,16 +2294,16 @@ export function ConnectionsView(props: ConnectionsViewProps) {
           <span class="cm-group-actions">
             <IconButton
               size="sm"
-              title="Edit group"
-              ariaLabel={`Edit group ${node.name}`}
+              title={t('connections.group.edit', 'Edit group')}
+              ariaLabel={`${t('connections.group.edit', 'Edit group')} ${node.name}`}
               onClick={() => openGroupEditor(node)}
             >
               <PencilIcon />
             </IconButton>
             <IconButton
               size="sm"
-              title="Delete group"
-              ariaLabel={`Delete group ${node.name}`}
+              title={t('connections.group.delete', 'Delete group')}
+              ariaLabel={`${t('connections.group.delete', 'Delete group')} ${node.name}`}
               onClick={() => confirmDeleteGroup(node)}
             >
               <TrashIcon />
@@ -2711,44 +2802,51 @@ export function ConnectionsView(props: ConnectionsViewProps) {
       <CollectionView
         searchValue={searchQuery()}
         onSearch={setSearchQuery}
-        searchPlaceholder="Filter connections"
-        searchLabel="Filter connections"
+        searchPlaceholder={t('connections.list.searchPlaceholder', 'Filter connections')}
+        searchLabel={t('connections.list.searchPlaceholder', 'Filter connections')}
         actions={
           <>
             <Button variant="default" onClick={openImportDialog}>
-              Import…
+              {t('connections.list.import', 'Import…')}
             </Button>
             <Button variant="default" onClick={startNewGroup}>
-              New group
+              {t('connections.list.newGroup', 'New group')}
             </Button>
             <Button variant="primary" onClick={startNewProfile}>
-              + New connection
+              {t('connections.list.newConnection', '+ New connection')}
             </Button>
           </>
         }
         hasItems={profiles().length > 0 || groups().length > 0}
         empty={
           <EmptyState
-            title="No connections yet"
-            description="Add one by hand, or import from ~/.ssh/config, Tabby, or an export."
+            title={t('connections.list.emptyTitle', 'No connections yet')}
+            description={t(
+              'connections.list.emptyDescription',
+              'Add one by hand, or import from ~/.ssh/config, Tabby, or an export.',
+            )}
             action={
               <>
                 <Button variant="primary" onClick={startNewProfile}>
-                  + New connection
+                  {t('connections.list.newConnection', '+ New connection')}
                 </Button>
                 <Button variant="default" onClick={openImportDialog}>
-                  Import…
+                  {t('connections.list.import', 'Import…')}
                 </Button>
               </>
             }
           />
         }
       >
-        <div role="list" aria-label="Connection list">
+        <div role="list" aria-label={t('connections.list.ariaLabel', 'Connection list')}>
           <For each={tree()}>{(node) => renderGroupSection(node)}</For>
           <Show when={ungrouped().length > 0}>
             <div class="cm-group-header" role="heading" aria-level={2}>
-              <span class="cm-group-name">{groups().length > 0 ? 'Ungrouped' : 'Connections'}</span>
+              <span class="cm-group-name">
+                {groups().length > 0
+                  ? t('connections.list.ungrouped', 'Ungrouped')
+                  : t('connections.list.connections', 'Connections')}
+              </span>
             </div>
             <For each={ungrouped()}>{(p) => renderRow(p)}</For>
           </Show>
@@ -2758,8 +2856,8 @@ export function ConnectionsView(props: ConnectionsViewProps) {
               to load. */}
         <Show when={searchQuery().trim() !== '' && filteredProfiles().length === 0}>
           <EmptyState
-            title="Nothing matches this filter"
-            description={`No connection's name, host or user contains "${searchQuery().trim()}".`}
+            title={t('connections.filter.emptyTitle', 'Nothing matches this filter')}
+            description={`${t('connections.filter.emptyHead', "No connection's name, host or user contains")} "${searchQuery().trim()}".`}
           />
         </Show>
       </CollectionView>
