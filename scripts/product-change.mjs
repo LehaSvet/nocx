@@ -10,7 +10,7 @@ const pipelineFiles = new Set([
   'scripts/publish-nightly.mjs',
   'scripts/publish-nightly.test.mjs',
   'scripts/verify-built-artifact.py',
-  'scripts/verify-built-artifact_test.py',
+  'scripts/verify_built_artifact_test.py',
   'scripts/verify-built-artifact.md',
   'scripts/test-nightly.sh',
   'VERSION',

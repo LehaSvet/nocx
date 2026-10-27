@@ -73,7 +73,7 @@ pipeline. This desktop gate does not claim to inspect the deployed site.
 Use the worktree's normal `nocx-sky-test` route, with its default resources:
 
 ```sh
-nocx-sky-test "$PWD" "python3 scripts/verify-built-artifact_test.py"
+nocx-sky-test "$PWD" "python3 scripts/verify_built_artifact_test.py"
 nocx-sky-test "$PWD" "go test -tags gtk3 -run TestReleaseDiagnostics . && go test -tags gtk3 -run TestWindowUpdater ."
 ```
 
