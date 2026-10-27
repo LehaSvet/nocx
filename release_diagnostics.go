@@ -18,30 +18,17 @@ import (
 	"github.com/shady2k/nocx/internal/version"
 )
 
-// windowUpdater is the single construction used by startup AND the packaged
-// executable's release diagnostic. No test-only HTTP client or trust root is
-// substituted by the diagnostic; a nil production client must fail the gate.
-type windowUpdater struct {
-	updater  update.Updater
-	fetch    *update.GitHubManifestFetcher
-	probe    *coordinator.LaunchProbe
-	evidence *recordedManifestFetcher
-}
-
-func newWindowUpdater(execPath string, logger log.Logger) (windowUpdater, error) {
+// productionWindowUpdaterConfig is shared by startup and the packaged
+// diagnostic. Both use the production HTTP client, endpoint and compiled trust
+// root, then pass this configuration through newWindowUpdater for placement.
+func productionWindowUpdaterConfig(logger log.Logger, probe *coordinator.LaunchProbe) (update.UpdaterConfig, *update.GitHubManifestFetcher, *recordedManifestFetcher, error) {
 	keyring, err := update.ReleaseKeyring()
-	// Startup must reconcile before the coordinator launcher runs. The pair
-	// probe therefore starts empty and is attached to the launch result later;
-	// until then it refuses to certify update health (D4).
-	probe := coordinator.NewLaunchProbe()
 	fetch := update.NewGitHubManifestFetcher(nil)
 	evidence := &recordedManifestFetcher{source: fetch}
-	updater := update.NewUpdater(update.UpdaterConfig{
+	return update.UpdaterConfig{
 		Platform: update.NewPlatform(), Fetcher: evidence, Keyring: keyring,
-		CurrentVersion: version.Version, InstallPath: upgradeInstallPath(execPath),
-		Coordinator: probe, Logger: logger,
-	})
-	return windowUpdater{updater: updater, fetch: fetch, probe: probe, evidence: evidence}, err
+		CurrentVersion: version.Version, Coordinator: probe, Logger: logger,
+	}, fetch, evidence, err
 }
 
 // The wrapper retains precisely the bytes Check fetched. This is not a second
@@ -79,18 +66,23 @@ func releaseDiagnostic(ctx context.Context, args []string, out io.Writer) (bool,
 		if err != nil {
 			return true, err
 		}
-		wiring, err := newWindowUpdater(execPath, log.NewSlogAdapter(nil))
+		cfg, fetch, evidence, err := productionWindowUpdaterConfig(log.NewSlogAdapter(nil), coordinator.NewLaunchProbe())
+		if err != nil {
+			return true, err
+		}
+		// Check never reconciles or applies, so it needs no persistent state.
+		updater, _, err := newWindowUpdater(execPath, "", cfg)
 		if err != nil {
 			return true, err
 		}
 		checkCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
-		if _, checkErr := wiring.updater.Check(checkCtx); checkErr != nil {
+		if _, checkErr := updater.Check(checkCtx); checkErr != nil {
 			return true, checkErr
 		}
-		wiring.evidence.mu.Lock()
-		body, sig := wiring.evidence.body, wiring.evidence.sig
-		wiring.evidence.mu.Unlock()
+		evidence.mu.Lock()
+		body, sig := evidence.body, evidence.sig
+		evidence.mu.Unlock()
 		if len(body) == 0 || len(sig) == 0 {
 			return true, errors.New("updater: Check returned without fetching a signed manifest")
 		}
@@ -108,7 +100,7 @@ func releaseDiagnostic(ctx context.Context, args []string, out io.Writer) (bool,
 			SHA256    string           `json:"sha256"`
 			Signature string           `json:"signature"`
 			Source    string           `json:"source"`
-		}{manifest, hex.EncodeToString(sum[:]), string(sig), wiring.fetch.BaseURL})
+		}{manifest, hex.EncodeToString(sum[:]), string(sig), fetch.BaseURL})
 	default:
 		return false, nil
 	}

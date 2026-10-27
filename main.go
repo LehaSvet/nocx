@@ -363,6 +363,12 @@ type WailsApp struct {
 	// arguments — it applies the update that Check already verified.
 	updateInfo *update.UpdateInfo
 
+	// updateInstallPath is chosen with the updater and reused for relaunch.
+	updateInstallPath string
+
+	// updatePlacementErr remains visible when placement prevents construction.
+	updatePlacementErr error
+
 	// updateFetch is the manifest fetcher the updater was wired with, held
 	// so SetUpdateChannel can flip which channel's manifest the next check
 	// reads (ADR-0097). nil exactly when updater is: a window that cannot
@@ -413,14 +419,13 @@ func (w *WailsApp) Log(message string) {
 // Wails process runs the ordinary startup path, which finds the compatible
 // coordinator and preserves its live sessions.
 func (w *WailsApp) RestartWindow() error {
-	execPath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolving executable: %w", err)
+	installPath := w.updateInstallPath
+	if installPath == "" {
+		return errors.New("the update install target is unavailable; check write access to the installation directory and restart nocx")
 	}
 	if w.quit == nil {
 		return errors.New("this window cannot quit the application")
 	}
-	installPath := upgradeInstallPath(execPath)
 	start := w.restartWindowFn
 	if start == nil {
 		start = startInstalledApplication
@@ -480,18 +485,29 @@ func (w *WailsApp) ServiceStartup(ctx context.Context, _ application.ServiceOpti
 	if err != nil {
 		w.logger.Warn("cannot determine executable path", "error", err)
 	}
-	// The release diagnostic calls this same construction and exercises Check
-	// with its production HTTP client, endpoint and compiled trust root.
-	wiring, err := newWindowUpdater(execPath, log.NewSlogAdapter(w.logger))
-	if err != nil {
-		w.logger.Error("release keyring unusable; updates cannot be verified on this build", "error", err)
+	// Construct the pair probe before reconciliation and attach it only after
+	// launch. Until then it refuses to certify health (D4).
+	w.probe = coordinator.NewLaunchProbe()
+	cfg, fetch, _, keyringErr := productionWindowUpdaterConfig(log.NewSlogAdapter(w.logger), w.probe)
+	if keyringErr != nil {
+		w.logger.Error("release keyring unusable; updates cannot be verified on this build", "error", keyringErr)
 	}
-	w.probe = wiring.probe
-	w.updateFetch = wiring.fetch
-	w.updater = wiring.updater
+	updatePaths, updatePathsErr := storage.NewAppPaths()
+	if updatePathsErr == nil {
+		w.updater, w.updateInstallPath, updatePathsErr = newWindowUpdater(execPath, updatePaths.DataDir(), cfg)
+	}
+	if updatePathsErr != nil {
+		w.updatePlacementErr = updatePathsErr
+		w.logger.Warn("update placement unavailable", "error", updatePathsErr)
+	}
+	if w.updater != nil {
+		w.updateFetch = fetch
+	}
 	// Settle any transaction in flight from a previous launch.
-	if reconcileErr := w.updater.Reconcile(ctx); reconcileErr != nil {
-		w.logger.Warn("update reconcile at startup failed", "error", reconcileErr)
+	if w.updater != nil {
+		if reconcileErr := w.updater.Reconcile(ctx); reconcileErr != nil {
+			w.logger.Warn("update reconcile at startup failed", "error", reconcileErr)
+		}
 	}
 
 	launchCtx, cancel := context.WithTimeout(ctx, launchTimeout)
@@ -1222,6 +1238,9 @@ func (w *WailsApp) HostRestoreWindow(width, height, x, y int, maximised, fullScr
 // offered anybody 0.6.1.
 func (w *WailsApp) CheckForUpdate() (*update.UpdateInfo, error) {
 	if w.updater == nil {
+		if w.updatePlacementErr != nil {
+			return nil, w.updatePlacementErr
+		}
 		return nil, nil
 	}
 	info, err := w.updater.Check(context.Background())
@@ -1256,6 +1275,9 @@ func (w *WailsApp) SetUpdateChannel(channel string) error {
 // the update info is already verified and held in window state.
 func (w *WailsApp) ApplyUpdate() error {
 	if w.updater == nil {
+		if w.updatePlacementErr != nil {
+			return w.updatePlacementErr
+		}
 		return errors.New("the updater is not available in this window")
 	}
 	if w.updateInfo == nil {
@@ -1383,26 +1405,35 @@ func (w *WailsApp) stopKeptCoordinator(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// upgradeInstallPath derives the path to the installed bundle from the
-// running executable's path. On macOS, the .app is 3 levels above the
-// binary; on Linux, it is the executable itself (the AppImage).
-func upgradeInstallPath(execPath string) string {
-	if execPath == "" {
-		return ""
+// newWindowUpdater is the single owner of desktop update placement. Restart
+// retains this destination rather than deriving it from the running copy.
+func newWindowUpdater(executable, stateDir string, cfg update.UpdaterConfig) (update.Updater, string, error) {
+	// THE PROBE IS NOT OPTIONAL, and refusing here is what stops a wiring
+	// regression from being invisible (nocx-1ebrs.66.1.1). Without it the
+	// updater cannot certify the pair after an exchange, so every update would
+	// download, swap and then roll back — and the only trace would be a log
+	// line. This call exists because the dead-code ratchet found exactly that:
+	// a change removed `w.probe = coordinator.NewLaunchProbe()` from the
+	// startup path, nothing failed, and only CI's reachability check noticed
+	// that no caller was left.
+	if cfg.Coordinator == nil {
+		return nil, "", errors.New("the window updater needs the launch probe: without it no update can ever be certified")
 	}
-	// On macOS the binary lives at nocx.app/Contents/MacOS/nocx.
-	// Walk up to the .app.
-	dir := filepath.Dir(execPath)
-	for {
-		if filepath.Ext(dir) == ".app" {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.From(context.Background()).Warn("update home resolution failed", "error", err)
+		return nil, "", errors.New("cannot find your home folder — check your account settings and try again")
 	}
-	// Not inside a .app — return the executable itself (Linux AppImage).
-	return execPath
+	target, err := update.ResolveInstallTarget(runtime.GOOS, executable, os.Getenv("APPIMAGE"), home, func(dir string) error {
+		probeErr := update.ProbeInstallDirectory(dir)
+		if probeErr != nil {
+			log.From(context.Background()).Warn("update install directory probe failed", "path", dir, "error", probeErr)
+		}
+		return probeErr
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	cfg.InstallPath, cfg.StateDir = target, stateDir
+	return update.NewUpdater(cfg), target, nil
 }

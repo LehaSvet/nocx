@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shady2k/nocx/internal/coordinator"
 	"github.com/shady2k/nocx/internal/log/logtest"
 	"github.com/shady2k/nocx/internal/version"
 )
@@ -37,11 +38,15 @@ func TestReleaseDiagnosticsBuildInfo(t *testing.T) {
 
 func TestWindowUpdaterUsesProductionFetcher(t *testing.T) {
 	_, logger := logtest.New(t)
-	wiring, err := newWindowUpdater("/tmp/nocx", logger)
+	cfg, fetch, _, err := productionWindowUpdaterConfig(logger, coordinator.NewLaunchProbe())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if wiring.fetch.HTTPClient == nil {
+	_, _, err = newWindowUpdater("/tmp/nocx", t.TempDir(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetch.HTTPClient == nil {
 		t.Fatal("production constructor stored nil HTTP client")
 	}
 }
@@ -63,12 +68,16 @@ func TestWindowUpdaterRefusesUnsignedManifest(t *testing.T) {
 	}))
 	defer server.Close()
 	_, logger := logtest.New(t)
-	wiring, err := newWindowUpdater("/tmp/nocx", logger)
+	cfg, fetch, _, err := productionWindowUpdaterConfig(logger, coordinator.NewLaunchProbe())
 	if err != nil {
 		t.Fatal(err)
 	}
-	wiring.fetch.BaseURL = server.URL
-	if _, err := wiring.updater.Check(context.Background()); err == nil || !strings.Contains(err.Error(), "verification") {
+	updater, _, err := newWindowUpdater("/tmp/nocx", t.TempDir(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetch.BaseURL = server.URL
+	if _, err := updater.Check(context.Background()); err == nil || !strings.Contains(err.Error(), "verification") {
 		t.Fatalf("unsigned manifest accepted: %v", err)
 	}
 	if calls != 2 {
@@ -83,12 +92,16 @@ func TestWindowUpdaterReportsFetchFailure(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()
 	_, logger := logtest.New(t)
-	wiring, err := newWindowUpdater("/tmp/nocx", logger)
+	cfg, fetch, _, err := productionWindowUpdaterConfig(logger, coordinator.NewLaunchProbe())
 	if err != nil {
 		t.Fatal(err)
 	}
-	wiring.fetch.BaseURL = server.URL
-	if _, err := wiring.updater.Check(context.Background()); err == nil || !strings.Contains(err.Error(), "404") {
+	updater, _, err := newWindowUpdater("/tmp/nocx", t.TempDir(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetch.BaseURL = server.URL
+	if _, err := updater.Check(context.Background()); err == nil || !strings.Contains(err.Error(), "404") {
 		t.Fatalf("HTTP failure accepted: %v", err)
 	}
 }

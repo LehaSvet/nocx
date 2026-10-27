@@ -1,9 +1,5 @@
 import './style.css'
-import {
-  GetUpdateState,
-  ReportHealthy,
-  SetUpdateChannel,
-} from '../bindings/github.com/shady2k/nocx/wailsapp'
+import { ReportHealthy, SetUpdateChannel } from '../bindings/github.com/shady2k/nocx/wailsapp'
 import { render } from 'solid-js/web'
 import { Show, createSignal, untrack } from 'solid-js'
 import App from './App'
@@ -55,18 +51,26 @@ import { SurfaceRegistry, SURFACE_ID_SETTINGS } from './surface-registry'
 import { apiSidebarAction, registerApiSurface } from './api'
 import { createApiWorkbenchServices, nativePickers } from './api/api-client'
 import { createUpdateCheck } from './update-check'
-import { mountUpdateNotice } from './update-notice'
-import { createUpdateToast } from './update-toast'
+import { startUpdateSchedule } from './update-schedule'
+import { createUpdateController } from './update-controller'
+import { shouldAnnounceUpdateStateFailure } from './update-degrade'
 import { mountConnectionOverlay, type ConnectionOverlayState } from './ui/connection-overlay'
 import { IconButton } from './ui/icon-button'
-import { BellIcon, CheckCircleIcon, PlugIcon, RefreshIcon, SettingsIcon } from './ui/icons'
+import {
+  BellIcon,
+  CheckCircleIcon,
+  ArrowDownIcon,
+  PlugIcon,
+  RefreshIcon,
+  SettingsIcon,
+} from './ui/icons'
 import { SettingsObserver } from './settings-observer'
 import { mountClientHost } from './client-host'
 import { mountWindowGeometry } from './window-geometry'
 import type { ApprovalFacts } from './client-host'
 import { mountRunCommandHandler } from './run-command'
 import { bootstrapTheme, reconcileThemeFromGo } from './renderers/theme-bootstrap'
-import { bootstrapPlatform } from './platform'
+import { bootstrapPlatform, currentPlatform } from './platform'
 import {
   QuickConnectController,
   ActionsQuickConnectProvider,
@@ -186,7 +190,19 @@ function main(): void {
   // only adds a notch, so a frame without it is correct on every platform that
   // does not need one, and blocking first paint on an IPC round trip is not.
   void bootstrapPlatform()
-  render(() => <App />, document.getElementById('app')!)
+  render(
+    () => (
+      <App
+        openUrl={(url) => terminalLinkUrlOpener.open(url)}
+        onOpenUrlError={(error) =>
+          log.warn('opening browser failed', {
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      />
+    ),
+    document.getElementById('app')!,
+  )
   // The window's pet, over the whole shell so the tab strip's underside is
   // terrain like any block edge. One animal per window: it is an ornament of
   // the window, not of whichever pane happens to be in front.
@@ -197,25 +213,26 @@ function main(): void {
   const activityBar = document.getElementById('activitybar')!
   const sidebarPanel = document.getElementById('sidebar')!
 
-  // Update notice — renders inline in the tab bar, right-aligned.
-  const notice = mountUpdateNotice(bar)
+  // Window-owned update state outlives every connection-scoped sidebar.
+  const updateController = createUpdateController()
 
-  // A pair already attached under ADR-0101 can still be held; new launches
-  // take over across Versions (ADR-0104). That retained held state is the one
-  // startup state the strip must say aloud with its action: the update is
-  // installed, the kept coordinator is still serving it, and finishing
-  // means a full restart that closes the open sessions. Anything less than
-  // held stays quiet here — an ordinary pending restart has not yet had
-  // this run's health report, and a strip that guesses early would tell a
-  // healthy restart to restart again.
-  void GetUpdateState()
-    .then((state) => {
-      if (state.HeldByOlderCoordinator) notice.showHeldByCoordinator(state.Version)
-    })
-    .catch(() => {
-      // The strip is not load-bearing: a failed read leaves it hidden,
-      // and the state is re-read on the next launch.
-    })
+  // A retained coordinator needs an explicit full restart, with its session
+  // warning. Ordinary pending startup stays quiet until health is known.
+  // A failed state read is a soft degrade and it must be visible in the app —
+  // but only in a window where an updater can exist at all: a browser or the
+  // e2e stand has none, and a warning there is noise (and one e2e spec tripped
+  // over exactly that). `currentPlatform()` is the repository's own fact for
+  // "is this the packaged app".
+  void updateController.restore({
+    onFailure: (reason) => {
+      if (!shouldAnnounceUpdateStateFailure(reason, currentPlatform())) return
+      showToast({
+        level: 'warning',
+        message:
+          'nocx could not read the update state this launch — open Settings and check there if you expect a new release.',
+      })
+    },
+  })
 
   const clipboard = createClipboardAccess()
   const gate = new ClipboardGate()
@@ -1547,6 +1564,24 @@ function main(): void {
       () => activeOrigin(),
       sidebarWidthCtrl,
       () => activeSurfaceType() === SURFACE_SETTINGS,
+      {
+        title: 'Update available',
+        icon: ArrowDownIcon,
+        level: () => {
+          switch (updateController.state().kind) {
+            case 'error':
+              return 'error'
+            case 'held':
+              return 'warning'
+            case 'pending':
+              return 'ok'
+            default:
+              return 'neutral'
+          }
+        },
+        available: () => updateController.state().kind !== 'hidden',
+        onActivate: updateController.showOffer,
+      },
     )
   }
 
@@ -1859,11 +1894,11 @@ function main(): void {
     }
   })
 
-  // Check for updates, at startup and every 24 hours. One controller owns
-  // the outcome for both (nocx-1ebrs.36): an available update reaches the
-  // notice, a failure is kept with its cause — logged at warn and shown in
-  // Settings > About — instead of vanishing in a silent catch the way
-  // 0.6.0's did.
+  // One controller owns the outcome of every check (nocx-1ebrs.36): an
+  // available update reaches the notice, a failure is kept with its cause —
+  // logged at warn and shown in Settings > About — instead of vanishing in a
+  // silent catch the way 0.6.0's did. When the checks happen is
+  // update-schedule.ts.
   // The channel bridge (nocx-1ebrs.35.1): the setting is stored by the
   // backend's settings store, the check runs in the window — the renderer
   // hands the stored value across on every check, so no window-side copy of
@@ -1893,25 +1928,16 @@ function main(): void {
   // The channel the bridge last applied, so the observer only re-checks on a
   // real change. Starts at the default; the first resolve corrects it.
   let lastChannel = 'stable'
-  // The actionable announcement (nocx-1ebrs.54): the check's finding fans
-  // out to BOTH presenters at this one composition point — the strip stays
-  // as the quiet persistent marker a dismissed update remains findable in,
-  // and the toast's Restart now starts the installed app before this window
-  // quits. The new process resolves the compatible coordinator and keeps its
-  // live sessions (nocx-1ebrs.53).
-  const updateToast = createUpdateToast()
-  const updateCheck = createUpdateCheck(
-    {
-      showAvailable: (version, notesUrl) => {
-        notice.showAvailable(version, notesUrl)
-        updateToast.showAvailable(version, notesUrl)
-      },
-    },
-    updateChannelBridge,
-  )
-  void updateCheck.run()
-  const DAY_MS = 24 * 60 * 60 * 1000
-  setInterval(() => void updateCheck.run(), DAY_MS)
+  // One finding enters the window-owned offer, never separate presenters
+  // (nocx-1ebrs.66.1.5): the controller owns the state, the activity-bar
+  // indicator is its persistent place and the kit toast its announcement.
+  const updateCheck = createUpdateCheck(updateController, updateChannelBridge)
+  // WHEN the check runs (nocx-1ebrs.66.1.1): startup, on wake from sleep and on
+  // window focus — at most once an hour — plus every four hours. It used to be
+  // startup and every 24 hours, so a window kept open for days could sit
+  // through a whole release; the schedule module owns the rule and the wake
+  // signal it listens to (the pane wake reporter reads the same owner).
+  void startUpdateSchedule({ check: () => updateCheck.run() })
 
   // ── Vault dialogs ────────────────────────────────────────────────────
   // Mounted at the app level so they float over every page, not just Settings.
