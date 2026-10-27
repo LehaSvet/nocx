@@ -112,7 +112,9 @@ is the same class of bug as `nocx-25k9.14` and would have thrown on the renderer
 ## Signed update manifest
 
 `update/manifest.schema.json` declares the signed HTTP release manifest, not a
-JSON-RPC method. It stays outside the renderer/OpenRPC generation surface.
+JSON-RPC method. The `update/` namespace stays outside the renderer/OpenRPC
+generation surface and the window/coordinator protocol fingerprint. Artifact
+identity is not a window/coordinator compatibility requirement.
 `TestUpdateManifest_DTOConformsToContract` validates its Go DTO, and
 `TestUpdateManifest_OverTheWireConformsToContract` validates signed bytes fetched
 from the real HTTP socket and the verifier's returned DTO.
