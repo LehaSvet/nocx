@@ -5,7 +5,10 @@ go 1.26
 require (
 	github.com/cloudwego/eino v0.9.13
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
-	github.com/creack/pty v1.1.24
+	// TEMPORARY: pin upstream PR #215 (9246436fffe85773950f49dcc73de333da5212e6).
+	// It fixes the lost ioctl pointer/index from issue #216; drop this pin when
+	// a tagged release carries the fix. SyscallConn.Control also preserves nonblocking.
+	github.com/creack/pty v1.1.25-0.20260601142114-9246436fffe8
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/meguminnnnnnnnn/go-openai v0.1.2
