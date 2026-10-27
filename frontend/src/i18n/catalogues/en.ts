@@ -35,19 +35,19 @@ export const en: Readonly<Record<string, CatalogueEntry>> = {
   'settings.skills.enabled.description': 'Allow the assistant to discover and use local skills.',
   'settings.skills.idleDays.label': 'Switch off unused skills after',
   'settings.skills.idleDays.description':
-    "A skill nobody has used for this long is switched off, and the row says nocx did it. Turning it back on clears that mark. Built-in skills are never switched off this way.",
+    'A skill nobody has used for this long is switched off, and the row says nocx did it. Turning it back on clears that mark. Built-in skills are never switched off this way.',
   'settings.worktrees.idleDays.label': 'Remove unused worker checkouts after',
   'settings.worktrees.idleDays.description':
-    "A worker checkout nocx created that nothing has used for this long is removed by the daily sweep. Only the checkout goes — its branch and every commit on it stay — and one holding uncommitted work is never removed.",
+    'A worker checkout nocx created that nothing has used for this long is removed by the daily sweep. Only the checkout goes — its branch and every commit on it stay — and one holding uncommitted work is never removed.',
   'settings.skills.readingMinutes.label': 'Give up on a skill reading after',
   'settings.skills.readingMinutes.description':
-    "The longest one check of a skill may take, counted over every file it reads and the conclusion it draws. When it is reached the check stops and says so, and nothing is stored. A local model on a large skill can need several minutes; a hosted one is usually done inside one.",
+    'The longest one check of a skill may take, counted over every file it reads and the conclusion it draws. When it is reached the check stops and says so, and nothing is stored. A local model on a large skill can need several minutes; a hosted one is usually done inside one.',
   'settings.history.retentionDays.label': 'Keep history for',
   'settings.history.retentionDays.description':
     "How long a completed command is kept. Older commands are removed from nocx — removal is not secure erasure, deleted rows can remain in the database file's free space.",
   'settings.history.retentionMiB.label': 'Command history size',
   'settings.history.retentionMiB.description':
-    "How much command text to keep. When it is reached the oldest commands are removed from nocx (again, not securely erased). The on-disk footprint is larger than this number: measured ~3.2x — 256 MiB of content is about 811 MiB on disk — because of the search index and encrypted pages.",
+    'How much command text to keep. When it is reached the oldest commands are removed from nocx (again, not securely erased). The on-disk footprint is larger than this number: measured ~3.2x — 256 MiB of content is about 811 MiB on disk — because of the search index and encrypted pages.',
   'settings.history.diskCeilingMiB.label': 'Disk space limit',
   'settings.history.diskCeilingMiB.description':
     'Physical ceiling for the history database plus its write-ahead log. A separate number from the content size: deleting content shrinks what you keep, not necessarily the file. When this is reached the store compacts rather than deleting more.',
@@ -68,12 +68,12 @@ export const en: Readonly<Record<string, CatalogueEntry>> = {
     'When enabled, the permission banner for OSC 52 clipboard writes is permanently suppressed. The clipboard stays protected — this only hides the repeated prompt.',
   'settings.update.channel.label': 'Update channel',
   'settings.update.channel.description':
-    "Stable checks the signed manifest of the latest release. Nightly checks the nightly channel — a build made from main every night it moved, not tried by anyone before you. Switching back to stable never downgrades: you wait for the next stable release or install it by hand.",
+    'Stable checks the signed manifest of the latest release. Nightly checks the nightly channel — a build made from main every night it moved, not tried by anyone before you. Switching back to stable never downgrades: you wait for the next stable release or install it by hand.',
   'settings.update.channel.option.stable': 'Stable',
   'settings.update.channel.option.nightly': 'Nightly',
   'settings.tab.placement.label': 'Tab placement',
   'settings.tab.placement.description':
-    "Horizontal displays tabs across the top of the window, as in a traditional terminal. Vertical lists tabs on the side, as in an IDE.",
+    'Horizontal displays tabs across the top of the window, as in a traditional terminal. Vertical lists tabs on the side, as in an IDE.',
   'settings.tab.placement.option.horizontal': 'Horizontal',
   'settings.tab.placement.option.vertical': 'Vertical',
   'settings.ssh.reconnect.label': 'When an SSH connection is lost',
@@ -109,7 +109,7 @@ export const en: Readonly<Record<string, CatalogueEntry>> = {
     "Standing instructions added to the end of every question you ask the assistant — how you like answers, what this machine is, anything you would otherwise repeat. They come last, so where they contradict nocx's own instructions yours win. They are not permissions: what the assistant may do is decided on the Assistant permissions page, and nothing written here changes it.",
   'settings.assistant.expandReasoning.label': "Always show the model's thinking",
   'settings.assistant.expandReasoning.description':
-    "Open the thinking note on every answer instead of leaving it collapsed. You can still close any single note by clicking it, and a model that returns no thinking still shows nothing at all.",
+    'Open the thinking note on every answer instead of leaving it collapsed. You can still close any single note by clicking it, and a model that returns no thinking still shows nothing at all.',
   'settings.assistant.runWallClockMinutes.label': "Stop an assistant's command after",
   'settings.assistant.runWallClockMinutes.description':
     'The longest one command the assistant runs may take, counted from when it starts and reset by nothing. When it is reached the command is stopped and the assistant is told which bound ended it. The assistant can ask for less on a single command; it can never ask for more than this.',
@@ -118,7 +118,7 @@ export const en: Readonly<Record<string, CatalogueEntry>> = {
     'How long a command the assistant runs may print nothing before nocx asks the assistant whether it is still worth waiting for. The command is not stopped: the assistant answers, and it is the assistant — not you — that is interrupted. The timer restarts on every line the command prints, so a slow but talkative command never reaches it.',
   'settings.terminal.scrollbackLines.label': 'Scroll back, at most',
   'settings.terminal.scrollbackLines.description':
-    'How many lines of output the live terminal keeps above the current screen. Pruning happens in whole pages (about 400 KB each), so the terminal usually keeps somewhat more than this — by dozens of lines, sometimes a hundred. Heavily styled output keeps fewer, because the emulator\'s internal memory ceiling is reached first. Lowering the value prunes live scrollback immediately. Set to 0 for no live scrollback; output remains available to durable capture.',
+    "How many lines of output the live terminal keeps above the current screen. Pruning happens in whole pages (about 400 KB each), so the terminal usually keeps somewhat more than this — by dozens of lines, sometimes a hundred. Heavily styled output keeps fewer, because the emulator's internal memory ceiling is reached first. Lowering the value prunes live scrollback immediately. Set to 0 for no live scrollback; output remains available to durable capture.",
   'settings.terminal.fontFamily.label': 'Font family',
   'settings.terminal.fontFamily.description':
     "The monospace font for terminal output and the command editor. Nordwand Mono is bundled and works offline; System default uses the theme's original font stack.",
@@ -157,8 +157,7 @@ export const en: Readonly<Record<string, CatalogueEntry>> = {
   'notify.kind.transferFinished.description':
     "nocx's own transfer registry recorded that an upload or a download reached its end.",
   'notify.kind.programNotify.label': 'Program notification request',
-  'notify.kind.programNotify.description':
-    'A program printed OSC 9 or OSC 777 to ask for one.',
+  'notify.kind.programNotify.description': 'A program printed OSC 9 or OSC 777 to ask for one.',
   'notify.kind.bell.label': 'Terminal bell',
   'notify.kind.bell.description': 'A program printed BEL.',
   'notify.kind.coordinatorStalled.label': 'A coordinator is not reading its workers',
@@ -451,8 +450,7 @@ export const en: Readonly<Record<string, CatalogueEntry>> = {
   'connections.forward.destination': 'Destination',
   'connections.forward.storedAria': 'Stored forwards',
   'connections.forward.add': 'Add forward',
-  'connections.forward.empty':
-    'No forwards — add one to open it automatically on connect.',
+  'connections.forward.empty': 'No forwards — add one to open it automatically on connect.',
   'connections.forward.removeHead': 'Remove forward',
   'connections.mode.desiredAuto': 'Auto — install scripts, ask before the helper',
   'connections.mode.desiredScript': 'Script — scripts only, never the helper',
@@ -526,8 +524,7 @@ export const en: Readonly<Record<string, CatalogueEntry>> = {
   'endpoints.loadFailed': "Couldn't load endpoints",
   'endpoints.retry': 'Retry',
   'endpoints.emptyTitle': 'No endpoints yet',
-  'endpoints.emptyDescription':
-    "Add an AI endpoint to configure the assistant's model provider.",
+  'endpoints.emptyDescription': "Add an AI endpoint to configure the assistant's model provider.",
   'endpoints.newEndpoint': '+ New endpoint',
   'endpoints.filter': 'Filter endpoints',
   'endpoints.listAria': 'Endpoint list',
@@ -542,4 +539,67 @@ export const en: Readonly<Record<string, CatalogueEntry>> = {
   'endpoints.saveFailed': 'Could not save the endpoint:',
   'endpoints.deleted': 'Deleted',
   'endpoints.deleteFailedHead': 'Could not delete',
+  // ── Quick connect surface (frontend/src/quick-connect.tsx) ──────────────
+  // The palette's type vocabulary — the badge on the right of each row.
+  'quickConnect.kind.command': 'Command',
+  'quickConnect.kind.host': 'Host',
+  'quickConnect.kind.setting': 'Setting',
+  'quickConnect.kind.secret': 'Secret',
+  'quickConnect.kind.snippet': 'Snippet',
+  // Provider group headings.
+  'quickConnect.group.commands': 'Commands',
+  'quickConnect.group.ssh': 'SSH Connections',
+  'quickConnect.group.sshAliases': 'SSH Aliases',
+  'quickConnect.group.secrets': 'Secrets',
+  'quickConnect.group.quickConnect': 'Quick Connect',
+  // The commands provider's rows.
+  'quickConnect.actions.localShell': 'Local shell',
+  'quickConnect.actions.localShellDetail': 'Open a new local terminal tab',
+  'quickConnect.actions.newConnection': 'New connection',
+  'quickConnect.actions.newConnectionDetail': 'Define an SSH connection in Settings',
+  // The alias provider's degraded-resolver row.
+  'quickConnect.aliases.configHead': 'SSH config:',
+  // The ad-hoc fallback row.
+  'quickConnect.adhoc.connectTo': 'Connect to',
+  'quickConnect.adhoc.portDetail': 'port',
+  // Vault kinds, as the secrets provider subtitles them.
+  'quickConnect.secretKind.password': 'Password',
+  'quickConnect.secretKind.keyPassphrase': 'Key passphrase',
+  'quickConnect.secretKind.privateKey': 'Private key',
+  'quickConnect.secretKind.publicKey': 'Public key',
+  'quickConnect.secretKind.otpSeed': 'One-time-password seed',
+  // Empty and degraded states.
+  'quickConnect.state.loading': 'Loading…',
+  'quickConnect.state.noMatches': 'No matches',
+  'quickConnect.state.noMatchingHead': 'No matching',
+  'quickConnect.state.parseFailedHead': 'Could not parse',
+  'quickConnect.state.parseFailedHint': 'try "user@host:port" or "ssh://user@host:port"',
+  // Drill-in.
+  'quickConnect.drill.stepLoadFailedHead': 'Could not load',
+  // English plural tail for drill step names ("servers", "ports"); locales
+  // without one carry the empty string.
+  'quickConnect.drill.pluralTail': 's',
+  // Search field.
+  'quickConnect.search.filterHead': 'Filter',
+  'quickConnect.search.hosts': 'Type to filter…',
+  'quickConnect.search.secrets': 'Type to filter secrets…',
+  'quickConnect.search.snippets': 'Type to filter snippets…',
+  'quickConnect.search.palette': 'Search commands and hosts…',
+  // Accessible names.
+  'quickConnect.aria.drillPath': 'Drill-in path',
+  'quickConnect.aria.connectionList': 'Connection list',
+  'quickConnect.aria.filterHosts': 'Quick connect filter',
+  'quickConnect.aria.filterSecrets': 'Secret filter',
+  'quickConnect.aria.filterSnippets': 'Snippet filter',
+  'quickConnect.aria.filterPalette': 'Command palette filter',
+  // Row fallbacks.
+  'quickConnect.item.aliasBadge': 'alias',
+  // The vault offers, keyed at this surface — the words themselves are the
+  // picker's exported sentences (ui/secret-picker.ts), which never imports
+  // i18n.
+  'quickConnect.vault.offerSetup': 'Set up the vault to store secrets',
+  'quickConnect.vault.offerUnseal': 'Unlock the vault to use its secrets',
+  'quickConnect.vault.addSecret': 'Add a secret…',
+  'quickConnect.vault.addNamedSecretHead': 'Add',
+  'quickConnect.vault.addNamedSecretTail': 'to the vault…',
 }
