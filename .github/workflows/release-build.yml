@@ -49,6 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      build-date: ${{ steps.v.outputs.build-date }}
     steps:
       - id: v
         env:
@@ -61,6 +62,9 @@ jobs:
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$TAG" =~ ^(nightly-[0-9]{8}-[0-9]+|v[0-9]+\.[0-9]+\.[0-9]+)$ ]]
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # One identity for both platforms and their signed manifest. A
+          # publication or promotion time is not the time these bytes were built.
+          echo "build-date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
   helpers:
     needs: [validate]
     runs-on: ubuntu-latest
@@ -263,6 +267,7 @@ jobs:
     env:
       VERSION: ${{ needs.validate.outputs.version }}
       BUILD_SHA: ${{ inputs.sha || github.sha }}
+      BUILD_DATE: ${{ needs.validate.outputs.build-date }}
       RELEASE_TAG: ${{ inputs.release-tag || format('nightly-19700101-{0}', github.run_id) }}
       # WHICH PLATFORMS THIS APP CAN RUN ON, stated by the job that knows: the
       # macOS bundle is universal, so either slice may be the one executing and
@@ -477,7 +482,6 @@ jobs:
       - name: Build universal bundle
         run: |
           set -euo pipefail
-          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           # THE SHELL'S OWN VERSION IS STAMPED, NOT READ (nocx-1ebrs.11).
           # app.about is answered by nocx-server, which is built below without
           # cgo and without a window: its module list has no wails entry, so the
@@ -896,6 +900,7 @@ jobs:
     env:
       VERSION: ${{ needs.validate.outputs.version }}
       BUILD_SHA: ${{ inputs.sha || github.sha }}
+      BUILD_DATE: ${{ needs.validate.outputs.build-date }}
       RELEASE_TAG: ${{ inputs.release-tag || format('nightly-19700101-{0}', github.run_id) }}
       # The AppImage is amd64 and nothing else, so one local variant. See the
       # macOS job's line for why this is a job-level fact.
@@ -998,7 +1003,6 @@ jobs:
       - name: Build Linux binary
         run: |
           set -euo pipefail
-          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           # The shell's version, stamped for the same reason as the macOS job's
           # (nocx-1ebrs.11): the coordinator answers app.about and links no window.
           WAILS_VERSION="$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)"
@@ -1161,6 +1165,7 @@ jobs:
     env:
       VERSION: ${{ needs.validate.outputs.version }}
       BUILD_SHA: ${{ inputs.sha || github.sha }}
+      BUILD_DATE: ${{ needs.validate.outputs.build-date }}
       RELEASE_TAG: ${{ inputs.release-tag || format('nightly-19700101-{0}', github.run_id) }}
     steps:
       - uses: actions/checkout@v7
@@ -1288,6 +1293,8 @@ jobs:
 
           jq -n \
             --arg v "$VERSION" \
+            --arg commit "$BUILD_SHA" \
+            --arg built_at "$BUILD_DATE" \
             --arg r "$released" \
             --arg notes "https://github.com/shady2k/nocx/releases/tag/${RELEASE_TAG}" \
             --arg mac_url "$mac_url" \
@@ -1298,6 +1305,7 @@ jobs:
             --argjson linux_size "$linux_size" \
             --argjson helpers "$helpers_json" \
             '{version: $v, released: $r, notesUrl: $notes,
+              build: {commit: $commit, builtAt: $built_at},
               artifacts: [
                 {os: "darwin", arch: "universal", format: "zip",
                  url: $mac_url, sha256: $mac_sha, size: $mac_size},

@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"time"
 
+	"github.com/shady2k/nocx/internal/version"
 	"golang.org/x/mod/semver"
 )
 
@@ -16,10 +19,21 @@ import (
 // The raw JSON bytes are verified against a detached ed25519 signature
 // before this struct is populated (see [VerifyManifest]).
 type Manifest struct {
-	Version   string     `json:"version"`
-	Released  string     `json:"released"`
-	NotesURL  string     `json:"notesUrl"`
-	Artifacts []Artifact `json:"artifacts"`
+	Version   string                `json:"version"`
+	Build     version.BuildIdentity `json:"build"`
+	Helpers   []HelperArtifact      `json:"helpers"`
+	Released  string                `json:"released"`
+	NotesURL  string                `json:"notesUrl"`
+	Artifacts []Artifact            `json:"artifacts"`
+}
+
+// HelperArtifact describes a published remote helper in the signed manifest.
+type HelperArtifact struct {
+	OS     string `json:"os"`
+	Arch   string `json:"arch"`
+	URL    string `json:"url"`
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
 }
 
 // Artifact describes one downloadable update payload.
@@ -116,4 +130,28 @@ func MatchArtifact(artifacts []Artifact, id ArtifactID) (*Artifact, error) {
 	}
 
 	return nil, fmt.Errorf("no artifact in manifest matching os=%s arch=%s format=%s", id.OS, id.Arch, id.Format)
+}
+
+var fullCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+func (u *updater) newerNightly(channel Channel, remote *Manifest) bool {
+	if channel != ChannelNightly {
+		return false
+	}
+	currentVersion := semver.Canonical("v" + u.currentVersion)
+	remoteVersion := semver.Canonical("v" + remote.Version)
+	if currentVersion == "" || remoteVersion == "" || semver.Compare(currentVersion, remoteVersion) != 0 {
+		return false
+	}
+	current, candidate := u.currentBuild, remote.Build
+	if !fullCommit.MatchString(current.Commit) || !fullCommit.MatchString(candidate.Commit) || current.Commit == candidate.Commit {
+		return false
+	}
+	const layout = "2006-01-02T15:04:05Z"
+	currentTime, err := time.Parse(layout, current.BuiltAt)
+	if err != nil || currentTime.Format(layout) != current.BuiltAt {
+		return false
+	}
+	remoteTime, err := time.Parse(layout, candidate.BuiltAt)
+	return err == nil && remoteTime.Format(layout) == candidate.BuiltAt && remoteTime.After(currentTime)
 }

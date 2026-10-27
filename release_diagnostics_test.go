@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/shady2k/nocx/internal/update"
 
 	"github.com/shady2k/nocx/internal/coordinator"
 	"github.com/shady2k/nocx/internal/log/logtest"
@@ -103,5 +108,47 @@ func TestWindowUpdaterReportsFetchFailure(t *testing.T) {
 	fetch.BaseURL = server.URL
 	if _, err := updater.Check(context.Background()); err == nil || !strings.Contains(err.Error(), "404") {
 		t.Fatalf("HTTP failure accepted: %v", err)
+	}
+}
+
+// The production diagnostic wrapper must preserve the fetched channel, not
+// silently turn a same-version nightly check back into a stable comparison.
+func TestWindowUpdaterOffersLaterNightlyThroughProductionWrapper(t *testing.T) {
+	oldV, oldC, oldD := version.Version, version.Commit, version.Date
+	version.Version, version.Commit, version.Date = "0.8.0", strings.Repeat("a", 40), "2026-10-27T00:00:00Z"
+	defer func() { version.Version, version.Commit, version.Date = oldV, oldC, oldD }()
+	private := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	body := []byte(fmt.Sprintf(`{"version":"0.8.0","released":"2026-10-29T00:00:00Z","notesUrl":"https://example.test/notes","build":{"commit":"%s","builtAt":"2026-10-28T00:00:00Z"},"artifacts":[{"os":"linux","arch":"amd64","format":"AppImage","url":"https://example.test/nocx.AppImage","sha256":"%s","size":123},{"os":"linux","arch":"arm64","format":"AppImage","url":"https://example.test/nocx-arm64.AppImage","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","size":123},{"os":"darwin","arch":"universal","format":"zip","url":"https://example.test/nocx.zip","sha256":"%s","size":123}],"helpers":[]}`, strings.Repeat("b", 40), strings.Repeat("c", 64), strings.Repeat("c", 64)))
+	sig := []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(private, body)))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/manifest.json":
+			_, _ = w.Write(body)
+		case "/manifest.json.sig":
+			_, _ = w.Write(sig)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	ctx, logger := logtest.New(t)
+	cfg, fetch, _, err := productionWindowUpdaterConfig(logger, coordinator.NewLaunchProbe())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Keyring = []ed25519.PublicKey{ed25519.PublicKey(private[ed25519.SeedSize:])}
+	fetch.BaseURL, fetch.NightlyBaseURL = srv.URL, srv.URL
+	fetch.SetChannel(update.ChannelNightly)
+	updater, _, err := newWindowUpdater("/tmp/nocx", t.TempDir(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := updater.Check(ctx)
+	if err != nil || info == nil {
+		t.Fatalf("production wrapper lost nightly offer: %v, %v", info, err)
+	}
+	fetch.SetChannel(update.ChannelStable)
+	if info, err := updater.Check(ctx); err != nil || info != nil {
+		t.Fatalf("stable comparison changed: %v, %v", info, err)
 	}
 }

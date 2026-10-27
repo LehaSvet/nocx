@@ -29,8 +29,8 @@ type mockFetcher struct {
 	sig  []byte
 }
 
-func (f *mockFetcher) Fetch(_ context.Context) ([]byte, []byte, error) {
-	return f.body, f.sig, nil
+func (f *mockFetcher) Fetch(_ context.Context) (FetchedManifest, error) {
+	return FetchedManifest{Body: f.body, Signature: f.sig}, nil
 }
 
 // makeTestKeyring generates n ed25519 keypairs and returns the public

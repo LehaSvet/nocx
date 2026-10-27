@@ -22,19 +22,20 @@ func (u *updater) Check(ctx context.Context) (*UpdateInfo, error) {
 	}
 
 	// Fetch manifest + signature.
-	body, sig, err := u.fetcher.Fetch(ctx)
+	fetched, err := u.fetcher.Fetch(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("update check: fetch manifest: %w", err)
 	}
 
 	// Verify signature before parsing.
-	m, err := VerifyManifest(body, string(sig), u.keyring)
+	m, err := VerifyManifest(fetched.Body, string(fetched.Signature), u.keyring)
 	if err != nil {
 		return nil, fmt.Errorf("update check: manifest verification: %w", err)
 	}
 
-	// Semver comparison.
-	if !IsNewer(u.currentVersion, m.Version) {
+	// Stable stays semver-only. Nightly also admits a later distinct build
+	// within the same valid version; it never admits a downgrade.
+	if !IsNewer(u.currentVersion, m.Version) && !u.newerNightly(fetched.Channel, m) {
 		u.log.Debug("update check: already current",
 			"current", u.currentVersion, "remote", m.Version)
 		return nil, nil
@@ -53,7 +54,7 @@ func (u *updater) Check(ctx context.Context) (*UpdateInfo, error) {
 		URL:         art.URL,
 		SHA256:      art.SHA256,
 		Size:        art.Size,
-		manifestRaw: body,
+		manifestRaw: fetched.Body,
 	}, nil
 }
 
