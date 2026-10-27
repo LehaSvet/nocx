@@ -1,6 +1,6 @@
 # ADR-6bs6bk2p — Linux packages stay outside the v0.8 release pipeline
 
-- **Status:** Proposed (owner approval required)
+- **Status:** Accepted (owner decision, 2026-10-27, with the amendments recorded below)
 - **Date:** 2026-10-27
 - **Related:** [ADR-0007](0007-cross-platform-auto-update.md) (AppImage-only
   self-update), [ADR-0035](0035-appimage-carries-webkits-helper-processes.md)
@@ -14,11 +14,16 @@
 
 The v0.8 outcome is a daily changed-main build and a byte-identical promotion,
 not a catalogue of install formats. ADR-0097 removes a measured 40-plus minute
-CI queue from release iteration by building and publishing only the artifacts
-that support its update proof. Every additional artifact adds build inputs,
-platform dependencies, validation, signing or provenance, publication, retention,
-and a failure mode that can stop the nightly or promotion. It also lengthens the
-path whose purpose is to make building and publishing cease to be the bottleneck.
+CI queue from release iteration, and that queue is a property of re-running CI,
+not of how many formats are wrapped: turning an already-built binary into a deb
+or an rpm is minutes of work, and it can run in a job decoupled from promotion,
+so an extra format does not lengthen the promotion path. What an extra format
+does add is maintenance that outlives the build - repository hosting and key
+custody, package revisions that must increase monotonically with every nightly,
+per-package signatures and metadata signatures for rpm, install and upgrade
+proofs against host WebKitGTK, and a failure mode that can stop a publication
+this milestone exists to make routine. The cost is ownership, not queue time,
+and this record treats it as ownership.
 
 The AppImage remains the one Linux artifact in that outcome and the only one
 updated in-app. Its signed release manifest authenticates the exact bytes
@@ -45,12 +50,12 @@ as well as another build. It is not merely another package extension.
 Do not add Flatpak, deb, rpm, or AUR builds to the v0.8 nightly or promotion
 pipeline.** The format-by-format recommendation and intended later boundary are:
 
-| Format      | Recommendation                                                                                                                                                                                                                                           | Hosting and signing                                                                                                                                                                                                                                                                                                                                 | Update owner                                                                        | Pipeline                                                                                                                                                                 |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Flatpak** | Do not ship. Reconsider only if users require sandboxed distribution and nocx has a reviewed permission model, a maintained runtime, and a demonstrated store route.                                                                                     | No repository or signer is adopted. If reconsidered, target Flathub; Flathub's build/review and repository signing would be the distribution trust path, not the nocx AppImage updater.                                                                                                                                                             | Flatpak/Flathub update mechanism. No in-app update.                                 | Not v0.8; a separate later decision and implementation, only after the conditions above.                                                                                 |
-| **deb**     | Recommend a later release, not v0.8. A Debian package is a useful native path, but publishing a lone `.deb` does not provide unattended package-manager updates or a maintained security channel.                                                        | If admitted later, publish through a nocx-owned apt repository with repository metadata signed by a dedicated apt signing key; do not imply that the AppImage manifest signs apt metadata. Host and key custody must be approved before implementation.                                                                                             | `apt`/the configured system package manager. No in-app update.                      | Later, after an owner-approved repository, key custody/rotation, supported Debian/Ubuntu baseline, and package install/upgrade tests exist.                              |
-| **rpm**     | Recommend a later release, not v0.8, for the same reason as deb; adding a second repository ecosystem now multiplies maintenance and release failure paths without advancing the AppImage update outcome.                                                | If admitted later, publish through a nocx-owned RPM repository with signed repository metadata and a dedicated signing key, separate from the AppImage manifest key. Host and key custody must be approved first.                                                                                                                                   | `dnf`/the configured system package manager. No in-app update.                      | Later, after repository/key ownership, supported distribution baseline, and install/upgrade tests are agreed. Do not block v0.8 promotion on it.                         |
-| **AUR**     | Recommend a later, bounded first native-package experiment, ahead of expanding to deb and rpm. It directly serves the Arch use case already recorded in `nocx-j3prm`, while avoiding a project-operated binary repository. It is not a v0.8 deliverable. | A project-maintained PKGBUILD in the AUR points to a versioned GitHub Release source artifact and checks its pinned SHA-256. AUR Git commits are not a nocx publisher signature, and the PKGBUILD is not a signed binary package; the checksum protects the fetched release bytes only if the PKGBUILD itself is trusted. Do not claim AUR signing. | `makepkg`/`pacman` via AUR helper or the user's package workflow. No in-app update. | Later, after a maintainer and review/update cadence are assigned, and package build/install/upgrade checks prove host WebKitGTK use and exclusion of the AppImage patch. |
+| Format      | Recommendation                                                                                                                                                                                                                                           | Hosting and signing                                                                                                                                                                                                                                                                                                                                 | Update owner                                                                        | Pipeline                                                                                                                                                                                                                                                                               |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Flatpak** | **Deferred beyond v0.8** - not refused. It becomes live work when one of the revisit criteria below fires, and it needs a reviewed permission model, a maintained runtime and a store route before it can be built.                                      | No repository or signer is adopted. If reconsidered, target Flathub; Flathub's build/review and repository signing would be the distribution trust path, not the nocx AppImage updater.                                                                                                                                                             | Flatpak/Flathub update mechanism. No in-app update.                                 | Not v0.8; a separate later decision and implementation, only after the conditions above.                                                                                                                                                                                               |
+| **deb**     | Recommend a later release, not v0.8. A Debian package is a useful native path, but publishing a lone `.deb` does not provide unattended package-manager updates or a maintained security channel.                                                        | If admitted later, publish through a nocx-owned apt repository with repository metadata signed by a dedicated apt signing key; do not imply that the AppImage manifest signs apt metadata. Host and key custody must be approved before implementation.                                                                                             | `apt`/the configured system package manager. No in-app update.                      | Later, after an owner-approved repository, key custody/rotation, supported Debian/Ubuntu baseline, and package install/upgrade tests exist. **Every nightly's package revision must increase monotonically**, or a manager sees no update.                                             |
+| **rpm**     | Recommend a later release, not v0.8, for the same reason as deb; adding a second repository ecosystem now multiplies maintenance and release failure paths without advancing the AppImage update outcome.                                                | If admitted later, publish through a nocx-owned RPM repository with signed repository metadata and a dedicated signing key, separate from the AppImage manifest key. Host and key custody must be approved first.                                                                                                                                   | `dnf`/the configured system package manager. No in-app update.                      | Later, after repository/key ownership, supported distribution baseline, and install/upgrade tests are agreed. **The packages need their own signatures as well as signed repository metadata**, and monotonically increasing revisions per nightly. Do not block v0.8 promotion on it. |
+| **AUR**     | Recommend a later, bounded first native-package experiment, ahead of expanding to deb and rpm. It directly serves the Arch use case already recorded in `nocx-j3prm`, while avoiding a project-operated binary repository. It is not a v0.8 deliverable. | A project-maintained PKGBUILD in the AUR points to a versioned GitHub Release source artifact and checks its pinned SHA-256. AUR Git commits are not a nocx publisher signature, and the PKGBUILD is not a signed binary package; the checksum protects the fetched release bytes only if the PKGBUILD itself is trusted. Do not claim AUR signing. | `makepkg`/`pacman` via AUR helper or the user's package workflow. No in-app update. | **First of the later formats** (`-bin`, wrapping the existing release artefact): after a review/update cadence is assigned and build/install/upgrade checks prove host WebKitGTK use and exclusion of the AppImage patch.                                                              |
 
 The recommendations are intentionally not equivalent to admission. The ADR
 chooses no additional v0.8 artifact. Separate implementation work must be filed
@@ -75,6 +80,34 @@ package managers and stores own native-package updates; and no native build may
 run the AppImage helper-path patch or bundle WebKitGTK as though it were an
 AppImage.
 
+### What comparable terminals and desktop apps actually do
+
+Recorded because the question "is AppImage-only defensible?" is answered by the
+field rather than by preference, and the evidence was gathered for this decision
+(a consultation kept at `codex-linux-consult.md` beside the coordinator's run; its
+sources are linked here):
+
+- **AppImage plus native packages, both maintained**: Warp (deb/rpm with vendor
+  repositories and a signing key, plus AppImage and an Arch archive), WezTerm
+  (AppImage, deb/rpm, tarball and Flathub, with a signed apt repository, a nightly
+  COPR and distro builds), Cursor (AppImage plus GPG-protected apt/yum
+  repositories). Sources: <https://docs.warp.dev/support-and-community/troubleshooting-and-support/updating-warp>,
+  <https://wezterm.org/install/linux.html>, <https://cursor.com/docs/get-started/quickstart>.
+- **A signed repository _and_ a self-updating AppImage, by one vendor**: Signal,
+  which is the closest analogue to nocx's combination.
+  <https://signal.org/download/linux/>
+- **No upstream Linux binaries at all**: Ghostty, which leaves packaging,
+  signing and updates to distributions and community packagers.
+  <https://ghostty.org/docs/install/binary>
+- **The AppImage risks that survive bundling**: WebKitGTK still meets the host's
+  EGL/Mesa/NVIDIA and Wayland/XWayland, so a container or Xvfb gate cannot prove
+  physical-GPU compatibility (<https://v2.tauri.app/develop/debug/linux-graphics/>),
+  and an AppImage is not a sandbox: Ubuntu 24.04's AppArmor user-namespace
+  restriction is a real-desktop test, not a CI one
+  (<https://documentation.ubuntu.com/release-notes/24.04/>). Bundled-engine
+  security becomes the vendor's duty to track, advisory by advisory
+  (<https://webkitgtk.org/security.html>).
+
 ## Consequences
 
 - v0.8 has no new Linux publication destination, package signing secret, key
@@ -97,16 +130,31 @@ AppImage.
   recommendations, the admitted format's build and updater-recognition work is
   filed separately; no format is assumed admitted before that decision.
 
-## Revisit when
+## Revisit when - criteria that fire without anybody's permission
 
-- Users demonstrate a concrete need for native Linux installs and a maintainer
-  accepts the continuing work, rather than only the one-time package build.
-- The owner accepts who operates and signs apt/rpm repositories, how keys are
-  backed up and rotated, and which distributions are supported.
-- A Flatpak permission model and maintained runtime can be reviewed against the
-  app's desktop, filesystem, terminal, and update needs.
-- AUR maintenance has an assigned owner and a tested release-source/checksum
-  process.
-- The package build, install/upgrade proof, and publication can join the
-  nightly/promotion path without making a daily release depend on an unowned
-  repository or signing service.
+The owner amended these on 2026-10-27: a criterion of "when a maintainer accepts
+the work" never fires, because accepting ongoing work is exactly what nobody
+volunteers for. These are measurable instead.
+
+- **Installation failure on a real Linux desktop becomes a pattern**: the
+  AppImage fails to start, or to update, for a measurable share of users - failed
+  start-ups reported, or affected users counted - rather than a single report.
+- **The bundled WebKitGTK falls behind on security**: a security advisory applies
+  to the WebKitGTK nocx bundles and the fix is available only in a distribution
+  build (or in a newer runtime a package manager would deliver), so staying
+  AppImage-only would ship a known-vulnerable engine.
+- **The measured packaging and publication time stops being a rounding error**:
+  if producing and publishing an extra format costs more than the measured
+  minutes it takes today to wrap an already-built binary, the reason not to do it
+  has changed from ownership to time, and the record must say which.
+
+Each of these can fire without anyone volunteering: the first two are counts and
+advisories, the third is a measurement this record already asks for.
+
+## Later order, if they fire
+
+AUR `-bin` first (it wraps the existing artefact and needs no project-operated
+repository), then signed apt, then dnf, and Flathub last - Flathub's permission
+model and runtime maintenance are the largest piece of ownership on the list.
+Cloudsmith's OSS hosting is the preferred home for the apt and dnf repositories
+if that order is ever taken up.
