@@ -4,3 +4,4 @@ set -euo pipefail
 node --test scripts/publish-nightly.test.mjs scripts/product-change.test.mjs
 go test ./internal/version -count=1
 python3 -m unittest discover -s scripts -p 'verify-built-artifact_test.py'
+node --test .githooks/check-log-context.test.mjs

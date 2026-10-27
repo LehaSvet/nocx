@@ -50,6 +50,13 @@ const appName = "nocx"
 const launchTimeout = 45 * time.Second
 
 func main() {
+	if handled, err := releaseDiagnostic(context.Background(), os.Args[1:], os.Stdout); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	// Checked before any window exists so CI's release smoke check
 	// (distribution design §5) and a user's `nocx --version` print the linked
 	// build metadata and exit, never opening a terminal.
@@ -469,33 +476,19 @@ func (w *WailsApp) ServiceStartup(ctx context.Context, _ application.ServiceOpti
 	// decode costs the user their update check and nothing else: the app
 	// starts, and VerifyManifest then refuses every manifest, which is the
 	// direction to fail in.
-	keyring, err := update.ReleaseKeyring()
-	if err != nil {
-		w.logger.Error("release keyring unusable; updates cannot be verified on this build", "error", err)
-	}
 	execPath, err := os.Executable()
 	if err != nil {
 		w.logger.Warn("cannot determine executable path", "error", err)
 	}
-	// The pair probe (D4). This window's backend is another process, so
-	// the only honest answer to "which coordinator is serving me" is the
-	// one the discovery handshake gives — and that answer does not exist
-	// yet, because the updater has to Reconcile before the launcher runs
-	// (see coordinator.LaunchProbe). So it is wired empty here and
-	// attached below. Until it is attached it refuses to certify, which is
-	// the direction to fail in.
-	w.probe = coordinator.NewLaunchProbe()
-	fetch := update.NewGitHubManifestFetcher(nil)
-	w.updateFetch = fetch
-	w.updater = update.NewUpdater(update.UpdaterConfig{
-		Platform:       update.NewPlatform(),
-		Fetcher:        fetch,
-		Keyring:        keyring,
-		CurrentVersion: version.Version,
-		InstallPath:    upgradeInstallPath(execPath),
-		Coordinator:    w.probe,
-		Logger:         log.NewSlogAdapter(w.logger),
-	})
+	// The release diagnostic calls this same construction and exercises Check
+	// with its production HTTP client, endpoint and compiled trust root.
+	wiring, err := newWindowUpdater(execPath, log.NewSlogAdapter(w.logger))
+	if err != nil {
+		w.logger.Error("release keyring unusable; updates cannot be verified on this build", "error", err)
+	}
+	w.probe = wiring.probe
+	w.updateFetch = wiring.fetch
+	w.updater = wiring.updater
 	// Settle any transaction in flight from a previous launch.
 	if reconcileErr := w.updater.Reconcile(ctx); reconcileErr != nil {
 		w.logger.Warn("update reconcile at startup failed", "error", reconcileErr)

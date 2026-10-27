@@ -160,6 +160,7 @@ jobs:
         run: |
           node --test scripts/publish-nightly.test.mjs scripts/product-change.test.mjs
           python3 -m unittest discover -s scripts -p 'verify-built-artifact_test.py'
+          node --test .githooks/check-log-context.test.mjs
       - name: Promotion and cask fixtures by path
         run: |
           shopt -s nullglob
