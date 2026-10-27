@@ -116,10 +116,10 @@ type Descriptor interface {
 // Declaration is the JSON-RPC wire shape matching the frozen contract at
 // .internal/plans/settings-rpc-contract.md.
 type Declaration struct {
-	Key         string         `json:"key"`
-	Section     string         `json:"section"`
-	Label       string         `json:"label"`
-	Description string         `json:"description"`
+	Key         string `json:"key"`
+	Section     string `json:"section"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
 	// LabelKey and DescriptionKey are the translation keys the label and
 	// description resolve through (localisation design Q2, Option B):
 	// minted by labelKeyFor from the setting key, never declared by hand.
@@ -127,14 +127,14 @@ type Declaration struct {
 	// key with no catalogue entry renders (the epic's "never blank" rule).
 	LabelKey       string         `json:"labelKey,omitempty"`
 	DescriptionKey string         `json:"descriptionKey,omitempty"`
-	Control     ControlKind    `json:"control"`
-	DataClass   DataClass      `json:"dataClass"`
-	Default     any            `json:"default,omitempty"`
-	Options     []SelectOption `json:"options,omitempty"`
-	Min         *float64       `json:"min,omitempty"`
-	Max         *float64       `json:"max,omitempty"`
-	Unit        string         `json:"unit,omitempty"`
-	ZeroLabel   string         `json:"zeroLabel,omitempty"`
+	Control        ControlKind    `json:"control"`
+	DataClass      DataClass      `json:"dataClass"`
+	Default        any            `json:"default,omitempty"`
+	Options        []SelectOption `json:"options,omitempty"`
+	Min            *float64       `json:"min,omitempty"`
+	Max            *float64       `json:"max,omitempty"`
+	Unit           string         `json:"unit,omitempty"`
+	ZeroLabel      string         `json:"zeroLabel,omitempty"`
 	// Multiline is the text control's paragraph variant (nocx-avogl.4):
 	// present only on control "text", and the screen renders the kit's
 	// multiline TextField for it. Max then bounds the text in characters
@@ -397,15 +397,15 @@ func (b *Bool) Max() *float64           { return nil }
 
 func (b *Bool) toDeclaration() Declaration {
 	return Declaration{
-		Key:           b.key,
-		Section:       b.section,
-		Label:         b.label,
-		Description:   b.description,
-		LabelKey:      LabelKeyFor(b.key),
+		Key:            b.key,
+		Section:        b.section,
+		Label:          b.label,
+		Description:    b.description,
+		LabelKey:       LabelKeyFor(b.key),
 		DescriptionKey: DescriptionKeyFor(b.key),
-		Control:       ControlToggle,
-		DataClass:     b.dataClass,
-		Default:       b.default_,
+		Control:        ControlToggle,
+		DataClass:      b.dataClass,
+		Default:        b.default_,
 	}
 }
 
@@ -450,17 +450,17 @@ func (s *String) Multiline() bool { return s.multiline }
 
 func (s *String) toDeclaration() Declaration {
 	d := Declaration{
-		Key:           s.key,
-		Section:       s.section,
-		Label:         s.label,
-		Description:   s.description,
-		LabelKey:      LabelKeyFor(s.key),
+		Key:            s.key,
+		Section:        s.section,
+		Label:          s.label,
+		Description:    s.description,
+		LabelKey:       LabelKeyFor(s.key),
 		DescriptionKey: DescriptionKeyFor(s.key),
-		Control:       ControlText,
-		DataClass:     s.dataClass,
-		Default:       s.default_,
-		Multiline:     s.Multiline(),
-		Max:           s.Max(),
+		Control:        ControlText,
+		DataClass:      s.dataClass,
+		Default:        s.default_,
+		Multiline:      s.Multiline(),
+		Max:            s.Max(),
 	}
 	if s.maxLength > 0 {
 		// Filled here rather than at the declaration site: a text bound is
@@ -506,20 +506,20 @@ func (n *Number) DefaultValue() float64 { return n.default_ }
 
 func (n *Number) toDeclaration() Declaration {
 	return Declaration{
-		Key:           n.key,
-		Section:       n.section,
-		Label:         n.label,
-		Description:   n.description,
-		LabelKey:      LabelKeyFor(n.key),
+		Key:            n.key,
+		Section:        n.section,
+		Label:          n.label,
+		Description:    n.description,
+		LabelKey:       LabelKeyFor(n.key),
 		DescriptionKey: DescriptionKeyFor(n.key),
-		Control:       ControlNumber,
-		DataClass:     n.dataClass,
-		Default:       n.default_,
-		Min:           n.min,
-		Max:           n.max,
-		Unit:          n.unit,
-		ZeroLabel:     n.zeroLabel,
-		Slider:        n.slider,
+		Control:        ControlNumber,
+		DataClass:      n.dataClass,
+		Default:        n.default_,
+		Min:            n.min,
+		Max:            n.max,
+		Unit:           n.unit,
+		ZeroLabel:      n.zeroLabel,
+		Slider:         n.slider,
 	}
 }
 
@@ -555,16 +555,16 @@ func (s *Select) toDeclaration() Declaration {
 		opts[i] = o
 	}
 	return Declaration{
-		Key:           s.key,
-		Section:       s.section,
-		Label:         s.label,
-		Description:   s.description,
-		LabelKey:      LabelKeyFor(s.key),
+		Key:            s.key,
+		Section:        s.section,
+		Label:          s.label,
+		Description:    s.description,
+		LabelKey:       LabelKeyFor(s.key),
 		DescriptionKey: DescriptionKeyFor(s.key),
-		Control:       ControlSelect,
-		DataClass:     s.dataClass,
-		Default:       s.default_,
-		Options:       opts,
+		Control:        ControlSelect,
+		DataClass:      s.dataClass,
+		Default:        s.default_,
+		Options:        opts,
 	}
 }
 
@@ -591,14 +591,14 @@ func (s *Secret) Max() *float64           { return nil }
 
 func (s *Secret) toDeclaration() Declaration {
 	return Declaration{
-		Key:           s.key,
-		Section:       s.section,
-		Label:         s.label,
-		Description:   s.description,
-		LabelKey:      LabelKeyFor(s.key),
+		Key:            s.key,
+		Section:        s.section,
+		Label:          s.label,
+		Description:    s.description,
+		LabelKey:       LabelKeyFor(s.key),
 		DescriptionKey: DescriptionKeyFor(s.key),
-		Control:       ControlSecret,
-		DataClass:     s.dataClass,
+		Control:        ControlSecret,
+		DataClass:      s.dataClass,
 	}
 }
 
@@ -1541,14 +1541,14 @@ func descriptorToDeclaration(d Descriptor) Declaration {
 		return t.toDeclaration()
 	default:
 		return Declaration{
-			Key:           d.Key(),
-			Section:       d.Section(),
-			Label:         d.Label(),
-			Description:   d.Description(),
-			LabelKey:      LabelKeyFor(d.Key()),
+			Key:            d.Key(),
+			Section:        d.Section(),
+			Label:          d.Label(),
+			Description:    d.Description(),
+			LabelKey:       LabelKeyFor(d.Key()),
 			DescriptionKey: DescriptionKeyFor(d.Key()),
-			Control:       d.Control(),
-			DataClass:     d.DataClass(),
+			Control:        d.Control(),
+			DataClass:      d.DataClass(),
 		}
 	}
 }

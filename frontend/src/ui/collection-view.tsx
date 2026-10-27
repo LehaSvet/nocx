@@ -7,6 +7,8 @@ export interface CollectionViewProps {
   onSearch: (value: string) => void
   searchPlaceholder: string
   searchLabel: string
+  /** Toolbar aria label, overridable for the person's locale. */
+  actionsAria?: string
   actions: JSX.Element
   hasItems: boolean
   empty: JSX.Element
@@ -17,7 +19,7 @@ export interface CollectionViewProps {
 export function CollectionView(props: CollectionViewProps) {
   return (
     <div class="ui-collection-view">
-      <Toolbar ariaLabel="Collection actions">
+      <Toolbar ariaLabel={props.actionsAria ?? 'Collection actions'}>
         <div class="ui-collection-view__search">
           <SearchField
             value={props.searchValue}

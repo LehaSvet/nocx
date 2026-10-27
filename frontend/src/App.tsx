@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import { ToastHost } from './ui/toast'
+import { t } from './i18n/locale-model'
 
 /**
  * App — single Solid root that owns the shell layout and provides empty hosts
@@ -73,7 +74,11 @@ const App: Component<AppProps> = (props) => {
           the pane that raised it — and because two hosts would show every toast
           twice. It is fixed and empty until something is raised, so it costs no
           layout. */}
-      <ToastHost openUrl={props.openUrl} onOpenUrlError={props.onOpenUrlError} />
+      <ToastHost
+        openUrl={props.openUrl}
+        onOpenUrlError={props.onOpenUrlError}
+        dismissAria={t('ui.toast.dismiss', 'Dismiss notification')}
+      />
     </>
   )
 }

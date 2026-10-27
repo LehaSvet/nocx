@@ -89,6 +89,17 @@ export interface FolderPickerProps {
    *  knows nothing about JSON-RPC, bindings or which machine it is reading. */
   list: (path: string) => Promise<{ path: string; entries: FolderEntry[] }>
   onResolve: (chosen: string | null) => void
+  /** Chrome strings, overridable by the surface so the picker speaks the
+   *  person's locale (kit components never import i18n themselves). English
+   *  defaults are the visible fallback. */
+  title?: string
+  cancelLabel?: string
+  chooseLabel?: string
+  folderLabel?: string
+  goLabel?: string
+  upLabel?: string
+  contentsAria?: string
+  emptyTitle?: string
 }
 
 /* ── The one place this component reasons about the shape of a path ───────
@@ -192,16 +203,16 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
     <Dialog
       open
       size="lg"
-      title="Choose a folder"
+      title={props.title ?? 'Choose a folder'}
       onClose={cancel}
       onSubmit={choose}
       footer={
         <>
           <Button variant="default" onClick={cancel}>
-            Cancel
+            {props.cancelLabel ?? 'Cancel'}
           </Button>
           <Button variant="primary" disabled={chosen() === ''} onClick={choose}>
-            Choose
+            {props.chooseLabel ?? 'Choose'}
           </Button>
         </>
       }
@@ -209,7 +220,7 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
       <div class="ui-folder-picker">
         <div class="ui-folder-picker__path">
           <TextField
-            label="Folder"
+            label={props.folderLabel ?? 'Folder'}
             value={answer()}
             onInput={setAnswer}
             autoFocus
@@ -220,12 +231,12 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
             disabled={chosen() === ''}
             onClick={() => void navigate(chosen())}
           >
-            Go
+            {props.goLabel ?? 'Go'}
           </Button>
           <Button
             variant="default"
-            ariaLabel="Up one level"
-            title="Up one level"
+            ariaLabel={props.upLabel ?? 'Up one level'}
+            title={props.upLabel ?? 'Up one level'}
             disabled={parent() === null}
             onClick={() => {
               const up = parent()
@@ -245,14 +256,14 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
         <div
           class="ui-folder-picker__list"
           role="listbox"
-          aria-label="Folder contents"
+          aria-label={props.contentsAria ?? 'Folder contents'}
           aria-busy={busy() ? 'true' : undefined}
         >
           <Show
             when={entries().length > 0}
             fallback={
               <Show when={!busy() && failure() === null}>
-                <EmptyState title="This folder is empty" />
+                <EmptyState title={props.emptyTitle ?? 'This folder is empty'} />
               </Show>
             }
           >

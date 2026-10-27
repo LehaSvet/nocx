@@ -183,4 +183,69 @@ export const ru: Readonly<Record<string, CatalogueEntry>> = {
     other: '{count} команды',
   },
   // 'i18n.sample.untranslated' is deliberately absent — see the header.
+
+  // ── Kit chrome, passed as props from the surfaces (kit never imports i18n)
+  'ui.collision.title': 'Файл уже существует',
+  'ui.collision.overwrite': 'Перезаписать',
+  'ui.collision.keepBoth': 'Оставить оба',
+  'ui.collision.skip': 'Пропустить',
+  'ui.collision.existsIn': 'уже существует в',
+  'ui.collision.applyOne': 'Применить к 1 оставшемуся файлу',
+  'ui.collision.applyMany': {
+    one: 'Применить к {count} оставшемуся файлу',
+    few: 'Применить к {count} оставшимся файлам',
+    many: 'Применить к {count} оставшимся файлам',
+    other: 'Применить к {count} оставшимся файлам',
+  },
+  'ui.toast.dismiss': 'Закрыть уведомление',
+  'ui.connection.status': 'Состояние подключения',
+  'ui.fileReadout.factsAria': 'Что это за файл',
+  'ui.fileReadout.legendTitle': 'Подсвеченные ниже строки совпали со статическим сканом',
+  'ui.fileReadout.legendTail':
+    'Совпадение подсвечено там, где оно находится, в самих байтах — это улика, которую читают там, а не отказ, и ничего не изменилось из-за того, что шаблон совпал. Строки без совпадений — не строки, за которые кто-то поручился.',
+
+  // ── Terminal surface (frontend/src/terminal-content.ts) ─────────────────
+  'terminal.warning.connectionLost': 'Соединение потеряно',
+  'terminal.warning.hostNotAnswering': 'Хост не отвечает',
+  'terminal.pasteMultiline.title': 'Вставить многострочный текст?',
+  'terminal.pasteMultiline.paste': 'Вставить',
+  'terminal.pasteMultiline.cancel': 'Отмена',
+  'terminal.inputDropped':
+    'Это соединение перестало принимать ввод — нажатия клавиш отбрасываются.',
+  'terminal.nativeInputActive':
+    'Активен нативный ввод — включите редактор команд, чтобы спросить ассистента.',
+  'terminal.noAssistant': 'В этой панели нет ассистента.',
+  'terminal.assistant.closeAria': 'Закрыть ассистента и вернуться к программе',
+  'terminal.assistant.closeTitle': 'Закрыть ассистента (Esc)',
+  'terminal.assistant.resizeAria': 'Изменить размер ассистента поверх замороженного экрана',
+  'terminal.startFailed': 'Не удалось запустить терминал:',
+  'terminal.stop.armed':
+    'Команда ещё не запустилась, поэтому остановка взведена: она сработает в момент запуска команды.',
+  'terminal.stop.remote':
+    'Эта команда выполняется на удалённом хосте, и nocx не может подать ей сигнал отсюда.',
+  'terminal.stop.unreconciled':
+    'Команда всё ещё числится запущенной, и nocx не смог её остановить — программа делит оболочку, из которой была запущена, так что принудительная остановка унесла бы и оболочку. Воспользуйтесь собственным способом выхода из программы.',
+  'terminal.stop.nothingRunning':
+    'В этой панели больше ничего не выполняется, так что останавливать было нечего.',
+  'terminal.stop.unknown': 'nocx не смог определить, остановилась ли команда.',
+  'terminal.stop.unreached': 'Команда недоступна, поэтому она может всё ещё выполняться.',
+  'terminal.secrets.offerGone': 'Предложение больше не действует — команда остаётся сохранённой в маскированном виде.',
+  'terminal.secrets.saveFailed':
+    'Не удалось сохранить секрет — команда остаётся сохранённой в маскированном виде.',
+  'terminal.secrets.unlockVault': 'Разблокируйте хранилище, чтобы сохранить этот ключ.',
+  'terminal.secrets.dismissFailed': 'Не удалось отклонить предложение — попробуйте ещё раз.',
+  'terminal.secrets.dismissOfferSession':
+    'Отклонено — этот ключ больше не будет предлагаться в этой сессии.',
+  'terminal.secrets.vaultLocked':
+    'Хранилище заблокировано. Разблокируйте его и выполните команду снова.',
+  'terminal.secrets.resolveFailed': 'Не удалось разрешить команду. Она не была отправлена.',
+  'terminal.secrets.unknown': 'Неизвестный секрет (секреты)',
+  'terminal.secrets.notSent': 'Команда не была отправлена.',
+  'terminal.secrets.stored': 'Сохранено:',
+  'terminal.secrets.storedInVault': 'в хранилище.',
+  'terminal.connection.dismissed': 'Отклонено —',
+  'terminal.connection.dismissedTail': 'больше не будет предлагаться как подключение.',
+  'terminal.connection.saved': 'Сохранено:',
+  'terminal.connection.savedAs': 'как подключение.',
+  'terminal.connection.saveFailed': 'Не удалось сохранить подключение:',
 }

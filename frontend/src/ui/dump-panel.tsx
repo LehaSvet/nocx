@@ -31,6 +31,16 @@ export interface DumpPanelProps {
   dump: DumpData
   copy: (text: string) => Promise<void>
   onClose: () => void
+  /** Chrome strings, overridable for the person's locale (kit never imports
+   *  i18n). English defaults are the visible fallback. */
+  title?: string
+  intro?: string
+  fullPageAria?: string
+  fullPageLabel?: string
+  searchAria?: string
+  searchPlaceholder?: string
+  requestLabel?: string
+  responseLabel?: string
 }
 
 type HighlightMode = 'json' | 'sse' | 'plain'
@@ -240,35 +250,39 @@ export function DumpPanel(props: DumpPanelProps) {
   const [fullPage, setFullPage] = createSignal(false)
   const [searchQuery, setSearchQuery] = createSignal('')
   return (
-    <Dialog open title="Model dump" size="full" onClose={props.onClose}>
+    <Dialog open title={props.title ?? 'Model dump'} size="full" onClose={props.onClose}>
       <div class="ui-dump-panel" data-reader={fullPage() ? 'full-page' : undefined}>
         <Stack>
           <div class="ui-dump-panel__toolbar">
             <p class="ui-dump-panel__intro">
-              Recorded provider bytes. Requests are formatted JSON; responses show the assembled
-              answer above raw chunks.
+              {props.intro ??
+                'Recorded provider bytes. Requests are formatted JSON; responses show the assembled answer above raw chunks.'}
             </p>
-            <Button variant="ghost" ariaLabel="Open full page" onClick={() => setFullPage(true)}>
-              Open full page
+            <Button
+              variant="ghost"
+              ariaLabel={props.fullPageAria ?? 'Open full page'}
+              onClick={() => setFullPage(true)}
+            >
+              {props.fullPageLabel ?? 'Open full page'}
             </Button>
           </div>
           <Show when={fullPage()}>
             <SearchField
               value={searchQuery()}
               onInput={setSearchQuery}
-              ariaLabel="Search dump"
-              placeholder="Search dump"
+              ariaLabel={props.searchAria ?? 'Search dump'}
+              placeholder={props.searchPlaceholder ?? 'Search dump'}
             />
           </Show>
           <DriveList
-            label="Request"
+            label={props.requestLabel ?? 'Request'}
             drives={props.dump.request}
             copy={props.copy}
             response={false}
             searchQuery={searchQuery}
           />
           <DriveList
-            label="Response"
+            label={props.responseLabel ?? 'Response'}
             drives={props.dump.response}
             copy={props.copy}
             response

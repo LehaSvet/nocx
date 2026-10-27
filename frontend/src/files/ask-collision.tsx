@@ -19,6 +19,7 @@ import {
   type CollisionRequest,
   type CollisionResult,
 } from '../ui/collision-dialog'
+import { t, tPlural } from '../i18n/locale-model'
 
 export function askCollision(request: CollisionRequest): Promise<CollisionResult> {
   return new Promise<CollisionResult>((resolve) => {
@@ -38,6 +39,29 @@ export function askCollision(request: CollisionRequest): Promise<CollisionResult
       resolve(result)
     }
 
-    dispose = render(() => <CollisionDialog request={request} onResolve={finish} />, host)
+    dispose = render(
+      () => (
+        <CollisionDialog
+          request={request}
+          title={t('ui.collision.title', 'File already exists')}
+          overwriteLabel={t('ui.collision.overwrite', 'Overwrite')}
+          keepBothLabel={t('ui.collision.keepBoth', 'Keep both')}
+          skipLabel={t('ui.collision.skip', 'Skip')}
+          bodyPrefix={(name, destination) => (
+            <>
+              <code>{name}</code> {t('ui.collision.existsIn', 'already exists in')}{' '}
+              <code>{destination}</code>.
+            </>
+          )}
+          applyAllLabel={(others) =>
+            others === 1
+              ? t('ui.collision.applyOne', 'Apply to the 1 remaining file')
+              : tPlural('ui.collision.applyMany', others, 'Apply to the {count} remaining files')
+          }
+          onResolve={finish}
+        />
+      ),
+      host,
+    )
   })
 }

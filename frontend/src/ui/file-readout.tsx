@@ -110,6 +110,11 @@ export interface FileReadoutProps {
    */
   ariaLabel: string
   outcome: FileReadoutOutcome
+  /** Legend strings, overridable for the person's locale (kit never imports
+   *  i18n). English defaults are the visible fallback. */
+  factsAria?: string
+  legendTitle?: string
+  legendDescription?: (words: string) => string
   /**
    * The caller owns a height and wants the bytes to fill it (nocx-xj1l6).
    *
@@ -235,7 +240,7 @@ export function FileReadout(props: FileReadoutProps) {
       data-state={props.outcome.kind}
       data-fill={props.fill ? 'true' : undefined}
     >
-      <FactList facts={props.facts} ariaLabel="What this file is" />
+      <FactList facts={props.facts} ariaLabel={props.factsAria ?? 'What this file is'} />
       <Show when={refusal()}>
         {(said) => (
           <StatusCard tone={said().tone} title={said().title} description={said().description} />
@@ -245,8 +250,13 @@ export function FileReadout(props: FileReadoutProps) {
         {(words) => (
           <StatusCard
             tone="warning"
-            title="Highlighted lines below matched a static scan"
-            description={`${words()}. The match is highlighted where it sits, in the bytes themselves \u2014 it is evidence to read there, not a refusal, and nothing changed because a pattern matched. Lines nothing matched are not lines anything has vouched for.`}
+            title={
+              props.legendTitle ?? 'Highlighted lines below matched a static scan'
+            }
+            description={
+              props.legendDescription?.(words()) ??
+              `${words()}. The match is highlighted where it sits, in the bytes themselves — it is evidence to read there, not a refusal, and nothing changed because a pattern matched. Lines nothing matched are not lines anything has vouched for.`
+            }
           />
         )}
       </Show>

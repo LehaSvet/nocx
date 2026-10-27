@@ -71,6 +71,7 @@ import type { ApprovalFacts } from './client-host'
 import { mountRunCommandHandler } from './run-command'
 import { bootstrapTheme, reconcileThemeFromGo } from './renderers/theme-bootstrap'
 import { bootstrapLocale, reconcileLocaleFromGo } from './i18n/bootstrap'
+import { t } from './i18n/locale-model'
 import { bootstrapPlatform, currentPlatform } from './platform'
 import {
   QuickConnectController,
@@ -272,6 +273,7 @@ function main(): void {
     state: () => connectionState(),
     onRetry: () => dispatcher.retryNow(),
     onHidden: () => focusActive(),
+    ariaLabel: t('ui.connection.status', 'Connection status'),
   })
 
   const profileClient = new ProfileClient(dispatcher)

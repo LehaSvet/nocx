@@ -49,6 +49,10 @@ export interface DialogProps {
   onClose: () => void
   /** Dialog title (optional). Rendered in `.nocx-dialog__title`. */
   title?: string
+  /** Close-button strings, overridable for the person's locale (kit never
+   *  imports i18n). English defaults are the visible fallback. */
+  closeAria?: string
+  closeTitle?: string
   /** Dialog body content. */
   children: JSX.Element
   /** Optional footer / action area. Rendered after children. */
@@ -320,8 +324,8 @@ export const Dialog: Component<DialogProps> = (props) => {
           <Show when={props.dismissible !== false}>
             <span class="nocx-dialog__close">
               <IconButton
-                ariaLabel="Close dialog"
-                title="Close"
+                ariaLabel={props.closeAria ?? 'Close dialog'}
+                title={props.closeTitle ?? 'Close'}
                 size="sm"
                 onClick={() => props.onClose()}
               >

@@ -72,6 +72,7 @@ import {
 import { mountIntegrationNotice } from './integration/notice'
 import { mountIntegrationWaiting } from './integration/waiting'
 import { mountToolSurfaceNotice } from './tool-surface-notice'
+import { t } from './i18n/locale-model'
 import {
   mountPublishNotice,
   subscribePublishFailed,
@@ -1917,11 +1918,11 @@ export class TerminalContent extends BasePaneContent {
    *  warned about latency would cry wolf. */
   private _publishTabMark(): void {
     if (this._sessionLost) {
-      this.hooks.onWarningChange?.(true, 'Connection lost')
+      this.hooks.onWarningChange?.(true, t('terminal.warning.connectionLost', 'Connection lost'))
       return
     }
     if (this._connection === 'unreachable') {
-      this.hooks.onWarningChange?.(true, 'Host not answering')
+      this.hooks.onWarningChange?.(true, t('terminal.warning.hostNotAnswering', 'Host not answering'))
       return
     }
     this.hooks.onWarningChange?.(this._degraded, this._degradedLabel)
@@ -4305,7 +4306,7 @@ export class TerminalContent extends BasePaneContent {
             return
           }
           if (text.includes('\n') && this._bufferType === 'normal') {
-            const confirmed = await showConfirm('Paste multi-line text?', 'Paste', 'Cancel')
+            const confirmed = await showConfirm(t('terminal.pasteMultiline.title', 'Paste multi-line text?'), t('terminal.pasteMultiline.paste', 'Paste'), t('terminal.pasteMultiline.cancel', 'Cancel'))
             if (!confirmed) return
           }
           this.onSessionIntent({ kind: 'paste', payload: text })
@@ -4560,7 +4561,7 @@ export class TerminalContent extends BasePaneContent {
       }
       const notice = document.createElement('pre')
       notice.className = 'pane-error'
-      notice.textContent = `Terminal failed to start:\n\n${err instanceof Error ? err.message : String(err)}`
+      notice.textContent = `${t('terminal.startFailed', 'Terminal failed to start:')}\n\n${err instanceof Error ? err.message : String(err)}`
       // PREPEND, never replace (nocx-mb3x2). `replaceChildren` took out the
       // scrollback the restored blocks had just been drawn into, so a pane
       // whose session cannot start came back with a reason and no past — the
@@ -5360,7 +5361,7 @@ export class TerminalContent extends BasePaneContent {
       log.warn('nocx: session input stalled', { sid: session.sessionId })
       showToast({
         level: 'danger',
-        message: 'This connection has stopped accepting input — keystrokes are being dropped.',
+        message: t('terminal.inputDropped', 'This connection has stopped accepting input — keystrokes are being dropped.'),
       })
     })
     session.onLiveness((liveness) => {
@@ -7767,7 +7768,7 @@ export class TerminalContent extends BasePaneContent {
       return {
         kind: 'speak',
         reason: 'native-mode',
-        message: 'Native input is active — enable command editor to ask the assistant.',
+        message: t('terminal.nativeInputActive', 'Native input is active — enable command editor to ask the assistant.'),
       }
     }
     const targets = this.inputTargets
@@ -7776,7 +7777,7 @@ export class TerminalContent extends BasePaneContent {
       return {
         kind: 'speak',
         reason: 'missing-assistant-target',
-        message: 'This pane has no assistant.',
+        message: t('terminal.noAssistant', 'This pane has no assistant.'),
       }
     }
     const frameHost = this.scrollback?.terminalLiveContainer
@@ -7982,8 +7983,8 @@ export class TerminalContent extends BasePaneContent {
         () =>
           IconButton({
             size: 'xs',
-            ariaLabel: 'Close the assistant and return to the program',
-            title: 'Close the assistant (Esc)',
+            ariaLabel: t('terminal.assistant.closeAria', 'Close the assistant and return to the program'),
+            title: t('terminal.assistant.closeTitle', 'Close the assistant (Esc)'),
             onClick: () => {
               this.stopCurrentSummonedAnswerAndDismiss()
             },
@@ -8093,7 +8094,7 @@ export class TerminalContent extends BasePaneContent {
         ResizeHandle({
           orientation: 'horizontal',
           pane: 'after',
-          ariaLabel: 'Resize the assistant against the frozen screen',
+          ariaLabel: t('terminal.assistant.resizeAria', 'Resize the assistant against the frozen screen'),
           get value() {
             return height()
           },
@@ -8599,12 +8600,12 @@ export class TerminalContent extends BasePaneContent {
             }
             level = 'info'
             message =
-              'The command had not started yet, so the stop is armed: it will land the moment the command starts.'
+              t('terminal.stop.armed', 'The command had not started yet, so the stop is armed: it will land the moment the command starts.')
             break
           case 'unsupported':
             revertStopRequested()
             message =
-              'This command is running on the remote host, which nocx cannot signal from here.'
+              t('terminal.stop.remote', 'This command is running on the remote host, which nocx cannot signal from here.')
             break
           case 'unreconciled':
             // Deliberately does NOT suggest Ctrl+C: over a group nocx may
@@ -8613,11 +8614,11 @@ export class TerminalContent extends BasePaneContent {
             // app not knowing what it did.
             revertStopRequested()
             message =
-              'The command is still recorded as running and nocx could not stop it — the program shares the shell it was started from, so stopping it by force would take the shell too. Use the program’s own way out.'
+              t('terminal.stop.unreconciled', 'The command is still recorded as running and nocx could not stop it — the program shares the shell it was started from, so stopping it by force would take the shell too. Use the program’s own way out.')
             break
           case 'nothing-running':
             revertStopRequested()
-            message = 'Nothing is running in this pane any more, so there was nothing to stop.'
+            message = t('terminal.stop.nothingRunning', 'Nothing is running in this pane any more, so there was nothing to stop.')
             break
           default: {
             const unreachable: never = result.outcome
@@ -8625,7 +8626,7 @@ export class TerminalContent extends BasePaneContent {
             log.warn('nocx: session.signal returned an outcome this build does not know', {
               outcome: String(unreachable),
             })
-            message = 'nocx could not tell whether the command stopped.'
+            message = t('terminal.stop.unknown', 'nocx could not tell whether the command stopped.')
           }
         }
         showToast({ level, message })
@@ -8637,7 +8638,7 @@ export class TerminalContent extends BasePaneContent {
         })
         showToast({
           level: 'danger',
-          message: 'The command could not be reached, so it may still be running.',
+          message: t('terminal.stop.unreached', 'The command could not be reached, so it may still be running.'),
         })
       },
     )
@@ -10291,7 +10292,10 @@ export class TerminalContent extends BasePaneContent {
           )
           continue
         }
-        showToast({ level: 'success', message: `Stored "${res.name}" in the vault.` })
+        showToast({
+          level: 'success',
+          message: `${t('terminal.secrets.stored', 'Stored')} "${res.name}" ${t('terminal.secrets.storedInVault', 'in the vault.')}`,
+        })
         if (receipt.removeRow(row.captureId)) this.retireReceipt(blockEl)
       } catch (err) {
         // A capture the backend no longer holds cannot be retried, so the
@@ -10300,14 +10304,14 @@ export class TerminalContent extends BasePaneContent {
         if (isCaptureGone(err)) {
           showToast({
             level: 'warning',
-            message: 'This offer is no longer held — the command stays stored masked.',
+            message: t('terminal.secrets.offerGone', 'This offer is no longer held — the command stays stored masked.'),
           })
           if (receipt.removeRow(row.captureId)) this.retireReceipt(blockEl)
           continue
         }
         showToast({
           level: 'danger',
-          message: 'Could not save the secret — the command stays stored masked.',
+          message: t('terminal.secrets.saveFailed', 'Could not save the secret — the command stays stored masked.'),
         })
         receipt.markFailed(row.captureId, 'could not save — try again')
       }
@@ -10330,7 +10334,7 @@ export class TerminalContent extends BasePaneContent {
     }
     if (status.state === 'unsealed') return true
     if (status.state === 'sealed') {
-      showToast({ level: 'warning', message: 'Unlock the vault to save this key.' })
+      showToast({ level: 'warning', message: t('terminal.secrets.unlockVault', 'Unlock the vault to save this key.') })
       return false
     }
     // Setting up needs a passphrase, and a passphrase needs a dialog the
@@ -10362,7 +10366,10 @@ export class TerminalContent extends BasePaneContent {
       // once rather than letting it read as the feature having broken.
       showToast({
         level: 'info',
-        message: 'Dismissed — this key will not be offered again in this session.',
+        message: t(
+          'terminal.secrets.dismissOfferSession',
+          'Dismissed — this key will not be offered again in this session.',
+        ),
       })
     } catch (err) {
       if (isCaptureGone(err)) {
@@ -10372,7 +10379,7 @@ export class TerminalContent extends BasePaneContent {
       }
       showToast({
         level: 'danger',
-        message: 'Could not dismiss the offer — try again.',
+        message: t('terminal.secrets.dismissFailed', 'Could not dismiss the offer — try again.'),
       })
     }
   }
@@ -10410,20 +10417,20 @@ export class TerminalContent extends BasePaneContent {
       const names = (failure.names ?? []).join(', ')
       showToast({
         level: 'danger',
-        message: `Unknown secret${(failure.names ?? []).length === 1 ? '' : 's'}: ${names}. The command was not sent.`,
+        message: `${t('terminal.secrets.unknown', 'Unknown secret(s)')}: ${names}. ${t('terminal.secrets.notSent', 'The command was not sent.')}`,
       })
       return
     }
     if (failure.reason === 'sealed') {
       showToast({
         level: 'danger',
-        message: 'The vault is locked. Unlock it and run the command again.',
+        message: t('terminal.secrets.vaultLocked', 'The vault is locked. Unlock it and run the command again.'),
       })
       return
     }
     showToast({
       level: 'danger',
-      message: failure.message ?? 'Could not resolve the command. It was not sent.',
+      message: failure.message ?? t('terminal.secrets.resolveFailed', 'Could not resolve the command. It was not sent.'),
     })
   }
 
@@ -10541,7 +10548,7 @@ export class TerminalContent extends BasePaneContent {
     if (this.receiptBlockEl === blockEl) this.receiptBlockEl = null
     showToast({
       level: 'info',
-      message: `Dismissed — ${dest} will not be offered again as a connection.`,
+      message: `${t('terminal.connection.dismissed', 'Dismissed —')} ${dest} ${t('terminal.connection.dismissedTail', 'will not be offered again as a connection.')}`,
     })
   }
 
@@ -10569,12 +10576,12 @@ export class TerminalContent extends BasePaneContent {
       if (this.receiptBlockEl === blockEl) this.receiptBlockEl = null
       showToast({
         level: 'success',
-        message: `Saved "${profile.name}" as a connection.`,
+        message: `${t('terminal.connection.saved', 'Saved')} "${profile.name}" ${t('terminal.connection.savedAs', 'as a connection.')}`,
       })
     } catch (err) {
       showToast({
         level: 'danger',
-        message: `Could not save connection: ${err instanceof Error ? err.message : String(err)}`,
+        message: `${t('terminal.connection.saveFailed', 'Could not save connection:')} ${err instanceof Error ? err.message : String(err)}`,
       })
       receipt.markFailed(`conn-offer:${dest}`, 'could not save — try again')
     }

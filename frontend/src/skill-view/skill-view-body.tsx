@@ -91,6 +91,7 @@ import {
   type CheckState,
 } from './skill-view-check'
 import { SkillViewIdentity, type SkillViewIdentityProps } from './skill-view-header'
+import { t } from '../i18n/locale-model'
 
 export interface SkillViewBodyProps extends Omit<SkillViewIdentityProps, 'skill'> {
   /** The RESOLVED skill — its identity is rendered at the top of the left
@@ -814,7 +815,13 @@ export function SkillViewBody(props: SkillViewBodyProps): JSX.Element {
                   <Show
                     when={documentText(said())}
                     fallback={
-                      <FileReadout facts={[]} fill ariaLabel={readoutLabel()} outcome={said()} />
+                      <FileReadout
+                        facts={[]}
+                        fill
+                        ariaLabel={readoutLabel()}
+                        factsAria={t('ui.fileReadout.factsAria', 'What this file is')}
+                        outcome={said()}
+                      />
                     }
                   >
                     {(doc) => (

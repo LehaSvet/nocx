@@ -181,6 +181,7 @@ import {
 } from './ui'
 import { EFFECT_LABEL } from './effect-labels'
 import { scanPatternWords } from './scan-pattern-words'
+import { t } from './i18n/locale-model'
 import type { AgentApprovalRequested } from './generated/agent.approvalRequested'
 import type { AgentApprove } from './generated/agent.approve'
 
@@ -1256,6 +1257,14 @@ export function AgentApprovalPrompt(props: AgentApprovalPromptProps) {
                         // in this window.
                         facts={[{ name: 'path', value: file.path }]}
                         ariaLabel={`${file.path}, which installing “${skill.name}” would write`}
+                        factsAria={t('ui.fileReadout.factsAria', 'What this file is')}
+                        legendTitle={t(
+                          'ui.fileReadout.legendTitle',
+                          'Highlighted lines below matched a static scan',
+                        )}
+                        legendDescription={(words) =>
+                          `${words}. ${t('ui.fileReadout.legendTail', 'The match is highlighted where it sits, in the bytes themselves — it is evidence to read there, not a refusal, and nothing changed because a pattern matched. Lines nothing matched are not lines anything has vouched for.')}`
+                        }
                         outcome={installFileOutcome(file)}
                       />
                     )}
@@ -1297,6 +1306,14 @@ export function AgentApprovalPrompt(props: AgentApprovalPromptProps) {
                   { name: 'verb', value: SCRIPT_VERB_WORDS[reading.verb] },
                 ]}
                 ariaLabel={`What ${reading.path} holds right now`}
+                factsAria={t('ui.fileReadout.factsAria', 'What this file is')}
+                legendTitle={t(
+                  'ui.fileReadout.legendTitle',
+                  'Highlighted lines below matched a static scan',
+                )}
+                legendDescription={(words) =>
+                  `${words}. ${t('ui.fileReadout.legendTail', 'The match is highlighted where it sits, in the bytes themselves — it is evidence to read there, not a refusal, and nothing changed because a pattern matched. Lines nothing matched are not lines anything has vouched for.')}`
+                }
                 outcome={scriptOutcome(reading)}
               />
             )}

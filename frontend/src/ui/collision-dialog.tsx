@@ -38,7 +38,7 @@
  * Focus is `Dialog`'s: a native modal `<dialog>` traps it, and `focusInitial`
  * picks the `autofocus` button. Nothing here builds a second trap.
  */
-import { createSignal, Show } from 'solid-js'
+import { createSignal, Show, type JSX } from 'solid-js'
 import { Button } from './button'
 import { Checkbox } from './checkbox'
 import { Dialog } from './dialog'
@@ -73,6 +73,15 @@ export interface CollisionDialogProps {
   request: CollisionRequest
   /** Called exactly once per user decision, with the answer and its reach. */
   onResolve: (result: CollisionResult) => void
+  /** Dialog title, overridable for the person's locale (kit never imports
+   *  i18n). English default is the visible fallback. */
+  title?: string
+  /** Body and button strings, overridable for the person's locale. */
+  overwriteLabel?: string
+  keepBothLabel?: string
+  skipLabel?: string
+  bodyPrefix?: (name: string, destination: string) => JSX.Element
+  applyAllLabel?: (others: number) => string
 }
 
 export function CollisionDialog(props: CollisionDialogProps) {
@@ -94,26 +103,35 @@ export function CollisionDialog(props: CollisionDialogProps) {
   return (
     <Dialog
       open
-      title="File already exists"
+      title={props.title ?? 'File already exists'}
       onClose={() => resolve('skip')}
       footer={
         <>
           <Button variant="danger" onClick={() => resolve('overwrite')}>
-            Overwrite
+            {props.overwriteLabel ?? 'Overwrite'}
           </Button>
           <Button variant="primary" onClick={() => resolve('keepBoth')}>
-            Keep both
+            {props.keepBothLabel ?? 'Keep both'}
           </Button>
           <Button variant="default" onClick={() => resolve('skip')} autofocus>
-            Skip
+            {props.skipLabel ?? 'Skip'}
           </Button>
         </>
       }
     >
       <Stack gap="loose">
         <p>
-          <code>{props.request.name}</code> already exists in{' '}
-          <code>{props.request.destination}</code>.
+          <Show
+            when={props.bodyPrefix}
+            fallback={
+              <>
+                <code>{props.request.name}</code> already exists in{' '}
+                <code>{props.request.destination}</code>.
+              </>
+            }
+          >
+            {(prefix) => prefix()(props.request.name, props.request.destination)}
+          </Show>
         </p>
         <Show when={asksAboutAll()}>
           <Checkbox
@@ -122,9 +140,10 @@ export function CollisionDialog(props: CollisionDialogProps) {
               setApplyToAll(checked)
             }}
             label={
-              others() === 1
+              props.applyAllLabel?.(others()) ??
+              (others() === 1
                 ? 'Apply to the 1 remaining file'
-                : `Apply to the ${others()} remaining files`
+                : `Apply to the ${others()} remaining files`)
             }
           />
         </Show>

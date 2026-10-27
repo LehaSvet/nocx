@@ -181,4 +181,62 @@ export const en: Readonly<Record<string, CatalogueEntry>> = {
   // Deliberately absent from ru: proves the visible-English fallback at
   // runtime (design story 2) and emits the parity fixture's warning shape.
   'i18n.sample.untranslated': 'This key has no Russian translation yet',
+
+  // ── Kit chrome, passed as props from the surfaces (kit never imports i18n)
+  'ui.collision.title': 'File already exists',
+  'ui.collision.overwrite': 'Overwrite',
+  'ui.collision.keepBoth': 'Keep both',
+  'ui.collision.skip': 'Skip',
+  'ui.collision.existsIn': 'already exists in',
+  'ui.collision.applyOne': 'Apply to the 1 remaining file',
+  'ui.collision.applyMany': 'Apply to the {count} remaining files',
+  'ui.toast.dismiss': 'Dismiss notification',
+  'ui.connection.status': 'Connection status',
+  'ui.fileReadout.factsAria': 'What this file is',
+  'ui.fileReadout.legendTitle': 'Highlighted lines below matched a static scan',
+  'ui.fileReadout.legendTail':
+    'The match is highlighted where it sits, in the bytes themselves — it is evidence to read there, not a refusal, and nothing changed because a pattern matched. Lines nothing matched are not lines anything has vouched for.',
+
+  // ── Terminal surface (frontend/src/terminal-content.ts) ─────────────────
+  'terminal.warning.connectionLost': 'Connection lost',
+  'terminal.warning.hostNotAnswering': 'Host not answering',
+  'terminal.pasteMultiline.title': 'Paste multi-line text?',
+  'terminal.pasteMultiline.paste': 'Paste',
+  'terminal.pasteMultiline.cancel': 'Cancel',
+  'terminal.inputDropped':
+    'This connection has stopped accepting input — keystrokes are being dropped.',
+  'terminal.nativeInputActive':
+    'Native input is active — enable command editor to ask the assistant.',
+  'terminal.noAssistant': 'This pane has no assistant.',
+  'terminal.assistant.closeAria': 'Close the assistant and return to the program',
+  'terminal.assistant.closeTitle': 'Close the assistant (Esc)',
+  'terminal.assistant.resizeAria': 'Resize the assistant against the frozen screen',
+  'terminal.startFailed': 'Terminal failed to start:',
+  'terminal.stop.armed':
+    'The command had not started yet, so the stop is armed: it will land the moment the command starts.',
+  'terminal.stop.remote':
+    'This command is running on the remote host, which nocx cannot signal from here.',
+  'terminal.stop.unreconciled':
+    'The command is still recorded as running and nocx could not stop it — the program shares the shell it was started from, so stopping it by force would take the shell too. Use the program’s own way out.',
+  'terminal.stop.nothingRunning':
+    'Nothing is running in this pane any more, so there was nothing to stop.',
+  'terminal.stop.unknown': 'nocx could not tell whether the command stopped.',
+  'terminal.stop.unreached': 'The command could not be reached, so it may still be running.',
+  'terminal.secrets.offerGone': 'This offer is no longer held — the command stays stored masked.',
+  'terminal.secrets.saveFailed': 'Could not save the secret — the command stays stored masked.',
+  'terminal.secrets.unlockVault': 'Unlock the vault to save this key.',
+  'terminal.secrets.dismissFailed': 'Could not dismiss the offer — try again.',
+  'terminal.secrets.dismissOfferSession':
+    'Dismissed — this key will not be offered again in this session.',
+  'terminal.secrets.vaultLocked': 'The vault is locked. Unlock it and run the command again.',
+  'terminal.secrets.resolveFailed': 'Could not resolve the command. It was not sent.',
+  'terminal.secrets.unknown': 'Unknown secret(s)',
+  'terminal.secrets.notSent': 'The command was not sent.',
+  'terminal.secrets.stored': 'Stored',
+  'terminal.secrets.storedInVault': 'in the vault.',
+  'terminal.connection.dismissed': 'Dismissed —',
+  'terminal.connection.dismissedTail': 'will not be offered again as a connection.',
+  'terminal.connection.saved': 'Saved',
+  'terminal.connection.savedAs': 'as a connection.',
+  'terminal.connection.saveFailed': 'Could not save connection:',
 }

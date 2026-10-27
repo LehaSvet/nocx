@@ -167,6 +167,8 @@ const LEVEL_ICON: Record<ToastLevel, Component> = {
 export interface ToastHostProps {
   openUrl?: (url: string) => Promise<void>
   onOpenUrlError?: (error: unknown) => void
+  /** Dismiss-button aria label, overridable for the person's locale. */
+  dismissAria?: string
 }
 
 export function ToastHost(props: ToastHostProps = {}) {
@@ -256,7 +258,7 @@ function renderHost(props: ToastHostProps) {
             </Show>
             <IconButton
               size="xs"
-              ariaLabel="Dismiss notification"
+              ariaLabel={props.dismissAria ?? 'Dismiss notification'}
               onClick={() => dismissToast(toast.id)}
             >
               <CloseIcon />
