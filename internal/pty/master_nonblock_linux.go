@@ -21,22 +21,22 @@ import (
 // non-blocking mode as a side effect of being pollable
 // (internal/poll.FD.Init, called from os/file_unix.go's newFile with
 // kind=kindOpenFile) — so FOR A MOMENT the master already is what this bead
-// wants. Then creack/pty calls ptsname and unlockpt, and both reach the fd
+// wants. In creack/pty v1.1.24, ptsname and unlockpt then reached the fd
 // through (*os.File).Fd(): "if f.nonblock { f.pfd.SetBlocking() }... because
 // historically we have always returned a descriptor opened in blocking
 // mode" (os/file_unix.go). A file Go itself put into non-blocking mode has
-// f.nonblock set, so the very first ioctl after the open SILENTLY reverts
-// the master to blocking, and it never becomes non-blocking again — nothing
-// downstream calls SetNonblock a second time. That is nocx-6q1uh.1's root
-// cause on Linux as much as on Darwin: a program that floods output and
-// never reads stdin can still stall its pane through this master.
+// f.nonblock set, so that first ioctl silently reverted the master to
+// blocking. That was nocx-6q1uh.1's Linux cause. The pinned upstream fix
+// (nocx-zewbi, creack/pty#215) now uses SyscallConn for those ioctls, but
+// later .Fd() calls still have the same Go semantics. This package needs
+// non-blocking to survive every raw-fd escape, not only the opening ioctls.
 //
 // So every ioctl below is issued against the RAW fd, before anything ever
 // wraps it in an *os.File, and O_NONBLOCK is set on that same raw fd
 // afterwards. os.NewFile then sees a descriptor ALREADY non-blocking
 // (unix.HasNonblockFlag reads true off F_GETFL) and, per newFile's own
 // branching, never marks f.nonblock true for it — so future .Fd() calls
-// (Setsize among them) leave it alone. See master_nonblock_darwin.go for the
+// leave it alone. See master_nonblock_darwin.go for the
 // platform this was first measured on.
 func openMaster() (master *os.File, slaveName string, err error) {
 	fd, err := unix.Open("/dev/ptmx", unix.O_RDWR|unix.O_CLOEXEC, 0)
