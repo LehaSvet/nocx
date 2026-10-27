@@ -7,6 +7,33 @@ import { join } from 'node:path'
 import { generateKeyPairSync, sign, createHash } from 'node:crypto'
 import { decide, publish, prepare, attest, authorize } from './publish-nightly.mjs'
 
+const buildIdentity = { commit: 'a'.repeat(40), builtAt: '2026-10-27T03:17:00Z' }
+
+function writeSignedJSON(dir, name, value, privateKey) {
+  const bytes = Buffer.from(JSON.stringify(value))
+  writeFileSync(join(dir, name), bytes)
+  writeFileSync(join(dir, `${name}.sig`), sign(null, bytes, privateKey).toString('base64'))
+}
+
+function sealProvenance({ dir, input, privateKey }) {
+  writeSignedJSON(dir, 'nightly.json', attest(input), privateKey)
+}
+
+function changeManifest(candidate, change) {
+  const manifest = JSON.parse(readFileSync(join(candidate.dir, 'manifest.json'), 'utf8'))
+  change(manifest)
+  writeSignedJSON(candidate.dir, 'manifest.json', manifest, candidate.privateKey)
+  sealProvenance(candidate)
+}
+
+function changeReport(candidate, platform, change) {
+  const path = join(candidate.dir, `verified-${platform}.json`)
+  const report = JSON.parse(readFileSync(path, 'utf8'))
+  change(report)
+  writeFileSync(path, JSON.stringify(report))
+  sealProvenance(candidate)
+}
+
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'nightly-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
@@ -24,12 +51,22 @@ function fixture(t) {
       size: data.length,
     }
   })
-  const manifest = Buffer.from(JSON.stringify({ version: '0.8.0', artifacts, helpers: [] }))
-  writeFileSync(join(dir, 'manifest.json'), manifest)
-  writeFileSync(join(dir, 'manifest.json.sig'), sign(null, manifest, privateKey).toString('base64'))
+  writeSignedJSON(
+    dir,
+    'manifest.json',
+    {
+      version: '0.8.0',
+      released: '2026-10-27T03:25:00Z',
+      notesUrl: 'https://github.com/shady2k/nocx/releases/tag/nightly-20261027-42',
+      build: { ...buildIdentity },
+      artifacts,
+      helpers: [],
+    },
+    privateKey,
+  )
   const input = {
     moved: true,
-    sha: 'a'.repeat(40),
+    sha: buildIdentity.commit,
     version: '0.8.0',
     tag: 'nightly-20261027-42',
     runId: '42',
@@ -38,7 +75,12 @@ function fixture(t) {
     keyring: [publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64')],
   }
   for (const [i, platform] of ['darwin', 'linux'].entries()) {
-    const about = { Version: input.version, Commit: input.sha, Wails: 'v3.0.0-beta.9' }
+    const about = {
+      Version: input.version,
+      Commit: input.sha,
+      Date: buildIdentity.builtAt,
+      Wails: 'v3.0.0-beta.9',
+    }
     writeFileSync(
       join(dir, `verified-${platform}.json`),
       JSON.stringify({
@@ -63,13 +105,9 @@ function fixture(t) {
     ),
   ])
     writeFileSync(join(dir, name), 'fixture payload')
-  const provenance = Buffer.from(JSON.stringify(attest(input)))
-  writeFileSync(join(dir, 'nightly.json'), provenance)
-  writeFileSync(
-    join(dir, 'nightly.json.sig'),
-    sign(null, provenance, privateKey).toString('base64'),
-  )
-  return { dir, input, privateKey }
+  const candidate = { dir, input, privateKey }
+  sealProvenance(candidate)
+  return candidate
 }
 
 test('unchanged main publishes nothing, without artifacts or signing keys', async () => {
@@ -90,6 +128,115 @@ test('moved main publishes signed dated and moving prereleases, never a cask', a
   assert.ok(calls.some((c) => c.includes('nightly') && c.includes('--prerelease')))
   assert.ok(!JSON.stringify(calls).includes('homebrew'))
 })
+test('publication keeps build time distinct from the later manifest release time', (t) => {
+  const candidate = fixture(t)
+  const manifest = JSON.parse(readFileSync(join(candidate.dir, 'manifest.json'), 'utf8'))
+  assert.notEqual(manifest.released, manifest.build.builtAt)
+  assert.equal(decide(candidate.input).published, true)
+})
+
+const invalidBuildIdentities = [
+  ['missing build', undefined],
+  ['null build', null],
+  ['array build', []],
+  ['string build', 'not-an-object'],
+  ['missing commit', { builtAt: buildIdentity.builtAt }],
+  ['missing builtAt', { commit: buildIdentity.commit }],
+  ['unknown field', { ...buildIdentity, extra: true }],
+  ['non-string commit', { ...buildIdentity, commit: 42 }],
+  ['short commit', { ...buildIdentity, commit: 'a'.repeat(39) }],
+  ['non-hex commit', { ...buildIdentity, commit: 'g'.repeat(40) }],
+  ['uppercase commit', { ...buildIdentity, commit: 'A'.repeat(40) }],
+  ['non-string builtAt', { ...buildIdentity, builtAt: 42 }],
+  ['empty builtAt', { ...buildIdentity, builtAt: '' }],
+  ['date-only builtAt', { ...buildIdentity, builtAt: '2026-10-27' }],
+  ['timezone-less builtAt', { ...buildIdentity, builtAt: '2026-10-27T03:17:00' }],
+  ['invalid month', { ...buildIdentity, builtAt: '2026-13-27T03:17:00Z' }],
+  ['nonexistent day', { ...buildIdentity, builtAt: '2026-02-30T03:17:00Z' }],
+  ['invalid hour', { ...buildIdentity, builtAt: '2026-10-27T25:17:00Z' }],
+]
+
+for (const [label, build] of invalidBuildIdentities) {
+  test(`signed manifest with ${label} refuses before any gh call`, async (t) => {
+    const candidate = fixture(t)
+    changeManifest(candidate, (manifest) => {
+      if (build === undefined) delete manifest.build
+      else manifest.build = build
+    })
+    const calls = []
+    await assert.rejects(
+      publish(candidate.input, (args) => {
+        calls.push(args)
+        return '[]'
+      }),
+      /build/i,
+    )
+    assert.deepEqual(calls, [])
+  })
+}
+
+test('signed manifest build.commit must match the declared candidate before any gh call', async (t) => {
+  const candidate = fixture(t)
+  changeManifest(candidate, (manifest) => {
+    manifest.build.commit = 'b'.repeat(40)
+  })
+  const calls = []
+  await assert.rejects(
+    publish(candidate.input, (args) => {
+      calls.push(args)
+      return '[]'
+    }),
+    /build.commit/,
+  )
+  assert.deepEqual(calls, [])
+})
+
+for (const platform of ['darwin', 'linux']) {
+  for (const executable of ['nocx', 'nocx-server']) {
+    for (const [field, value] of [
+      ['Date', '2026-10-26T03:17:00Z'],
+      ['Date', undefined],
+      ['Commit', 'b'.repeat(40)],
+    ]) {
+      test(`${platform}.${executable} ${field} ${value === undefined ? 'missing' : 'mismatch'} refuses before any gh call`, async (t) => {
+        const candidate = fixture(t)
+        changeReport(candidate, platform, (report) => {
+          if (value === undefined) delete report.executables[executable].about[field]
+          else report.executables[executable].about[field] = value
+        })
+        const calls = []
+        await assert.rejects(
+          publish(candidate.input, (args) => {
+            calls.push(args)
+            return '[]'
+          }),
+          (error) => {
+            assert.ok(error.message.includes(`${platform}.${executable}.About.${field}`))
+            return true
+          },
+        )
+        assert.deepEqual(calls, [])
+      })
+    }
+  }
+}
+
+test('a later signed build time cannot replace the original packaged identity', async (t) => {
+  const candidate = fixture(t)
+  changeManifest(candidate, (manifest) => {
+    manifest.build.builtAt = manifest.released
+  })
+  const calls = []
+  await assert.rejects(
+    publish(candidate.input, (args) => {
+      calls.push(args)
+      return '[]'
+    }),
+    /About.Date/,
+  )
+  assert.deepEqual(calls, [])
+})
+
 test('missing or corrupt signature refuses before any publication', async (t) => {
   const { input, dir } = fixture(t)
   const calls = []

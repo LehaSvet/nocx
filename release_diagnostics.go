@@ -41,12 +41,12 @@ type recordedManifestFetcher struct {
 	sig    []byte
 }
 
-func (f *recordedManifestFetcher) Fetch(ctx context.Context) ([]byte, []byte, error) {
-	body, sig, err := f.source.Fetch(ctx)
+func (f *recordedManifestFetcher) Fetch(ctx context.Context) (update.FetchedManifest, error) {
+	fetched, err := f.source.Fetch(ctx)
 	f.mu.Lock()
-	f.body, f.sig = body, sig
+	f.body, f.sig = fetched.Body, fetched.Signature
 	f.mu.Unlock()
-	return body, sig, err
+	return fetched, err
 }
 
 // releaseDiagnostic runs before Wails, GTK, a coordinator, a profile, or an OS

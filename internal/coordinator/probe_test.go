@@ -75,7 +75,9 @@ func (fakePlatform) Exchange(_ context.Context, a, b string) error {
 // staticFetcher serves one signed manifest.
 type staticFetcher struct{ body, sig []byte }
 
-func (f staticFetcher) Fetch(context.Context) ([]byte, []byte, error) { return f.body, f.sig, nil }
+func (f staticFetcher) Fetch(context.Context) (update.FetchedManifest, error) {
+	return update.FetchedManifest{Body: f.body, Signature: f.sig}, nil
+}
 
 // ---------------------------------------------------------------------------
 // Fixtures

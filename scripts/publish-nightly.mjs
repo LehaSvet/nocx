@@ -72,6 +72,56 @@ export function attest(input) {
     })
   return { schema: 1, sha, version, tag, runId, runAttempt, artifacts }
 }
+// This is deliberately an adapter for the build identity's object/string
+// schema, not a general JSON Schema validator. The contract owns its key set
+// and patterns; publication adds only equality with the packaged descriptors.
+// Refuse new constraints until this adapter knows how to enforce them.
+function validateBuildIdentity(value, schema, path = 'manifest.build') {
+  const keywords = {
+    object: ['type', 'properties', 'required', 'additionalProperties'],
+    string: ['type', 'pattern', 'format'],
+  }[schema?.type]
+  if (!keywords || Object.keys(schema).some((key) => !keywords.includes(key)))
+    fail(`${path} schema has unsupported identity constraints`)
+  if (schema.type === 'object') {
+    const properties = schema.properties
+    if (
+      !properties ||
+      schema.additionalProperties !== false ||
+      !Array.isArray(schema.required) ||
+      Object.keys(properties).some((key) => !schema.required.includes(key)) ||
+      schema.required.some((key) => !Object.hasOwn(properties, key))
+    )
+      fail(`${path} schema must require every identity property and forbid extras`)
+    if (value === null || typeof value !== 'object' || Array.isArray(value))
+      fail(`${path} must be an object`)
+    for (const key of schema.required) {
+      if (!Object.hasOwn(value, key)) fail(`${path}.${key} is required`)
+    }
+    for (const key of Object.keys(value)) {
+      if (!Object.hasOwn(properties, key)) fail(`${path}.${key} is not allowed`)
+    }
+    for (const [key, property] of Object.entries(properties))
+      validateBuildIdentity(value[key], property, `${path}.${key}`)
+    return
+  }
+  if (schema.pattern !== undefined && typeof schema.pattern !== 'string')
+    fail(`${path} schema has an unsupported pattern`)
+  if (schema.format !== undefined && schema.format !== 'date-time')
+    fail(`${path} schema has an unsupported format`)
+  if (typeof value !== 'string') fail(`${path} must be a string`)
+  if (schema.pattern !== undefined && !new RegExp(schema.pattern).test(value))
+    fail(`${path} does not match the identity contract`)
+  if (schema.format === 'date-time') {
+    // Date.parse normalizes nonexistent days. Round-tripping rejects those as
+    // well as fractional seconds, offsets and missing zones: this identity is
+    // the exact UTC-second value stamped into internal/version.Date.
+    const parsed = new Date(value)
+    if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== `${value.slice(0, -1)}.000Z`)
+      fail(`${path} must be a valid canonical UTC timestamp`)
+  }
+}
+
 export function decide(input) {
   if (input.moved === false) return { published: false }
   if (input.moved !== true) fail('moved must be explicitly true or false')
@@ -79,6 +129,11 @@ export function decide(input) {
   if (!/^[a-f0-9]{40}$/.test(sha) || !/^nightly-\d{8}-\d+$/.test(tag))
     fail('invalid nightly identity')
   const manifest = verifyFile(dir, 'manifest.json', keyring)
+  const contract = JSON.parse(
+    readFileSync(new URL('../contracts/update/manifest.schema.json', import.meta.url), 'utf8'),
+  )
+  validateBuildIdentity(manifest.build, contract.properties?.build)
+  if (manifest.build.commit !== sha) fail('manifest.build.commit differs from declared revision')
   if (manifest.version !== version) fail('manifest.version differs from declared version')
   for (const platform of ['darwin', 'linux']) {
     if (manifest.artifacts.filter((a) => a.os === platform).length !== 1)
@@ -112,6 +167,8 @@ export function decide(input) {
         fail(`${platform}.${executable}.About.Version differs from declared value`)
       if (about?.Commit !== sha)
         fail(`${platform}.${executable}.About.Commit differs from declared value`)
+      if (about?.Date !== manifest.build.builtAt)
+        fail(`${platform}.${executable}.About.Date differs from manifest.build.builtAt`)
       if (!about?.Wails || /unknown|my company|my product/i.test(about.Wails))
         fail(`${platform}.${executable}.About.Wails is a placeholder`)
     }
