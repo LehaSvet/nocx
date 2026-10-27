@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createUpdateCheck } from './update-check'
-import type { UpdateNoticeController } from './update-notice'
+import type { UpdateController } from './update-controller'
 
 const NOTES_URL = 'https://example.com/releases/0.7.0'
 const checkForUpdate = vi.fn<() => Promise<unknown>>()
@@ -28,11 +28,7 @@ vi.mock('../bindings/github.com/shady2k/nocx/wailsapp', () => ({
 function fakeNotice() {
   return {
     showAvailable: vi.fn(),
-    showDownloading: vi.fn(),
-    showPendingRestart: vi.fn(),
-    showHeldByCoordinator: vi.fn(),
-    showError: vi.fn(),
-  } satisfies UpdateNoticeController
+  } satisfies Pick<UpdateController, 'showAvailable'>
 }
 
 beforeEach(() => {
@@ -217,5 +213,33 @@ describe('createUpdateCheck with a channel bridge (nocx-1ebrs.35.1)', () => {
     expect(apply).toHaveBeenNthCalledWith(2, 'nightly')
     expect(apply).toHaveBeenNthCalledWith(3, 'nightly')
     expect(current).toBe('stable')
+  })
+
+  it('runs one check at a time for every caller, not only for the interval (review, .66.1.1)', async () => {
+    // The schedule throttles WHEN checks start; About's button and a channel
+    // switch call run() directly. Two answers arriving out of order would let
+    // the later "no update" overwrite an offer the person can still see.
+    let resolveFirst: ((value: unknown) => void) | undefined
+    checkForUpdate.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirst = resolve
+        }),
+    )
+    const notice = fakeNotice()
+    const check = createUpdateCheck(notice)
+
+    const first = check.run()
+    const second = check.run()
+    expect(checkForUpdate).toHaveBeenCalledTimes(1)
+
+    resolveFirst?.(null)
+    await Promise.all([first, second])
+    expect(checkForUpdate).toHaveBeenCalledTimes(1)
+
+    // The next request is its own check again.
+    checkForUpdate.mockResolvedValue(null)
+    await check.run()
+    expect(checkForUpdate).toHaveBeenCalledTimes(2)
   })
 })

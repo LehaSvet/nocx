@@ -16,7 +16,7 @@ import { createSignal, type Accessor } from 'solid-js'
 
 import { CheckForUpdate } from '../bindings/github.com/shady2k/nocx/wailsapp'
 import { log } from './log'
-import type { UpdateNoticeController } from './update-notice'
+import type { UpdateController } from './update-controller'
 
 /** The persisted setting's road into the window (nocx-1ebrs.35.1, ADR-0097):
  *  the channel is stored by the backend's settings store, and the check runs
@@ -57,14 +57,22 @@ export interface UpdateCheckController {
 }
 
 export function createUpdateCheck(
-  notice: Pick<UpdateNoticeController, 'showAvailable'>,
+  notice: Pick<UpdateController, 'showAvailable'>,
   channel?: UpdateChannelBridge,
 ): UpdateCheckController {
   const [error, setError] = createSignal<string | null>(null)
   const [lastOutcome, setLastOutcome] = createSignal<UpdateCheckOutcome | null>(null)
   const [appliedChannel, setAppliedChannel] = createSignal('stable')
 
-  const run = async (): Promise<UpdateCheckOutcome | null> => {
+  /** The check that is in flight, if any. ONE OWNER FOR "one at a time"
+   *  (nocx-1ebrs.66.1.1 review): the schedule throttles WHEN checks start,
+   *  but About's button and a channel switch call `run()` directly, and two
+   *  answers arriving out of order would let the later "no update" overwrite
+   *  an offer the person can still see. Every caller shares this promise, so
+   *  a second request joins the first rather than racing it. */
+  let inFlight: Promise<UpdateCheckOutcome | null> | null = null
+
+  const runOnce = async (): Promise<UpdateCheckOutcome | null> => {
     // The channel is resolved on EVERY run, not cached at startup: the
     // 24-hour interval and a person switching in Settings both read the
     // store's current truth through this one path.
@@ -110,6 +118,14 @@ export function createUpdateCheck(
       log.warn('update check failed', { reason })
       return null
     }
+  }
+
+  const run = (): Promise<UpdateCheckOutcome | null> => {
+    if (inFlight) return inFlight
+    inFlight = runOnce().finally(() => {
+      inFlight = null
+    })
+    return inFlight
   }
 
   return { error, lastOutcome, channel: appliedChannel, run }

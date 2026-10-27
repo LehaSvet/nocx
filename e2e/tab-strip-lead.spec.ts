@@ -1,13 +1,22 @@
 import { test, expect } from './harness'
 
 /**
- * e2e: a hidden update notice must not reserve width in the tab strip
- * (nocx-gm4fj).
+ * e2e: the tab strip carries no update offer, and its lead is the first control
+ * (nocx-gm4fj, rewritten for nocx-1ebrs.66.1.5).
  *
- * Measured in a browser and not asserted in jsdom, because this is a layout
- * defect: `.update-notice` uses `display: flex`, which can override the
- * browser's `[hidden] { display: none }` rule. Its padding then leaves a
- * blank 48px box even while the notice is hidden.
+ * WHAT CHANGED. The update offer used to live in the tab strip, and these two
+ * tests protected the layout from it: a hidden `.update-notice` must reserve no
+ * width, and the strip's lead had to follow it without another condition child
+ * sneaking in between. The owner removed the offer from the strip on 2026-10-26
+ * — it took room from open tabs — and put it on the activity bar's bottom group
+ * instead. The requirement these tests encode is therefore a different one, and
+ * it is stronger rather than absent: the strip must not carry an update child AT
+ * ALL, so a future change cannot quietly reintroduce one.
+ *
+ * Kept in a browser rather than jsdom because both of the defects they were
+ * written against were layout defects (`.update-notice`'s `display: flex`
+ * overriding `[hidden]`), and the new assertions are about what the strip is
+ * made of, which only the mounted shell can answer.
  */
 
 const BAR = '.tabbar'
@@ -25,37 +34,43 @@ async function leftWithin(
   }, selector)
 }
 
-// The update notice is the only optional child before the tab strip lead.
-// Connection state now owns a top-layer overlay, so it must not add a second
-// child to the tab bar or participate in this layout contract.
-test('a hidden update notice does not occupy tab strip width', async ({ page }) => {
+test('the tab strip carries no update offer at all', async ({ page }) => {
   await page.goto('/')
   await expect(page.locator(BAR)).toBeVisible()
-  await expect(page.locator('.update-notice')).toBeHidden()
 
-  const widths = await page.evaluate(() =>
-    [...(document.querySelector('.tabbar') as HTMLElement).children]
-      .filter((child) => child.querySelector('.update-notice'))
-      .map((child) => child.getBoundingClientRect().width),
+  // The offer lives on the activity bar now; the strip must not have one —
+  // not visible, not hidden, not reserving width. `count` rather than
+  // `toBeHidden` is deliberate: a hidden node is exactly what used to reserve
+  // 48px here.
+  await expect(page.locator('.update-notice')).toHaveCount(0)
+  const stripChildrenWithUpdate = await page.evaluate(
+    () =>
+      [...(document.querySelector('.tabbar') as HTMLElement).children].filter(
+        (child) => child.querySelector('.update-notice') !== null,
+      ).length,
   )
-  expect(widths.length).toBeGreaterThan(0)
-  for (const w of widths) expect(w).toBe(0)
+  expect(stripChildrenWithUpdate).toBe(0)
+
+  // And the activity bar is where a person finds it: the bottom group carries
+  // the update entry (absent until a release is available, so the control is
+  // asserted by its seam rather than by its presence).
+  const bottomZone = await page.evaluate(
+    () => document.querySelectorAll('.activity-bar-bottom').length,
+  )
+  expect(bottomZone).toBe(1)
 })
 
-test('the tab strip lead follows the update notice without another condition child', async ({
+test('the tab strip lead is the first control, with no update or condition child', async ({
   page,
 }) => {
   await page.goto('/')
   await expect(page.locator(BAR)).toBeVisible()
-  await expect(page.locator('.update-notice')).toBeHidden()
   await expect(page.locator(LEAD)).toBeVisible()
 
   const layout = await page.evaluate(() => {
     const bar = document.querySelector('.tabbar')
     if (!(bar instanceof HTMLElement)) throw new Error('tabbar is not mounted')
     const children = [...bar.children]
-    const update = children.find((child) => child.querySelector('.update-notice') !== null)
-    const lead = children.find((child) => child.matches('.tabstrip-lead'))
     const roles = children.map((child) => {
       if (child.querySelector('.update-notice') !== null) return 'update'
       if (child.matches('.tabstrip-lead')) return 'lead'
@@ -67,21 +82,17 @@ test('the tab strip lead follows the update notice without another condition chi
       }
       return 'other'
     })
-    return {
-      roles,
-      leadAfterUpdate:
-        update !== undefined &&
-        lead !== undefined &&
-        Boolean(update.compareDocumentPosition(lead) & Node.DOCUMENT_POSITION_FOLLOWING),
-    }
+    return { roles, first: roles[0] ?? '', lead: children[0]?.matches('.tabstrip-lead') ?? false }
   })
-  expect(layout.roles).toHaveLength(5)
-  expect(layout.roles).toEqual(
-    expect.arrayContaining(['update', 'lead', 'tabs', 'actions', 'spacer']),
-  )
+
+  // Exactly the strip's own parts: no update child (the offer moved out on
+  // nocx-1ebrs.66.1.5) and no condition child (connection state owns a
+  // top-layer overlay instead of a strip child).
+  expect(layout.roles).toEqual(['lead', 'tabs', 'actions', 'spacer'])
+  expect(layout.roles).not.toContain('update')
   expect(layout.roles).not.toContain('connection')
   expect(layout.roles).not.toContain('other')
-  expect(layout.leadAfterUpdate).toBe(true)
+  expect(layout.lead).toBe(true)
 })
 
 // AND THEREFORE the first control sits exactly where the platform's window

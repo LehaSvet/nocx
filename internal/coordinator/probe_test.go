@@ -141,6 +141,7 @@ func applyPendingUpdate(t *testing.T, from, to string) string {
 		Keyring:        []ed25519.PublicKey{pub},
 		CurrentVersion: from,
 		InstallPath:    installPath,
+		StateDir:       filepath.Join(dir, "state"),
 	})
 	info, err := applying.Check(ctx)
 	if err != nil {
@@ -152,7 +153,7 @@ func applyPendingUpdate(t *testing.T, from, to string) string {
 	if err = applying.Apply(ctx, info); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if _, err = os.Stat(filepath.Join(dir, journalName)); err != nil {
+	if _, err = os.Stat(filepath.Join(dir, "state", journalName)); err != nil {
 		t.Fatalf("Apply left no pending journal: %v", err)
 	}
 	return installPath
@@ -167,6 +168,7 @@ func restartedWindow(installPath, version string, probe update.CoordinatorProbe)
 		Fetcher:        staticFetcher{},
 		CurrentVersion: version,
 		InstallPath:    installPath,
+		StateDir:       filepath.Join(filepath.Dir(installPath), "state"),
 		Coordinator:    probe,
 	})
 }
@@ -185,7 +187,7 @@ func attachedTo(version, commit string) *coordinator.LaunchProbe {
 
 func assertJournalKept(t *testing.T, installPath string) {
 	t.Helper()
-	if _, err := os.Stat(filepath.Join(filepath.Dir(installPath), journalName)); err != nil {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(installPath), "state", journalName)); err != nil {
 		t.Fatalf("the rollback journal was deleted by a refused health report: %v", err)
 	}
 }
@@ -230,7 +232,7 @@ func TestReportHealthy_MatchingPair_Certifies(t *testing.T) {
 	if err := w.ReportHealthy(context.Background()); err != nil {
 		t.Fatalf("a window and coordinator both at 0.2.0 must certify: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(installPath), journalName)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(installPath), "state", journalName)); !os.IsNotExist(err) {
 		t.Fatalf("the journal survived a certified health report (%v)", err)
 	}
 }
