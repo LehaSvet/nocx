@@ -121,8 +121,9 @@ type LocalLaunch struct {
 // `--rcfile /dev/fd/3`; the POSIX tier takes `ENV=/dev/fd/3`; zsh has neither
 // and takes a transient ZDOTDIR (launcher_zsh.go). None of them is handed
 // anything by TYPING, so nothing nocx starts with ever appears in the person's
-// transcript. What crosses a descriptor is a script for the two rcfile tiers
-// and, for zsh, two bearer LINES read before any user code runs.
+// transcript. Bash's script travels in a fully written, already-unlinked
+// regular file; the other tiers retain their pipe delivery. Zsh's pipe carries
+// bearer lines read before any user code runs.
 func LocalEnhancedLaunchInMemory(shellPath string, kind ShellKind, opts LaunchOptions) (LocalLaunch, error) {
 	if !opts.Enhanced || opts.SessionID == "" {
 		return LocalLaunch{}, fmt.Errorf("shellintegration: in-memory launch requires an enhanced session with a session id")
@@ -134,7 +135,11 @@ func LocalEnhancedLaunchInMemory(shellPath string, kind ShellKind, opts LaunchOp
 		if err != nil {
 			return LocalLaunch{}, err
 		}
-		launch, err := pipeLaunch(shellPath, []string{"--rcfile", "/dev/fd/3", "-i"}, nil, rc)
+		// Bash 3.2 sizes an rcfile with fstat and reads it once. A pipe
+		// races that read against its writer, so an enhanced launch can
+		// reach a plain prompt without ever installing the integration
+		// (nocx-ukf54). Deliver the complete seekable file before spawn.
+		launch, err := localBashRcfileLaunch(shellPath, rc)
 		if err != nil || opts.AgentToolToken == "" {
 			return launch, err
 		}
@@ -224,6 +229,54 @@ func LocalEnhancedLaunchInMemory(shellPath string, kind ShellKind, opts LaunchOp
 	default:
 		return LocalLaunch{}, fmt.Errorf("shellintegration: %q has no in-memory enhanced tier", shellPath)
 	}
+}
+
+// localBashRcfileLaunch keeps the existing fd layout but removes the writer
+// race. Unlink BEFORE writing: the rendered rcfile can contain lifecycle
+// bearers, which must never exist under a filesystem name (ADR-0024/0049).
+// Bash reads the regular rcfile whole before executing it, so its first line
+// closes the inherited descriptor before user startup can rewind that copy.
+func localBashRcfileLaunch(command, script string) (LocalLaunch, error) {
+	f, err := os.CreateTemp("", "nocx-bash-rc-*")
+	if err != nil {
+		return LocalLaunch{}, fmt.Errorf("shellintegration: local bash rcfile: %w", err)
+	}
+	if err := prepareLocalRcfile(f, os.Remove, "exec 3<&-\n"+script); err != nil {
+		return LocalLaunch{}, err
+	}
+	var once sync.Once
+	closeFile := func() { once.Do(func() { _ = f.Close() }) }
+	return LocalLaunch{
+		Command: command, Args: []string{"--rcfile", "/dev/fd/3", "-i"},
+		ExtraFiles: []*os.File{f}, Cleanup: closeFile, Abort: closeFile,
+	}, nil
+}
+
+// localRcfile is the small I/O boundary whose partial failures must leave no
+// bearer under a name and no open descriptor. It is separate from the bundle
+// publisher's FS: that persistent, rename-based protocol has no seek operation.
+type localRcfile interface {
+	io.WriteSeeker
+	io.Closer
+	Name() string
+}
+
+func prepareLocalRcfile(f localRcfile, unlink func(string) error, script string) (err error) {
+	defer func() {
+		if err != nil {
+			_ = f.Close()
+		}
+	}()
+	if err = unlink(f.Name()); err != nil {
+		return fmt.Errorf("shellintegration: unlink local bash rcfile: %w", err)
+	}
+	if _, err = io.Copy(f, strings.NewReader(script)); err != nil {
+		return fmt.Errorf("shellintegration: write local bash rcfile: %w", err)
+	}
+	if _, err = f.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("shellintegration: rewind local bash rcfile: %w", err)
+	}
+	return nil
 }
 
 func pipeLaunch(command string, args, env []string, script string) (LocalLaunch, error) {
