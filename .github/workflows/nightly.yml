@@ -1,0 +1,133 @@
+# ADR-0097: build once daily only after product changes; never rerun CI or write a cask.
+name: Nightly
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Build and verify without publishing anything
+        type: boolean
+        default: true
+      linux-only:
+        description: Iterate the Linux leg before paying for macOS signing
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: nightly-publication
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      moved: ${{ steps.plan.outputs.moved }}
+      sha: ${{ steps.plan.outputs.sha }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || 'main' }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - id: plan
+        name: Compare main with the last published nightly using CI's product predicate
+        env:
+          RUN_ID: ${{ github.run_id }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
+          LINUX_ONLY: ${{ inputs.linux-only }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync, appendFileSync } from 'node:fs';
+          import { prepare, authorize, releaseKeys, verifyFile } from './scripts/publish-nightly.mjs';
+          authorize({ ref: process.env.GITHUB_REF, dryRun: process.env.DRY_RUN === 'true', linuxOnly: process.env.LINUX_ONLY === 'true' });
+          const git = args => execFileSync('git', args, { encoding: 'utf8' }).trim();
+          const sha = git(['rev-parse', 'HEAD']);
+          const gh = args => execFileSync('gh', args, { encoding: 'utf8' });
+          const releases = JSON.parse(gh(['api', '--paginate', '--slurp', 'repos/{owner}/{repo}/releases?per_page=100'])).flat();
+          const last = releases.find(r => r.tag_name === 'nightly' && r.prerelease && !r.draft);
+          let previous = null;
+          if (last) {
+            gh(['release', 'download', 'nightly', '--pattern', 'nightly.json*', '--dir', 'previous-nightly']);
+            previous = verifyFile('previous-nightly', 'nightly.json', releaseKeys('internal/update/keyring.go')).sha;
+            if (git(['rev-parse', 'nightly^{commit}']) !== previous) throw Error('nightly tag differs from signed provenance');
+          }
+          // A rewritten main is not a publishable successor.
+          if (previous) git(['merge-base', '--is-ancestor', previous, sha]);
+          const files = previous ? git(['diff', '--name-only', previous, sha]).split('\n').filter(Boolean) : [];
+          const plan = prepare({ sha, previous, files, version: readFileSync('VERSION', 'utf8').trim(),
+            date: new Date().toISOString().slice(0, 10).replaceAll('-', ''), runId: process.env.RUN_ID });
+          if (process.env.DRY_RUN === 'true') plan.moved = true;
+          for (const [key, value] of Object.entries(plan)) appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
+          console.log(JSON.stringify(plan));
+          JS
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.moved == 'true'
+    uses: ./.github/workflows/release-build.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      sha: ${{ needs.prepare.outputs.sha }}
+      release-tag: ${{ needs.prepare.outputs.tag }}
+      linux-only: ${{ github.event_name == 'workflow_dispatch' && inputs.linux-only }}
+      dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
+    secrets: inherit
+  publish:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.moved == 'true' && !inputs.linux-only
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v8
+        with:
+          name: macos-universal
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-amd64
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: helper-binaries
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: manifest
+          path: dist
+      - name: Refuse unsigned, changed or undeclared bytes; then publish or rehearse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD_SHA: ${{ needs.prepare.outputs.sha }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          PUBLISH: ${{ github.event_name == 'schedule' || !inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'JS'
+          import { decide, publish, releaseKeys } from './scripts/publish-nightly.mjs';
+          const input = { moved: true, sha: process.env.BUILD_SHA, version: process.env.VERSION,
+            tag: process.env.RELEASE_TAG, runId: process.env.RUN_ID, runAttempt: process.env.RUN_ATTEMPT,
+            dir: 'dist', keyring: releaseKeys('internal/update/keyring.go') };
+          if (process.env.PUBLISH === 'true') console.log(await publish(input));
+          else console.log({ rehearsal: true, ...decide(input) });
+          JS
