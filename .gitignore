@@ -89,3 +89,5 @@ internal/helper/deploy/artifacts/*.gz
 # Agent worktrees: a nested checkout, never ours to commit or lint (nocx-04noc)
 .claude/worktrees/
 .mwscode
+# Local agent tooling config: per-checkout, never committed
+.mcp.json
