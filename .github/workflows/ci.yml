@@ -783,6 +783,13 @@ jobs:
         working-directory: .
         run: node --test scripts/shard-files.test.mjs
 
+      # The pre-commit hook's frontend lock (nocx-owbpb): two hooks in two
+      # processes, one machine, and the second one waits. It drives the hook
+      # with a stubbed toolchain, so it costs seconds and needs no linter.
+      - name: The hook's frontend lock
+        working-directory: .
+        run: node --test .githooks/pre-commit.test.mjs
+
   # ci-backlog — the backlog is still a queue, not a dump.
   #
   # The one gate here that reads no code. It applies the rules in

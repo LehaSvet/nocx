@@ -125,6 +125,8 @@ if [ "$RUN_ROOT" = 1 ]; then
   echo "=== root: format:check ===";              (cd /work && npm run format:check)
   echo "=== root: every spec file is collected ==="
   (cd /work && node e2e/check-coverage.mjs)
+  echo "=== root: the pre-commit hook frontend lock ==="
+  (cd /work && node --test .githooks/pre-commit.test.mjs)
 fi
 '
 

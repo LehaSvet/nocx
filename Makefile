@@ -1182,6 +1182,8 @@ root-ci:
 	npm run format:check
 	@echo "--- every spec file is collected ---"
 	node e2e/check-coverage.mjs
+	@echo "--- the hook's frontend lock (two hooks, two processes) ---"
+	node --test .githooks/pre-commit.test.mjs
 
 frontend-ci:
 	@echo "=== frontend ==="
