@@ -2,7 +2,8 @@
 
 `nocx-1ebrs.66.1.4` owns nightly publication and this manifest contract.
 `nocx-ngw57` owns the packaged-artifact inspection. Promotion (`nocx-1ebrs.35.3`)
-and the nightly cask (`nocx-1ebrs.35.4`) consume these bytes, not a second build.
+and the one stable cask consume these bytes, not a second build — there is no nightly cask: the channel is the app's own
+setting, decided in [ADR-2syp2fpx](../decisions/2syp2fpx-one-cask-and-the-channel-setting-not-two-casks.md).
 
 ## Rehearse, then publish
 
@@ -37,6 +38,10 @@ release and its signed provenance. GitHub cannot atomically swap release assets,
 so the moving endpoint can be briefly unavailable during replacement.
 
 ## Manifest and cask contract
+
+The cask here is the **stable** one (`Casks/nocx.rb`). `nocx-1ebrs.35.4`'s nightly cask and `nocx-1ebrs.66.1.7`'s
+install-time channel preset are cancelled by [ADR-2syp2fpx](../decisions/2syp2fpx-one-cask-and-the-channel-setting-not-two-casks.md):
+one app, one cask, and `update.channel` decides which line an install follows.
 
 `VERSION` on main contains the next stable version (`0.8.0` initially). A nightly
 stamps that version into both executables and both plist version fields.
