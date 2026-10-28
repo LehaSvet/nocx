@@ -134,6 +134,37 @@ describe('the notification area clears the activity bar', () => {
 // runs the caller's handler and dismisses the toast — a toast whose Later
 // leaves the toast up would make the label a lie.
 describe('showToast with actions and a link', () => {
+  it.each(['resolve', 'reject', 'throw'])(
+    'hands link activation synchronously to the opener: %s',
+    async (outcome) => {
+      const error = new Error('browser refused /private/path')
+      const open = vi.fn<(url: string) => Promise<void>>().mockImplementation(() => {
+        if (outcome === 'throw') throw error
+        return outcome === 'reject' ? Promise.reject(error) : Promise.resolve()
+      })
+      const reportError = vi.fn()
+      const { container } = render(() => <ToastHost openUrl={open} onOpenUrlError={reportError} />)
+      showToast({
+        message: 'Update available',
+        link: { label: 'Release notes', href: 'https://example.com/notes' },
+      })
+      const link = container.querySelector('a')!
+      const event = new MouseEvent('click', { bubbles: true, cancelable: true })
+      link.dispatchEvent(event)
+      expect(event.defaultPrevented).toBe(true)
+      expect(open).toHaveBeenCalledWith('https://example.com/notes')
+      await Promise.resolve()
+      if (outcome === 'resolve') expect(toasts()).toHaveLength(1)
+      else {
+        expect(toasts()).toHaveLength(2)
+        expect(toasts()[1].level).toBe('danger')
+        expect(toasts()[1].message).toContain('The browser could not be opened.')
+        expect(toasts()[1].message).not.toContain('/private/path')
+        expect(reportError).toHaveBeenCalledWith(error)
+      }
+    },
+  )
+
   it('renders the link as an anchor to where it points', () => {
     const { container } = render(() => <ToastHost />)
     showToast({
@@ -144,9 +175,8 @@ describe('showToast with actions and a link', () => {
     expect(link).not.toBeNull()
     expect(link.getAttribute('href')).toBe('https://example.com/notes')
     expect(link.textContent).toBe('Release notes')
-    // Off-site pages open in their own tab, never replacing the terminal.
-    expect(link.getAttribute('target')).toBe('_blank')
-    expect(link.getAttribute('rel')).toContain('noopener')
+    // Navigation is handed to the injected opener, never the webview.
+    expect(link.getAttribute('target')).toBeNull()
   })
 
   it('renders actions as kit buttons that reach the caller', () => {

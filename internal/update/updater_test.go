@@ -29,8 +29,8 @@ type mockFetcher struct {
 	sig  []byte
 }
 
-func (f *mockFetcher) Fetch(_ context.Context) ([]byte, []byte, error) {
-	return f.body, f.sig, nil
+func (f *mockFetcher) Fetch(_ context.Context) (FetchedManifest, error) {
+	return FetchedManifest{Body: f.body, Signature: f.sig}, nil
 }
 
 // makeTestKeyring generates n ed25519 keypairs and returns the public
@@ -149,9 +149,17 @@ func newTestUpdater(t *testing.T, installDir string, fetcherBody, fetcherSig []b
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{body: fetcherBody, sig: fetcherSig},
 		Keyring:        keyring,
-		CurrentVersion: "0.1.0",
-		InstallPath:    installPath,
+		CurrentVersion: "0.1.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"),
 	})
+}
+
+func testJournalPath(t *testing.T, installPath string) string {
+	t.Helper()
+	state := filepath.Join(filepath.Dir(installPath), "state")
+	if err := os.MkdirAll(state, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	return journalPath(state)
 }
 
 // ---------------------------------------------------------------------------
@@ -294,8 +302,7 @@ func TestReconcile_NoRecord_NothingInFlight(t *testing.T) {
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
 		Keyring:        nil,
-		CurrentVersion: "0.1.0",
-		InstallPath:    installPath,
+		CurrentVersion: "0.1.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"),
 	})
 
 	if err := u.Reconcile(context.Background()); err != nil {
@@ -317,13 +324,62 @@ func TestReconcile_NoRecord_ManagedDebris(t *testing.T) {
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
 		Keyring:        nil,
-		CurrentVersion: "0.1.0",
-		InstallPath:    installPath,
+		CurrentVersion: "0.1.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"),
 	})
 
 	err := u.Reconcile(context.Background())
 	if err == nil {
 		t.Fatal("expected error for managed debris with no journal, got nil")
+	}
+}
+
+// TestReconcile_AdoptsLegacyJournalBesideTheInstallPath is the upgrade path the
+// placement split created (review, nocx-1ebrs.66.1.1): a build from before
+// ADR-0106 kept its journal beside the installed bundle, so a transaction that
+// was in flight when the person upgraded must be settled by the new build
+// rather than read as unmanaged debris.
+func TestReconcile_AdoptsLegacyJournalBesideTheInstallPath(t *testing.T) {
+	dir := t.TempDir()
+	installPath := filepath.Join(dir, "nocx.AppImage")
+	makeMinimalAppImage(t, installPath)
+
+	oldID, err := statBundleID(installPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Where the previous layout wrote it: beside the install path.
+	legacy := filepath.Join(dir, ".nocx-update-journal.json")
+	rec := &journalRecord{
+		TxID:        "0.2.0",
+		InstallPath: installPath,
+		OldBundleID: oldID, // the exchange never happened
+		FromVersion: "0.1.0",
+		ToVersion:   "0.2.0",
+	}
+	if err := writeJournal(legacy, rec); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := filepath.Join(dir, "state")
+	u := NewUpdater(UpdaterConfig{
+		Platform:       newFakePlatform(),
+		CurrentVersion: "0.1.0",
+		InstallPath:    installPath,
+		StateDir:       stateDir,
+	})
+
+	if err := u.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile must adopt the journal the previous layout left: %v", err)
+	}
+
+	// Settled, not stranded: the state directory's copy is gone with the
+	// transaction, and the old file does not linger beside the install path.
+	if _, err := os.Stat(journalPath(stateDir)); !os.IsNotExist(err) {
+		t.Fatalf("the adopted journal survived reconciliation (stat error %v)", err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("the journal beside the install path was not removed after adoption (stat error %v)", err)
 	}
 }
 
@@ -339,7 +395,7 @@ func TestReconcile_ExchangeDidNotHappen_OldIDMatches(t *testing.T) {
 
 	// Write a journal that says oldBundleID = current identity
 	// (exchange didn't happen after journal was written).
-	jp := journalPath(installPath)
+	jp := testJournalPath(t, installPath)
 	rec := &journalRecord{
 		TxID:        "0.2.0",
 		InstallPath: installPath,
@@ -363,8 +419,7 @@ func TestReconcile_ExchangeDidNotHappen_OldIDMatches(t *testing.T) {
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
 		Keyring:        nil,
-		CurrentVersion: "0.1.0",
-		InstallPath:    installPath,
+		CurrentVersion: "0.1.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"),
 	})
 
 	if err := u.Reconcile(context.Background()); err != nil {
@@ -397,7 +452,7 @@ func TestReconcile_ExchangeHappened_PendingRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	jp := journalPath(installPath)
+	jp := testJournalPath(t, installPath)
 	rec := &journalRecord{
 		TxID:           "0.2.0",
 		InstallPath:    installPath,
@@ -415,8 +470,7 @@ func TestReconcile_ExchangeHappened_PendingRestart(t *testing.T) {
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
 		Keyring:        nil,
-		CurrentVersion: "0.1.0",
-		InstallPath:    installPath,
+		CurrentVersion: "0.1.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"),
 	})
 
 	if err := u.Reconcile(context.Background()); err != nil {
@@ -451,7 +505,7 @@ func TestReconcile_AutoRollback_AfterThreeLaunches(t *testing.T) {
 
 	currentID, _ := statBundleID(installPath)
 
-	jp := journalPath(installPath)
+	jp := testJournalPath(t, installPath)
 	rec := &journalRecord{
 		TxID:           "0.2.0",
 		InstallPath:    installPath,
@@ -470,8 +524,7 @@ func TestReconcile_AutoRollback_AfterThreeLaunches(t *testing.T) {
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
 		Keyring:        nil,
-		CurrentVersion: "0.1.0",
-		InstallPath:    installPath,
+		CurrentVersion: "0.1.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"),
 	})
 
 	if err = u.Reconcile(context.Background()); err != nil {
@@ -503,7 +556,7 @@ func TestReportHealthy_FinalisesUpdate(t *testing.T) {
 	currentID, _ := statBundleID(installPath)
 
 	// Simulate: exchange happened, health unconfirmed.
-	jp := journalPath(installPath)
+	jp := testJournalPath(t, installPath)
 	rec := &journalRecord{
 		TxID:           "0.2.0",
 		InstallPath:    installPath,
@@ -530,9 +583,7 @@ func TestReportHealthy_FinalisesUpdate(t *testing.T) {
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
 		Keyring:        nil,
-		CurrentVersion: "0.2.0",
-		InstallPath:    installPath,
-		Coordinator:    &stubProbe{build: CoordinatorBuild{Version: "0.2.0", Commit: "testsha"}},
+		CurrentVersion: "0.2.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"), Coordinator: &stubProbe{build: CoordinatorBuild{Version: "0.2.0", Commit: "testsha"}},
 	})
 
 	if err := u.ReportHealthy(context.Background()); err != nil {
@@ -563,8 +614,7 @@ func TestReportHealthy_Idempotent_NoRecord(t *testing.T) {
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{},
 		Keyring:        nil,
-		CurrentVersion: "0.1.0",
-		InstallPath:    installPath,
+		CurrentVersion: "0.1.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"),
 	})
 
 	// Calling ReportHealthy with no record should be harmless.
@@ -711,8 +761,7 @@ func TestUpdater_Apply_HappyPath(t *testing.T) {
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{body: manifestBody, sig: manifestSig},
 		Keyring:        pubs,
-		CurrentVersion: "0.1.0",
-		InstallPath:    installPath,
+		CurrentVersion: "0.1.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"),
 	})
 
 	// 1. Check must return the update.
@@ -738,7 +787,7 @@ func TestUpdater_Apply_HappyPath(t *testing.T) {
 	}
 
 	// 3. After Apply, journal must exist with newBundleID recorded.
-	jp := journalPath(installPath)
+	jp := testJournalPath(t, installPath)
 	rec, err := readJournal(jp)
 	if err != nil {
 		t.Fatalf("read journal after Apply: %v", err)
@@ -794,9 +843,7 @@ func TestUpdater_Apply_HappyPath(t *testing.T) {
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{body: manifestBody, sig: manifestSig},
 		Keyring:        pubs,
-		CurrentVersion: "0.2.0",
-		InstallPath:    installPath,
-		Coordinator:    &stubProbe{build: CoordinatorBuild{Version: "0.2.0", Commit: "testsha"}},
+		CurrentVersion: "0.2.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"), Coordinator: &stubProbe{build: CoordinatorBuild{Version: "0.2.0", Commit: "testsha"}},
 	})
 	if err := restarted.ReportHealthy(ctx); err != nil {
 		t.Fatalf("ReportHealthy failed: %v", err)
@@ -855,8 +902,7 @@ func TestUpdater_Apply_SHA256Mismatch(t *testing.T) {
 		Platform:       newFakePlatform(),
 		Fetcher:        &mockFetcher{body: manifestBody, sig: manifestSig},
 		Keyring:        pubs,
-		CurrentVersion: "0.1.0",
-		InstallPath:    installPath,
+		CurrentVersion: "0.1.0", InstallPath: installPath, StateDir: filepath.Join(filepath.Dir(installPath), "state"),
 	})
 
 	info, err := u.Check(ctx)

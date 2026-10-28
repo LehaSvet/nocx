@@ -68,7 +68,7 @@ export interface ToastOptions {
    */
   duration?: number
   /** An inline link after the message, e.g. the release notes an update
-   *  toast names. Off-site pages open in their own tab. */
+   *  toast names. The host hands it to its injected URL opener. */
   link?: ToastLink
   /** Actions after the message, in order. A toast with actions should be
    *  raised sticky (`duration: 0`): one that dismisses itself takes its own
@@ -162,7 +162,14 @@ const LEVEL_ICON: Record<ToastLevel, Component> = {
  * region is announced as its contents change, which is one announcement per toast
  * instead of one per re-render of the list.
  */
-export function ToastHost() {
+/** Platform capability injected at the shell root. The kit never imports a
+ * transport, and calls the opener synchronously to preserve browser gestures. */
+export interface ToastHostProps {
+  openUrl?: (url: string) => Promise<void>
+  onOpenUrlError?: (error: unknown) => void
+}
+
+export function ToastHost(props: ToastHostProps = {}) {
   onCleanup(clearToasts)
   // Rendered into the topmost open overlay when there is one, and into the body
   // otherwise. A modal `<dialog>` lives in the browser's top layer, which is
@@ -175,13 +182,29 @@ export function ToastHost() {
   // rebuilt when the topmost overlay changes. The toasts themselves live in a
   // module signal and survive that.
   return (
-    <Show when={topOverlayElement()} keyed fallback={renderHost()}>
-      {(el) => <Portal mount={el}>{renderHost()}</Portal>}
+    <Show when={topOverlayElement()} keyed fallback={renderHost(props)}>
+      {(el) => <Portal mount={el}>{renderHost(props)}</Portal>}
     </Show>
   )
 }
 
-function renderHost() {
+function renderHost(props: ToastHostProps) {
+  const openLink = (url: string): void => {
+    const refused = (error: unknown): void => {
+      props.onOpenUrlError?.(error)
+      showToast({
+        level: 'danger',
+        message:
+          'The browser could not be opened. Try again or open the release notes in your browser.',
+      })
+    }
+    try {
+      if (!props.openUrl) throw new Error('URL opener is not configured')
+      void props.openUrl(url).catch(refused)
+    } catch (error) {
+      refused(error)
+    }
+  }
   return (
     <div class="ui-toast-host" role="status" aria-live="polite">
       <For each={toasts()}>
@@ -199,8 +222,10 @@ function renderHost() {
                     <a
                       class="ui-toast__link"
                       href={link().href}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                      onClick={(event) => {
+                        event.preventDefault()
+                        openLink(link().href)
+                      }}
                     >
                       {link().label}
                     </a>

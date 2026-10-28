@@ -571,6 +571,12 @@ test.describe('tab completion', () => {
       await expect(page.locator('.nocx-tab')).toHaveCount(1)
       await promptReady(page)
       await cdInto(page, fixture)
+      // promptReady observes input ownership, not the later OSC 7 cwd report.
+      // The path provider needs that verified cwd to resolve `repos/meshynet/gr`
+      // against this fixture rather than the previous directory.
+      await expect(
+        page.locator('.ui-prompt-context[data-presentation="composer"]'),
+      ).toHaveAttribute('title', fixture)
 
       // ── report 3: the row shows the LAST SEGMENT, never the typed
       //    prefix repeated — `graphify-output/`, not

@@ -22,19 +22,20 @@ func (u *updater) Check(ctx context.Context) (*UpdateInfo, error) {
 	}
 
 	// Fetch manifest + signature.
-	body, sig, err := u.fetcher.Fetch(ctx)
+	fetched, err := u.fetcher.Fetch(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("update check: fetch manifest: %w", err)
 	}
 
 	// Verify signature before parsing.
-	m, err := VerifyManifest(body, string(sig), u.keyring)
+	m, err := VerifyManifest(fetched.Body, string(fetched.Signature), u.keyring)
 	if err != nil {
 		return nil, fmt.Errorf("update check: manifest verification: %w", err)
 	}
 
-	// Semver comparison.
-	if !IsNewer(u.currentVersion, m.Version) {
+	// Stable stays semver-only. Nightly also admits a later distinct build
+	// within the same valid version; it never admits a downgrade.
+	if !IsNewer(u.currentVersion, m.Version) && !u.newerNightly(fetched.Channel, m) {
 		u.log.Debug("update check: already current",
 			"current", u.currentVersion, "remote", m.Version)
 		return nil, nil
@@ -53,7 +54,7 @@ func (u *updater) Check(ctx context.Context) (*UpdateInfo, error) {
 		URL:         art.URL,
 		SHA256:      art.SHA256,
 		Size:        art.Size,
-		manifestRaw: body,
+		manifestRaw: fetched.Body,
 	}, nil
 }
 
@@ -63,6 +64,16 @@ func (u *updater) Check(ctx context.Context) (*UpdateInfo, error) {
 
 // Apply implements [Updater.Apply].
 func (u *updater) Apply(ctx context.Context, info *UpdateInfo) error {
+	// Refusals must not leave even a lock or journal behind.
+	if err := u.platform.Preflight(ctx, u.installPath); err != nil {
+		return fmt.Errorf("update apply: preflight refused: %w", err)
+	}
+	if u.stateDir == "" {
+		return errors.New("update apply: state directory is not configured")
+	}
+	if err := os.MkdirAll(u.stateDir, 0o750); err != nil {
+		return fmt.Errorf("update apply: create state directory: %w", err)
+	}
 	// Step 1: acquire lock.
 	lk, err := acquireLock(u.lockPath)
 	if err != nil {
@@ -76,14 +87,9 @@ func (u *updater) Apply(ctx context.Context, info *UpdateInfo) error {
 	}
 
 	// Abort if there is still a journal — a transaction is in flight.
-	jp := journalPath(u.installPath)
+	jp := journalPath(u.stateDir)
 	if rec, _ := readJournal(jp); rec != nil {
 		return fmt.Errorf("update apply: a previous transaction is still in flight — run Reconcile first")
-	}
-
-	// Step 3: preflight check through platform seam.
-	if err = u.platform.Preflight(ctx, u.installPath); err != nil {
-		return fmt.Errorf("update apply: preflight refused: %w", err)
 	}
 
 	// Step 4: write the journal record BEFORE touching the disk.
@@ -92,9 +98,6 @@ func (u *updater) Apply(ctx context.Context, info *UpdateInfo) error {
 	oldID, err := statBundleID(u.installPath)
 	if err != nil {
 		return fmt.Errorf("update apply: stat install bundle: %w", err)
-	}
-	if oldID.isZero() {
-		return fmt.Errorf("update apply: install bundle not found at %s", u.installPath)
 	}
 
 	txID := info.Version // simple, unique per release
@@ -174,8 +177,14 @@ func (u *updater) Apply(ctx context.Context, info *UpdateInfo) error {
 		return fmt.Errorf("update apply: install bundle changed during update (was %v, now %v) — refusing to exchange", oldID, currentID)
 	}
 
-	// Step 11: atomic exchange.
-	if err := u.platform.Exchange(ctx, u.installPath, swap); err != nil {
+	// A first installation has no exchange peer. Rename is still atomic
+	// because staging is on the target filesystem.
+	if oldID.isZero() {
+		err = os.Rename(swap, u.installPath)
+	} else {
+		err = u.platform.Exchange(ctx, u.installPath, swap)
+	}
+	if err != nil {
 		return fmt.Errorf("update apply: exchange failed: %w", err)
 	}
 
@@ -223,6 +232,12 @@ func (u *updater) extractedBundlePath(stageDir string) string {
 
 // Reconcile implements [Updater.Reconcile].
 func (u *updater) Reconcile(ctx context.Context) error {
+	if u.stateDir == "" {
+		return errors.New("reconcile: state directory is not configured")
+	}
+	if err := os.MkdirAll(u.stateDir, 0o750); err != nil {
+		return fmt.Errorf("reconcile: create state directory: %w", err)
+	}
 	// Try-lock at startup so the terminal never blocks on an
 	// in-progress download from another process.
 	lk, err := tryLock(ctx, u.lockPath)
@@ -240,85 +255,73 @@ func (u *updater) Reconcile(ctx context.Context) error {
 
 // reconcileLocked performs reconciliation under an already-held lock.
 func (u *updater) reconcileLocked(ctx context.Context) error {
-	jp := journalPath(u.installPath)
+	if u.stateDir == "" {
+		return errors.New("reconcile: state directory is not configured")
+	}
+	jp := journalPath(u.stateDir)
 	rec, err := readJournal(jp)
 	if err != nil {
-		// Unreadable journal — refuse with recovery instructions.
 		return fmt.Errorf("reconcile: journal is unreadable or corrupt at %s: %w — remove this file manually to recover", jp, err)
 	}
 	if rec == nil {
-		// No record — check for orphaned managed debris.
-		swap := swapPath(u.installPath)
-		backup := backupPath(u.installPath)
-		if u.pathExists(swap) || u.pathExists(backup) {
-			return fmt.Errorf(
-				"reconcile: no journal but managed debris exists at %s and/or %s — "+
-					"these files may hold a rollback copy. Remove them by hand if they are stale, "+
-					"or consult the README rollback procedures.",
-				swap, backup,
-			)
+		// A transaction begun by a build that kept its journal beside the
+		// install path is still a transaction: the placement split moved the
+		// journal into the profile's data directory (ADR-0106), and an update
+		// that was in flight when the person upgraded must be settled rather
+		// than read as debris. Adoption is read-then-write, so a read-only
+		// install directory costs nothing: the old copy is removed on a best
+		// effort, and the state directory's copy is authoritative from here.
+		legacy := legacyJournalPath(u.installPath)
+		if lrec, lerr := readJournal(legacy); lerr == nil && lrec != nil {
+			if werr := writeJournal(jp, lrec); werr != nil {
+				return fmt.Errorf("reconcile: adopt the journal at %s: %w", legacy, werr)
+			}
+			_ = deleteJournal(legacy)
+			u.log.Info("reconcile: adopted a journal left by the previous layout",
+				"fromVersion", lrec.FromVersion, "toVersion", lrec.ToVersion)
+			rec = lrec
 		}
-		// Nothing in flight.
+	}
+	if rec == nil {
+		swap, backup := swapPath(u.installPath), backupPath(u.installPath)
+		if u.pathExists(swap) || u.pathExists(backup) {
+			return fmt.Errorf("reconcile: no journal but managed debris exists at %s and/or %s — these files may hold a rollback copy. Remove them by hand if they are stale, or consult the README rollback procedures.", swap, backup)
+		}
 		return nil
 	}
-
-	// Check whether the install path still matches. We must handle
-	// the linux case where the "bundle" is a single file, and the
-	// darwin case where it's a directory — os.Stat works for both.
-	currentID, err := statBundleID(u.installPath)
+	currentID, err := statBundleID(rec.InstallPath)
 	if err != nil {
-		return fmt.Errorf("reconcile: stat install bundle %s: %w", u.installPath, err)
+		return fmt.Errorf("reconcile: stat install bundle %s: %w", rec.InstallPath, err)
 	}
-
 	switch {
-	case currentID.isZero():
-		// The install path does not exist — the user deleted it.
-		return fmt.Errorf("reconcile: install bundle missing at %s — a transaction was in flight but the bundle is gone. Remove %s and consult the README rollback procedures.", u.installPath, jp)
-
+	case currentID.isZero() && !rec.OldBundleID.isZero():
+		return fmt.Errorf("reconcile: install bundle missing at %s — a transaction was in flight but the bundle is gone. Remove %s and consult the README rollback procedures.", rec.InstallPath, jp)
 	case currentID.equal(rec.OldBundleID):
-		// Exchange did not happen. Clean up transaction debris.
-		u.log.Info("reconcile: exchange did not happen, cleaning up",
-			"fromVersion", rec.FromVersion, "toVersion", rec.ToVersion)
-
-		swap := swapPath(u.installPath)
-		_ = os.RemoveAll(swap)
-		extractDir := extractionDir(u.installPath, rec.TxID)
-		_ = os.RemoveAll(extractDir)
+		u.log.Info("reconcile: exchange did not happen, cleaning up", "fromVersion", rec.FromVersion, "toVersion", rec.ToVersion)
+		_ = os.RemoveAll(swapPath(rec.InstallPath))
+		_ = os.RemoveAll(extractionDir(rec.InstallPath, rec.TxID))
 		if err := deleteJournal(jp); err != nil {
 			return fmt.Errorf("reconcile: clear journal: %w", err)
 		}
 		return nil
-
 	case currentID.equal(rec.NewBundleID):
-		// Exchange happened, health unconfirmed — pendingRestart.
-		u.log.Info("reconcile: exchange happened, health unconfirmed",
-			"fromVersion", rec.FromVersion, "toVersion", rec.ToVersion)
-
-		// Increment launch counter.
+		// A healthy window on a kept compatible coordinator is not a failed
+		// launch. Preserve the rollback copy until the installed pair runs.
+		if rec.HeldByCoordinator != "" {
+			u.log.Info("reconcile: update held by the running coordinator", "heldByVersion", rec.HeldByCoordinator, "toVersion", rec.ToVersion)
+			return nil
+		}
 		rec.LaunchAttempts++
 		if err := writeJournal(jp, rec); err != nil {
 			return fmt.Errorf("reconcile: update launch count: %w", err)
 		}
-
-		// Auto-rollback after 3 launches without health confirmation.
 		if rec.LaunchAttempts >= 3 {
-			u.log.Warn("reconcile: auto-rollback triggered after 3 unhealthy launches",
-				"toVersion", rec.ToVersion, "attempts", rec.LaunchAttempts)
 			return u.rollback(jp, rec)
 		}
-
-		u.log.Info("reconcile: waiting for health confirmation",
-			"attempt", rec.LaunchAttempts)
+		u.log.Info("reconcile: waiting for health confirmation", "attempt", rec.LaunchAttempts)
 		return nil
-
 	default:
-		// installPath holds neither oldBundleID nor newBundleID.
-		return fmt.Errorf(
-			"reconcile: install bundle at %s has unexpected identity %v — "+
-				"the journal recorded old=%v new=%v. The bundle was replaced by hand or by another process. "+
-				"Remove %s and consult the README rollback procedures.",
-			u.installPath, currentID, rec.OldBundleID, rec.NewBundleID, jp,
-		)
+		return fmt.Errorf("reconcile: install bundle at %s has unexpected identity %v — the journal recorded old=%v new=%v. The bundle was replaced by hand or by another process. Remove %s and consult the README rollback procedures.", rec.InstallPath, currentID, rec.OldBundleID, rec.NewBundleID, jp)
 	}
 }
 
@@ -331,12 +334,12 @@ func (u *updater) reconcileLocked(ctx context.Context) error {
 // staged. A journal whose exchange never happened is debris Reconcile is
 // about to clean, not pending work a person should be told about.
 func (u *updater) State(ctx context.Context) UpdateState {
-	jp := journalPath(u.installPath)
+	jp := journalPath(u.stateDir)
 	rec, err := readJournal(jp)
 	if err != nil || rec == nil {
 		return UpdateState{}
 	}
-	currentID, err := statBundleID(u.installPath)
+	currentID, err := statBundleID(rec.InstallPath)
 	if err != nil || !currentID.equal(rec.NewBundleID) {
 		return UpdateState{}
 	}
@@ -350,7 +353,10 @@ func (u *updater) State(ctx context.Context) UpdateState {
 // rollback exchanges the swap bundle back into the install path,
 // deleting the journal afterward.
 func (u *updater) rollback(jp string, rec *journalRecord) error {
-	swap := swapPath(u.installPath)
+	if rec.OldBundleID.isZero() {
+		return errors.New("rollback: this was a first installation, with no previous target to restore; launch the original copy or install a known-good release")
+	}
+	swap := swapPath(rec.InstallPath)
 
 	// Verify the swap peer still exists and holds newBundleID.
 	swapID, err := statBundleID(swap)
@@ -362,7 +368,7 @@ func (u *updater) rollback(jp string, rec *journalRecord) error {
 	}
 
 	// Exchange back.
-	if err := u.platform.Exchange(context.Background(), u.installPath, swap); err != nil {
+	if err := u.platform.Exchange(context.Background(), rec.InstallPath, swap); err != nil {
 		return fmt.Errorf("rollback: exchange back failed: %w", err)
 	}
 
@@ -372,7 +378,7 @@ func (u *updater) rollback(jp string, rec *journalRecord) error {
 	if err := deleteJournal(jp); err != nil {
 		return fmt.Errorf("rollback: clear journal: %w", err)
 	}
-	extractDir := extractionDir(u.installPath, rec.TxID)
+	extractDir := extractionDir(rec.InstallPath, rec.TxID)
 	_ = os.RemoveAll(extractDir)
 
 	return nil
@@ -390,13 +396,19 @@ func (u *updater) rollback(jp string, rec *journalRecord) error {
 // the exchange happen, and — the pair check, D4 — is the software now
 // running actually the software that was installed.
 func (u *updater) ReportHealthy(ctx context.Context) error {
+	if u.stateDir == "" {
+		return errors.New("report healthy: state directory is not configured")
+	}
+	if err := os.MkdirAll(u.stateDir, 0o750); err != nil {
+		return fmt.Errorf("report healthy: create state directory: %w", err)
+	}
 	lk, err := acquireLock(u.lockPath)
 	if err != nil {
 		return fmt.Errorf("report healthy: lock: %w", err)
 	}
 	defer func() { _ = lk.release() }()
 
-	jp := journalPath(u.installPath)
+	jp := journalPath(u.stateDir)
 	rec, err := readJournal(jp)
 	if err != nil {
 		return fmt.Errorf("report healthy: read journal: %w", err)
@@ -406,7 +418,7 @@ func (u *updater) ReportHealthy(ctx context.Context) error {
 		return nil
 	}
 
-	currentID, err := statBundleID(u.installPath)
+	currentID, err := statBundleID(rec.InstallPath)
 	if err != nil {
 		return fmt.Errorf("report healthy: stat install bundle: %w", err)
 	}
@@ -434,14 +446,14 @@ func (u *updater) ReportHealthy(ctx context.Context) error {
 
 	// Finalisation (idempotent):
 	// 1. Delete old backup (if exists and not the current newID).
-	backup := backupPath(u.installPath)
+	backup := backupPath(rec.InstallPath)
 	backupID, _ := statBundleID(backup)
 	if !backupID.isZero() && !backupID.equal(rec.NewBundleID) {
 		_ = os.RemoveAll(backup)
 	}
 
 	// 2. Rename swap (which now holds old bundle) to backup.
-	swap := swapPath(u.installPath)
+	swap := swapPath(rec.InstallPath)
 	if u.pathExists(swap) {
 		_ = os.RemoveAll(backup)
 		if err := os.Rename(swap, backup); err != nil {

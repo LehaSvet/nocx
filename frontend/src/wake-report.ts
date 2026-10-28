@@ -33,6 +33,11 @@
 // diagnostic that outlives its question becomes noise nobody dares remove.
 
 import { log } from './log'
+import { documentWakeSource, type WakeSource } from './wake-source'
+
+/** Re-exported for the callers that used to get it from here; the owner of the
+ *  signal itself is `wake-source.ts` (nocx-1ebrs.66.1.1). */
+export type { WakeSource }
 
 /** What one pane can be asked about itself at wake. Every field is a
  *  MEASUREMENT the pane already holds; nothing here computes or repairs. */
@@ -55,28 +60,6 @@ export interface WakeObservation {
   editorVisible: boolean
   /** The pane's own connection condition at that moment. */
   connection: string
-}
-
-/** A source of wake events. The DOM's own; injected so a test can drive it. */
-export interface WakeSource {
-  subscribe(onWake: () => void): () => void
-}
-
-/** The browser's account of coming back: the document becoming visible again,
- *  and the window regaining focus. Both fire on a lid opening and neither is
- *  reliable alone, so the reporter debounces rather than choosing one. */
-const documentWakeSource: WakeSource = {
-  subscribe(onWake: () => void): () => void {
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') onWake()
-    }
-    document.addEventListener('visibilitychange', onVisibility)
-    window.addEventListener('focus', onWake)
-    return () => {
-      document.removeEventListener('visibilitychange', onVisibility)
-      window.removeEventListener('focus', onWake)
-    }
-  },
 }
 
 /** How long two wake signals are treated as one event. A lid opening delivers

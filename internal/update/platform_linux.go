@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/shady2k/nocx/internal/log"
 	"golang.org/x/sys/unix"
 )
 
@@ -44,7 +45,7 @@ func NewPlatform() Platform {
 // build, an unpacked binary, or a deb/rpm install — none of which
 // can be self-replaced. This mirrors the darwin §7.7 refusals and
 // matches electron-updater's behaviour.
-func (p *linuxPlatform) Preflight(_ context.Context, installPath string) error {
+func (p *linuxPlatform) Preflight(ctx context.Context, installPath string) error {
 	appImagePath := os.Getenv("APPIMAGE")
 	if appImagePath == "" {
 		return errors.New(
@@ -59,7 +60,8 @@ func (p *linuxPlatform) Preflight(_ context.Context, installPath string) error {
 	// AppImage can be placed and the atomic exchange can proceed.
 	dir := filepath.Dir(installPath)
 	if err := unix.Access(dir, unix.W_OK); err != nil {
-		return fmt.Errorf("install directory %s is not writable — cannot stage or apply an update: %w", dir, err)
+		log.From(ctx).Warn("update install directory is not writable", "path", dir, "error", err)
+		return errors.New("the AppImage directory is not writable — move the AppImage to a directory you can write to, launch it there, and try again")
 	}
 
 	return nil
