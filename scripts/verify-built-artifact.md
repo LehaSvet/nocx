@@ -24,7 +24,15 @@ gate checks every field and compares both descriptors. It reads the assembled
 macOS `Info.plist`, not the build-assets arguments. Expected values come from the
 committed plist identifier, LICENSE owner, main's description, go.mod Wails pin,
 and the workflow's expected version and SHA. A missing, stale, or template field
-fails with its name.
+fails with its name. Read and parse failures name the archive and the exact
+input path (or executable command), byte count, first 64 bytes, and parser
+reason. Missing inputs explicitly say that byte evidence is unavailable.
+
+Wails beta.9 emits valid XML plists starting with `<!DOCTYPE plist`, without
+an XML declaration. The gate selects XML parsing for that prefix because
+`plistlib` auto-detection does not recognize it. It parses the original bytes;
+it does not normalize the package or bypass any identity check. Binary plists
+remain supported. Malformed XML and binary plists still fail publication.
 
 `--verify-release-manifest` runs before any desktop, profile, daemon, or keystore
 starts. It calls the **same updater construction** as `ServiceStartup`, then calls
@@ -73,11 +81,16 @@ pipeline. This desktop gate does not claim to inspect the deployed site.
 Use the worktree's normal `nocx-sky-test` route, with its default resources:
 
 ```sh
-nocx-sky-test "$PWD" "python3 scripts/verify_built_artifact_test.py"
-nocx-sky-test "$PWD" "go test -tags gtk3 -run TestReleaseDiagnostics . && go test -tags gtk3 -run TestWindowUpdater ."
+flock /tmp/nocx-sky.lock -c 'nocx-sky-test "$PWD" "python3 scripts/verify_built_artifact_test.py"'
+flock /tmp/nocx-sky.lock -c 'nocx-sky-test "$PWD" "go test -tags gtk3 -run TestReleaseDiagnostics . && go test -tags gtk3 -run TestWindowUpdater ."'
 ```
 
 The Python checks package executable fixtures into actual zip archives, mutate
 About fields, identity, and manifest failures, and assert publication refusal.
+`scripts/testdata/wails-beta.9-Info.plist` is the unmodified output of the pinned
+`wails3 generate build-assets` command and identity flags in `release-build.yml`
+for version `0.8.0` (1097 bytes, SHA-256
+`ae274dd09516a36c85e8131679738ac988d8b228cd85d1622ff05d027644e3a1`). It exercises
+the real declaration-free XML rather than a plistlib-generated approximation.
 They establish the checker, not a real signed application build. The real macOS
 zip and AppImage checks must run once on GitHub before acceptance.
