@@ -144,14 +144,24 @@ func (u *updater) newerNightly(channel Channel, remote *Manifest) bool {
 		return false
 	}
 	current, candidate := u.currentBuild, remote.Build
-	if !fullCommit.MatchString(current.Commit) || !fullCommit.MatchString(candidate.Commit) || current.Commit == candidate.Commit {
+	if current.Commit == candidate.Commit {
 		return false
+	}
+	currentTime, valid := buildTime(current)
+	if !valid {
+		return false
+	}
+	remoteTime, valid := buildTime(candidate)
+	return valid && remoteTime.After(currentTime)
+}
+
+// buildTime accepts only complete stamped identities, never dev defaults or
+// partial identities. Nightly comparison and certification share this rule.
+func buildTime(build version.BuildIdentity) (time.Time, bool) {
+	if !fullCommit.MatchString(build.Commit) {
+		return time.Time{}, false
 	}
 	const layout = "2006-01-02T15:04:05Z"
-	currentTime, err := time.Parse(layout, current.BuiltAt)
-	if err != nil || currentTime.Format(layout) != current.BuiltAt {
-		return false
-	}
-	remoteTime, err := time.Parse(layout, candidate.BuiltAt)
-	return err == nil && remoteTime.Format(layout) == candidate.BuiltAt && remoteTime.After(currentTime)
+	builtAt, err := time.Parse(layout, build.BuiltAt)
+	return builtAt, err == nil && builtAt.Format(layout) == build.BuiltAt
 }
