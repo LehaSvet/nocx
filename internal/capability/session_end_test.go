@@ -114,3 +114,85 @@ func TestSessionEndAdmissionRefusalLeavesTheSessionLive(t *testing.T) {
 		t.Fatalf("refused close removed the session: %v", err)
 	}
 }
+
+// A counting admission makes cancellation's position in the operation visible:
+// cancelled queued work must not acquire anything, and cancellation during a
+// permit handoff must release what it acquired without retiring the identity.
+type reviewCountingAdmission struct {
+	control.Admission
+	calls  int
+	cancel context.CancelFunc
+}
+
+func (a *reviewCountingAdmission) TryAcquire(ctx context.Context) (control.Permit, *control.Rejection) {
+	a.calls++
+	permit, rejection := a.Admission.TryAcquire(ctx)
+	if rejection == nil && a.cancel != nil {
+		a.cancel()
+	}
+	return permit, rejection
+}
+
+func TestReviewSessionEndCancelledBeforeAdmissionLeavesSessionLive(t *testing.T) {
+	reg := newFakeSessionRegistry()
+	reg.sessions["A"] = &fakeSession{id: "A"}
+	gate := &reviewCountingAdmission{Admission: control.NewSemaphore(capability.GateSession, 1)}
+	lane := &reviewCountingAdmission{Admission: control.NewSemaphore("control", 1)}
+	ops := capability.NewSessionOperations(gate, lane, reg, nil)
+	op, err := ops.ForSessionEnd("A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got, err := op.Run(ctx, func(session.Session) { t.Error("cancelled close reached teardown") })
+	if got != nil || !capability.IsRefused(err) {
+		t.Errorf("cancelled close = (%v, %v), want refusal", got, err)
+	}
+	if gate.calls != 0 || lane.calls != 0 {
+		t.Errorf("cancelled close acquired admissions: gate=%d lane=%d", gate.calls, lane.calls)
+	}
+	if _, err := reg.Get("A"); err != nil {
+		t.Fatalf("cancelled close retired A: %v", err)
+	}
+}
+
+func TestReviewSessionEndCancelledDuringAdmissionLeavesSessionLive(t *testing.T) {
+	for _, cancelAt := range []string{"gate", "lane"} {
+		t.Run(cancelAt, func(t *testing.T) {
+			reg := newFakeSessionRegistry()
+			reg.sessions["A"] = &fakeSession{id: "A"}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			gate := &reviewCountingAdmission{Admission: control.NewSemaphore(capability.GateSession, 1)}
+			lane := &reviewCountingAdmission{Admission: control.NewSemaphore("control", 1)}
+			if cancelAt == "gate" {
+				gate.cancel = cancel
+			} else {
+				lane.cancel = cancel
+			}
+			op, err := capability.NewSessionOperations(gate, lane, reg, nil).ForSessionEnd("A")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := op.Run(ctx, func(session.Session) { t.Error("cancelled close reached teardown") })
+			if got != nil || !capability.IsRefused(err) {
+				t.Errorf("cancelled close = (%v, %v), want refusal", got, err)
+			}
+			if cancelAt == "gate" && lane.calls != 0 {
+				t.Error("close acquired execution lane after gate cancelled it")
+			}
+			if _, err := reg.Get("A"); err != nil {
+				t.Errorf("cancelled close retired A: %v", err)
+			}
+			for _, admission := range []control.Admission{gate.Admission, lane.Admission} {
+				permit, rejection := admission.TryAcquire(context.Background())
+				if rejection != nil {
+					t.Errorf("cancelled close leaked permit: %+v", rejection)
+				} else {
+					permit.Release()
+				}
+			}
+		})
+	}
+}

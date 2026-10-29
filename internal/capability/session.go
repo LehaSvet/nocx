@@ -125,11 +125,26 @@ func (op *sessionEndOperation) Disposition() Disposition {
 }
 
 func (op *sessionEndOperation) Run(ctx context.Context, before func(session.Session)) (sess session.Session, err error) {
+	// Queued tasks still run during shutdown to settle their callers, but an
+	// uncommitted close has no authority after cancellation. Admissions may
+	// take their free fast path without consulting ctx, so check each handoff.
+	refuseCancelled := func() error {
+		if ctx.Err() != nil {
+			return &RefusedError{Rejection: control.Rejection{Scope: GateSession, Reason: ctx.Err().Error()}}
+		}
+		return nil
+	}
+	if cancelled := refuseCancelled(); cancelled != nil {
+		return nil, cancelled
+	}
 	sessionPermit, rej := op.sessionGate.TryAcquire(ctx)
 	if rej != nil {
 		return nil, &RefusedError{Rejection: *rej}
 	}
 	defer sessionPermit.Release()
+	if cancelled := refuseCancelled(); cancelled != nil {
+		return nil, cancelled
+	}
 
 	// Both permits precede retirement: a refused lane must leave the session
 	// live. Acquisition order remains domain gate before execution lane.
@@ -138,6 +153,9 @@ func (op *sessionEndOperation) Run(ctx context.Context, before func(session.Sess
 		return nil, &RefusedError{Rejection: *rej}
 	}
 	defer lanePermit.Release()
+	if cancelled := refuseCancelled(); cancelled != nil {
+		return nil, cancelled
+	}
 
 	sess, finish, err := op.registry.PrepareEndSession(op.id)
 	if err != nil {
