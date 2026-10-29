@@ -106,6 +106,11 @@ def snapshot_done(source, result, data):
             print("COLRV1_DOM_METRICS " + json.dumps({"control": control, "glyph": candidate["text"],
                   "bounds": box, **metric}), flush=True)
             if control:
+                # U+10FFFF in monospace is a missing-glyph control, not a
+                # weaker colour sample. Require the recorded zero invariant.
+                assert metric["chromatic_pixels"] == 0, "missing-glyph control has chromatic pixels"
+                assert metric["hue_buckets"] == 0, "missing-glyph control has coloured hues"
+                assert metric["mean_saturation"] == 0, "missing-glyph control has chromatic saturation"
                 before = colour_metrics[index]
                 assert before["chromatic_pixels"] > metric["chromatic_pixels"] * 2 + 100, "glyph not more chromatic than tofu control"
                 assert before["hue_buckets"] >= metric["hue_buckets"] + 2, "glyph hue coverage not above tofu control"
