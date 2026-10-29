@@ -33,12 +33,9 @@ for (const ratio of [1, 1.8, 2]) {
         })
         const measurement = await page.evaluate(() => {
           const g = document.querySelector<HTMLElement>('.pane.active .terminal-live-grid')
-          const last =
-            g &&
-            [...g.querySelectorAll<HTMLElement>('.term-grid-row')].find((r) =>
-              r.textContent?.includes('LAST-ROW'),
-            )
-          if (!g || !last) return null
+          const rows = g?.querySelectorAll<HTMLElement>('.term-grid-row')
+          const last = rows?.[rows.length - 1]
+          if (!g || !last?.textContent?.includes('LAST-ROW')) return null
           let clip = Infinity
           for (let n: HTMLElement | null = g.parentElement; n; n = n.parentElement) {
             if (getComputedStyle(n).overflowY !== 'visible') {
