@@ -519,6 +519,13 @@ test('only an open bead quarantines; a closed one protects nothing; an unknown o
   )
   assert.throws(() => readQuarantine(doc([{ test: 'go:TestA', bead: 'nocx-z' }]), issues), /exist/)
   assert.throws(() => readQuarantine(doc([{ test: 'TestA', bead: 'nocx-a' }]), issues), /entry/)
+  assert.deepEqual(readQuarantine(doc([{ test: 'job:ci-backlog#557', bead: 'nocx-a' }]), issues), {
+    'job:ci-backlog#557': 'nocx-a',
+  })
+  assert.throws(
+    () => readQuarantine(doc([{ test: 'job:ci-backlog', bead: 'nocx-a' }]), issues),
+    /entry/,
+  )
   assert.throws(() => readQuarantine('{"schema":2,"tests":[]}', issues), /quarantine/)
 })
 
@@ -569,6 +576,27 @@ test('a red required job passes only on quarantined tests or a retry that classi
       delete e.attempts[0].jobs[i].failures
       e.attempts[1].jobs[i].failures = []
     }),
+  )
+  // The same nameless failure in every attempt, quarantined for exactly this
+  // job of exactly this PR: green; for another PR's number: red.
+  const nameless = (e, i) => {
+    for (const a of e.attempts) a.jobs[i].failures = []
+  }
+  verifyCI(
+    red((e, i) => {
+      nameless(e, i)
+      e.quarantine['job:ci-e2e (webkit, 2)#12'] = 'nocx-b'
+    }),
+  )
+  assert.throws(
+    () =>
+      verifyCI(
+        red((e, i) => {
+          nameless(e, i)
+          e.quarantine['job:ci-e2e (webkit, 2)#13'] = 'nocx-b'
+        }),
+      ),
+    /never passed/,
   )
   // A cancelled job is never a flake.
   assert.throws(
