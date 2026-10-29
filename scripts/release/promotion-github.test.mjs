@@ -155,9 +155,32 @@ test('a red CI run is read whole: earlier attempts and each failed job log, quar
   )
   assert.deepEqual(entry.attempts[1].jobs[0].failures, ['go:TestFlaky'])
   assert.deepEqual(logs, [
-    `api repos/${repo}/actions/jobs/150/logs`,
-    `api repos/${repo}/actions/jobs/100/logs`,
+    `api --allow-escape-sequences repos/${repo}/actions/jobs/150/logs`,
+    `api --allow-escape-sequences repos/${repo}/actions/jobs/100/logs`,
   ])
+})
+
+test('a direct push is judged by the later green PR that covers it, or by being supporting', async () => {
+  const direct = 'd'.repeat(40)
+  const build = (product, ancestor) => {
+    const f = fixture()
+    f.options.commits = [direct, commit]
+    f.responses.set(`repos/${repo}/commits/${direct}/pulls`, [])
+    f.options.commitFiles = () => (product ? ['.github/workflows/ci.yml'] : ['.beads/issues.jsonl'])
+    f.options.touchesProduct = (files) => files.some((name) => !name.startsWith('.beads/'))
+    f.options.isAncestor = () => ancestor
+    return f
+  }
+  const supporting = await collectCI(build(false, false).options)
+  assert.equal(supporting[0].direct, true)
+  assert.equal(supporting[0].product, false)
+  const covered = await collectCI(build(true, true).options)
+  assert.equal(covered[0].coveredBy, 12)
+  await assert.rejects(() => collectCI(build(true, false).options), /no later green PR/)
+  const noRecord = fixture()
+  noRecord.options.commits = [direct, commit]
+  noRecord.responses.set(`repos/${repo}/commits/${direct}/pulls`, [])
+  await assert.rejects(() => collectCI(noRecord.options), /exactly one merged main PR/)
 })
 
 test('GitHub list reader follows every page and propagates a missing next page', () => {

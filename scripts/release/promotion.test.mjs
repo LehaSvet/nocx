@@ -13,6 +13,7 @@ import {
   updateCask,
   failedTests,
   readQuarantine,
+  runBelongsTo,
 } from './promotion.mjs'
 
 const sha = 'a'.repeat(40)
@@ -618,4 +619,21 @@ test('a red required job passes only on quarantined tests or a retry that classi
       ),
     /not green/,
   )
+})
+
+test('a run is its PR by number, or after the branch is deleted by branch, repository and head', () => {
+  const repo = 'shady2k/nocx'
+  const pr = { number: 529, head: { ref: 'chore/setup-skills-056', repo: { full_name: repo } } }
+  const run = (over) => ({
+    pull_requests: [],
+    head_branch: 'chore/setup-skills-056',
+    head_repository: { full_name: repo },
+    ...over,
+  })
+  assert.equal(runBelongsTo(run({ pull_requests: [{ number: 529 }] }), pr, repo), true)
+  assert.equal(runBelongsTo(run({}), pr, repo), true)
+  assert.equal(runBelongsTo(run({ pull_requests: [{ number: 530 }] }), pr, repo), false)
+  assert.equal(runBelongsTo(run({ head_branch: 'other' }), pr, repo), false)
+  assert.equal(runBelongsTo(run({ head_repository: { full_name: 'fork/nocx' } }), pr, repo), false)
+  assert.equal(runBelongsTo(run({ pull_requests: undefined }), pr, repo), false)
 })
