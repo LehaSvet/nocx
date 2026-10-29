@@ -6597,6 +6597,59 @@ describe('the projections consume the kernel through the composition root (ADR-0
     }
   })
 
+  it('a running command reclaims the keyboard from an unclaimed <body> (nocx-1ebrs.66.1.16)', async () => {
+    const client = makeClient()
+    const { content, ed, view, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    /* eslint-disable @typescript-eslint/unbound-method */
+    const protoScrollTo = Element.prototype.scrollTo
+    /* eslint-enable @typescript-eslint/unbound-method */
+    Element.prototype.scrollTo = () => {}
+    try {
+      const input = intentElementOf(content)
+      const handler = factHandler(client)
+      handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
+      ed.insertText('read x')
+      view.contentDOM.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+      )
+      expect(document.activeElement).toBe(input)
+
+      // The commit hands the keyboard over synchronously, but nothing says
+      // it STAYS there across the lifecycle.submitAttempt round trip: the
+      // editor's display:none host and the live region's move are both
+      // focus-changing DOM operations. If the keyboard is on <body> when
+      // the authenticated start lands, the command is running and nobody
+      // owns the keys typed before the deferred focusGrid repair — the
+      // letters are lost while the Enter that follows them is not
+      // (nocx-1ebrs.66.1.16). The running fact must reclaim an UNCLAIMED
+      // keyboard; a control's focus is still its own.
+      input.blur()
+      expect(document.activeElement).toBe(document.body)
+
+      handler({
+        lane: 'lane-1',
+        lifecycle: 'running',
+        domain: 'd1',
+        epoch: 1,
+        attempt: {
+          id: 'att-1',
+          state: 'open',
+          origin: 'app',
+          submitId: submitToken(client),
+          command: 'read x',
+        },
+      })
+      expect(document.activeElement).toBe(input)
+    } finally {
+      Element.prototype.scrollTo = protoScrollTo
+      teardown()
+    }
+  })
+
   it('keeps session intents ordered when the control call is still in flight', async () => {
     const { content, teardown } = await mountTerminal(makeClipboard())
     try {

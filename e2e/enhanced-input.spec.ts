@@ -4,7 +4,10 @@ import { test, expect, promptReady } from './harness'
 // submit — the editor must stay hidden while a program runs, and typed keys
 // must reach the PTY rather than the editor.
 
-const INPUT = '.nocx-editor-input'
+const INPUT = '.pane.active .nocx-editor-input'
+/** The grid's own input element: where the pane reads keys while a program
+ *  holds the pty and the composer is hidden. */
+const GRID_INPUT = '.pane.active .ui-terminal-input'
 
 test.describe('enhanced input raw routing', () => {
   test('read command receives input after enhanced submit', async ({ page }) => {
@@ -19,6 +22,17 @@ test.describe('enhanced input raw routing', () => {
     await page.keyboard.type('read x; printf \'got-%s\\n\' "$x"')
     await page.keyboard.press('Enter')
     await expect(page.locator(INPUT)).not.toBeVisible({ timeout: 5000 })
+
+    // A HIDDEN COMPOSER IS NOT A KEYBOARD OWNER. The composer's display:none
+    // and the authenticated start that makes the grid writable are two
+    // different facts, and the handoff that focuses the grid crosses the
+    // submitAttempt round trip (nocx-yb5y). When a key is typed before that
+    // focus lands it reaches <body> and is gone — the letters are lost while
+    // the Enter after them is kept (measured in CI shard 1: this spec's
+    // `read x` never received `hello`). The observable a keystroke needs is
+    // focus, not visibility, so the premise is established rather than
+    // assumed. Same gate as e2e/snippets.spec.ts.
+    await expect(page.locator(GRID_INPUT)).toBeFocused({ timeout: 5000 })
 
     // The `read` builtin is now waiting for stdin. Typing must reach the running
     // program (RUNNING_RAW → editor hidden), not the editor.

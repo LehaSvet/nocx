@@ -3784,6 +3784,15 @@ export class TerminalContent extends BasePaneContent {
         }
         this._syncIntegrationWaiting()
         this._syncLifecycleOwnership()
+        // A START MUST NOT LEAVE THE KEYBOARD UNCLAIMED. The commit focuses
+        // the grid synchronously, but the editor's display:none host and the
+        // live region's move are both focus-changing DOM operations between
+        // that handoff and this fact. If focus is on <body> now, the command
+        // is running and the letters typed before the deferred focusGrid
+        // repair have no owner — the Enter after them is kept and the letters
+        // are not (nocx-1ebrs.66.1.16). Repair only <body> or the grid; a
+        // control's focus is its own (see takeKeyboardToGridAfterSubmit).
+        if (this.lifecycle.state.kind === 'running') this.takeKeyboardToGridAfterSubmit()
         this._releaseDeferredShellSubmissions()
         // An integrated pane is settled by its authenticated lifecycle fact,
         // not by the non-authoritative promptBoundary observation. Without
