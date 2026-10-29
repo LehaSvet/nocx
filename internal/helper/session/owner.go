@@ -300,6 +300,13 @@ type sessionOwner struct {
 	// waited (nocx-6q1uh.6, spec §7.2). A test wanting a fake clock sets the
 	// field directly, in-package.
 	nowMono func() int64
+
+	// deadlineAfterFunc supplies the owner-only pending deadline wakeup.
+	deadlineAfterFunc lifecycleAfterFunc
+	deadlineTimer     lifecycleTimer
+	deadlineWake      chan struct{}
+	deadlineMono      int64
+	deadlineWall      time.Time
 	// detachSignal, detachOnce and detached are the SSH detach path (spec
 	// §5.7, nocx-6q1uh.3, owner_ssh.go): stop closes detachSignal, once,
 	// when its own deadline fires against a Process it cannot interrupt
@@ -372,6 +379,10 @@ func newSessionOwner(proc Process, rt *sessionruntime.Session, win *window, lg *
 		writeRes:      make(chan writeOutcome, 1),
 		nowMono:       func() int64 { return int64(monoclock.Now()) },
 		detachSignal:  make(chan struct{}),
+		deadlineWake:  make(chan struct{}, 1),
+		deadlineAfterFunc: func(d time.Duration, f func()) lifecycleTimer {
+			return time.AfterFunc(d, f)
+		},
 	}
 	// A fresh incarnation starts at epoch 1 (spec §7.2, §6.1): the zero
 	// value an unset atomic.Uint64 would otherwise report is not a real
@@ -397,6 +408,11 @@ func (o *sessionOwner) SetTokens(tb *tokenBook) {
 // anyway.
 func (o *sessionOwner) run() {
 	defer close(o.stopped)
+	defer func() {
+		if o.deadlineTimer != nil {
+			o.deadlineTimer.Stop()
+		}
+	}()
 	defer func() { _ = o.proc.Close() }()
 	defer o.cancelReadAndWake()
 
@@ -493,6 +509,7 @@ func (o *sessionOwner) run() {
 			close(o.writeReq)
 			return
 		}
+		o.armPendingDeadline()
 		var continueRead <-chan struct{}
 		if o.localReadPending {
 			continueRead = readMore
@@ -516,6 +533,13 @@ func (o *sessionOwner) run() {
 			o.readinessEnded(err)
 		case ev := <-readEvents:
 			o.handleReadEvent(ev)
+		case <-o.deadlineWake:
+			// The callback may be stale; stop the current timer before rearming.
+			// Only expirePending judges deadlines on the next owner turn.
+			if o.deadlineTimer != nil {
+				o.deadlineTimer.Stop()
+				o.deadlineTimer = nil
+			}
 		case res := <-o.writeRes:
 			o.completeWrite(res)
 		case <-detachSignal:
@@ -872,6 +896,54 @@ func (o *sessionOwner) expirePending() {
 		}
 	}
 	o.pending = kept
+}
+
+// armPendingDeadline schedules the next pending deadline.
+func (o *sessionOwner) armPendingDeadline() {
+	var earliest time.Duration
+	var nextMono int64
+	var nextWall time.Time
+	found := false
+	consider := func(d time.Duration, mono int64, wall time.Time) {
+		if !found || d < earliest {
+			earliest, nextMono, nextWall, found = d, mono, wall, true
+		}
+	}
+	for _, it := range o.pending {
+		if it.kind != itemIntent {
+			continue
+		}
+		pi := it.intent
+		if pi.CommitBy != 0 {
+			consider(time.Duration(pi.CommitBy-o.nowMono()), pi.CommitBy, time.Time{})
+		}
+		if pi.Token.ID != (TokenID{}) && o.tokens != nil {
+			consider(pi.Token.ExpiresAt.Sub(o.tokens.now()), 0, pi.Token.ExpiresAt)
+		}
+	}
+	if found && o.deadlineTimer != nil && nextMono == o.deadlineMono && nextWall.Equal(o.deadlineWall) {
+		return
+	}
+	if o.deadlineTimer != nil {
+		o.deadlineTimer.Stop()
+		o.deadlineTimer = nil
+	}
+	o.deadlineMono, o.deadlineWall = nextMono, nextWall
+	if !found {
+		return
+	}
+	// Refusal is strictly past the deadline, not at equality.
+	if earliest < 0 {
+		earliest = 0
+	} else if earliest < time.Duration(1<<63-1) {
+		earliest++
+	}
+	o.deadlineTimer = o.deadlineAfterFunc(earliest, func() {
+		select {
+		case o.deadlineWake <- struct{}{}:
+		default:
+		}
+	})
 }
 
 // refuseExpiredIntent runs between read quanta, never against the screen.
