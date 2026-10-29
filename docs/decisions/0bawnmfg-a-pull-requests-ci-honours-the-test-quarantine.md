@@ -34,9 +34,14 @@ policy change lands in one place and both callers take it.
 `scripts/ci-run-logged.sh`, which tees the step's stdout and stderr to
 `$NOCX_TEST_LOG_DIR/<name>.log` and writes the command's exit status to `<name>.status`. That
 file holds what the jobs/logs endpoint would return for the same step, which is why one
-`failedTests` reads both, and nothing here downloads a log, holds a token or asks the API. A
-step counts as failed when its status is non-zero **or** its log names a failure: the log is
-evidence on its own, so a misreported status cannot turn a red suite green.
+`failedTests` reads both, and nothing here downloads a log, holds a token or asks the API.
+
+**The status decides whether a step is judged; the log only names what it failed on.** Both
+halves are needed and neither is enough. A failure that names no test — a build error, a setup
+step — leaves nothing in the text to find, so the status is the only thing that can say the
+step failed. And text alone would fail a green job: `e2e/visual-board.spec.ts:170` runs a shell
+fixture that prints `--- FAIL: TestSessionReconnect (0.08s)` into a pane during a PASSING spec,
+so a log that names a failure is not evidence that anything failed.
 
 **The verdict is taken once, at the end of the job** — `node scripts/quarantine-gate.mjs`
 under `if: always()`. A gated step therefore always exits 0: stopping a step at its first

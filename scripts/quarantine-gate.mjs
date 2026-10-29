@@ -15,9 +15,14 @@
  * `<name>.status`. That file holds exactly what
  * `GET /repos/{repo}/actions/jobs/{id}/logs` would return for the same step, so
  * scripts/quarantine.mjs's `failedTests` parses both — no second parser, no
- * token, no API call, and no log downloaded by hand. The status file is the half
- * the log cannot carry: a failure that names no test (a build error, a setup
- * step) leaves nothing in the text to find.
+ * token, no API call, and no log downloaded by hand.
+ *
+ * The STATUS decides whether a step is judged, and the log only names what it
+ * failed on. Both halves are needed and neither is enough: a failure that names
+ * no test (a build error, a setup step) leaves nothing in the text to find, and
+ * a passing step can print a test failure's line into a pane —
+ * e2e/visual-board.spec.ts:170 does exactly that — so text alone would fail a
+ * green job.
  *
  * The gate runs as the job's last step (`if: always()`), so a red step has
  * already written its evidence by the time the decision is taken. A gated step
@@ -72,10 +77,13 @@ export function gate({
   const jobKey = pull ? `job:${job}#${pull}` : undefined
   const failed = []
   for (const step of steps) {
+    // ONLY A STEP THAT FAILED IS JUDGED, and the log only names what it failed
+    // on. That is not a weakening: e2e/visual-board.spec.ts:170 runs a shell
+    // fixture that prints `--- FAIL: TestSessionReconnect (0.08s)` into a pane
+    // during a PASSING spec, so a log that names a failure is not evidence the
+    // step failed — the status is.
+    if (step.status === 0) continue
     const named = failedTests(step.log)
-    // The log is evidence on its own: a command that printed a failure did not
-    // pass, whatever its status file says.
-    if (step.status === 0 && named.length === 0) continue
     failed.push({
       step,
       verdict: judgeFailures({ failures: named, quarantine: open, closed, jobKey }),

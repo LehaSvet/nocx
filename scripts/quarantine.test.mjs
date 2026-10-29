@@ -188,6 +188,14 @@ test('a job whose every test step passed says so, and an unreadable evidence set
   const { code, text } = run()
   assert.equal(code, 0, text)
   assert.match(text, /none of its 1 recorded test step\(s\) failed/)
+  // A PASSING step that prints a test failure's line is not a failure. This is
+  // not hypothetical: e2e/visual-board.spec.ts:170 runs a shell fixture that
+  // prints `--- FAIL: TestSessionReconnect (0.08s)` into a pane during a green
+  // spec, so text alone would fail the e2e job on a green run.
+  const printed = evidence(t, [
+    { name: 'e2e-chromium-1', status: 0, log: '--- FAIL: TestSessionReconnect (0.08s)\n' },
+  ]).run()
+  assert.equal(printed.code, 0, printed.text)
   assert.throws(
     () =>
       gate({
