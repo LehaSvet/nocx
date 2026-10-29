@@ -155,3 +155,19 @@ next-nightly promotion or a reporter-host retest. The reporter's exact font,
 glyph, loaded path and overwritten local field remain unknown. Actual-window
 screenshots have not been semantically inspected; its response proves survival,
 while the controlled shipped-engine snapshots prove glyph colour painting.
+
+## Staging-script failure checks
+
+Run `python3 scripts/appimage/test-stage-freetype.py` for the bounded shell-level
+contract tests. They execute the real staging script with local PATH doubles
+for fetch/package boundaries, never a network download. The checksum-negative
+case uses real `sha256sum`; deeper cases cross a controlled archive-checksum
+boundary and still run the real copied-library ctypes ABI check against tiny
+compiled C API fixtures. They require Bash, Python, coreutils and a C compiler.
+
+The suite rejects download failure, a wrong archive hash, wrong package name,
+version or architecture, extraction failure, missing library or copyright,
+a non-ELF copied file, and a runtime reporting FreeType 2.13 rather than 2.11.
+Every failure must name the failed check, return nonzero and omit provenance.
+A paired successful 2.11 fixture must copy a regular SONAME, notice and provenance.
+These are staging contract tests, not substitutes for the renderer artifact gate.
