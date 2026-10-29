@@ -287,9 +287,10 @@ func NewLocal(logger log.Logger, cfg Config) (*LocalPty, error) {
 // bead exists for: the master comes from this package's own openMaster
 // (master_nonblock_linux.go, master_nonblock_darwin.go), non-blocking from
 // the moment it is opened, rather than from creack/pty's Open — which on
-// Darwin never becomes pollable at all and on Linux is reverted to blocking
-// by its own ptsname/unlockpt ioctls (both files' doc comments have the
-// measurement). Everything else here — the slave becomes the child's
+// Darwin never becomes pollable at all and on Linux v1.1.24 was reverted to
+// blocking by its own ptsname/unlockpt ioctls (the pinned upstream #215 fixes
+// that opening path; both files explain why we still own the raw master).
+// Everything else here — the slave becomes the child's
 // stdin/stdout/stderr, Setsid and Setctty, the size applied before Start —
 // is what StartWithAttrs already does, over the master this package opened
 // instead of creack/pty's own.
@@ -333,7 +334,7 @@ func startWithSize(cmd *exec.Cmd, ws *pty.Winsize) (master *os.File, err error) 
 	cmd.SysProcAttr.Setctty = true
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("pty: start the shell: %w", err)
+		return nil, fmt.Errorf("pty: start the shell: %w; spawn diagnostics: %s", err, spawnDiagnostics())
 	}
 	closeMaster = false
 	return master, nil

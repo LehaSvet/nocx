@@ -36,7 +36,8 @@ func TestRestartWindowStartsInstalledPathBeforeQuitting(t *testing.T) {
 	quit := 0
 	order := []string{}
 	app := &WailsApp{
-		restartWindowFn: func(path string) error { started = path; order = append(order, "start"); return nil },
+		updateInstallPath: "/chosen/nocx.AppImage",
+		restartWindowFn:   func(path string) error { started = path; order = append(order, "start"); return nil },
 		quit: &quitSeam{
 			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 			quit:   func() { quit++; order = append(order, "quit") },
@@ -45,8 +46,8 @@ func TestRestartWindowStartsInstalledPathBeforeQuitting(t *testing.T) {
 	if err := app.RestartWindow(); err != nil {
 		t.Fatalf("RestartWindow: %v", err)
 	}
-	if started != upgradeInstallPath(mustExecutable(t)) {
-		t.Fatalf("started %q, want installed path %q", started, upgradeInstallPath(mustExecutable(t)))
+	if started != "/chosen/nocx.AppImage" {
+		t.Fatalf("started %q, want selected install target", started)
 	}
 	if quit != 1 {
 		t.Fatalf("quit called %d times, want once after successful start", quit)
@@ -59,8 +60,9 @@ func TestRestartWindowStartsInstalledPathBeforeQuitting(t *testing.T) {
 func TestRestartWindowKeepsCurrentWindowWhenStartFails(t *testing.T) {
 	quit := 0
 	app := &WailsApp{
-		restartWindowFn: func(string) error { return errors.New("launch refused") },
-		quit:            &quitSeam{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), quit: func() { quit++ }},
+		updateInstallPath: "/chosen/nocx.AppImage",
+		restartWindowFn:   func(string) error { return errors.New("launch refused") },
+		quit:              &quitSeam{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), quit: func() { quit++ }},
 	}
 	err := app.RestartWindow()
 	if err == nil || !strings.Contains(err.Error(), "launch refused") {
@@ -69,15 +71,6 @@ func TestRestartWindowKeepsCurrentWindowWhenStartFails(t *testing.T) {
 	if quit != 0 {
 		t.Fatalf("quit called %d times after launch failure, want 0", quit)
 	}
-}
-
-func mustExecutable(t *testing.T) string {
-	t.Helper()
-	path, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
-	return path
 }
 
 func TestResolveBackendReportsSuccessAndFailure(t *testing.T) {
@@ -498,6 +491,7 @@ func updaterBuiltAsMainBuildsIt(t *testing.T, srv *httptest.Server, keyring []ed
 		Keyring:        keyring,
 		CurrentVersion: "0.0.1",
 		InstallPath:    filepath.Join(t.TempDir(), "nocx"),
+		StateDir:       t.TempDir(),
 		Logger:         log.NewSlogAdapter(logtest.Slog(t)),
 	})
 }
@@ -636,6 +630,7 @@ func channelUpdaterAsMainBuildsIt(t *testing.T, srv *httptest.Server, keyring []
 		Keyring:        keyring,
 		CurrentVersion: "0.0.1",
 		InstallPath:    filepath.Join(t.TempDir(), "nocx"),
+		StateDir:       t.TempDir(),
 		Logger:         log.NewSlogAdapter(logtest.Slog(t)),
 	}), fetcher
 }

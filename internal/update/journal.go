@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/shady2k/nocx/internal/version"
 )
 
 // ---------------------------------------------------------------------------
@@ -57,15 +59,19 @@ func (b bundleID) equal(o bundleID) bool { return b == o }
 // The schema version is included so future format changes can be
 // recognised and a legible error produced instead of guessing.
 type journalRecord struct {
-	SchemaVersion  int      `json:"schemaVersion"`
-	TxID           string   `json:"txID"`
-	InstallPath    string   `json:"installPath"`
-	OldBundleID    bundleID `json:"oldBundleID"`
-	NewBundleID    bundleID `json:"newBundleID"` // zeroID until the staged swap file exists
-	FromVersion    string   `json:"fromVersion"`
-	ToVersion      string   `json:"toVersion"`
-	ArtifactSHA256 string   `json:"artifactSHA256"`
-	LaunchAttempts int      `json:"launchAttempts"`
+	SchemaVersion int      `json:"schemaVersion"`
+	TxID          string   `json:"txID"`
+	InstallPath   string   `json:"installPath"`
+	OldBundleID   bundleID `json:"oldBundleID"`
+	NewBundleID   bundleID `json:"newBundleID"` // zeroID until the staged swap file exists
+	FromVersion   string   `json:"fromVersion"`
+	ToVersion     string   `json:"toVersion"`
+	// ToBuild is the identity in the signed manifest, recorded before any
+	// download or exchange. Missing identities in older journals remain
+	// readable for rollback, but cannot certify a build by version alone.
+	ToBuild        version.BuildIdentity `json:"toBuild"`
+	ArtifactSHA256 string                `json:"artifactSHA256"`
+	LaunchAttempts int                   `json:"launchAttempts"`
 
 	// HeldByCoordinator records that a healthy window reported against a
 	// protocol-compatible OLDER coordinator kept under ADR-0101 (new
@@ -81,17 +87,23 @@ type journalRecord struct {
 
 const journalSchemaVersion = 1
 
-// journalPath returns the path to the journal file for the given
-// install path. The journal lives in the same directory as the
-// installed bundle.
-func journalPath(installPath string) string {
+// journalPath returns the transaction journal in the profile's data directory.
+func journalPath(stateDir string) string {
+	return filepath.Join(stateDir, ".nocx-update-journal.json")
+}
+
+// legacyJournalPath is where a build from before the placement split kept the
+// journal: beside the installed bundle, which on Linux inside an AppImage is a
+// read-only mount. It is read once, adopted into the state directory and then
+// removed on a best effort — see reconcileLocked.
+func legacyJournalPath(installPath string) string {
 	return filepath.Join(filepath.Dir(installPath), ".nocx-update-journal.json")
 }
 
 // readJournal reads and parses the journal, or returns nil if the
 // journal file does not exist.
 func readJournal(path string) (*journalRecord, error) {
-	f, err := os.Open(path) //nolint:gosec // path is constructed from installPath (caller-controlled)
+	f, err := os.Open(path) //nolint:gosec // path is constructed from the configured profile state directory
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

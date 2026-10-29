@@ -281,6 +281,33 @@ else
     ok "log-context ratchet — skipped (no Go changes staged)"
 fi
 
+# --- 3e. decision records: one identifier, one record (nocx-hyh2p) ---------
+# A number was chosen from a counter only the author's own branch could see, so
+# two branches open at once took the same one and the merge renumbered a record
+# after citations to it had been written — four such pairs repaired in
+# nocx-yjvg5, three more in nocx-jp0h3. New records DRAW their identifier
+# instead (ADR-k3f9a-style), which needs no coordination, and this check is what
+# keeps the draw honest: a collision refuses the commit rather than reaching
+# main and being found by the reader of a citation.
+#
+# Scoped to a staged change under docs/decisions/, which is where a record can
+# appear. The check wants the WHOLE directory and not the staged files: a
+# collision is a property of the set, and a staged file read alone cannot see
+# the record it collides with.
+RUN_ADR=0
+if [ "${#CHANGED[@]}" -gt 0 ]; then
+    for f in "${CHANGED[@]}"; do
+        case "$f" in
+            docs/decisions/*) RUN_ADR=1 ;;
+        esac
+    done
+fi
+if [ "$RUN_ADR" = 1 ]; then
+    host_gate "decision record identifiers" node .githooks/check-adr-identifiers.mjs
+else
+    ok "decision record identifiers — skipped (no docs/decisions/ changes staged)"
+fi
+
 # --- 4. prettier (always) ---------------------------------------------------
 # From the REPOSITORY ROOT, which is what the comment here always claimed and
 # `cd frontend` always made false: the root carries its own .prettierrc.json,
@@ -329,11 +356,142 @@ fi
 host_gate "eslint (root)" npm run lint
 
 # --- 5. frontend-only host gates --------------------------------------------
+# THE HOOK'S LARGEST MEMORY SPIKE, AND THE LOCK THAT STOPS TWO COMMITS RUNNING
+# IT AT ONCE.
+#
+# Measured 2026-10-26 (nocx-owbpb) on the shared 12 GB agent VM, two worktrees of
+# one run committing together: each hook ran `cd frontend && npm run lint` —
+# `eslint . --max-warnings 0`, the whole frontend with type-checked rules — at
+# 2.1 GB and 2.0 GB RSS, leaving 707 MB, with a full `tsc --noEmit` still to
+# come. What that produces is already in this file's history: on 2026-08-27 three
+# concurrent hooks left 232 MB free, a gate child was OOM-killed, and this hook
+# reported it as `FAIL: eslint (frontend)` with nothing under it (nocx-y6d9j) — a
+# starved machine and a real failure written identically — and two workers
+# answered it with --no-verify.
+#
+# Two things changed here, and neither one weakens a check.
+#
+# 1. A MACHINE-WIDE LOCK around the whole section (scripts/gate-lock.sh,
+#    namespace `frontend`). Two commits serialize instead of colliding, and the
+#    waiting one SAYS it is waiting and names the run it waits for: a silent wait
+#    is a hang nobody can explain, and an unexplained hang is what teaches
+#    --no-verify. The lock is the machine's — keyed by uid, never by worktree —
+#    because the contended resource is the machine. A commit does NOT queue
+#    behind `make ci-full` or the e2e suite: those hold the lock's default
+#    namespace, and a wait of half an hour would buy exactly the bypass this is
+#    meant to prevent.
+#
+# 2. THE TYPED ESLINT OVER THE STAGED FILES. Every rule in
+#    frontend/eslint.config.js is per-file: the type-checked ones ask the
+#    TypeScript program about the file being linted, and the rules that read
+#    other files read them when the CONFIG is loaded rather than per linted file
+#    — nocx/no-inline-markup scans ui/*.tsx for class ownership at import time,
+#    so scoping the file list changes nothing it knows. This is the trade section
+#    4 already made for prettier, for the same reason, and the measured peak is
+#    in the comment's table at the end of this block.
+#
+# WHAT CANNOT BE SCOPED TO A FILE, and so still runs whole-tree here:
+#   tsc --noEmit            answers about the project, not about one file
+#   npm run lint:static     eight checks that compare the tree against a
+#                           baseline or against another file: css colours, css
+#                           integrity, dead exports, two owners, row grammar, the
+#                           error vocabulary, menu icons, glyph icons
+#   lint:fixture-check      the negative fixtures, each a rule proven to fire
+#   contracts:check         the generated wire types against contracts/
+#
+# Section 5b's `tsc --noEmit` over the e2e suite is OUTSIDE this lock, and it is
+# named here rather than left to be discovered: it runs only when e2e/ changes
+# and it was not measured. If a future measurement says it matters, it belongs
+# in the same section.
+#
+# AND NOTHING DROPS OUT OF SIGHT. CI's ci-frontend job runs `npm run lint` over
+# the whole frontend and `npm run typecheck`, and so do `make root-ci`,
+# `make frontend-ci` and the merged-tree gate. This hook checks the files a
+# commit ACTUALLY TOUCHES; the whole tree is checked where the whole tree is
+# available. The summary this hook prints at its end says so in as many words.
+#
+# MEASURED, one hook run at a time, the same staged change in both rows (one
+# comment line in frontend/src/about-client.ts), on this 12 GB machine shared
+# with every other agent session. `time -v` cannot answer this question: its
+# `Maximum resident set size` is the DIRECT child's, and the hook's direct child
+# is this bash script at 4 MB while the memory lives two levels down in node. So
+# the numbers are the peak resident memory of the hook's whole process tree,
+# sampled every 25 ms by scripts/measure-hook-memory.py:
+#
+#   hook, one frontend file staged         before         after
+#   peak of the whole tree (tree RSS)      2284 MB        1219 MB
+#   peak single process                    2199 MB        1138 MB
+#                                          (eslint .)     (tsc --noEmit)
+#   the frontend's typed eslint itself     2199 MB         651 MB
+#   wall clock                             111 s           63 s
+#
+# Reproduce either row from the worktree root — the second row is this file as
+# it stands, the first is `git show <before>:.githooks/pre-commit > /tmp/old-pre-commit`
+# and that path given as the command:
+#
+#   python3 scripts/measure-hook-memory.py .githooks/pre-commit
+#
+# WHAT THE REMAINING PEAK IS, and why the lock is not thereby redundant: it is
+# `tsc --noEmit`, which answers about the project and cannot be scoped to a file
+# — so two hooks still cost 2.4 GB together on a 12 GB box. They take turns.
+# The repo-root `eslint .` every commit runs stayed OUTSIDE the lock on purpose:
+# measured at 690 MB and 4.6 s for a docs-only staged change (the whole hook,
+# 770 MB), which is not what starves a commit — and making every tracker commit
+# queue behind a sixty-second frontend lint is how a hook teaches --no-verify.
 if [ "$RUN_FE" = 1 ]; then
-    host_gate "eslint (frontend)" sh -c 'cd frontend && npm run lint'
+    GATE_LOCK_NAME=frontend
+    if [ -f "$PWD/scripts/gate-lock.sh" ]; then
+        # shellcheck source=/dev/null
+        . "$PWD/scripts/gate-lock.sh"
+    else
+        # shellcheck source=/dev/null
+        . "$(dirname "$0")/../scripts/gate-lock.sh"
+    fi
+    # Release on every exit path — a failing gate (host_gate exits), a Ctrl-C,
+    # and the ordinary end. A lock that survives a failure holds the next commit
+    # hostage for as long as the directory exists, which is the same defect in
+    # the other direction (nocx-owbpb C2).
+    trap gate_lock_release EXIT
+    gate_lock_acquire "the frontend typed eslint and tsc"
+
+    # The staged files eslint owns, relative to frontend/ — its config's root.
+    # Deletions are excluded (`--diff-filter=d`, as the prettier list above is):
+    # a deleted file cannot be linted and its absence is not a failure.
+    FE_LINT=()
+    FE_STAGED_LIST=$(mktemp) || exit 1
+    if ! git diff --cached --name-only --diff-filter=d -z -- 'frontend/*' >"$FE_STAGED_LIST"; then
+        rm -f "$FE_STAGED_LIST"
+        printf 'pre-commit: staged paths cannot be read; run make connect\n' >&2
+        exit 1
+    fi
+    while IFS= read -r -d '' f; do
+        case "$f" in
+            frontend/*.ts | frontend/*.tsx | frontend/*.js | frontend/*.jsx | frontend/*.mjs | frontend/*.cjs)
+                FE_LINT+=("${f#frontend/}")
+                ;;
+        esac
+    done <"$FE_STAGED_LIST"
+    rm -f "$FE_STAGED_LIST"
+
+    if [ "${#FE_LINT[@]}" -gt 0 ]; then
+        # --no-warn-ignored: WHICH files eslint does not lint is the config's
+        # decision (dist/, bindings/, lint-fixtures/, eslint-fixtures/,
+        # src/generated/), exactly as it is for `eslint .`. Listing a file the
+        # config ignores is not a finding, and under --max-warnings 0 the note
+        # about it would fail a commit that staged a regenerated file.
+        host_gate "eslint (frontend, staged files)" \
+            sh -c 'cd frontend && exec npx eslint --max-warnings 0 --no-warn-ignored -- "$@"' sh "${FE_LINT[@]}"
+    else
+        ok "eslint (frontend) — nothing it owns is staged (no .ts/.tsx/.js/.jsx/.mjs/.cjs)"
+    fi
+    host_gate "frontend lint fixtures (css, dead exports, owners, grammar — whole tree)" \
+        sh -c 'cd frontend && npm run lint:static'
     host_gate "solid negative fixture gate" sh -c 'cd frontend && npm run lint:fixture-check'
     host_gate "wire contracts current" sh -c 'cd frontend && npm run contracts:check'
     host_gate "tsc --noEmit" sh -c 'cd frontend && npm run typecheck'
+
+    gate_lock_release
+    trap - EXIT
 else
     ok "eslint (frontend), fixture gate, tsc — skipped (no frontend/ changes staged)"
 fi
@@ -494,6 +652,8 @@ printf "\nAll static checks passed.\n"
 # tree and never runs a test. Run suites explicitly or let the scoped CI jobs run:
 # neither this hook nor pre-push claims to reproduce product or platform behavior.
 printf "  NOT covered here: the test suites themselves  — CI, or \`make ci\` (NOT pre-push)\n"
+printf "                    the whole frontend's typed eslint — CI's \`ci-frontend\` job, \`npm run lint\` in frontend/\n"
+printf "                    (this hook lints the STAGED frontend files, not the whole tree — nocx-owbpb)\n"
 printf "                    macOS (bash 3.2, no /proc, Darwin PTY) — CI's \`ci-mac\` job\n"
 printf "                    Ubuntu + both keyring variants — scripts/ci-linux.sh\n"
 printf "                    the e2e suite itself           — e2e/run-in-container.sh\n"

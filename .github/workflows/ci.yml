@@ -138,26 +138,35 @@ jobs:
             exit 0
           fi
           files=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
-          # An empty diff is not evidence of safety.
-          product=false
-          [ -n "$files" ] || product=true
-          while IFS= read -r f; do
-            [ -n "$f" ] || continue
-            case "$f" in
-              .beads/*|docs/*|.internal/*|.githooks/backlog-gate/*) ;;
-              .githooks/pre-commit|.githooks/commit-msg|.githooks/pre-merge-commit|.githooks/pre-push) ;;
-              scripts/connect-clone.sh) ;;
-              scripts/install/*) product=true ;;
-              */*) product=true ;;
-              *.md) ;;
-              *) product=true ;;
-            esac
-          done <<EOF_FILES
-          $files
-          EOF_FILES
+          product="$(printf '%s\n' "$files" | node --input-type=module -e '
+            import { touchesProduct } from "./scripts/product-change.mjs";
+            let input = "";
+            for await (const chunk of process.stdin) input += chunk;
+            console.log(touchesProduct(input.trim().split("\n").filter(Boolean)));
+          ')"
           printf '%s\n' "$files" | sed 's/^/changed: /'
           echo "product=$product"
           echo "product=$product" >> "$GITHUB_OUTPUT"
+  # Supporting release-pipeline edits still owe their executable checks.
+  # Always run, independent of changes.product and draft status.
+  ci-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Workflow decision and refusal tests
+        run: |
+          node --test scripts/publish-nightly.test.mjs scripts/product-change.test.mjs
+          python3 -m unittest discover -s scripts -p 'verify_built_artifact_test.py'
+          node --test .githooks/check-log-context.test.mjs
+      - name: Promotion and cask fixtures by path
+        run: |
+          shopt -s nullglob
+          tests=(scripts/release/*.test.*)
+          if [ "${#tests[@]}" -gt 0 ]; then node --test "${tests[@]}"; fi
+
   ci-mac:
     needs: changes
     if: ${{ needs.changes.outputs.product == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
@@ -779,6 +788,13 @@ jobs:
         working-directory: .
         run: node --test scripts/shard-files.test.mjs
 
+      # The pre-commit hook's frontend lock (nocx-owbpb): two hooks in two
+      # processes, one machine, and the second one waits. It drives the hook
+      # with a stubbed toolchain, so it costs seconds and needs no linter.
+      - name: The hook's frontend lock
+        working-directory: .
+        run: node --test .githooks/pre-commit.test.mjs
+
   # ci-backlog — the backlog is still a queue, not a dump.
   #
   # The one gate here that reads no code. It applies the rules in
@@ -909,6 +925,21 @@ jobs:
             echo "introduced by $GITHUB_REF at $(git rev-parse --short HEAD)"
             node "$gate/commit-links.mjs" "$@"
           fi
+
+      # A decision record's identifier is DRAWN, never counted, so two branches
+      # cannot take one identifier between them (nocx-hyh2p). The check is here
+      # rather than in a job of its own because this job always runs: it reads
+      # documents and no code, and a docs-only change owes it whether or not it
+      # owes the product suites — the same reason the classifier above marks its
+      # files supporting.
+      - name: Decision records have unique identifiers
+        run: |
+          set -eu
+          node --test .githooks/adr-identifier.test.mjs \
+            .githooks/adr-records.test.mjs \
+            .githooks/adr-citations.test.mjs \
+            .githooks/check-adr-identifiers.test.mjs
+          node .githooks/check-adr-identifiers.mjs
 
       - name: Product documents at the checked revision
         env:

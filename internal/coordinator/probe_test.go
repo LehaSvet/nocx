@@ -17,6 +17,7 @@ import (
 
 	"github.com/shady2k/nocx/internal/coordinator"
 	"github.com/shady2k/nocx/internal/update"
+	"github.com/shady2k/nocx/internal/version"
 )
 
 // The wiring this file exists for is D4's second half: an update is
@@ -75,7 +76,9 @@ func (fakePlatform) Exchange(_ context.Context, a, b string) error {
 // staticFetcher serves one signed manifest.
 type staticFetcher struct{ body, sig []byte }
 
-func (f staticFetcher) Fetch(context.Context) ([]byte, []byte, error) { return f.body, f.sig, nil }
+func (f staticFetcher) Fetch(context.Context) (update.FetchedManifest, error) {
+	return update.FetchedManifest{Body: f.body, Signature: f.sig}, nil
+}
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -95,6 +98,9 @@ const journalName = ".nocx-update-journal.json"
 // Returned: the install path.
 func applyPendingUpdate(t *testing.T, from, to string) string {
 	t.Helper()
+	oldStamp := version.Identity()
+	version.Commit, version.Date = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "2026-10-28T10:00:00Z"
+	t.Cleanup(func() { version.Commit, version.Date = oldStamp.Commit, oldStamp.BuiltAt })
 	ctx := context.Background()
 	dir := t.TempDir()
 
@@ -113,6 +119,7 @@ func applyPendingUpdate(t *testing.T, from, to string) string {
 	id := fakePlatform{}.ArtifactID()
 	manifest, err := json.Marshal(update.Manifest{
 		Version:  to,
+		Build:    version.Identity(),
 		Released: "2026-08-28T10:00:00Z",
 		NotesURL: "https://example.com/releases/v" + to,
 		Artifacts: []update.Artifact{{
@@ -141,6 +148,7 @@ func applyPendingUpdate(t *testing.T, from, to string) string {
 		Keyring:        []ed25519.PublicKey{pub},
 		CurrentVersion: from,
 		InstallPath:    installPath,
+		StateDir:       filepath.Join(dir, "state"),
 	})
 	info, err := applying.Check(ctx)
 	if err != nil {
@@ -152,7 +160,7 @@ func applyPendingUpdate(t *testing.T, from, to string) string {
 	if err = applying.Apply(ctx, info); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if _, err = os.Stat(filepath.Join(dir, journalName)); err != nil {
+	if _, err = os.Stat(filepath.Join(dir, "state", journalName)); err != nil {
 		t.Fatalf("Apply left no pending journal: %v", err)
 	}
 	return installPath
@@ -167,6 +175,7 @@ func restartedWindow(installPath, version string, probe update.CoordinatorProbe)
 		Fetcher:        staticFetcher{},
 		CurrentVersion: version,
 		InstallPath:    installPath,
+		StateDir:       filepath.Join(filepath.Dir(installPath), "state"),
 		Coordinator:    probe,
 	})
 }
@@ -185,7 +194,7 @@ func attachedTo(version, commit string) *coordinator.LaunchProbe {
 
 func assertJournalKept(t *testing.T, installPath string) {
 	t.Helper()
-	if _, err := os.Stat(filepath.Join(filepath.Dir(installPath), journalName)); err != nil {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(installPath), "state", journalName)); err != nil {
 		t.Fatalf("the rollback journal was deleted by a refused health report: %v", err)
 	}
 }
@@ -230,23 +239,21 @@ func TestReportHealthy_MatchingPair_Certifies(t *testing.T) {
 	if err := w.ReportHealthy(context.Background()); err != nil {
 		t.Fatalf("a window and coordinator both at 0.2.0 must certify: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(installPath), journalName)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(installPath), "state", journalName)); !os.IsNotExist(err) {
 		t.Fatalf("the journal survived a certified health report (%v)", err)
 	}
 }
 
-// A commit difference at the same version is NOT a mismatch, and that is
-// deliberate rather than an oversight: the release manifest names a
-// version and no commit, so there is no expected commit in the journal to
-// compare against and a check against a fact nobody recorded would refuse
-// every update for a reason it could not name.
+// ADR-0104 permits a same-version different-commit coordinator to keep
+// serving. The window must match the signed installed identity, but the
+// LaunchProbe's older compatible coordinator need not share that identity.
 func TestReportHealthy_SameVersionDifferentCommit_Certifies(t *testing.T) {
 	installPath := applyPendingUpdate(t, "0.1.0", "0.2.0")
 
 	w := restartedWindow(installPath, "0.2.0", attachedTo("0.2.0", "a-different-sha"))
 
 	if err := w.ReportHealthy(context.Background()); err != nil {
-		t.Fatalf("the commit is carried, not compared: %v", err)
+		t.Fatalf("the installed window must certify with a kept same-version coordinator: %v", err)
 	}
 }
 

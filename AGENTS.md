@@ -432,6 +432,27 @@ the run that passed is the one that got lucky. Never "fix" it by widening a time
 adding a retry — that converts a report into silence, which is the failure mode the testing
 rules exist to prevent.
 
+**A known flake is quarantined by its bead, never by a retry**
+([ADR-xf4p9fzd](docs/decisions/xf4p9fzd-a-flaky-test-is-quarantined-by-its-open-bead.md)).
+File the flake, then add `{test, bead}` to `docs/testing/quarantine.json` with the key the
+suite printed (`go:<TestName>` or `e2e:<spec> › <title path>`, no line numbers). The
+promotion then accepts a red job whose every failed test is quarantined by a bead that is
+still open; closing the bead ends the protection by itself. The entry is not the fix — the
+bead still has to be worked, under every rule above. Measured 2026-10-29: 17 flakes fixed in
+one day and a fully green product run about one in five, which is what roughly 340 e2e tests
+at half a percent each predict.
+
+**After an asynchronous action, assert through a waiting matcher on what that action
+produces, never by reading a value once.** Eight of that day's seventeen were tests, not
+products, and all eight had this shape: sleeping one poll interval when the next poll is due
+two intervals later; counting notifications the moment the record that precedes them landed;
+reading `document.activeElement` in one browser round trip and typing in the next while the
+product's focus repair ran between them; reading the activity bar before the app had
+connected. No `sleep` appears in any of them — which is why "a test may not depend on timing"
+did not catch them. The rule is about the moment, not the clock: `expect(locator).toHave…`,
+`waitFor`, `waittest.WaitFor` on the observable the action causes, and an assertion about a
+premise made at the event that consumes it.
+
 **When you genuinely cannot fix it in this session** — the cause sits in a package another
 worker is mid-flight in, or the fix is an epic — say that IN THOSE WORDS, with what you
 found, what is left and what it would take, and ask. That is a report. "Not ours" is not.
@@ -481,10 +502,21 @@ how two agents ship two answers to one question.
    The owner's rule, 2026-09-10. An ADR is evidence of what was decided and why, at a
    date — edit it and the evidence is gone, while every citation written against it now
    points at a decision nobody took. The index already carries the spelling
-   (`Superseded by ADR-NNNN`, and `Accepted (§7 superseded by ADR-0027)` where only a
+   (`Superseded by ADR-zv62fyqg`, and `Accepted (§7 superseded by ADR-0027)` where only a
    section moved), so this costs one row. The new record names what it supersedes and
    why the old answer stopped holding; citations elsewhere — `contracts/`, code
-   comments, protocol docs — move to the new number in the same commit.
+   comments, protocol docs — move to the new identifier in the same commit.
+
+   **A new record's identifier is drawn, never counted** — `node .githooks/adr-identifier.mjs`
+   prints one, the file becomes `docs/decisions/<identifier>-<slug>.md`, and `INDEX.md`
+   takes the row in its date slot. A number is what two branches used to take from under each other, and the
+   renumber that repaired it stranded every citation written in between
+   ([ADR-zv62fyqg](docs/decisions/zv62fyqg-a-new-records-identifier-is-drawn-never-counted.md)).
+   Records 0001–0105 keep the numbers and filenames they were written with: an accepted
+   record is never edited, and a citation to a number has to go on resolving. So both
+   spellings are live — a supersession written before the draw still names a number
+   (`Superseded by ADR-0049`) — and what a reader needs is the record the citation
+   points at, never the era it was written in.
 
    This overrules the practice visible in the tree: ADR-0024 carries two `## Amendment`
    sections written into the record itself. Do not copy them. They are what the rule
