@@ -7272,6 +7272,81 @@ describe('two attempts and the live region stay separate while running (nocx-m87
     }
   })
 
+  it('shows none of a screen that cannot place the output anchor (nocx-1ebrs.66.1.24)', async () => {
+    const client = makeClient()
+    const { content, teardown } = await mountTerminal(makeClipboard(), {}, client)
+    const handler = factHandler(client)
+    const scrollback = (content as unknown as { scrollback: ScrollbackController }).scrollback
+    const ROWS = 30
+    try {
+      handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
+      // The previous command filled the screen and its last frames are still
+      // in flight when the next command starts, so the running fact is
+      // handled on a screen that is still two screens behind: the block is
+      // minted on THAT screen's cursor row while the command's own row is a
+      // hundred rows further down.
+      const stale = screenFrame(5, ['1', '2', '3', '4'], { rows: ROWS })
+      stale.state.baseRow = 0
+      stale.cursor = { x: 0, y: ROWS - 1, visible: true }
+      client._sessions[0].fireScreenFrame(stale)
+
+      // The backend's anchor names the command's first output row, which is
+      // below this screen's bottom edge.
+      client._fireBlockOutputStart({
+        entryId: 'att-lag',
+        row: 102,
+        screenRevision: 16,
+        bufferKind: 'normal',
+        bufferInstance: '1',
+        cols: SCREEN_COLS,
+        rows: ROWS,
+      })
+      handler({
+        lane: 'lane-1',
+        lifecycle: 'running',
+        domain: 'd1',
+        epoch: 1,
+        attempt: { id: 'att-lag', state: 'open', origin: 'shell', command: 'sleep 30' },
+      })
+      const block = scrollback.blockManager.blockForAttempt('att-lag')!
+      // The anchor's own revision has not been accepted yet, so the row the
+      // block was minted on still governs the shift.
+      expect(block.startOffset).toBe(29)
+      expect(scrollback.terminalLiveInner.style.transform).toBe('translateY(-464px)')
+
+      // The screen catches up: base row 72, the command's echo on the last
+      // row. The minted start is now above the screen and the anchor is one
+      // row past its bottom edge — still nothing of the command's on it.
+      const caught = screenFrame(
+        16,
+        [...Array.from({ length: ROWS - 1 }, (_, i) => String(72 + i)), 'sleep 30'],
+        { rows: ROWS },
+      )
+      caught.state.baseRow = 72
+      caught.cursor = { x: 0, y: ROWS - 1, visible: true }
+      client._sessions[0].fireScreenFrame(caught)
+      expect(block.startOffset).toBe(0)
+      expect(block.outputAnchorOffset).toBe(ROWS)
+      expect(scrollback.terminalLiveInner.style.transform).toBe('translateY(-480px)')
+
+      // One more row written puts the anchor on the screen, and then it
+      // places like any other: the echo above it is what the shift hides.
+      const placed = screenFrame(
+        17,
+        [...Array.from({ length: ROWS - 2 }, (_, i) => String(73 + i)), 'sleep 30', ''],
+        { rows: ROWS },
+      )
+      placed.state.baseRow = 73
+      placed.cursor = { x: 0, y: ROWS - 1, visible: true }
+      client._sessions[0].fireScreenFrame(placed)
+      expect(block.outputAnchorOffset).toBe(29)
+      expect(block.outputAnchorText).toBe('sleep 30')
+      expect(scrollback.terminalLiveInner.style.transform).toBe('translateY(-464px)')
+    } finally {
+      teardown()
+    }
+  })
+
   it.each([
     {
       kind: 'soft-wrapped',
