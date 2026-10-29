@@ -247,6 +247,12 @@ type sessionOwner struct {
 	win  *window
 	log  *slog.Logger
 
+	// admissionMu fences submit's check-and-enqueue against beginClosing.
+	// After admissionClosed is set, incoming is a finite, immutable backlog
+	// that the owner must settle before it can publish stopped.
+	admissionMu     sync.Mutex
+	admissionClosed bool
+
 	incoming      chan ownerItem
 	queueUsed     atomic.Int64
 	closingSignal chan struct{}
@@ -580,6 +586,12 @@ func (o *sessionOwner) cancelReadAndWake() {
 // records before it resolves, the same order finishItem and commitIntent's
 // own early refusals already use.
 func (o *sessionOwner) beginClosing() {
+	// A submit holding this fence must finish its enqueue before shutdown
+	// captures incoming. Later submitters are refused, even if they started
+	// before shutdown. Never hold the fence across process I/O or settlement.
+	o.admissionMu.Lock()
+	o.admissionClosed = true
+	o.admissionMu.Unlock()
 	o.closing = true
 	for _, it := range o.pending {
 		res := ownerResult{State: sessionruntime.IntentStateCancelled, Err: errOwnerClosing}
@@ -589,6 +601,12 @@ func (o *sessionOwner) beginClosing() {
 		o.resolve(it, res)
 	}
 	o.pending = nil
+	// No producer can refill incoming past the admission fence. Its capacity
+	// bounds this pass; ordinary input is cancelled and accepted access bumps
+	// still apply, including when EOF was observed before shutdown began.
+	for remaining := len(o.incoming); remaining > 0; remaining-- {
+		o.dispatchIncoming(<-o.incoming)
+	}
 	o.requestTermination()
 	o.interruptWriter()
 }
@@ -1173,6 +1191,11 @@ func (o *sessionOwner) PromptBoundary(effect sessionruntime.Effect) error {
 // the caller learns at once rather than waiting behind whatever is ahead of
 // it.
 func (o *sessionOwner) submit(it ownerItem) (<-chan ownerResult, error) {
+	o.admissionMu.Lock()
+	defer o.admissionMu.Unlock()
+	if o.admissionClosed {
+		return nil, errOwnerClosing
+	}
 	select {
 	case <-o.closingSignal:
 		return nil, errOwnerClosing
