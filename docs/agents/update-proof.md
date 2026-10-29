@@ -35,7 +35,9 @@ All commands below belong **inside** `nocx-sky-test --e2e`. Do not run them on t
 shared host or through local Docker. Keep the default pod size. The e2e image has
 Xvfb; the real desktop driver also needs distro Python's AT-SPI bindings. Install
 `python3-pyatspi` and `at-spi2-core` in that pod if the recipe does not carry them.
-Use `/usr/bin/python3`, not an unrelated Python virtual environment.
+Use `/usr/bin/python3`, not an unrelated Python virtual environment. The
+disposable runner in the job described below is the one other place these
+commands run.
 
 Publication readiness can be queried separately. It prints `result: blocked`
 with `no nightly published yet` (exit 2), distinct from a failed update assertion
@@ -110,6 +112,39 @@ only**, never shipped code. It can replace only the nightly manifest and its
 signature for negative probes. The real application, production keyring, artifact
 URL and desktop controls stay unchanged. Positive checks use the actual published
 channel. Temporary transport trust does not introduce a release signing key.
+
+## The nightly workflow runs it
+
+`.github/workflows/nightly.yml` carries the same recipe as a `prove-linux` job
+that needs `publish`, so the pair it proves is the nightly this run published
+and the one before it. It reads, and writes, only this:
+
+- **The two dated nightlies** — `gh api repos/{owner}/{repo}/releases`, newest
+  first by `published_at`, `nightly-` tags only, `prerelease` and not `draft`.
+- **Their `manifest.json` and `.sig`** — `gh release download <dated tag>`.
+- **The lower probe** — `releases/latest`, the newest non-prerelease release,
+  refused unless its `version` is strictly below the nightly's.
+- **The verifier** — `go build ./cmd/manifest-sign` in the checkout that
+  published.
+- **Both AppImages** — the signed manifest's own `linux/amd64` URL, fetched by
+  the harness.
+- **Evidence** — `proof-results/{linux.json,app.log,inputs.txt}`, uploaded as
+  `linux-update-proof`.
+
+The job fails when `--publication-status` reports blocked (fewer than two dated
+nightlies exist): blocked is not a pass, and the annotation says so. It also
+refuses to run when the newest dated nightly is not the tag this run published,
+so a pass cannot belong to another run's bytes. `workflow_dispatch` with
+`proof-only: true` runs this job alone against whatever is published now and
+skips `prepare`, `build` and `publish`.
+
+The driver reads the accessibility tree, so a control it must find has to be
+announced. The settings rows bind each control to the row's `<label>` through
+`Field for` and the control's own `id` (`frontend/src/settings.tsx`); a select
+with neither an `id` nor an `aria-label` is announced unnamed, and
+`named("Update channel", "combo box")` then times out — which is how this proof
+found that the Update-channel row's label pointed at the row instead of at the
+control.
 
 ## Shared macOS evidence collector
 
