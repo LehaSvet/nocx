@@ -159,8 +159,9 @@ type outputPrefixBasis struct {
 }
 
 // refreshOutputPrefixesLocked remembers the last primary-screen check before
-// a resize. Alternate-screen reads cannot confirm primary pins and leave the
-// last check alone, so a commit there can pay its repair when primary returns.
+// a resize. Reject an alternate or unreadable screen before reading its rows:
+// neither can confirm primary pins. Leave the last check alone so a commit
+// there can pay its repair when primary returns.
 //
 // Limitation (nocx-7epsi, follow-up to nocx-l3evv): a rewrite followed by
 // 1049h in one sub-feed leaves no observable primary state: its pins now
@@ -170,6 +171,9 @@ type outputPrefixBasis struct {
 // An emulator transition observation must close this gap, not a raw byte
 // sniff. A changed boundary top still declines repair conservatively.
 func (s *Session) refreshOutputPrefixesLocked() {
+	if screen, err := s.emulator.Screen(); err != nil || screen != emulator.ScreenPrimary {
+		return
+	}
 	scr, ok := s.takeObservationScreenLocked()
 	if !ok || scr.AltScreen {
 		return
