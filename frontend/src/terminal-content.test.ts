@@ -13486,6 +13486,106 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
       }
     })
 
+    // THE WEBKIT CI FLAKE (nocx-1ebrs.66.1.13). notify.raise is an OSC 9
+    // effect delivered when the marker is INGESTED, not when its screen frame
+    // is ACCEPTED and painted by this pane. The spec presses the chord on
+    // that effect, so under load the chord can arrive while the accepted
+    // screen is still the prompt. The attachment is decided once, at the
+    // chord; without a later offer the finished command stays unattached
+    // forever even as its marker is painted.
+    it('attaches the frozen screen when the repaint that makes it eligible is accepted after the chord', async () => {
+      const { ed, content, teardown } = await mountTerminal(makeClipboard(), {
+        attachToDocument: true,
+      })
+      try {
+        content.setVisible(true)
+        ed.show()
+        ed.focus()
+        frozenBlock(content, 'sh put-marker-on-screen.sh &')
+        await promptPainted(content)
+        const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
+        content.captureLiveFrame = captureLiveFrame
+        const session = sessionOf(content)
+
+        // The gesture lands while the accepted screen is still the prompt.
+        chordOn(viewOf(ed).contentDOM)
+        expect(targetNamed(ed)).toBe('agent')
+        await settleAttachment()
+        expect(
+          ed.root.querySelector('[data-control="grant"]')?.getAttribute('aria-label'),
+        ).not.toContain('frozen screen attached automatically')
+        expect(captureLiveFrame).not.toHaveBeenCalled()
+
+        // The background writer's next repaint is accepted after the gesture.
+        // It is the state the attachment reads, so it must still attach the
+        // frozen command rather than being refused once and forgotten.
+        session.fireScreenFrame(screenFrame(2, ['NOCX-SCREEN-00000000']))
+        await settleAttachment()
+
+        expect(
+          ed.root.querySelector('[data-control="grant"]')?.getAttribute('aria-label'),
+        ).toContain('frozen screen attached automatically')
+        expect(captureLiveFrame).toHaveBeenCalledTimes(1)
+      } finally {
+        teardown()
+      }
+    })
+
+    // The same early chord, but here the prompt boundary is the last state
+    // transition. The marker repaint was accepted while the boundary was
+    // still in flight, so only applying that boundary can make the frozen
+    // block eligible.
+    it('attaches the frozen screen when the prompt boundary that makes it eligible arrives after the chord', async () => {
+      const { ed, content, teardown } = await mountTerminal(makeClipboard(), {
+        attachToDocument: true,
+      })
+      try {
+        content.setVisible(true)
+        ed.show()
+        ed.focus()
+        frozenBlock(content, 'sh put-marker-on-screen.sh &')
+        const session = sessionOf(content)
+        session.fireScreenFrame(screenFrame(1, ['$ ']))
+        const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
+        content.captureLiveFrame = captureLiveFrame
+
+        // The gesture lands while the block still awaits its boundary.
+        chordOn(viewOf(ed).contentDOM)
+        expect(targetNamed(ed)).toBe('agent')
+        await settleAttachment()
+        expect(
+          ed.root.querySelector('[data-control="grant"]')?.getAttribute('aria-label'),
+        ).not.toContain('frozen screen attached automatically')
+        expect(captureLiveFrame).not.toHaveBeenCalled()
+
+        // The marker repaint is accepted before the boundary, so the accepted
+        // screen has moved on but the block is not yet eligible.
+        session.fireScreenFrame(screenFrame(2, ['NOCX-SCREEN-00000000']))
+        await settleAttachment()
+        expect(captureLiveFrame).not.toHaveBeenCalled()
+
+        // The boundary names the prompt revision, not the marker repaint. The
+        // pending offer must still attach the screen the person asked about.
+        session.fireEffect({
+          sessionId: session.sessionId,
+          generation: '1',
+          effectId: '2',
+          kind: 'promptBoundary',
+          screenRevision: 1,
+          title: '',
+          body: '',
+        })
+        await settleAttachment()
+
+        expect(
+          ed.root.querySelector('[data-control="grant"]')?.getAttribute('aria-label'),
+        ).toContain('frozen screen attached automatically')
+        expect(captureLiveFrame).toHaveBeenCalledTimes(1)
+      } finally {
+        teardown()
+      }
+    })
+
     it('flips the target when a scrollback selection has parked focus on the body', async () => {
       const { ed, content, teardown } = await mountTerminal(makeClipboard(), {
         attachToDocument: true,
