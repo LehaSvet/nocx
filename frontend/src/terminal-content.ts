@@ -1065,6 +1065,12 @@ export class TerminalContent extends BasePaneContent {
   /** The most recent visual freeze that can own a later screen read. It is
    *  valid only while a newer accepted backend frame has arrived after it. */
   private _lastFrozenBlock: BlockRecord | null = null
+  /** The frozen block whose automatic attachment was requested before the
+   *  accepted screen made it eligible. notify.raise is delivered when the
+   *  marker is INGESTED, not when its frame is ACCEPTED here, so the chord
+   *  can land one frame early; the gesture must not be refused once and
+   *  forgotten (nocx-1ebrs.66.1.13). */
+  private _pendingAutomaticAttachment: BlockRecord | null = null
   /** The accepted screen revision at the prompt boundary. Only a later
    *  backend frame may attach this screen to the frozen block. */
   private _screenHandbackRevision = -1
@@ -2807,6 +2813,7 @@ export class TerminalContent extends BasePaneContent {
         onClear: () => {
           this._lastFrozenBlock = null
           this._automaticFrameOwner = null
+          this._pendingAutomaticAttachment = null
           this._screenHandbackRevision = -1
           this._screenHandbackSnapshot = null
           this._screenHandbackAwaitingBoundary = false
@@ -3236,6 +3243,10 @@ export class TerminalContent extends BasePaneContent {
           )
         },
         onTurnAccepted: () => {
+          // The turn has taken the grants that existed when it was sent. A
+          // pending automatic attachment belongs to that gesture, not to the
+          // next question typed without pressing the chord again.
+          this._pendingAutomaticAttachment = null
           // Agent asks keep the editor visible by default. A summoned answer
           // is the one accepted case where the submitted question must give
           // the overlay to its current answer without exposing it to a refusal.
@@ -3773,6 +3784,15 @@ export class TerminalContent extends BasePaneContent {
         }
         this._syncIntegrationWaiting()
         this._syncLifecycleOwnership()
+        // A START MUST NOT LEAVE THE KEYBOARD UNCLAIMED. The commit focuses
+        // the grid synchronously, but the editor's display:none host and the
+        // live region's move are both focus-changing DOM operations between
+        // that handoff and this fact. If focus is on <body> now, the command
+        // is running and the letters typed before the deferred focusGrid
+        // repair have no owner — the Enter after them is kept and the letters
+        // are not (nocx-1ebrs.66.1.16). Repair only <body> or the grid; a
+        // control's focus is its own (see takeKeyboardToGridAfterSubmit).
+        if (this.lifecycle.state.kind === 'running') this.takeKeyboardToGridAfterSubmit()
         this._releaseDeferredShellSubmissions()
         // An integrated pane is settled by its authenticated lifecycle fact,
         // not by the non-authoritative promptBoundary observation. Without
@@ -5110,6 +5130,10 @@ export class TerminalContent extends BasePaneContent {
         this._screenHandbackSnapshot =
           handback?.revision === requiredScreenRevision ? handback : null
         this._screenHandbackAwaitingBoundary = false
+        // A repaint may have been accepted while this boundary was still in
+        // flight. It is the screen the person asked about, so offer it now
+        // rather than requiring another frame to arrive.
+        this._offerPendingAutomaticAttachment()
       }
       if (effect.kind === 'commandSnapshot') {
         this.snapshotStore.applyBackendSnapshot(effect.commandNames)
@@ -5247,6 +5271,9 @@ export class TerminalContent extends BasePaneContent {
           }
           if (frame.state.title !== null) this._applyTerminalTitle(frame.state.title)
           if (frame.state.cwd !== null) this._applyTerminalCwd(frame.state.cwd.path)
+          // The chord may have landed before the repaint that makes the
+          // frozen owner eligible. This accepted frame is that state.
+          this._offerPendingAutomaticAttachment()
         }
       } catch (err) {
         // apply refuses malformed shapes, but a document hostile enough to
@@ -7868,6 +7895,7 @@ export class TerminalContent extends BasePaneContent {
       this._automaticFrameOwner = owner
       this._pinnedFrame = frame
       this._summonedCommand = owner
+      if (this._pendingAutomaticAttachment === owner) this._pendingAutomaticAttachment = null
       this.grantController?.setAutomaticBlock(this.automaticFrozenGrant())
     } catch {
       // If the pane closes during the transition, leave the ordinary Ask
@@ -7877,8 +7905,20 @@ export class TerminalContent extends BasePaneContent {
     }
   }
 
+  /** Attach the frozen owner whose requested accepted frame has now arrived.
+   *  This is still the one shared owner predicate: the pending block must be
+   *  the block that predicate returns, so a later freeze or a prompt redraw
+   *  cannot turn a deferred ask into an attachment of some other screen. */
+  private _offerPendingAutomaticAttachment(): void {
+    const pending = this._pendingAutomaticAttachment
+    if (pending === null || this._summoned || this._automaticCapturePending) return
+    if (this.automaticAttachmentOwner(true) !== pending) return
+    void this.captureAutomaticFrozenFrame(pending)
+  }
+
   private clearAutomaticFrozenFrame(): void {
     if (this._summoned) return
+    this._pendingAutomaticAttachment = null
     this._pinnedFrame = null
     this._automaticFrameOwner = null
     this._summonedCommand = null
@@ -8509,8 +8549,16 @@ export class TerminalContent extends BasePaneContent {
     }
     targets.setActive(next)
     const owner = this.automaticAttachmentOwner(true)
-    if (owner !== null) void this.captureAutomaticFrozenFrame(owner)
-    else this.clearAutomaticFrozenFrame()
+    if (owner !== null) {
+      this._pendingAutomaticAttachment = null
+      void this.captureAutomaticFrozenFrame(owner)
+    } else {
+      this.clearAutomaticFrozenFrame()
+      // The frozen screen is not eligible YET: its prompt boundary may still
+      // be in flight, or the repaint that makes it the current screen may be
+      // one accepted frame away. Remember which block the person asked over.
+      this._pendingAutomaticAttachment = this._lastFrozenBlock
+    }
   }
 
   /** Address a signal to THE ACTIVE BLOCK — the one command running in this
@@ -10018,6 +10066,9 @@ export class TerminalContent extends BasePaneContent {
    *  renderer clamps the text to the wire bound and states how much more
    *  the block holds — never a silent truncation. */
   private _onBlockFrozen(rec: BlockRecord): void {
+    // A newer freeze is a different owner, and it cannot inherit an ask the
+    // person made over the previous one.
+    this._pendingAutomaticAttachment = null
     this._lastFrozenBlock = rec
     if (this.lifecycle.state.kind !== 'prompt_ready') {
       this._screenHandbackAwaitingBoundary = true
