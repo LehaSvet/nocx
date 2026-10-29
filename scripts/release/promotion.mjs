@@ -136,7 +136,7 @@ export function readQuarantine(json, issuesJsonl) {
   for (const entry of doc.tests) {
     requireThat(
       typeof entry?.test === 'string' &&
-        /^(go:Test\w+|e2e:e2e\/\S+ › .+)$/.test(entry.test) &&
+        /^(go:Test\w+|e2e:e2e\/\S+ › .+|job:[^#\n]+#[1-9]\d*)$/.test(entry.test) &&
         typeof entry.bead === 'string',
       `invalid test quarantine entry ${JSON.stringify(entry)}`,
     )
@@ -182,8 +182,12 @@ function quarantinedJob(entry, label, name) {
   for (const job of failed) {
     requireThat(job.conclusion === 'failure', `${label}: ${name} was not green`)
     const tests = job.failures ?? []
+    // A failure that names no test is not a flake anyone can quarantine by
+    // test name. It passes only when the same job passed in another attempt,
+    // or when a bead quarantines exactly this job of exactly this PR
+    // (`job:<name>#<PR>`): a known defect of the check itself, never a class.
     requireThat(
-      tests.length > 0 || passed,
+      tests.length > 0 || passed || entry.quarantine[`job:${name}#${entry.number}`] !== undefined,
       `${label}: ${name} failed without naming a test and never passed`,
     )
     for (const test of tests)
