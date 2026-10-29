@@ -280,19 +280,25 @@ test('publishing explicitly pins the tag, verifies draft downloads before latest
     writeFileSync(join(location, 'stable', asset.name), body)
     writeFileSync(join(location, 'plan.json'), JSON.stringify(plan))
     const calls = []
+    // GitHub's state: the release exists, as a draft and then published, only
+    // once `release create` has run; the list is where verifyUploaded reads it.
+    let created = false
     const github = {
-      pages: (url) =>
-        url.includes('matching-refs') && failure === 'conflict'
-          ? [{ ref: `refs/tags/${plan.tag}` }]
-          : [],
+      pages: (url) => {
+        if (url.includes('matching-refs'))
+          return failure === 'conflict' ? [{ ref: `refs/tags/${plan.tag}` }] : []
+        return created ? [{ tag_name: plan.tag, assets: [asset] }] : []
+      },
       api: (url) =>
         url.includes('git/ref/')
           ? { object: { type: 'commit', sha: commit } }
           : { assets: [asset] },
       gh: (args) => {
         calls.push(args)
-        if (args[0] === 'release' && args[1] === 'create' && failure === 'upload')
-          throw new Error('upload failed')
+        if (args[0] === 'release' && args[1] === 'create') {
+          if (failure === 'upload') throw new Error('upload failed')
+          created = true
+        }
         if (args[0] === 'release' && args[1] === 'edit' && failure === 'publish')
           throw new Error('publish failed')
         if (args[0] === 'release' && args[1] === 'download')
