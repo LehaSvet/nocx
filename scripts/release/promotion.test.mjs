@@ -493,7 +493,10 @@ test('a red required job passes only on quarantined tests or a retry that classi
       { attempt: 1, jobs: structuredClone(entry.jobs) },
       { attempt: 2, jobs: structuredClone(entry.jobs) },
     ]
-    for (const attempt of entry.attempts) attempt.jobs[failedIndex].failures = [askKey]
+    for (const attempt of entry.attempts) {
+      attempt.jobs[failedIndex].failures = [askKey]
+      attempt.jobs[failedIndex].complete = true
+    }
     mutate(entry, failedIndex)
     return [entry]
   }

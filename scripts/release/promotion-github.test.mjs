@@ -77,6 +77,10 @@ test('job contract expands the actual CI matrix and refuses unsupported syntax',
     'ci-e2e (webkit, 2)',
   ]
   for (const name of original) assert.ok(names.includes(name), `missing original CI job ${name}`)
+  assert.deepEqual(
+    ciJobNames(readFileSync('.github/workflows/ci.yml', 'utf8'), { gated: true }),
+    original.filter((name) => /^ci-(mac|backend|linux|e2e)( |$)/.test(name)),
+  )
   assert.throws(
     () =>
       ciJobNames(
@@ -144,16 +148,17 @@ test('a red CI run is read whole: earlier attempts and each failed job log, quar
   const logs = []
   f.options.github.gh = (args) => {
     logs.push(args.join(' '))
-    return '2026-10-29T00:00:00Z --- FAIL: TestFlaky (1.0s)\n'
+    return '2026-10-29T00:00:00Z setup failed\n'
   }
-  f.options.quarantine = { 'go:TestFlaky': 'nocx-x' }
+  f.options.quarantine = { 'job:changes#12': 'nocx-x' }
   const [entry] = await collectCI(f.options)
-  assert.deepEqual(entry.quarantine, { 'go:TestFlaky': 'nocx-x' })
+  assert.deepEqual(entry.quarantine, { 'job:changes#12': 'nocx-x' })
   assert.deepEqual(
     entry.attempts.map((a) => a.attempt),
     [1, 2],
   )
-  assert.deepEqual(entry.attempts[1].jobs[0].failures, ['go:TestFlaky'])
+  assert.deepEqual(entry.attempts[1].jobs[0].failures, [])
+  assert.equal(entry.attempts[1].jobs[0].complete, false)
   assert.deepEqual(logs, [
     `api --allow-escape-sequences repos/${repo}/actions/jobs/150/logs`,
     `api --allow-escape-sequences repos/${repo}/actions/jobs/100/logs`,
@@ -323,4 +328,171 @@ test('publishing explicitly pins the tag, verifies draft downloads before latest
       assert.equal(calls[publishIndex + 1][1], 'download')
     }
   }
+})
+
+// A gate can make a failed test job API-green. Promotion must read that job's
+// retained log record, not mistake GitHub's conclusion for a clean suite.
+function gatedFixture(
+  steps = [{ name: 'go-backend', status: 1, failures: ['go:TestFlaky'], complete: true }],
+) {
+  const f = fixture()
+  f.options.loadWorkflow = () =>
+    workflow +
+    '    steps:\n      - name: Honour test quarantine\n        run: node scripts/quarantine-gate.mjs\n'
+  f.records = new Map()
+  f.logs = []
+  for (const [index, job] of f.jobs.entries()) {
+    job.id = 100 + index
+    if (!job.name.startsWith('ci-linux (')) continue
+    f.records.set(job.id, { schema: 1, job: job.name, pull: '12', steps: structuredClone(steps) })
+  }
+  f.options.github.gh = (args) => {
+    f.logs.push(args)
+    const id = Number(/jobs\/(\d+)\/logs$/.exec(args.at(-1))[1])
+    return (
+      '2026-10-29T00:00:00Z NOCX_QUARANTINE_EVIDENCE_V1 ' + JSON.stringify(f.records.get(id)) + '\n'
+    )
+  }
+  return f
+}
+
+test('API-green gated failures are rejudged against the promotion quarantine', async () => {
+  const f = gatedFixture()
+  await assert.rejects(() => collectCI(f.options), /no open bead quarantines/)
+})
+
+test('API-green quarantine evidence is retained, including passing steps, and rejudged on saved verification', async () => {
+  const steps = [
+    { name: 'go-backend', status: 1, failures: ['go:TestFlaky'], complete: true },
+    { name: 'go-local-ssh', status: 0, failures: [], complete: true },
+  ]
+  const f = gatedFixture(steps)
+  f.options.quarantine = { 'go:TestFlaky': 'nocx-x' }
+  const [entry] = await collectCI(f.options)
+  assert.equal(f.logs.length, 2)
+  assert.deepEqual(
+    entry.gatedJobs,
+    f.jobs.slice(2).map((job) => job.name),
+  )
+  for (const job of entry.jobs.slice(2)) assert.deepEqual(job.quarantineEvidence.steps, steps)
+  const { verifyCI } = await import('./promotion.mjs')
+  for (const contract of [[], 'ci-linux', ['missing'], [entry.gatedJobs[0], entry.gatedJobs[0]]]) {
+    assert.throws(() => verifyCI([{ ...entry, gatedJobs: contract }]), /contract/)
+  }
+  const withoutContract = JSON.parse(JSON.stringify(entry))
+  delete withoutContract.gatedJobs
+  withoutContract.quarantine = {}
+  assert.throws(() => verifyCI([withoutContract]), /no open bead quarantines/)
+  const saved = JSON.parse(JSON.stringify(entry))
+  saved.quarantine = {}
+  assert.throws(() => verifyCI([saved]), /no open bead quarantines/)
+  delete saved.jobs[2].quarantineEvidence
+  assert.throws(() => verifyCI([saved]), /evidence/)
+})
+
+test('successful gated jobs require one valid matching record per matrix leg', async () => {
+  for (const damage of [
+    () => '',
+    () => 'NOCX_QUARANTINE_EVIDENCE_V1 not-json',
+    (log) => log + log,
+    (log) => log.replace('"pull":"12"', '"pull":"13"'),
+    (log) => log.replace('with-secret-service)', 'other-job)'),
+    (log) => log.replace('"schema":1', '"schema":2'),
+    (log) => log.replace('"status":0', '"status":"0"'),
+    (log) => log.replace('"complete":true', '"complete":null'),
+    (log) => log.replace('"complete":true', '"complete":false'),
+    (log) => log.replace('"failures":[]', '"failures":["go:TestHidden"]'),
+    (log) => log.replace('"status":0', '"status":-1'),
+    (log) => log.replace('"steps":[{', '"steps":[] ,"ignored":[{'),
+    () => {
+      throw new Error('job logs unavailable')
+    },
+  ]) {
+    const f = gatedFixture([{ name: 'tests', status: 0, failures: [], complete: true }])
+    const read = f.options.github.gh
+    f.options.github.gh = (args) => damage(read(args))
+    await assert.rejects(() => collectCI(f.options))
+  }
+})
+
+test('a gated quarantine cannot cover a direct product commit, but clean gated suites can', async () => {
+  const direct = 'd'.repeat(40)
+  for (const failed of [false, true]) {
+    const f = gatedFixture([
+      {
+        name: 'tests',
+        status: failed ? 1 : 0,
+        failures: failed ? ['go:TestFlaky'] : [],
+        complete: true,
+      },
+    ])
+    f.options.commits = [direct, commit]
+    f.responses.set(`repos/${repo}/commits/${direct}/pulls`, [])
+    f.options.commitFiles = () => ['main.go']
+    f.options.isAncestor = () => true
+    f.options.quarantine = { 'go:TestFlaky': 'nocx-x' }
+    if (failed) await assert.rejects(() => collectCI(f.options), /no later green PR/)
+    else assert.equal((await collectCI(f.options))[0].coveredBy, 12)
+  }
+})
+
+test('a gated named failure with incomplete evidence cannot be quarantined', async () => {
+  const f = gatedFixture([
+    { name: 'tests', status: 1, failures: ['go:TestFlaky'], complete: false },
+  ])
+  f.options.quarantine = { 'go:TestFlaky': 'nocx-x' }
+  await assert.rejects(() => collectCI(f.options), /incomplete|complete/)
+})
+
+test('a failed run still rejudges API-green gated jobs and keeps whole-job exceptions PR-specific', async () => {
+  const f = gatedFixture([{ name: 'tests', status: 1, failures: [], complete: false }])
+  f.run.conclusion = 'failure'
+  f.jobs[0].conclusion = 'failure'
+  const read = f.options.github.gh
+  f.options.github.gh = (args) => (args.at(-1).includes('/100/') ? 'setup failed' : read(args))
+  f.options.quarantine = { 'job:changes#12': 'nocx-setup' }
+  for (const job of f.jobs.slice(2)) f.options.quarantine[`job:${job.name}#13`] = 'nocx-wrong-pr'
+  await assert.rejects(() => collectCI(f.options), /never passed/)
+  for (const job of f.jobs.slice(2)) f.options.quarantine[`job:${job.name}#12`] = 'nocx-correct-pr'
+  const [entry] = await collectCI(f.options)
+  assert.equal(entry.attempts[0].jobs[2].quarantineEvidence.steps[0].status, 1)
+})
+
+test('supporting-only skipped gated matrices do not invent gate records', async () => {
+  const f = gatedFixture()
+  f.options.touchesProduct = () => false
+  f.jobs.splice(2, 2, { name: 'ci-linux', conclusion: 'skipped', status: 'completed' })
+  await collectCI(f.options)
+  assert.equal(f.logs.length, 0)
+})
+
+test('legacy named text cannot assert complete failure evidence for promotion', async () => {
+  const f = fixture()
+  f.run.conclusion = 'failure'
+  f.jobs[0].conclusion = 'failure'
+  f.jobs[0].id = 100
+  f.options.github.gh = () => '--- FAIL: TestFlaky (1s)\n'
+  f.options.quarantine = { 'go:TestFlaky': 'nocx-x', 'job:changes#12': 'nocx-job' }
+  await assert.rejects(() => collectCI(f.options), /incomplete|complete/)
+})
+
+test('older API-green gated attempts are rejudged even when the latest run is green', async () => {
+  const f = gatedFixture([{ name: 'tests', status: 0, failures: [], complete: true }])
+  f.run.run_attempt = 2
+  f.options.quarantine = { 'job:changes#12': 'nocx-setup' }
+  f.responses.set(`repos/${repo}/actions/runs/22/attempts/2/jobs`, f.jobs)
+  const first = f.jobs.map((job) => ({ ...job, id: job.id + 100 }))
+  f.responses.set(`repos/${repo}/actions/runs/22/attempts/1/jobs`, first)
+  for (const job of first.slice(2)) {
+    f.records.set(job.id, {
+      schema: 1,
+      job: job.name,
+      pull: '12',
+      steps: [{ name: 'tests', status: 1, failures: ['go:TestClosed'], complete: true }],
+    })
+  }
+  const read = f.options.github.gh
+  f.options.github.gh = (args) =>
+    /\/(100|200)\/logs$/.test(args.at(-1)) ? 'setup failed' : read(args)
+  await assert.rejects(() => collectCI(f.options), /no open bead quarantines/)
 })

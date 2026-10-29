@@ -94,12 +94,13 @@ export function authorize({ actor, triggeringActor, owner, ref, tried }) {
 
 // Expand the existing CI workflow's matrix, not a second hand-maintained job list.
 // Fail closed if CI gains syntax this small reader cannot understand.
-export function ciJobNames(workflow) {
+export function ciJobNames(workflow, { gated = false } = {}) {
   const jobSection = /^jobs:\n([\s\S]*)/m.exec(workflow)?.[1]
   requireThat(jobSection, 'CI workflow declares no jobs')
   const jobs = [...jobSection.matchAll(/^ {2}([\w-]+):\n([\s\S]*?)(?=^ {2}[\w-]+:|$(?![\s\S]))/gm)]
   requireThat(jobs.length > 0, 'CI workflow declares no jobs')
   return jobs.flatMap(([, name, body]) => {
+    if (gated && !body.includes('quarantine-gate.mjs')) return []
     if (!/^ {6}matrix:/m.test(body)) return [name]
     const block = /^ {6}matrix:\n((?: {8}[^\n]*\n|\n)*)/m.exec(body)?.[1]
     const rows = block
@@ -117,6 +118,73 @@ export function ciJobNames(workflow) {
     }
     return combinations.map((combo) => `${name} (${combo.join(', ')})`)
   })
+}
+
+const quarantineMarker = 'NOCX_QUARANTINE_EVIDENCE_V1 '
+
+// Read the final gate's record even when GitHub calls the job successful.
+// Timestamp stripping matches the shared legacy log parser. An echoed shell
+// command is not a record: the marker must start the log message itself.
+export function readQuarantineEvidence(log, name, pull) {
+  const records = log
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\S+Z /, ''))
+    .filter((line) => line.startsWith(quarantineMarker))
+  requireThat(records.length === 1, `CI: ${name} needs exactly one quarantine evidence record`)
+  const record = JSON.parse(records[0].slice(quarantineMarker.length))
+  validateQuarantineEvidence(record, name, pull)
+  return record
+}
+
+function validateQuarantineEvidence(record, name, pull) {
+  requireThat(
+    record?.schema === 1 &&
+      record.job === name &&
+      (record.pull === pull || record.pull === String(pull)) &&
+      Array.isArray(record.steps) &&
+      record.steps.length > 0,
+    `CI: ${name} has invalid quarantine evidence identity or steps`,
+  )
+  const names = new Set()
+  for (const step of record.steps) {
+    requireThat(
+      typeof step?.name === 'string' &&
+        step.name.trim() &&
+        !names.has(step.name) &&
+        Number.isInteger(step.status) &&
+        step.status >= 0 &&
+        step.status <= 255 &&
+        typeof step.complete === 'boolean' &&
+        Array.isArray(step.failures) &&
+        step.failures.every((key) => typeof key === 'string' && key.trim()) &&
+        (step.status !== 0 || (step.complete && step.failures.length === 0)),
+      `CI: ${name} has invalid quarantine evidence step`,
+    )
+    names.add(step.name)
+  }
+}
+
+// Direct product commits need clean suites, not merely API-green quarantines.
+export function cleanCICover(entry) {
+  return (
+    entry.run?.conclusion === 'success' &&
+    !entry.attempts &&
+    !entry.jobs.some((job) => job.quarantineEvidence?.steps.some((step) => step.status !== 0))
+  )
+}
+
+function verifyGatedJob(entry, label, job) {
+  validateQuarantineEvidence(job.quarantineEvidence, job.name, entry.number)
+  for (const step of job.quarantineEvidence.steps) {
+    if (step.status === 0) continue
+    const verdict = judgeFailures({
+      failures: step.failures,
+      complete: step.complete,
+      quarantine: entry.quarantine ?? {},
+      jobKey: `job:${job.name}#${entry.number}`,
+    })
+    requireThat(verdict.accepted, `${label}: ${job.name} step ${step.name} ${verdict.reason}`)
+  }
 }
 
 // A required job that is not green in the newest attempt still passes when
@@ -142,6 +210,7 @@ function quarantinedJob(entry, label, name) {
     // a pull request's own CI so the two cannot answer differently.
     const verdict = judgeFailures({
       failures: job.failures ?? [],
+      complete: job.complete === true,
       quarantine: entry.quarantine,
       jobKey: `job:${name}#${entry.number}`,
       passedInAnotherAttempt: passed,
@@ -184,8 +253,7 @@ export function verifyCI(evidence) {
               !other.direct &&
               other.number === entry.coveredBy &&
               other.product &&
-              other.run?.conclusion === 'success' &&
-              !other.attempts,
+              cleanCICover(other),
           ),
         `CI: direct commit ${entry.commit} touches product and no later green PR covers it`,
       )
@@ -212,6 +280,26 @@ export function verifyCI(evidence) {
       `${label}: missing workflow job contract`,
     )
     requireThat(Array.isArray(jobs), `${label}: no jobs`)
+    requireThat(
+      entry.gatedJobs === undefined ||
+        (Array.isArray(entry.gatedJobs) &&
+          entry.gatedJobs.length > 0 &&
+          new Set(entry.gatedJobs).size === entry.gatedJobs.length &&
+          entry.gatedJobs.every((name) => requiredJobs.includes(name))),
+      `${label}: invalid gated job contract`,
+    )
+    // Earlier attempts can also be API-green because their gate accepted a
+    // failure. Those records still owe today's quarantine verdict.
+    for (const attempt of entry.attempts ?? []) {
+      for (const job of attempt.jobs) {
+        if (
+          (entry.gatedJobs?.includes(job.name) || job.quarantineEvidence !== undefined) &&
+          job.conclusion === 'success'
+        ) {
+          verifyGatedJob(entry, label, job)
+        }
+      }
+    }
     const remaining = new Set(jobs)
     let quarantined = 0
     for (const name of requiredJobs) {
@@ -227,6 +315,12 @@ export function verifyCI(evidence) {
       const job = matches[0]
       const supportingSkip =
         !entry.product && !['changes', 'ci-backlog'].includes(name) && job.conclusion === 'skipped'
+      if (
+        (entry.gatedJobs?.includes(name) || job.quarantineEvidence !== undefined) &&
+        job.conclusion === 'success'
+      ) {
+        verifyGatedJob(entry, label, job)
+      }
       if (!(job.status === 'completed' && (job.conclusion === 'success' || supportingSkip))) {
         quarantinedJob(entry, label, job.name)
         quarantined++
