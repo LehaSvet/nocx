@@ -225,6 +225,13 @@ func (fx *liveSshd) laneFailureContext(kernel *recordingKernel) string {
 // terminalTail is the pane's own last bytes, quoted because what a fence
 // journey is looking for is control sequences: a missing fence is unreadable
 // in a rendered terminal and unmistakable in %q.
+// terminalTailBytes is how much of the pty a failure block prints. The
+// failure this was built for spans a whole prompt cycle — the previous
+// command's D, [J, A, OSC 7, a preexec C, whatever a prompt hook printed, the
+// prompt's ?2004h and PS1's B — and 400 bytes cut it off before the C that
+// names the suspect (nocx-1ebrs.66.1.18).
+const terminalTailBytes = 1200
+
 func terminalTail(out *outputBuffer, limit int) string {
 	all := out.String()
 	tail := all
@@ -272,7 +279,7 @@ func TestLiveSshd_BashReachesAcceptedDomain(t *testing.T) {
 	// wrote to the terminal (protocol doc §8).
 	fence := fmt.Sprintf("\x1b]1337;NOCX_FENCE;%x\x07", att0.Fence)
 	waittest.WaitForTimeoutDetail(t, "sentinel output and fence", 10*time.Second,
-		func() string { return fx.laneFailureContext(kernel) + terminalTail(out, 400) },
+		func() string { return fx.laneFailureContext(kernel) + terminalTail(out, terminalTailBytes) },
 		func() bool {
 			return strings.Contains(out.String(), "PROOF_BASH_123") &&
 				strings.Contains(out.String(), fence)
@@ -283,7 +290,7 @@ func TestLiveSshd_BashReachesAcceptedDomain(t *testing.T) {
 
 	// The lane is back at a ready prompt for the domain.
 	waittest.WaitForTimeoutDetail(t, "lane back at PromptReady", 10*time.Second,
-		func() string { return fx.laneFailureContext(kernel) + terminalTail(out, 400) },
+		func() string { return fx.laneFailureContext(kernel) + terminalTail(out, terminalTailBytes) },
 		func() bool {
 			kernel.mu.Lock()
 			defer kernel.mu.Unlock()

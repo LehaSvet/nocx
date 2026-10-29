@@ -526,10 +526,22 @@ const kernelFrameTail = 12
 // caused it.
 func (r *recordingKernel) Ingest(ctx context.Context, t lifecycle.TransportID, env lifecycle.Envelope) error {
 	err := r.Publisher.Ingest(ctx, t, env)
+	what := fmt.Sprintf("transport %s seq %d %s lane %s domain %s epoch %d",
+		t, env.Sequence, env.Event.Kind, env.Lane, env.Domain, env.Epoch)
+	// A `start` names the line the shell is about to run, and that line is the
+	// diagnosis when nothing completes it: a start naming a prompt hook is not
+	// a command a person typed, and a block that printed only the kind left the
+	// reader to guess which command had stranded the lane (nocx-1ebrs.66.1.18).
+	if st := env.Event.Start; st != nil {
+		attempt := ""
+		if st.AttemptID != nil {
+			attempt = string(*st.AttemptID)
+		}
+		what += fmt.Sprintf(" attempt %s command %s", attempt, quotedForReport(st.Command))
+	}
 	f := kernelFrame{
-		Lane: env.Lane,
-		What: fmt.Sprintf("transport %s seq %d %s lane %s domain %s epoch %d",
-			t, env.Sequence, env.Event.Kind, env.Lane, env.Domain, env.Epoch),
+		Lane:        env.Lane,
+		What:        what,
 		Disposition: "accepted",
 		At:          time.Now(),
 	}
@@ -583,75 +595,15 @@ func (r *recordingKernel) recordFrame(f kernelFrame) {
 	}
 }
 
-// lifecycleName is the readable name of a lane lifecycle. LifecycleState is a
-// uint8 with no String method — the kernel never prints it — and a failure
-// block that says '\x02' where the reader needs "prompt_ready" is the one thing
-// a stranger cannot use.
-func lifecycleName(st lifecycle.LifecycleState) string {
-	switch st {
-	case lifecycle.LifecycleNative:
-		return "native"
-	case lifecycle.LifecyclePromptReady:
-		return "prompt_ready"
-	case lifecycle.LifecycleRunning:
-		return "running"
-	case lifecycle.LifecycleDesynchronized:
-		return "desynchronized"
-	case lifecycle.LifecycleLost:
-		return "lost"
+// quotedForReport renders one shell line for a failure block: %q so quotes and
+// control bytes stay unambiguous, bounded so a long line cannot bury the frames
+// it is printed beside.
+func quotedForReport(s string) string {
+	const budget = 200
+	if len(s) > budget {
+		return fmt.Sprintf("%q… (%d bytes)", s[:budget], len(s))
 	}
-	return fmt.Sprintf("unknown(%d)", uint8(st))
-}
-
-// laneReport is the failure block the live-ssh journeys print when a wait over
-// the lane times out (nocx-1ebrs.66.1.18). It answers, at the moment of the
-// timeout and from the kernel's own read model, the questions the old message
-// ("timed out waiting for lane back at PromptReady") left open: which lane, what
-// the kernel says its lifecycle/domain/attempt are, which transport it rides,
-// and what the last frames were and what became of them.
-func (r *recordingKernel) laneReport() string {
-	r.mu.Lock()
-	lane, transport, minted := r.lane, r.transport, r.minted
-	frames := append([]kernelFrame(nil), r.frames...)
-	r.mu.Unlock()
-
-	now := time.Now()
-	var b strings.Builder
-	fmt.Fprintf(&b, "kernel.lane = %q (domains minted: %d)\n", lane, minted)
-	fmt.Fprintf(&b, "lane transport = %q\n", transport)
-	if lane == "" {
-		b.WriteString("kernel.State: no lane was ever minted, so there is nothing to read\n")
-	} else if st, err := r.State(lane); err != nil {
-		fmt.Fprintf(&b, "kernel.State(%q) failed: %v\n", lane, err)
-	} else {
-		fmt.Fprintf(&b, "kernel.State(%q): lifecycle %s domain %q attempt %q\n",
-			lane, lifecycleName(st.Lifecycle), st.Domain, st.Attempt)
-		fmt.Fprintf(&b, "  open attempts %v, stack %v, recovery sighted %v\n",
-			st.OpenAttempts, st.Stack, st.RecoverySighted)
-	}
-
-	shown := 0
-	for _, f := range frames {
-		if f.Lane == "" || f.Lane == lane {
-			shown++
-		}
-	}
-	fmt.Fprintf(&b, "pane lifecycle frames the kernel saw (%d in the tail, showing %d; accepted/rejected/dropped):\n",
-		len(frames), shown)
-	if shown == 0 {
-		b.WriteString("  none — no frame reached the kernel for this lane\n")
-	}
-	for _, f := range frames {
-		if f.Lane != "" && f.Lane != lane {
-			continue
-		}
-		fmt.Fprintf(&b, "  -%8s %-9s %s", now.Sub(f.At).Round(time.Millisecond), f.Disposition, f.What)
-		if f.Reason != "" {
-			fmt.Fprintf(&b, " — %s", f.Reason)
-		}
-		b.WriteString("\n")
-	}
-	return b.String()
+	return fmt.Sprintf("%q", s)
 }
 
 // ---------------------------------------------------------------------------
