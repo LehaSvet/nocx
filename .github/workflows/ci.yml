@@ -191,8 +191,15 @@ jobs:
     runs-on: macos-latest
     # The evidence the quarantine gate reads: one .log and one .status per test
     # step, written by scripts/ci-run-logged.sh (see the header).
+    #
+    # A literal path, not `${{ runner.temp }}`: a job's `env:` may use only the
+    # github, needs, strategy, matrix, vars, secrets and inputs contexts, and
+    # `runner` is not one of them. actionlint says so, and GitHub fails the WHOLE
+    # workflow at startup for it — measured on PR #595's first push, whose only
+    # run was a zero-job failure named after this file. /tmp is the runner VM's,
+    # dies with the job, and two matrix legs are two VMs.
     env:
-      NOCX_TEST_LOG_DIR: ${{ runner.temp }}/nocx-test-logs
+      NOCX_TEST_LOG_DIR: /tmp/nocx-test-logs
     steps:
       - uses: actions/checkout@v7
 
@@ -450,8 +457,15 @@ jobs:
     runs-on: ubuntu-latest
     # The evidence the quarantine gate reads: one .log and one .status per test
     # step, written by scripts/ci-run-logged.sh (see the header).
+    #
+    # A literal path, not `${{ runner.temp }}`: a job's `env:` may use only the
+    # github, needs, strategy, matrix, vars, secrets and inputs contexts, and
+    # `runner` is not one of them. actionlint says so, and GitHub fails the WHOLE
+    # workflow at startup for it — measured on PR #595's first push, whose only
+    # run was a zero-job failure named after this file. /tmp is the runner VM's,
+    # dies with the job, and two matrix legs are two VMs.
     env:
-      NOCX_TEST_LOG_DIR: ${{ runner.temp }}/nocx-test-logs
+      NOCX_TEST_LOG_DIR: /tmp/nocx-test-logs
     strategy:
       fail-fast: false
       matrix:
@@ -623,8 +637,15 @@ jobs:
     runs-on: ubuntu-latest
     # The evidence the quarantine gate reads: one .log and one .status per test
     # step, written by scripts/ci-run-logged.sh (see the header).
+    #
+    # A literal path, not `${{ runner.temp }}`: a job's `env:` may use only the
+    # github, needs, strategy, matrix, vars, secrets and inputs contexts, and
+    # `runner` is not one of them. actionlint says so, and GitHub fails the WHOLE
+    # workflow at startup for it — measured on PR #595's first push, whose only
+    # run was a zero-job failure named after this file. /tmp is the runner VM's,
+    # dies with the job, and two matrix legs are two VMs.
     env:
-      NOCX_TEST_LOG_DIR: ${{ runner.temp }}/nocx-test-logs
+      NOCX_TEST_LOG_DIR: /tmp/nocx-test-logs
     strategy:
       fail-fast: false
       matrix:
@@ -1073,8 +1094,15 @@ jobs:
     timeout-minutes: 40
     # The evidence the quarantine gate reads: one .log and one .status per test
     # step, written by scripts/ci-run-logged.sh (see the header).
+    #
+    # A literal path, not `${{ runner.temp }}`: a job's `env:` may use only the
+    # github, needs, strategy, matrix, vars, secrets and inputs contexts, and
+    # `runner` is not one of them. actionlint says so, and GitHub fails the WHOLE
+    # workflow at startup for it — measured on PR #595's first push, whose only
+    # run was a zero-job failure named after this file. /tmp is the runner VM's,
+    # dies with the job, and two matrix legs are two VMs.
     env:
-      NOCX_TEST_LOG_DIR: ${{ runner.temp }}/nocx-test-logs
+      NOCX_TEST_LOG_DIR: /tmp/nocx-test-logs
     # ONE JOB PER BROWSER PER SHARD, and the split is about wall clock, not
     # coverage: every project still runs and every test still runs, they run at
     # the same time. The suite is one Playwright worker per job
