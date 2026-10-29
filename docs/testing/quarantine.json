@@ -32,6 +32,10 @@
     {
       "test": "e2e:e2e/running-grid-fits-its-clip.spec.ts › at a display ratio of 1.8 › the last row of a full-height program is visible in a 800px window",
       "bead": "nocx-kylyl"
+    },
+    {
+      "test": "e2e:e2e/running-block-body-seam.spec.ts › the body of a running block that has outgrown its screen › keeps one row pitch across the rows the record holds and the rows still live",
+      "bead": "nocx-1ebrs.73.3"
     }
   ]
 }
