@@ -323,7 +323,7 @@ jobs:
         run: scripts/install-zsh-zle-plugins.sh "$RUNNER_TEMP/zsh-plugins"
 
       - name: Test (the widget-wrapping zsh plugin stack, both orders)
-        run: scripts/ci-run-logged.sh go-mac-zsh-plugins go test -json -race -tags gtk3,nocx_framecheck -count=1 -v -run 'TestLocalZshPane_ThePluginStackIntegratesInEitherOrder' ./internal/shellintegration/
+        run: scripts/ci-run-logged.sh go-mac-zsh-plugins go test -json -exec "$PWD/scripts/ci-go-test-exec.sh" -race -tags gtk3,nocx_framecheck -count=1 -v -run 'TestLocalZshPane_ThePluginStackIntegratesInEitherOrder' ./internal/shellintegration/
 
       - name: Install the pinned native Fish
         run: scripts/install-fish-ci.sh "$RUNNER_TEMP/fish-ci"
@@ -331,7 +331,7 @@ jobs:
       - name: Test (native Fish startup and lifecycle)
         env:
           NOCX_REQUIRE_NATIVE_FISH: '1'
-        run: scripts/ci-run-logged.sh go-mac-fish go test -json -race -tags gtk3,nocx_framecheck -count=1 -v -run 'TestNativeFish|TestFishComment' ./internal/shellintegration/
+        run: scripts/ci-run-logged.sh go-mac-fish go test -json -exec "$PWD/scripts/ci-go-test-exec.sh" -race -tags gtk3,nocx_framecheck -count=1 -v -run 'TestNativeFish|TestFishComment' ./internal/shellintegration/
 
       - name: Test (the OS-specific packages, per-test timings)
         env:
@@ -342,7 +342,7 @@ jobs:
         # the runner's exit status or strip its structured evidence.
         run: |
           scripts/ci-run-logged.sh go-mac-os \
-            go test -json -race -tags gtk3,nocx_framecheck -count=1 $PKGS
+            go test -json -exec "$PWD/scripts/ci-go-test-exec.sh" -race -tags gtk3,nocx_framecheck -count=1 $PKGS
           node scripts/summarize-go-test-json.mjs < "$NOCX_TEST_LOG_DIR/go-mac-os.log"
 
       # THE SECOND PASS. A package whose Go files all carry nocx_local_ssh does
@@ -355,14 +355,14 @@ jobs:
       - name: Test (the local helper's ssh client, nocx_local_ssh)
         env:
           PKGS: ${{ steps.localssh.outputs.list }}
-        run: scripts/ci-run-logged.sh go-mac-local-ssh go test -json -race -tags gtk3,nocx_local_ssh,nocx_framecheck -count=1 $PKGS
+        run: scripts/ci-run-logged.sh go-mac-local-ssh go test -json -exec "$PWD/scripts/ci-go-test-exec.sh" -race -tags gtk3,nocx_local_ssh,nocx_framecheck -count=1 $PKGS
 
       # The shipped profile directory lives behind `-tags release`
       # (internal/storage/appdir.go), so the ordinary run never compiles it. One
       # package, one assertion — but without it a typo there ships an app that
       # cannot find any existing installation's documents.
       - name: Test (release build tag)
-        run: scripts/ci-run-logged.sh go-mac-release-tag go test -json -race -count=1 -tags release ./internal/storage/...
+        run: scripts/ci-run-logged.sh go-mac-release-tag go test -json -exec "$PWD/scripts/ci-go-test-exec.sh" -race -count=1 -tags release ./internal/storage/...
 
       # THE FIRST COMMAND'S BLOCK, ON THE OS IT FAILED ON (nocx-ruf5o). A
       # 0.6.1 build on macOS never settled a fresh tab's first command — the
@@ -581,9 +581,9 @@ jobs:
           echo "=== Unlocking login keyring ==="
           printf '%s' "nocx-ci" | gnome-keyring-daemon --unlock
           echo "=== Running tests ==="
-          scripts/ci-run-logged.sh go-backend go test -json -race -tags gtk3,nocx_framecheck -count=1 $PKGS
+          scripts/ci-run-logged.sh go-backend go test -json -exec "$PWD/scripts/ci-go-test-exec.sh" -race -tags gtk3,nocx_framecheck -count=1 $PKGS
           echo "=== Running the local helper's ssh tests (nocx_local_ssh) ==="
-          scripts/ci-run-logged.sh go-backend-local-ssh go test -json -race -tags gtk3,nocx_local_ssh,nocx_framecheck -count=1 $LOCAL_SSH_PKGS
+          scripts/ci-run-logged.sh go-backend-local-ssh go test -json -exec "$PWD/scripts/ci-go-test-exec.sh" -race -tags gtk3,nocx_local_ssh,nocx_framecheck -count=1 $LOCAL_SSH_PKGS
           TESTEOF
 
       - name: Test (no Secret Service)
@@ -592,9 +592,9 @@ jobs:
           PKGS: ${{ steps.pkgs.outputs.list }}
           LOCAL_SSH_PKGS: ${{ steps.localssh.outputs.list }}
         run: |
-          scripts/ci-run-logged.sh go-backend go test -json -race -tags gtk3,nocx_framecheck -count=1 $PKGS
+          scripts/ci-run-logged.sh go-backend go test -json -exec "$PWD/scripts/ci-go-test-exec.sh" -race -tags gtk3,nocx_framecheck -count=1 $PKGS
           echo "=== Running the local helper's ssh tests (nocx_local_ssh) ==="
-          scripts/ci-run-logged.sh go-backend-local-ssh go test -json -race -tags gtk3,nocx_local_ssh,nocx_framecheck -count=1 $LOCAL_SSH_PKGS
+          scripts/ci-run-logged.sh go-backend-local-ssh go test -json -exec "$PWD/scripts/ci-go-test-exec.sh" -race -tags gtk3,nocx_local_ssh,nocx_framecheck -count=1 $LOCAL_SSH_PKGS
 
       # THE ALLOCATION BUDGETS, WITHOUT -race (nocx-zg3k3.5.8). Every pass above
       # runs -race, which instruments and adds allocations (the pump's window
@@ -698,7 +698,7 @@ jobs:
       - name: Test (native Fish startup and lifecycle)
         env:
           NOCX_REQUIRE_NATIVE_FISH: '1'
-        run: scripts/ci-run-logged.sh go-linux-fish go test -json -race -tags gtk3,nocx_framecheck -count=1 -v -run 'TestNativeFish|TestFishComment' ./internal/shellintegration/
+        run: scripts/ci-run-logged.sh go-linux-fish go test -json -exec "$PWD/scripts/ci-go-test-exec.sh" -race -tags gtk3,nocx_framecheck -count=1 -v -run 'TestNativeFish|TestFishComment' ./internal/shellintegration/
 
       - name: Test Linux installer refusals
         run: dash scripts/install/test-install.sh
@@ -787,9 +787,9 @@ jobs:
           echo "=== Unlocking login keyring ==="
           printf '%s' "nocx-ci" | gnome-keyring-daemon --unlock
           echo "=== Running tests ==="
-          scripts/ci-run-logged.sh go-linux go test -json -race -tags gtk3,nocx_framecheck -count=1 $PKGS
+          scripts/ci-run-logged.sh go-linux go test -json -exec "$PWD/scripts/ci-go-test-exec.sh" -race -tags gtk3,nocx_framecheck -count=1 $PKGS
           echo "=== Running the local helper's ssh tests (nocx_local_ssh) ==="
-          scripts/ci-run-logged.sh go-linux-local-ssh go test -json -race -tags gtk3,nocx_local_ssh,nocx_framecheck -count=1 $LOCAL_SSH_PKGS
+          scripts/ci-run-logged.sh go-linux-local-ssh go test -json -exec "$PWD/scripts/ci-go-test-exec.sh" -race -tags gtk3,nocx_local_ssh,nocx_framecheck -count=1 $LOCAL_SSH_PKGS
           TESTEOF
 
       - name: Test (no Secret Service)
@@ -798,9 +798,9 @@ jobs:
           PKGS: ${{ steps.pkgs.outputs.list }}
           LOCAL_SSH_PKGS: ${{ steps.localssh.outputs.list }}
         run: |
-          scripts/ci-run-logged.sh go-linux go test -json -race -tags gtk3,nocx_framecheck -count=1 $PKGS
+          scripts/ci-run-logged.sh go-linux go test -json -exec "$PWD/scripts/ci-go-test-exec.sh" -race -tags gtk3,nocx_framecheck -count=1 $PKGS
           echo "=== Running the local helper's ssh tests (nocx_local_ssh) ==="
-          scripts/ci-run-logged.sh go-linux-local-ssh go test -json -race -tags gtk3,nocx_local_ssh,nocx_framecheck -count=1 $LOCAL_SSH_PKGS
+          scripts/ci-run-logged.sh go-linux-local-ssh go test -json -exec "$PWD/scripts/ci-go-test-exec.sh" -race -tags gtk3,nocx_local_ssh,nocx_framecheck -count=1 $LOCAL_SSH_PKGS
 
       # The quarantine decides this job, once, here: see the header for why the
       # evidence is the job's own output and why this step runs `always()`.

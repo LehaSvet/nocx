@@ -41,6 +41,7 @@ import { pathToFileURL } from 'node:url'
 
 import {
   goTestEvidence,
+  stepManifestDigest,
   playwrightEvidence,
   judgeFailures,
   readQuarantineState,
@@ -117,6 +118,8 @@ export function gate({
   expectedSteps,
   job = 'unknown job',
   pull,
+  runId,
+  attempt,
   quarantineJson,
   issuesJsonl,
   mainIssuesJsonl,
@@ -130,9 +133,18 @@ export function gate({
   const open = Object.fromEntries(
     Object.entries(checkout.open).filter(([key]) => current.open[key] && !closed[key]),
   )
+  if (
+    typeof runId !== 'string' ||
+    !/^[1-9]\d*$/.test(runId) ||
+    !Number.isSafeInteger(Number(runId)) ||
+    !Number.isSafeInteger(attempt) ||
+    attempt < 1
+  )
+    throw new Error('invalid quarantine run/attempt identity')
   const steps = readStepLogs(logs, expectedSteps)
+  const manifestDigest = stepManifestDigest(expectedSteps)
   write(
-    `NOCX_QUARANTINE_EVIDENCE_V1 ${JSON.stringify({ schema: 1, job, pull: pull || '', steps })}`,
+    `NOCX_QUARANTINE_EVIDENCE_V1 ${JSON.stringify({ schema: 1, job, pull: pull || '', runId, attempt, manifestDigest, steps })}`,
   )
   const jobKey = pull ? `job:${job}#${pull}` : undefined
   const failed = []
@@ -208,6 +220,10 @@ export function main(env = process.env) {
       expectedSteps: env.NOCX_EXPECTED_STEPS?.trim().split(/\s+/),
       job: env.NOCX_QUARANTINE_JOB?.trim() || 'unknown job',
       pull: pull || undefined,
+      runId: env.GITHUB_RUN_ID,
+      attempt: /^[1-9]\d*$/.test(env.GITHUB_RUN_ATTEMPT || '')
+        ? Number(env.GITHUB_RUN_ATTEMPT)
+        : undefined,
       quarantineJson: readFileSync(
         env.NOCX_QUARANTINE_FILE || 'docs/testing/quarantine.json',
         'utf8',

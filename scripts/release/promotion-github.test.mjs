@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { ciJobNames } from './promotion.mjs'
+import { ciJobNames, ciStepManifests, verifyCI } from './promotion.mjs'
 import { collectCI, githubClient, publish, verifyUploaded } from './promotion-github.mjs'
 
 const repo = 'shady2k/nocx'
@@ -338,13 +338,28 @@ function gatedFixture(
   const f = fixture()
   f.options.loadWorkflow = () =>
     workflow +
-    '    steps:\n      - name: Honour test quarantine\n        run: node scripts/quarantine-gate.mjs\n'
+    `    steps:
+      - name: Honour test quarantine
+        env:
+          NOCX_EXPECTED_STEPS: ${steps.map((step) => step.name).join(' ')}
+        run: node scripts/quarantine-gate.mjs
+`
   f.records = new Map()
   f.logs = []
   for (const [index, job] of f.jobs.entries()) {
     job.id = 100 + index
     if (!job.name.startsWith('ci-linux (')) continue
-    f.records.set(job.id, { schema: 1, job: job.name, pull: '12', steps: structuredClone(steps) })
+    f.records.set(job.id, {
+      schema: 1,
+      job: job.name,
+      pull: '12',
+      runId: '22',
+      attempt: 1,
+      manifestDigest: createHash('sha256')
+        .update(JSON.stringify(steps.map((step) => step.name).sort()))
+        .digest('hex'),
+      steps: structuredClone(steps),
+    })
   }
   f.options.github.gh = (args) => {
     f.logs.push(args)
@@ -483,8 +498,11 @@ test('older API-green gated attempts are rejudged even when the latest run is gr
   f.responses.set(`repos/${repo}/actions/runs/22/attempts/2/jobs`, f.jobs)
   const first = f.jobs.map((job) => ({ ...job, id: job.id + 100 }))
   f.responses.set(`repos/${repo}/actions/runs/22/attempts/1/jobs`, first)
+  for (const job of f.jobs.slice(2)) f.records.get(job.id).attempt = 2
   for (const job of first.slice(2)) {
     f.records.set(job.id, {
+      ...structuredClone(f.records.get(job.id - 100)),
+      attempt: 1,
       schema: 1,
       job: job.name,
       pull: '12',
@@ -495,4 +513,245 @@ test('older API-green gated attempts are rejudged even when the latest run is gr
   f.options.github.gh = (args) =>
     /\/(100|200)\/logs$/.test(args.at(-1)) ? 'setup failed' : read(args)
   await assert.rejects(() => collectCI(f.options), /no open bead quarantines/)
+})
+
+const passingStep = { name: 'tests', status: 0, failures: [], complete: true }
+const evidenceSubstitutions = [
+  [
+    'other run',
+    (record) => {
+      record.runId = '21'
+    },
+  ],
+  [
+    'numeric run',
+    (record) => {
+      record.runId = 22
+    },
+  ],
+  [
+    'missing run',
+    (record) => {
+      delete record.runId
+    },
+  ],
+  [
+    'other attempt',
+    (record) => {
+      record.attempt = 2
+    },
+  ],
+  [
+    'string attempt',
+    (record) => {
+      record.attempt = '1'
+    },
+  ],
+  [
+    'missing attempt',
+    (record) => {
+      delete record.attempt
+    },
+  ],
+  [
+    'other digest',
+    (record) => {
+      record.manifestDigest = 'a'.repeat(64)
+    },
+  ],
+  [
+    'missing digest',
+    (record) => {
+      delete record.manifestDigest
+    },
+  ],
+  [
+    'omitted step',
+    (record) => {
+      record.steps.pop()
+    },
+  ],
+  [
+    'renamed step',
+    (record) => {
+      record.steps[0].name = 'substitute'
+    },
+  ],
+  [
+    'extra step',
+    (record) => {
+      record.steps.push({ ...passingStep, name: 'extra' })
+    },
+  ],
+  [
+    'self-consistent partial manifest',
+    (record) => {
+      record.steps.pop()
+      record.manifestDigest = createHash('sha256')
+        .update(JSON.stringify(record.steps.map((step) => step.name).sort()))
+        .digest('hex')
+    },
+  ],
+]
+
+test('collected API-green records bind the run, attempt and independent workflow step manifest', async () => {
+  for (const [label, substitute] of evidenceSubstitutions) {
+    const f = gatedFixture([passingStep, { ...passingStep, name: 'second' }])
+    substitute(f.records.get(f.jobs[2].id))
+    await assert.rejects(() => collectCI(f.options), /evidence/, label)
+  }
+})
+
+test('saved API-green records recheck run, attempt, manifest digest and exact step names', async () => {
+  const f = gatedFixture([passingStep, { ...passingStep, name: 'second' }])
+  const [entry] = await collectCI(f.options)
+  for (const [label, substitute] of evidenceSubstitutions) {
+    const saved = JSON.parse(JSON.stringify(entry))
+    substitute(saved.jobs[2].quarantineEvidence)
+    assert.throws(() => verifyCI([saved]), /evidence/, label)
+  }
+})
+
+function greenRerunFixture() {
+  const f = gatedFixture([passingStep, { ...passingStep, name: 'second' }])
+  f.run.run_attempt = 2
+  f.responses.set(`repos/${repo}/actions/runs/22/attempts/2/jobs`, f.jobs)
+  const first = f.jobs.map((job) => ({ ...job, id: job.id + 100 }))
+  f.responses.set(`repos/${repo}/actions/runs/22/attempts/1/jobs`, first)
+  for (const job of first.slice(2)) {
+    f.records.set(job.id, structuredClone(f.records.get(job.id - 100)))
+    f.records.get(job.id - 100).attempt = 2
+  }
+  return f
+}
+
+test('historical API-green records bind their own attempt during collection and saved verification', async () => {
+  const good = greenRerunFixture()
+  const [entry] = await collectCI(good.options)
+  assert.deepEqual(
+    entry.attempts.map((item) => item.attempt),
+    [1, 2],
+  )
+  for (const [label, substitute] of evidenceSubstitutions) {
+    const f = greenRerunFixture()
+    substitute(f.records.get(f.jobs[2].id + 100))
+    await assert.rejects(() => collectCI(f.options), /evidence/, label)
+    const saved = JSON.parse(JSON.stringify(entry))
+    substitute(saved.attempts[0].jobs[2].quarantineEvidence)
+    assert.throws(() => verifyCI([saved]), /evidence/, label)
+  }
+})
+
+test('gate manifests come from each actual workflow job and matrix choice', () => {
+  const manifests = ciStepManifests(readFileSync('.github/workflows/ci.yml', 'utf8'))
+  assert.deepEqual(
+    Object.keys(manifests),
+    ciJobNames(readFileSync('.github/workflows/ci.yml', 'utf8'), { gated: true }),
+  )
+  assert.deepEqual(manifests['ci-mac'], [
+    'go-mac-zsh-plugins',
+    'go-mac-fish',
+    'go-mac-os',
+    'go-mac-local-ssh',
+    'go-mac-release-tag',
+    'e2e-macos-first-command',
+  ])
+  for (const keyring of ['with-secret-service', 'no-secret-service']) {
+    assert.deepEqual(manifests[`ci-backend (${keyring})`], [
+      'go-backend',
+      'go-backend-local-ssh',
+      ...(keyring === 'no-secret-service' ? ['go-backend-alloc-budgets'] : []),
+    ])
+    assert.deepEqual(manifests[`ci-linux (${keyring})`], [
+      'go-linux-fish',
+      'go-linux',
+      'go-linux-local-ssh',
+    ])
+  }
+  for (const project of ['chromium', 'webkit']) {
+    for (const shard of ['1', '2']) {
+      assert.deepEqual(manifests[`ci-e2e (${project}, ${shard})`], [`e2e-${project}-${shard}`])
+    }
+  }
+})
+
+test('unsupported or missing workflow manifest declarations and expressions fail closed', () => {
+  const actual = readFileSync('.github/workflows/ci.yml', 'utf8')
+  for (const change of [
+    (source) => source.replace(/NOCX_EXPECTED_STEPS: [^\n]+/, 'NOCX_EXPECTED_STEPS: tests tests'),
+    (source) =>
+      source.replace(/NOCX_EXPECTED_STEPS: [^\n]+/, 'NOCX_EXPECTED_STEPS: |\n            tests'),
+    (source) =>
+      source.replace(/NOCX_EXPECTED_STEPS: [^\n]+/, 'NOCX_EXPECTED_STEPS: ${{ inputs.steps }}'),
+    (source) =>
+      source.replace(/NOCX_EXPECTED_STEPS: [^\n]+/, 'NOCX_EXPECTED_STEPS: ${{ matrix.absent }}'),
+    (source) =>
+      source.replace(
+        /NOCX_EXPECTED_STEPS: [^\n]+/,
+        "NOCX_EXPECTED_STEPS: ${{ format('tests-{0}', matrix.keyring) }}",
+      ),
+    (source) => source.replace(/ {10}NOCX_EXPECTED_STEPS: [^\n]+\n/, ''),
+    (source) => source.replace(/( {10}NOCX_EXPECTED_STEPS: [^\n]+\n)/, '$1$1'),
+    (source) =>
+      source.replace(
+        'run: node scripts/quarantine-gate.mjs',
+        'run: |\n          node scripts/quarantine-gate.mjs',
+      ),
+  ])
+    assert.throws(() => ciStepManifests(change(actual)), /manifest|expression|declaration/)
+})
+
+test('saved gated evidence must retain workflow source and uses it rather than record names', async () => {
+  const f = gatedFixture([passingStep])
+  const [entry] = await collectCI(f.options)
+  assert.equal(entry.workflow, f.options.loadWorkflow(head))
+  for (const change of [
+    (saved) => {
+      delete saved.workflow
+    },
+    (saved) => {
+      saved.workflow = saved.workflow.replace(
+        'NOCX_EXPECTED_STEPS: tests',
+        'NOCX_EXPECTED_STEPS: second',
+      )
+    },
+    (saved) => {
+      saved.run.run_attempt++
+    },
+    (saved) => {
+      saved.run.id++
+    },
+    (saved) => {
+      delete saved.gatedJobs
+      delete saved.jobs[2].quarantineEvidence
+    },
+  ]) {
+    const saved = JSON.parse(JSON.stringify(entry))
+    change(saved)
+    assert.throws(() => verifyCI([saved]), /evidence|workflow/)
+  }
+})
+
+test('saved workflow gates and their earlier attempts cannot be dropped from the contract', async () => {
+  const [entry] = await collectCI(greenRerunFixture().options)
+  for (const change of [
+    (saved) => {
+      delete saved.attempts
+    },
+    (saved) => {
+      saved.attempts.shift()
+    },
+    (saved) => {
+      saved.attempts[1].attempt = 1
+    },
+    (saved) => {
+      delete saved.gatedJobs
+      saved.jobs = saved.jobs.slice(0, 2)
+      saved.requiredJobs = saved.requiredJobs.slice(0, 2)
+    },
+  ]) {
+    const saved = JSON.parse(JSON.stringify(entry))
+    change(saved)
+    assert.throws(() => verifyCI([saved]), /contract|history/)
+  }
 })

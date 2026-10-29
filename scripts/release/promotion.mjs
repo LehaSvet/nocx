@@ -10,7 +10,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 
-import { judgeFailures } from '../quarantine.mjs'
+import { judgeFailures, stepManifestDigest } from '../quarantine.mjs'
 
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const shaPattern = /^[0-9a-f]{40}$/
@@ -92,32 +92,92 @@ export function authorize({ actor, triggeringActor, owner, ref, tried }) {
   requireThat(tried === true, 'owner must confirm they tried the named nightly')
 }
 
-// Expand the existing CI workflow's matrix, not a second hand-maintained job list.
-// Fail closed if CI gains syntax this small reader cannot understand.
-export function ciJobNames(workflow, { gated = false } = {}) {
+// Expand the candidate workflow once for both job names and gate manifests.
+// This deliberately supports only CI's literal matrix axes, not arbitrary YAML.
+function ciJobs(workflow) {
+  requireThat(typeof workflow === 'string', 'CI workflow source is missing')
   const jobSection = /^jobs:\n([\s\S]*)/m.exec(workflow)?.[1]
   requireThat(jobSection, 'CI workflow declares no jobs')
   const jobs = [...jobSection.matchAll(/^ {2}([\w-]+):\n([\s\S]*?)(?=^ {2}[\w-]+:|$(?![\s\S]))/gm)]
   requireThat(jobs.length > 0, 'CI workflow declares no jobs')
   return jobs.flatMap(([, name, body]) => {
-    if (gated && !body.includes('quarantine-gate.mjs')) return []
-    if (!/^ {6}matrix:/m.test(body)) return [name]
+    if (!/^ {6}matrix:/m.test(body)) return [{ name, body, matrix: {} }]
     const block = /^ {6}matrix:\n((?: {8}[^\n]*\n|\n)*)/m.exec(body)?.[1]
     const rows = block
       ?.split('\n')
       .map((line) => line.trim())
       .filter((line) => line && !line.startsWith('#'))
     requireThat(rows?.length, `CI matrix ${name} is empty`)
-    let combinations = [[]]
+    let combinations = [{}]
     for (const row of rows) {
       const match = /^(\w+): \[([\w, -]+)\]$/.exec(row)
       requireThat(match, `unsupported CI matrix syntax in ${name}: ${row}`)
       const values = match[2].split(',').map((s) => s.trim())
       requireThat(values.every(Boolean), `empty CI matrix value in ${name}`)
-      combinations = combinations.flatMap((combo) => values.map((value) => [...combo, value]))
+      requireThat(!Object.hasOwn(combinations[0], match[1]), `duplicate CI matrix axis in ${name}`)
+      combinations = combinations.flatMap((combo) =>
+        values.map((value) => ({ ...combo, [match[1]]: value })),
+      )
     }
-    return combinations.map((combo) => `${name} (${combo.join(', ')})`)
+    return combinations.map((matrix) => ({
+      name: `${name} (${Object.values(matrix).join(', ')})`,
+      body,
+      matrix,
+    }))
   })
+}
+
+export function ciJobNames(workflow, { gated = false } = {}) {
+  return ciJobs(workflow)
+    .filter(({ body }) => !gated || body.includes('quarantine-gate.mjs'))
+    .map(({ name }) => name)
+}
+
+// Read the gate step's own env declaration, independently of its log record.
+// CI uses literals, matrix substitutions and one equality/and/or choice. Any
+// other expression or declaration shape needs an explicit parser change.
+export function ciStepManifests(workflow) {
+  return Object.fromEntries(
+    ciJobs(workflow).flatMap(({ name, body, matrix }) => {
+      if (!body.includes('quarantine-gate.mjs')) return []
+      const steps = body.split(/^ {6}- /m).slice(1)
+      const gates = steps.filter((step) =>
+        /^ {8}run: node scripts\/quarantine-gate\.mjs\s*$/m.test(step),
+      )
+      requireThat(gates.length === 1, `CI: unsupported quarantine gate declaration in ${name}`)
+      const declarations = [...gates[0].matchAll(/^ {10}NOCX_EXPECTED_STEPS: ([^\n]+)$/gm)]
+      requireThat(
+        declarations.length === 1,
+        `CI: missing or duplicate expected-step manifest in ${name}`,
+      )
+      let value = declarations[0][1].trim()
+      if (value.startsWith("'") && value.endsWith("'")) value = value.slice(1, -1)
+      else if (value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1)
+      value = value.replace(/\$\{\{([\s\S]*?)\}\}/g, (_, expression) => {
+        const variable = /^\s*matrix\.(\w+)\s*$/.exec(expression)
+        const choice =
+          /^\s*matrix\.(\w+)\s*==\s*'([\w-]+)'\s*&&\s*'([\w -]+)'\s*\|\|\s*'([\w -]+)'\s*$/.exec(
+            expression,
+          )
+        const axis = variable?.[1] ?? choice?.[1]
+        requireThat(
+          axis && Object.hasOwn(matrix, axis),
+          `CI: unsupported expected-step expression in ${name}`,
+        )
+        return variable ? matrix[axis] : matrix[axis] === choice[2] ? choice[3] : choice[4]
+      })
+      requireThat(
+        /^[\w-]+(?: [\w-]+)*$/.test(value),
+        `CI: unsupported expected-step manifest in ${name}`,
+      )
+      const expected = value.split(' ')
+      requireThat(
+        new Set(expected).size === expected.length,
+        `CI: duplicate expected-step manifest in ${name}`,
+      )
+      return [[name, expected]]
+    }),
+  )
 }
 
 const quarantineMarker = 'NOCX_QUARANTINE_EVIDENCE_V1 '
@@ -125,21 +185,27 @@ const quarantineMarker = 'NOCX_QUARANTINE_EVIDENCE_V1 '
 // Read the final gate's record even when GitHub calls the job successful.
 // Timestamp stripping matches the shared legacy log parser. An echoed shell
 // command is not a record: the marker must start the log message itself.
-export function readQuarantineEvidence(log, name, pull) {
+export function readQuarantineEvidence(log, name, pull, binding) {
   const records = log
     .split(/\r?\n/)
     .map((line) => line.replace(/^\S+Z /, ''))
     .filter((line) => line.startsWith(quarantineMarker))
   requireThat(records.length === 1, `CI: ${name} needs exactly one quarantine evidence record`)
   const record = JSON.parse(records[0].slice(quarantineMarker.length))
-  validateQuarantineEvidence(record, name, pull)
+  validateQuarantineEvidence(record, name, pull, binding)
   return record
 }
 
-function validateQuarantineEvidence(record, name, pull) {
+function validateQuarantineEvidence(record, name, pull, binding) {
   requireThat(
     record?.schema === 1 &&
       record.job === name &&
+      typeof record.runId === 'string' &&
+      /^[1-9]\d*$/.test(record.runId) &&
+      Number.isSafeInteger(record.attempt) &&
+      record.attempt > 0 &&
+      typeof record.manifestDigest === 'string' &&
+      hashPattern.test(record.manifestDigest) &&
       (record.pull === pull || record.pull === String(pull)) &&
       Array.isArray(record.steps) &&
       record.steps.length > 0,
@@ -162,6 +228,15 @@ function validateQuarantineEvidence(record, name, pull) {
     )
     names.add(step.name)
   }
+  const { runId, attempt, expectedSteps } = binding ?? {}
+  requireThat(
+    record.runId === String(runId) &&
+      record.attempt === attempt &&
+      Array.isArray(expectedSteps) &&
+      record.manifestDigest === stepManifestDigest(expectedSteps) &&
+      JSON.stringify([...names].sort()) === JSON.stringify([...expectedSteps].sort()),
+    `CI: ${name} quarantine evidence does not match run, attempt or workflow manifest`,
+  )
 }
 
 // Direct product commits need clean suites, not merely API-green quarantines.
@@ -173,8 +248,12 @@ export function cleanCICover(entry) {
   )
 }
 
-function verifyGatedJob(entry, label, job) {
-  validateQuarantineEvidence(job.quarantineEvidence, job.name, entry.number)
+function verifyGatedJob(entry, label, job, manifests, attempt) {
+  validateQuarantineEvidence(job.quarantineEvidence, job.name, entry.number, {
+    runId: entry.run.id,
+    attempt,
+    expectedSteps: manifests[job.name],
+  })
   for (const step of job.quarantineEvidence.steps) {
     if (step.status === 0) continue
     const verdict = judgeFailures({
@@ -288,15 +367,59 @@ export function verifyCI(evidence) {
           entry.gatedJobs.every((name) => requiredJobs.includes(name))),
       `${label}: invalid gated job contract`,
     )
+    const hasGateEvidence = [...jobs, ...(entry.attempts ?? []).flatMap((a) => a.jobs)].some(
+      (job) => job.quarantineEvidence !== undefined,
+    )
+    const manifests =
+      entry.workflow !== undefined || entry.gatedJobs || hasGateEvidence
+        ? ciStepManifests(entry.workflow)
+        : {}
+    const gatedJobs = Object.keys(manifests)
+    if (entry.workflow !== undefined) {
+      requireThat(
+        JSON.stringify([...requiredJobs].sort()) ===
+          JSON.stringify(ciJobNames(entry.workflow).sort()),
+        `${label}: required job contract does not match workflow`,
+      )
+    }
+    if (entry.gatedJobs !== undefined) {
+      requireThat(
+        JSON.stringify([...entry.gatedJobs].sort()) === JSON.stringify([...gatedJobs].sort()),
+        `${label}: gated job contract does not match workflow`,
+      )
+    }
+    if (gatedJobs.length || hasGateEvidence) {
+      requireThat(
+        Number.isSafeInteger(run.id) &&
+          run.id > 0 &&
+          Number.isSafeInteger(run.run_attempt) &&
+          run.run_attempt > 0,
+        `${label}: invalid quarantine evidence run identity`,
+      )
+      if (run.run_attempt > 1 || entry.attempts !== undefined) {
+        requireThat(
+          Array.isArray(entry.attempts) &&
+            entry.attempts.length === run.run_attempt &&
+            entry.attempts.every((item, index) => item.attempt === index + 1),
+          `${label}: incomplete quarantine evidence history`,
+        )
+      }
+    }
     // Earlier attempts can also be API-green because their gate accepted a
     // failure. Those records still owe today's quarantine verdict.
     for (const attempt of entry.attempts ?? []) {
+      requireThat(
+        Number.isSafeInteger(attempt.attempt) &&
+          attempt.attempt > 0 &&
+          attempt.attempt <= run.run_attempt,
+        `${label}: invalid quarantine evidence history attempt`,
+      )
       for (const job of attempt.jobs) {
         if (
-          (entry.gatedJobs?.includes(job.name) || job.quarantineEvidence !== undefined) &&
+          (gatedJobs.includes(job.name) || job.quarantineEvidence !== undefined) &&
           job.conclusion === 'success'
         ) {
-          verifyGatedJob(entry, label, job)
+          verifyGatedJob(entry, label, job, manifests, attempt.attempt)
         }
       }
     }
@@ -316,10 +439,10 @@ export function verifyCI(evidence) {
       const supportingSkip =
         !entry.product && !['changes', 'ci-backlog'].includes(name) && job.conclusion === 'skipped'
       if (
-        (entry.gatedJobs?.includes(name) || job.quarantineEvidence !== undefined) &&
+        (gatedJobs.includes(name) || job.quarantineEvidence !== undefined) &&
         job.conclusion === 'success'
       ) {
-        verifyGatedJob(entry, label, job)
+        verifyGatedJob(entry, label, job, manifests, run.run_attempt)
       }
       if (!(job.status === 'completed' && (job.conclusion === 'success' || supportingSkip))) {
         quarantinedJob(entry, label, job.name)

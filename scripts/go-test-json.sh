@@ -7,4 +7,4 @@ if [ "$1" != test ]; then
   exit 2
 fi
 shift
-exec go test -json "$@"
+exec go test -json -exec "$PWD/scripts/ci-go-test-exec.sh" "$@"

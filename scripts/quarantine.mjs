@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 // One owner for the test quarantine: the file, the log parse, and the verdict.
 //
 // Two callers ask the same question of the same data — the promotion
@@ -12,6 +14,21 @@
 
 const requireThat = (condition, message) => {
   if (!condition) throw new Error(message)
+}
+
+// Canonical step manifest fingerprint. The workflow declares the expected
+// names; producer and promotion hash the same sorted, unique list.
+export function stepManifestDigest(names) {
+  requireThat(
+    Array.isArray(names) &&
+      names.length > 0 &&
+      names.every((name) => typeof name === 'string' && /^[a-zA-Z0-9_-]+$/.test(name)) &&
+      new Set(names).size === names.length,
+    'invalid expected-step manifest',
+  )
+  return createHash('sha256')
+    .update(JSON.stringify([...names].sort()))
+    .digest('hex')
 }
 
 // A key is the name the suite prints on failure, without line numbers, which
@@ -99,10 +116,24 @@ export function goTestEvidence(log) {
     }
     let pkg = packages.get(event.Package)
     if (!pkg) {
-      pkg = { started: false, ended: false, failed: false, named: false, tests: new Set() }
+      pkg = {
+        started: false,
+        ended: false,
+        failed: false,
+        named: false,
+        normalFailureEnd: false,
+        binaryExit: undefined,
+        tests: new Set(),
+      }
       packages.set(event.Package, pkg)
     }
-    if (pkg.ended) valid = false
+    if (
+      pkg.ended ||
+      (pkg.binaryExit !== undefined &&
+        event.Action !== 'output' &&
+        !(['pass', 'fail', 'skip'].includes(event.Action) && !event.Test))
+    )
+      valid = false
     if (event.Action === 'start') {
       if (pkg.started) valid = false
       pkg.started = true
@@ -121,11 +152,31 @@ export function goTestEvidence(log) {
         pkg.failed = event.Action === 'fail'
       }
     }
-    if (
-      event.Action === 'output' &&
-      /(?:^|\n)(?:panic:|fatal error:|FAIL\s+.*\[build failed\])/.test(event.Output ?? '')
-    )
-      valid = false
+    if (event.Action === 'output') {
+      const output = event.Output ?? ''
+      // A package fail action is also emitted after a killed binary or an
+      // abnormal TestMain exit. Require testing.M's normal terminal FAIL,
+      // and reject runner diagnostics even after all tests have terminated.
+      if (
+        /(?:^|\n)(?:panic:|fatal error:|signal:|exit status |FAIL\s+.*\[build failed\])/.test(
+          output,
+        )
+      )
+        valid = false
+      const receipt = /^NOCX_GO_TEST_EXIT (0|[1-9]\d*)\n$/.exec(output)
+      if (receipt) {
+        if (pkg.binaryExit !== undefined || pkg.tests.size) valid = false
+        pkg.binaryExit = Number(receipt[1])
+        if (![0, 1].includes(pkg.binaryExit)) valid = false
+      } else if (!event.Test) {
+        if (output === 'FAIL\n') {
+          if (pkg.normalFailureEnd || pkg.tests.size) valid = false
+          pkg.normalFailureEnd = true
+        } else if (pkg.normalFailureEnd && !output.startsWith(`FAIL\t${event.Package}\t`)) {
+          valid = false
+        }
+      }
+    }
     if (
       !['start', 'run', 'pause', 'cont', 'output', 'pass', 'fail', 'skip', 'bench'].includes(
         event.Action,
@@ -134,7 +185,15 @@ export function goTestEvidence(log) {
       valid = false
   }
   for (const pkg of packages.values())
-    if (!pkg.started || !pkg.ended || pkg.tests.size || pkg.failed !== pkg.named) valid = false
+    if (
+      !pkg.started ||
+      !pkg.ended ||
+      pkg.tests.size ||
+      pkg.failed !== pkg.named ||
+      (pkg.failed && (!pkg.normalFailureEnd || pkg.binaryExit !== 1)) ||
+      (!pkg.failed && pkg.binaryExit !== undefined && pkg.binaryExit !== 0)
+    )
+      valid = false
   return { failures: [...failures].sort(), complete: valid && packages.size > 0 }
 }
 

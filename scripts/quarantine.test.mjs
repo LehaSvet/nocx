@@ -15,6 +15,7 @@ import {
   judgeFailures,
   readQuarantine,
   readQuarantineState,
+  stepManifestDigest,
 } from './quarantine.mjs'
 
 // Real log lines (CI runs 40866954718 and 40893969284, 2026-10-29), with the
@@ -147,6 +148,8 @@ function evidence(t, steps, { tests } = {}) {
       expectedSteps: steps.map((step) => step.name),
       job,
       pull,
+      runId: '22',
+      attempt: 1,
       ...files,
       mainIssuesJsonl,
       write: (line) => report.push(line),
@@ -162,6 +165,8 @@ const failure = (test, pkg = `nocx/${test}`) =>
     { Action: 'start', Package: pkg },
     { Action: 'run', Package: pkg, Test: test },
     { Action: 'fail', Package: pkg, Test: test },
+    { Action: 'output', Package: pkg, Output: 'FAIL\n' },
+    { Action: 'output', Package: pkg, Output: 'NOCX_GO_TEST_EXIT 1\n' },
     { Action: 'fail', Package: pkg },
   ])
 const e2eReport = {
@@ -266,6 +271,8 @@ test('a job whose every test step passed says so, and an unreadable evidence set
     () =>
       gate({
         logs: join(tmpdir(), 'nocx-quarantine-does-not-exist'),
+        runId: '22',
+        attempt: 1,
         expectedSteps: ['go-backend'],
         mainIssuesJsonl: '{}',
         quarantineJson: '{"schema":1,"tests":[]}',
@@ -492,15 +499,22 @@ test('the real helper and gate leave rejudgeable evidence even when a quarantine
     expectedSteps: ['go-backend'],
     job: 'ci-backend',
     pull: '12',
+    runId: '22',
+    attempt: 1,
     quarantineJson: JSON.stringify({ schema: 1, tests: [{ test: 'go:TestA', bead: 'nocx-a' }] }),
     issuesJsonl: issues,
     mainIssuesJsonl: issues,
     write: (line) => lines.push(line),
   })
   assert.equal(code, 0, lines.join('\n'))
-  assert.deepEqual(readQuarantineEvidence(lines.join('\n'), 'ci-backend', 12).steps, [
-    { name: 'go-backend', status: 1, failures: ['go:TestA'], complete: true },
-  ])
+  assert.deepEqual(
+    readQuarantineEvidence(lines.join('\n'), 'ci-backend', 12, {
+      runId: '22',
+      attempt: 1,
+      expectedSteps: ['go-backend'],
+    }).steps,
+    [{ name: 'go-backend', status: 1, failures: ['go:TestA'], complete: true }],
+  )
 })
 
 test('a macOS boundary failure beside a quarantined spec cannot become green', (t) => {
@@ -562,6 +576,8 @@ test('the actual macOS wrapper proves its boundary before a named quarantine app
       expectedSteps: ['e2e-macos-first-command'],
       job: 'ci-mac',
       pull: '12',
+      runId: '22',
+      attempt: 1,
       quarantineJson: JSON.stringify({ schema: 1, tests: [{ test: askKey, bead: 'nocx-b' }] }),
       issuesJsonl: issues,
       mainIssuesJsonl: issues,
@@ -569,4 +585,75 @@ test('the actual macOS wrapper proves its boundary before a named quarantine app
     })
     assert.equal(code, leak ? 1 : 0, lines.join('\n'))
   }
+})
+
+test('a completed quarantined test never explains an abnormal Go package termination', (t) => {
+  const prefix = [
+    { Action: 'start', Package: 'nocx/abnormal' },
+    { Action: 'run', Package: 'nocx/abnormal', Test: 'TestA' },
+    { Action: 'fail', Package: 'nocx/abnormal', Test: 'TestA' },
+  ]
+  for (const outputs of [
+    ['signal: killed\n'],
+    ['exit status 2\n'],
+    [],
+    ['FAIL\n', 'signal: killed\n'],
+    ['FAIL\n', 'exit status 2\n'],
+  ]) {
+    const log = goEvents([
+      ...prefix,
+      ...outputs.map((Output) => ({ Action: 'output', Package: 'nocx/abnormal', Output })),
+      { Action: 'fail', Package: 'nocx/abnormal' },
+    ])
+    assert.equal(goTestEvidence(log).complete, false, JSON.stringify(outputs))
+    assert.equal(evidence(t, [{ name: 'go-backend', status: 1, log }]).run().code, 1)
+  }
+})
+
+test('the Go binary wrapper preserves abnormal TestMain and signal exit status after named tests end', (t) => {
+  for (const status of [1, 2, 137]) {
+    const result = spawnSync(
+      'bash',
+      ['scripts/ci-go-test-exec.sh', 'bash', '-c', `printf 'FAIL\\n'; exit ${status}`],
+      { encoding: 'utf8' },
+    )
+    assert.equal(result.status, status)
+    assert.equal(result.stdout, `FAIL\nNOCX_GO_TEST_EXIT ${status}\n`)
+    const log = failure('TestA').replace('NOCX_GO_TEST_EXIT 1', `NOCX_GO_TEST_EXIT ${status}`)
+    assert.equal(
+      evidence(t, [{ name: 'go-backend', status: 1, log }]).run().code,
+      status === 1 ? 0 : 1,
+    )
+  }
+})
+
+test('a successful gate record carries its exact run attempt and declared manifest', (t) => {
+  const { run } = evidence(t, [{ name: 'go-backend', status: 0, log: 'ok\n' }])
+  const { text } = run()
+  const record = JSON.parse(
+    text
+      .split('\n')
+      .find((line) => line.startsWith('NOCX_QUARANTINE_EVIDENCE_V1 '))
+      .slice('NOCX_QUARANTINE_EVIDENCE_V1 '.length),
+  )
+  assert.equal(record.runId, '22')
+  assert.equal(record.attempt, 1)
+  assert.equal(record.manifestDigest, stepManifestDigest(['go-backend']))
+})
+
+test('the binary receipt distinguishes a normal pass and a binary killed after printing output', () => {
+  const pass = spawnSync(
+    'bash',
+    ['scripts/ci-go-test-exec.sh', 'bash', '-c', 'printf "PASS\\n"; exit 0'],
+    { encoding: 'utf8' },
+  )
+  assert.equal(pass.status, 0)
+  assert.equal(pass.stdout, 'PASS\nNOCX_GO_TEST_EXIT 0\n')
+  const killed = spawnSync(
+    'bash',
+    ['scripts/ci-go-test-exec.sh', 'bash', '-c', 'printf "FAIL\\n"; kill -KILL $$'],
+    { encoding: 'utf8' },
+  )
+  assert.equal(killed.status, 137)
+  assert.equal(killed.stdout, 'FAIL\nNOCX_GO_TEST_EXIT 137\n')
 })

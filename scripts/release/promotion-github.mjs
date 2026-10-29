@@ -7,6 +7,7 @@ import { failedTests, readQuarantine } from '../quarantine.mjs'
 import {
   authorize,
   ciJobNames,
+  ciStepManifests,
   cleanCICover,
   readQuarantineEvidence,
   isNewerVersion,
@@ -105,18 +106,26 @@ export async function collectCI({
       'jobs',
     )
     const workflow = loadWorkflow(pr.head.sha)
-    const gatedJobs = ciJobNames(workflow, { gated: true })
+    const manifests = ciStepManifests(workflow)
+    const gatedJobs = Object.keys(manifests)
     fail(
       !workflow.includes('quarantine-gate.mjs') || gatedJobs.length > 0,
       'CI: cannot locate workflow quarantine gates',
     )
     const jobLog = (job) =>
       github.gh(['api', '--allow-escape-sequences', `repos/${repo}/actions/jobs/${job.id}/logs`])
-    const readGatedJob = (job) =>
+    const readGatedJob = (job, attempt) =>
       gatedJobs.includes(job.name) && job.conclusion === 'success'
-        ? { ...job, quarantineEvidence: readQuarantineEvidence(jobLog(job), job.name, pr.number) }
+        ? {
+            ...job,
+            quarantineEvidence: readQuarantineEvidence(jobLog(job), job.name, pr.number, {
+              runId: run.id,
+              attempt,
+              expectedSteps: manifests[job.name],
+            }),
+          }
         : job
-    const recordedJobs = jobs.map(readGatedJob)
+    const recordedJobs = jobs.map((job) => readGatedJob(job, run.run_attempt))
     const entry = {
       number: pr.number,
       head: pr.head.sha,
@@ -126,7 +135,7 @@ export async function collectCI({
       run,
       jobs: recordedJobs,
       requiredJobs: ciJobNames(workflow),
-      ...(gatedJobs.length ? { gatedJobs, quarantine } : {}),
+      ...(gatedJobs.length ? { gatedJobs, quarantine, workflow } : {}),
     }
     // Gated reruns also need their earlier records: an API-green attempt can
     // contain accepted failures even when the newest attempt is truly clean.
@@ -144,7 +153,7 @@ export async function collectCI({
             ? recordedJobs
             : github
                 .pages(`repos/${repo}/actions/runs/${run.id}/attempts/${attempt}/jobs`, 'jobs')
-                .map(readGatedJob)
+                .map((job) => readGatedJob(job, attempt))
         entry.attempts.push({
           attempt,
           jobs: attemptJobs.map((job) => ({
