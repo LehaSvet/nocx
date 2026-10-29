@@ -6597,6 +6597,59 @@ describe('the projections consume the kernel through the composition root (ADR-0
     }
   })
 
+  it('a running command reclaims the keyboard from an unclaimed <body> (nocx-1ebrs.66.1.16)', async () => {
+    const client = makeClient()
+    const { content, ed, view, teardown } = await mountTerminal(
+      makeClipboard(),
+      { attachToDocument: true },
+      client,
+    )
+    /* eslint-disable @typescript-eslint/unbound-method */
+    const protoScrollTo = Element.prototype.scrollTo
+    /* eslint-enable @typescript-eslint/unbound-method */
+    Element.prototype.scrollTo = () => {}
+    try {
+      const input = intentElementOf(content)
+      const handler = factHandler(client)
+      handler({ lane: 'lane-1', lifecycle: 'prompt_ready', domain: 'd1', epoch: 1 })
+      ed.insertText('read x')
+      view.contentDOM.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+      )
+      expect(document.activeElement).toBe(input)
+
+      // The commit hands the keyboard over synchronously, but nothing says
+      // it STAYS there across the lifecycle.submitAttempt round trip: the
+      // editor's display:none host and the live region's move are both
+      // focus-changing DOM operations. If the keyboard is on <body> when
+      // the authenticated start lands, the command is running and nobody
+      // owns the keys typed before the deferred focusGrid repair — the
+      // letters are lost while the Enter that follows them is not
+      // (nocx-1ebrs.66.1.16). The running fact must reclaim an UNCLAIMED
+      // keyboard; a control's focus is still its own.
+      input.blur()
+      expect(document.activeElement).toBe(document.body)
+
+      handler({
+        lane: 'lane-1',
+        lifecycle: 'running',
+        domain: 'd1',
+        epoch: 1,
+        attempt: {
+          id: 'att-1',
+          state: 'open',
+          origin: 'app',
+          submitId: submitToken(client),
+          command: 'read x',
+        },
+      })
+      expect(document.activeElement).toBe(input)
+    } finally {
+      Element.prototype.scrollTo = protoScrollTo
+      teardown()
+    }
+  })
+
   it('keeps session intents ordered when the control call is still in flight', async () => {
     const { content, teardown } = await mountTerminal(makeClipboard())
     try {
@@ -13477,6 +13530,106 @@ describe('asking about, and stopping, a running command (nocx-92gfl, nocx-23rph)
         await settleAttachment()
 
         expect(targetNamed(ed)).toBe('agent')
+        expect(
+          ed.root.querySelector('[data-control="grant"]')?.getAttribute('aria-label'),
+        ).toContain('frozen screen attached automatically')
+        expect(captureLiveFrame).toHaveBeenCalledTimes(1)
+      } finally {
+        teardown()
+      }
+    })
+
+    // THE WEBKIT CI FLAKE (nocx-1ebrs.66.1.13). notify.raise is an OSC 9
+    // effect delivered when the marker is INGESTED, not when its screen frame
+    // is ACCEPTED and painted by this pane. The spec presses the chord on
+    // that effect, so under load the chord can arrive while the accepted
+    // screen is still the prompt. The attachment is decided once, at the
+    // chord; without a later offer the finished command stays unattached
+    // forever even as its marker is painted.
+    it('attaches the frozen screen when the repaint that makes it eligible is accepted after the chord', async () => {
+      const { ed, content, teardown } = await mountTerminal(makeClipboard(), {
+        attachToDocument: true,
+      })
+      try {
+        content.setVisible(true)
+        ed.show()
+        ed.focus()
+        frozenBlock(content, 'sh put-marker-on-screen.sh &')
+        await promptPainted(content)
+        const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
+        content.captureLiveFrame = captureLiveFrame
+        const session = sessionOf(content)
+
+        // The gesture lands while the accepted screen is still the prompt.
+        chordOn(viewOf(ed).contentDOM)
+        expect(targetNamed(ed)).toBe('agent')
+        await settleAttachment()
+        expect(
+          ed.root.querySelector('[data-control="grant"]')?.getAttribute('aria-label'),
+        ).not.toContain('frozen screen attached automatically')
+        expect(captureLiveFrame).not.toHaveBeenCalled()
+
+        // The background writer's next repaint is accepted after the gesture.
+        // It is the state the attachment reads, so it must still attach the
+        // frozen command rather than being refused once and forgotten.
+        session.fireScreenFrame(screenFrame(2, ['NOCX-SCREEN-00000000']))
+        await settleAttachment()
+
+        expect(
+          ed.root.querySelector('[data-control="grant"]')?.getAttribute('aria-label'),
+        ).toContain('frozen screen attached automatically')
+        expect(captureLiveFrame).toHaveBeenCalledTimes(1)
+      } finally {
+        teardown()
+      }
+    })
+
+    // The same early chord, but here the prompt boundary is the last state
+    // transition. The marker repaint was accepted while the boundary was
+    // still in flight, so only applying that boundary can make the frozen
+    // block eligible.
+    it('attaches the frozen screen when the prompt boundary that makes it eligible arrives after the chord', async () => {
+      const { ed, content, teardown } = await mountTerminal(makeClipboard(), {
+        attachToDocument: true,
+      })
+      try {
+        content.setVisible(true)
+        ed.show()
+        ed.focus()
+        frozenBlock(content, 'sh put-marker-on-screen.sh &')
+        const session = sessionOf(content)
+        session.fireScreenFrame(screenFrame(1, ['$ ']))
+        const captureLiveFrame = vi.fn().mockResolvedValue(defaultPinnedFrame())
+        content.captureLiveFrame = captureLiveFrame
+
+        // The gesture lands while the block still awaits its boundary.
+        chordOn(viewOf(ed).contentDOM)
+        expect(targetNamed(ed)).toBe('agent')
+        await settleAttachment()
+        expect(
+          ed.root.querySelector('[data-control="grant"]')?.getAttribute('aria-label'),
+        ).not.toContain('frozen screen attached automatically')
+        expect(captureLiveFrame).not.toHaveBeenCalled()
+
+        // The marker repaint is accepted before the boundary, so the accepted
+        // screen has moved on but the block is not yet eligible.
+        session.fireScreenFrame(screenFrame(2, ['NOCX-SCREEN-00000000']))
+        await settleAttachment()
+        expect(captureLiveFrame).not.toHaveBeenCalled()
+
+        // The boundary names the prompt revision, not the marker repaint. The
+        // pending offer must still attach the screen the person asked about.
+        session.fireEffect({
+          sessionId: session.sessionId,
+          generation: '1',
+          effectId: '2',
+          kind: 'promptBoundary',
+          screenRevision: 1,
+          title: '',
+          body: '',
+        })
+        await settleAttachment()
+
         expect(
           ed.root.querySelector('[data-control="grant"]')?.getAttribute('aria-label'),
         ).toContain('frozen screen attached automatically')
