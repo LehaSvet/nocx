@@ -214,7 +214,7 @@ test('post-upload verification downloads fresh bytes; changed digest, extra asse
   }
   const plan = { tag: 'v0.8.0', assets: [asset] }
   let serial = 0
-  for (const failure of [null, 'changed', 'extra', 'api']) {
+  for (const failure of [null, 'changed', 'extra', 'api', 'twice']) {
     const github = {
       gh: (args) => {
         assert.equal(args[0], 'release')
@@ -224,9 +224,23 @@ test('post-upload verification downloads fresh bytes; changed digest, extra asse
           failure === 'changed' ? 'rebuilt bytes' : bytes,
         )
       },
-      api: () => {
+      // The release list, not releases/tags/<tag>: that endpoint 404s for a
+      // draft, which is the state this check first runs in.
+      pages: (path) => {
+        assert.equal(path, `repos/${repo}/releases`)
         if (failure === 'api') throw new Error('GitHub unavailable')
-        return { assets: failure === 'extra' ? [asset, { name: 'extra' }] : [asset] }
+        return [
+          { tag_name: 'v0.7.2', assets: [] },
+          {
+            tag_name: 'v0.8.0',
+            draft: true,
+            assets: failure === 'extra' ? [asset, { name: 'extra' }] : [asset],
+          },
+          ...(failure === 'twice' ? [{ tag_name: 'v0.8.0', assets: [asset] }] : []),
+        ]
+      },
+      api: () => {
+        throw new Error('releases/tags/<tag> 404s for a draft and must not be asked')
       },
     }
     const run = () => verifyUploaded(github, repo, plan, join(root, String(serial++)))
