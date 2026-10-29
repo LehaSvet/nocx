@@ -3,14 +3,13 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { failedTests, readQuarantine } from '../quarantine.mjs'
 import {
   authorize,
   ciJobNames,
-  failedTests,
   isNewerVersion,
   prepareStable,
   readKeyring,
-  readQuarantine,
   runBelongsTo,
   signedRunNumber,
   signingKey,

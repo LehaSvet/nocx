@@ -10,6 +10,8 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 
+import { judgeFailures } from '../quarantine.mjs'
+
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const shaPattern = /^[0-9a-f]{40}$/
 const hashPattern = /^[0-9a-f]{64}$/
@@ -117,51 +119,6 @@ export function ciJobNames(workflow) {
   })
 }
 
-// A quarantined test is one a flake bead owns (ADR "a flaky test is quarantined by
-// its bead"). Its failure stops blocking only while that bead is open: closing
-// the bead ends the protection without anyone remembering to edit this file.
-// Keys: `go:<TestName>` and `e2e:<spec path> › <title path>` — the names the
-// suites print on failure, without line numbers, which move.
-export function readQuarantine(json, issuesJsonl) {
-  if (json === undefined) return {}
-  const doc = JSON.parse(json)
-  requireThat(doc?.schema === 1 && Array.isArray(doc.tests), 'invalid test quarantine')
-  const status = new Map()
-  for (const line of (issuesJsonl ?? '').split('\n')) {
-    if (!line.trim()) continue
-    const row = JSON.parse(line)
-    status.set(row.id, row.status)
-  }
-  const open = {}
-  for (const entry of doc.tests) {
-    requireThat(
-      typeof entry?.test === 'string' &&
-        /^(go:Test\w+|e2e:e2e\/\S+ › .+|job:[^#\n]+#[1-9]\d*)$/.test(entry.test) &&
-        typeof entry.bead === 'string',
-      `invalid test quarantine entry ${JSON.stringify(entry)}`,
-    )
-    const state = status.get(entry.bead)
-    requireThat(state !== undefined, `quarantine ${entry.test}: bead ${entry.bead} does not exist`)
-    if (!['closed', 'tombstone'].includes(state)) open[entry.test] = entry.bead
-  }
-  return open
-}
-
-// The tests a failed job's log names, in the quarantine's key form. A failure
-// the log does not name (a build error, a timeout panic, the job's own setup)
-// yields nothing, and nothing cannot be quarantined.
-export function failedTests(log) {
-  const keys = new Set()
-  for (const raw of log.split(/\r?\n/)) {
-    const line = raw.replace(/^\S+Z /, '')
-    const go = /^\s*--- FAIL: (Test\w+)/.exec(line)
-    if (go) keys.add(`go:${go[1]}`)
-    const e2e = /^\s*\d+\) \[[^\]]+\] › (e2e\/[^:\s]+):\d+:\d+ › (.+?)[\s─]*$/.exec(line)
-    if (e2e) keys.add(`e2e:${e2e[1]} › ${e2e[2]}`)
-  }
-  return [...keys].sort()
-}
-
 // A required job that is not green in the newest attempt still passes when
 // every test it failed, in any attempt, is quarantined — or when its only
 // failures named no test and the same job passed in another attempt of the
@@ -181,20 +138,15 @@ function quarantinedJob(entry, label, name) {
   )
   for (const job of failed) {
     requireThat(job.conclusion === 'failure', `${label}: ${name} was not green`)
-    const tests = job.failures ?? []
-    // A failure that names no test is not a flake anyone can quarantine by
-    // test name. It passes only when the same job passed in another attempt,
-    // or when a bead quarantines exactly this job of exactly this PR
-    // (`job:<name>#<PR>`): a known defect of the check itself, never a class.
-    requireThat(
-      tests.length > 0 || passed || entry.quarantine[`job:${name}#${entry.number}`] !== undefined,
-      `${label}: ${name} failed without naming a test and never passed`,
-    )
-    for (const test of tests)
-      requireThat(
-        entry.quarantine[test] !== undefined,
-        `${label}: ${name} failed ${test}, which no open bead quarantines`,
-      )
+    // The verdict is the quarantine's own (scripts/quarantine.mjs), shared with
+    // a pull request's own CI so the two cannot answer differently.
+    const verdict = judgeFailures({
+      failures: job.failures ?? [],
+      quarantine: entry.quarantine,
+      jobKey: `job:${name}#${entry.number}`,
+      passedInAnotherAttempt: passed,
+    })
+    requireThat(verdict.accepted, `${label}: ${name} ${verdict.reason}`)
   }
   return failed.flatMap((job) => job.failures ?? [])
 }
