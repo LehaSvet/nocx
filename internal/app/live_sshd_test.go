@@ -40,6 +40,7 @@ package app
 // carries, and the test asserts the home gains nothing else.
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
@@ -468,9 +469,16 @@ type recordingKernel struct {
 	mu         sync.Mutex
 	lane       lifecycle.LaneID
 	domain     lifecycle.DomainID
-	capability lifecycle.Capability // the per-epoch bearer, from the handle
-	recovery   lifecycle.FenceNonce // the one-shot recovery fence, from the handle
+	transport  lifecycle.TransportID // the transport the minted domain rides
+	capability lifecycle.Capability  // the per-epoch bearer, from the handle
+	recovery   lifecycle.FenceNonce  // the one-shot recovery fence, from the handle
 	minted     int
+	// frames is the bounded tail of what the pane's lifecycle channel told the
+	// kernel and what the kernel did with it. Nothing in the product keeps such a
+	// list: a rejected envelope is one debug line and a gap is another, and a
+	// failure that has to be explained from a CI log has neither the order nor
+	// the lane state beside them (nocx-1ebrs.66.1.18).
+	frames []kernelFrame
 }
 
 func (r *recordingKernel) RequestDomain(lane lifecycle.LaneID, parent *lifecycle.DomainID, t lifecycle.TransportID) (lifecycle.DomainHandle, error) {
@@ -479,12 +487,171 @@ func (r *recordingKernel) RequestDomain(lane lifecycle.LaneID, parent *lifecycle
 		r.mu.Lock()
 		r.lane = lane
 		r.domain = h.Domain
+		r.transport = t
 		r.capability = h.Capability
 		r.recovery = h.Recovery
 		r.minted++
 		r.mu.Unlock()
 	}
 	return h, err
+}
+
+// kernelFrame is one event of the pane's lifecycle conversation as the KERNEL
+// saw it: which transport and lane it came from, what the kernel made of it,
+// and why it refused or dropped it when it did.
+//
+// The three dispositions are the vocabulary the live-ssh failure block prints:
+// "accepted" is an Ingest that returned nil, "rejected" is an Ingest that
+// returned an error — the reason is that error, the kernel's own words — and
+// "dropped" is loss the kernel was TOLD about rather than shown a frame for: a
+// gap the protocol reader discarded, or the transport ending. Frames the
+// adapter discards before the kernel (an unauthenticated envelope, a hello
+// that missed its window) never reach this seam; the adapter logs those itself.
+type kernelFrame struct {
+	Lane        lifecycle.LaneID
+	What        string
+	Disposition string
+	Reason      string
+	At          time.Time
+}
+
+// kernelFrameTail is how many of those events a failure block prints. The
+// failure this was built for is a lane that reaches no prompt: what matters is
+// the last handful of frames, whether they stopped arriving, and what the
+// kernel said about the one it refused.
+const kernelFrameTail = 12
+
+// Ingest is the observation seam: the adapter's every envelope passes through
+// it, so the kernel's answer for each one is recorded beside the frame that
+// caused it.
+func (r *recordingKernel) Ingest(ctx context.Context, t lifecycle.TransportID, env lifecycle.Envelope) error {
+	err := r.Publisher.Ingest(ctx, t, env)
+	f := kernelFrame{
+		Lane: env.Lane,
+		What: fmt.Sprintf("transport %s seq %d %s lane %s domain %s epoch %d",
+			t, env.Sequence, env.Event.Kind, env.Lane, env.Domain, env.Epoch),
+		Disposition: "accepted",
+		At:          time.Now(),
+	}
+	if err != nil {
+		f.Disposition, f.Reason = "rejected", err.Error()
+	}
+	r.recordFrame(f)
+	return err
+}
+
+// NotifyGap records a dropped run of bytes: the protocol reader found frames it
+// could not decode, and the kernel was told how many rather than shown them.
+func (r *recordingKernel) NotifyGap(t lifecycle.TransportID, d lifecycle.DomainID, garbageBytes, garbageFrames int) error {
+	err := r.Publisher.NotifyGap(t, d, garbageBytes, garbageFrames)
+	f := kernelFrame{
+		What:        fmt.Sprintf("transport %s gap domain %s", t, d),
+		Disposition: "dropped",
+		Reason:      fmt.Sprintf("%d garbage frames, %d bytes", garbageFrames, garbageBytes),
+		At:          time.Now(),
+	}
+	if err != nil {
+		f.Reason += "; " + err.Error()
+	}
+	r.recordFrame(f)
+	return err
+}
+
+// TransportLost records the channel ending, which is the drop that ends a
+// domain rather than refusing one frame.
+func (r *recordingKernel) TransportLost(t lifecycle.TransportID) error {
+	err := r.Publisher.TransportLost(t)
+	f := kernelFrame{
+		What:        fmt.Sprintf("transport %s ended", t),
+		Disposition: "dropped",
+		Reason:      "the channel ended",
+		At:          time.Now(),
+	}
+	if err != nil {
+		f.Reason += "; " + err.Error()
+	}
+	r.recordFrame(f)
+	return err
+}
+
+func (r *recordingKernel) recordFrame(f kernelFrame) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.frames = append(r.frames, f)
+	if len(r.frames) > kernelFrameTail {
+		r.frames = r.frames[len(r.frames)-kernelFrameTail:]
+	}
+}
+
+// lifecycleName is the readable name of a lane lifecycle. LifecycleState is a
+// uint8 with no String method — the kernel never prints it — and a failure
+// block that says '\x02' where the reader needs "prompt_ready" is the one thing
+// a stranger cannot use.
+func lifecycleName(st lifecycle.LifecycleState) string {
+	switch st {
+	case lifecycle.LifecycleNative:
+		return "native"
+	case lifecycle.LifecyclePromptReady:
+		return "prompt_ready"
+	case lifecycle.LifecycleRunning:
+		return "running"
+	case lifecycle.LifecycleDesynchronized:
+		return "desynchronized"
+	case lifecycle.LifecycleLost:
+		return "lost"
+	}
+	return fmt.Sprintf("unknown(%d)", uint8(st))
+}
+
+// laneReport is the failure block the live-ssh journeys print when a wait over
+// the lane times out (nocx-1ebrs.66.1.18). It answers, at the moment of the
+// timeout and from the kernel's own read model, the questions the old message
+// ("timed out waiting for lane back at PromptReady") left open: which lane, what
+// the kernel says its lifecycle/domain/attempt are, which transport it rides,
+// and what the last frames were and what became of them.
+func (r *recordingKernel) laneReport() string {
+	r.mu.Lock()
+	lane, transport, minted := r.lane, r.transport, r.minted
+	frames := append([]kernelFrame(nil), r.frames...)
+	r.mu.Unlock()
+
+	now := time.Now()
+	var b strings.Builder
+	fmt.Fprintf(&b, "kernel.lane = %q (domains minted: %d)\n", lane, minted)
+	fmt.Fprintf(&b, "lane transport = %q\n", transport)
+	if lane == "" {
+		b.WriteString("kernel.State: no lane was ever minted, so there is nothing to read\n")
+	} else if st, err := r.State(lane); err != nil {
+		fmt.Fprintf(&b, "kernel.State(%q) failed: %v\n", lane, err)
+	} else {
+		fmt.Fprintf(&b, "kernel.State(%q): lifecycle %s domain %q attempt %q\n",
+			lane, lifecycleName(st.Lifecycle), st.Domain, st.Attempt)
+		fmt.Fprintf(&b, "  open attempts %v, stack %v, recovery sighted %v\n",
+			st.OpenAttempts, st.Stack, st.RecoverySighted)
+	}
+
+	shown := 0
+	for _, f := range frames {
+		if f.Lane == "" || f.Lane == lane {
+			shown++
+		}
+	}
+	fmt.Fprintf(&b, "pane lifecycle frames the kernel saw (%d in the tail, showing %d; accepted/rejected/dropped):\n",
+		len(frames), shown)
+	if shown == 0 {
+		b.WriteString("  none — no frame reached the kernel for this lane\n")
+	}
+	for _, f := range frames {
+		if f.Lane != "" && f.Lane != lane {
+			continue
+		}
+		fmt.Fprintf(&b, "  -%8s %-9s %s", now.Sub(f.At).Round(time.Millisecond), f.Disposition, f.What)
+		if f.Reason != "" {
+			fmt.Fprintf(&b, " — %s", f.Reason)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // ---------------------------------------------------------------------------
