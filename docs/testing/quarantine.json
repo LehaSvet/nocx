@@ -60,6 +60,10 @@
     {
       "test": "e2e:e2e/composer-submit-flicker.spec.ts › the submit hand-off (nocx-1ebrs.40) › a real command departs through a fade, and the tail never detaches",
       "bead": "nocx-atpw5.1.4"
+    },
+    {
+      "test": "e2e:e2e/block-outcome.spec.ts › the quiet ⋮ is still reachable from the keyboard",
+      "bead": "nocx-atpw5.1.2"
     }
   ]
 }
