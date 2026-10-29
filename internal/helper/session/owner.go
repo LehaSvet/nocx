@@ -874,6 +874,11 @@ func (o *sessionOwner) advance() {
 			continue
 		}
 		barrier := o.drainLocal()
+		if len(o.incoming) != 0 {
+			// A revocation can arrive while the bounded read ingests. Let the
+			// next owner turn dispatch it before committing this pending head.
+			return
+		}
 		if it.kind == itemIntent && it.intent.requiresReadBarrier() && !barrier {
 			// Keep the head in place. Later input must not overtake a
 			// conditional write while it waits for a genuine read barrier.
