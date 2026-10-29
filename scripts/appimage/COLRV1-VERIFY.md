@@ -45,6 +45,8 @@ The grinning-face canvas graph contains a verified radial gradient, so a solid
 rainbow alone cannot satisfy the canvas check. A second snapshot replaces DOM
 glyphs with monospace U+10FFFF missing-glyph controls. Each colour glyph must
 exceed its control's chromatic pixel count, hue buckets and mean saturation.
+Each U+10FFFF control crop must independently have exactly zero chromatic
+pixels, hue buckets and chromatic saturation.
 Cairo pixels are inspected directly, without host image-library dependencies. A new JS message after the snapshot
 proves the renderer still responds. The `no-freetype` mutation must instead
 produce a nonzero result AND the exact `colrv1_configure_skpaint` / `ColorStop`
@@ -83,3 +85,73 @@ coordinate snapshot did not prove colour rendering; the maximum coordinate
 scenario did not run. Variable rendering remains unproven. The experimental
 helper and wiring were removed rather than retained as an unvalidated release
 check. The final bounded gate uses the three verified default glyphs only.
+
+## Recorded ABI regression rehearsal
+
+[ADR-8c9vy815](../../docs/decisions/8c9vy815-appimage-bundles-webkits-matched-freetype-abi.md)
+owns this packaging decision. On 2026-10-29 the controlled rehearsal used these
+artifacts, not a newly built nightly:
+
+- Released `nocx-0.8.0-linux-amd64.AppImage`, SHA256
+  `99054eaf8e8eb93fa3d61f89aa77c7c13d1b365a76209ef4d438117fb1f2370f`.
+- A fresh extraction of that image, repacked with matched FreeType, its notices
+  and package provenance; released executable, WebKit and helper bytes unchanged.
+  SHA256 `96a54550a1adaf1b974310446f90471365a3ce82e88280f8ffccb4ed14a8adf1`.
+- Jammy `libfreetype6` version `2.11.1+dfsg-1ubuntu0.4`, archive SHA256
+  `3728210ef44a7a51b3824d5c499f6fbd428584a42a65aee15794a4264c8c173a`;
+  copied ELF SHA256
+  `c338538f8d90eb85217e8525ab363e68e79b46d3c8acc0b6824190e032687e5f`.
+
+The actual pinned font graphs are:
+
+| Text          | Glyph     | Gradient paints                      |
+| ------------- | --------- | ------------------------------------ |
+| U+26A0 + FE0F | `uni26A0` | two linear gradients, two stops each |
+| U+1F308       | `u1F308`  | none; solid-colour companion         |
+| U+1F600       | `u1F600`  | one radial gradient, three stops     |
+
+The original and deletion cases reproduced the exact ColorStop assertion on
+Arch FreeType **2.15.0** and Ubuntu 24.04 FreeType **2.13.2**. Their WebProcess
+maps respectively named `/usr/lib/libfreetype.so.6.20.7` and
+`/usr/lib/x86_64-linux-gnu/libfreetype.so.6.20.1`. The probe exited **1** and
+reported `WEB_PROCESS_TERMINATED`; the negative-control harness exited **0**
+after requiring all of `colrv1_configure_skpaint`, `ColorStop` and
+`Assertion '__n < this->size()' failed` on one assertion line. A single
+U+1F600 probe had survived, so it is not an equivalent regression fixture.
+
+With the matched bundle, main and WebProcess mapped the image's regular
+`usr/lib/libfreetype.so.6`, version **2.11.1**, before and after painting.
+Modern host fontconfig/HarfBuzz passed `ldd -r` with that pairing. An actual
+terminal child reported empty `LD_LIBRARY_PATH`; no global AppRun loader-path
+export is needed. The window accepted a subsequent command through keyboard
+input after title/output. Explicit user loader overrides remain unsupported.
+
+The Ubuntu DOM snapshot measured each span's own bounds:
+
+| Text     | Crop x/y/w/h  | Chromatic pixels | Hue buckets | Mean saturation | U+10FFFF control pixels/hues/saturation |
+| -------- | ------------- | ---------------- | ----------- | --------------- | --------------------------------------- |
+| warning  | 0/0/200/160   | 4118             | 2           | 0.80659         | 0/0/0                                   |
+| rainbow  | 200/0/200/160 | 4914             | 17          | 0.85527         | 0/0/0                                   |
+| grinning | 400/0/200/160 | 5438             | 4           | 0.80562         | 0/0/0                                   |
+
+Repeat the product gate with a freshly assembled image:
+
+```sh
+scripts/appimage/verify-appimage.sh /path/to/repaired.AppImage
+NOCX_APPIMAGE_VERIFY_IMAGE=ubuntu:24.04 \
+  scripts/appimage/verify-appimage.sh /path/to/repaired.AppImage none no-freetype
+scripts/appimage/verify-appimage.sh /path/to/released-0.8.0.AppImage unbundled-baseline
+```
+
+The full five-case Arch command exited **0**. The Ubuntu positive/deletion pair
+exited **0**. The original baseline check on each host exited **0**, meaning the
+expected exact product failure was observed, not that the original renderer
+passed. After adding explicit zero-control assertions, the final-source Arch
+`none no-freetype` pair again exited **0**. Commit hooks and present-document
+checks passed. Go/vitest/Playwright product suites were left to integration/CI.
+
+This establishes a controlled shipped-engine red/green/deletion result, not
+next-nightly promotion or a reporter-host retest. The reporter's exact font,
+glyph, loaded path and overwritten local field remain unknown. Actual-window
+screenshots have not been semantically inspected; its response proves survival,
+while the controlled shipped-engine snapshots prove glyph colour painting.

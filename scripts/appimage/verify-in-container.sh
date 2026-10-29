@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Container half of the AppImage release gate. Do not run this on your machine:
+# Container half of the AppImage release gate. ADR-8c9vy815 requires the
+# matched FreeType loader proof, gradient paint and deletion control below.
+# Do not run this on your machine:
 # it mutates the AppImage it is given and installs packages. Use
 # scripts/appimage/verify-appimage.sh, which starts the container for you.
 #

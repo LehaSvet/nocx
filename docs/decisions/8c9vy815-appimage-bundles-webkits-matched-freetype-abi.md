@@ -16,8 +16,9 @@ The released v0.8.0 AppImage carries Ubuntu jammy's WebKitGTK
 WebKit's own `$ORIGIN` RUNPATH cannot find a library that is absent, so its
 `libfreetype.so.6` dependency resolves outside the image. The Ubuntu buildinfo
 records FreeType `2.11.1+dfsg-1ubuntu0.3` headers and runtime at WebKit build time
-([diagnosis §1](../../diagnosis-2inid.md#1-what-the-released-appimage-actually-carries),
-[§2](../../diagnosis-2inid.md#2-compile-headers-and-exact-upstream-mechanism)).
+in its [Ubuntu amd64 buildinfo](https://launchpad.net/~ubuntu-security-proposed/+archive/ubuntu/ppa/+build/32114182/+files/webkit2gtk_2.50.4-0ubuntu0.22.04.1_amd64.buildinfo).
+The validated WebKit ELF build ID is
+`5453dc26598bc698bee8376a0266f979a653dac7`.
 
 FreeType 2.13 changed experimental COLRv1 structures without changing that
 SONAME. `FT_ColorStop.stop_offset` changed from a short to a C long, which is
@@ -26,13 +27,21 @@ Old-header local objects passed to the new runtime can therefore corrupt
 adjacent data. The bundled Skia path uses these objects without a runtime ABI
 guard. This explains the reported `ColorStop` vector assertion and matches an
 [independent AppImage repair](https://github.com/home-assistant/installer/pull/366).
-It is not a measured nocx reproduction: the reporter's loaded FreeType, font,
-glyph and corrupted field remain unknown. Our probe could not start a renderer
-because runner capacity was unavailable (diagnosis §§2–3, §5).
+The reporter's loaded FreeType, font, glyph and corrupted field remain
+unknown. The controlled reproduction described below proves the same assertion,
+not the reporter's exact triggering input.
+
+The layout changes are documented by FreeType's commits
+[`117df36b`](https://github.com/freetype/freetype/commit/117df36b4c3a5f7850a3789e92ce54d9341673ff)
+(`stop_offset`) and
+[`3414fef7`](https://github.com/freetype/freetype/commit/3414fef74f9dd1858aca521f93ebadca9ab36f96)
+(`read_variable`). WebKit's
+[2.50.4 Skia paint path](https://github.com/WebKit/WebKit/blob/webkitgtk-2.50.4/Source/ThirdParty/skia/src/ports/SkFontHost_FreeType_common.cpp#L607-L640)
+passes compile-time-layout objects to those runtime symbols without an ABI guard.
 
 No built-in 45-second emoji insertion was found. Pets render PNG sprites;
 arbitrary tab titles, terminal output and assistant text can supply Unicode.
-Filtering one UI element would not close the unsafe path (diagnosis §3).
+Filtering one UI element would not close the unsafe path.
 
 ## Decision
 
@@ -43,8 +52,7 @@ Copy the regular library into `AppDir/usr/lib`, provide
 `libfreetype.so.6`, ship its licence, and record the exact package version and
 hash in build provenance. Packaging must reject an unexpected ABI generation.
 The initial package is Ubuntu's
-[`libfreetype6_2.11.1+dfsg-1ubuntu0.4_amd64.deb`](https://archive.ubuntu.com/ubuntu/pool/main/f/freetype/libfreetype6_2.11.1+dfsg-1ubuntu0.4_amd64.deb)
-(diagnosis §4).
+[`libfreetype6_2.11.1+dfsg-1ubuntu0.4_amd64.deb`](https://archive.ubuntu.com/ubuntu/pool/main/f/freetype/libfreetype6_2.11.1+dfsg-1ubuntu0.4_amd64.deb).
 
 The normal loader path must reach the bundle in nocx and its WebProcess,
 not merely place a file beside WebKit. WebKit's `$ORIGIN` RUNPATH resolves the
@@ -52,7 +60,7 @@ library in `AppDir/usr/lib`; nocx independently has `$ORIGIN/../lib`. Verify
 actual process maps per process and reject outside-image FreeType bindings in
 the repaired artifact. Keep host fonts and fontconfig configuration; a
 compatible ABI preserves colour rendering without banning the user's emoji
-fonts (diagnosis §§1, 4–5).
+fonts.
 
 Do not prepend a bundle-wide `LD_LIBRARY_PATH` in AppRun. That environment would
 reach the detached coordinator and every terminal child, handing jammy
@@ -66,12 +74,14 @@ map check still rejects an outside-image FreeType in the measured release run.
 
 ### A newer distro WebKit is not a proven drop-in fix
 
-Ubuntu noble's WebKitGTK 2.52.6 buildinfo lists FreeType 2.13.2, libc6 2.39,
+Ubuntu noble's WebKitGTK 2.52.6
+[buildinfo](https://launchpad.net/~ubuntu-security-proposed/+archive/ubuntu/ppa/+build/33529899/+files/webkit2gtk_2.52.6-0ubuntu0.24.04.1_amd64.buildinfo)
+lists FreeType 2.13.2, libc6 2.39,
 GLib 2.80 and ICU74. Our current jammy build floor is glibc 2.35. Switching to
 that prebuilt changes dependency generations and requires a separate support
 floor decision. **Buildinfo proves its build environment, not its ELF minimum
 GLIBC symbol requirement.** The noble ELF was not inspected; this record does
-not claim every symbol requires glibc 2.39 (diagnosis §4).
+not claim every symbol requires glibc 2.39.
 
 No confirmed WebKitGTK fixed release was found. Checked tags 2.50.6, 2.52.6 and
 2.54.2 still contain the unguarded path. A concrete
@@ -79,8 +89,7 @@ No confirmed WebKitGTK fixed release was found. Checked tags 2.50.6, 2.52.6 and
 compares header/runtime sides of the 2.13 boundary and declines COLRv1 on a
 mismatch, but it is not evidence of a WebKit fix. Backporting it through our own
 WebKit build buys the security-build obligation ADR-0035 rejected. Waiting for
-an unconfirmed upstream release does not protect the current artifact
-(diagnosis §§2, 4).
+an unconfirmed upstream release does not protect the current artifact.
 
 ### Removing assertions is not a repair
 
@@ -88,8 +97,7 @@ Dropping `_GLIBCXX_ASSERTIONS` cannot change the struct layout or prevent the
 out-of-bounds access. It replaces a deterministic abort with undefined
 behaviour, including corruption or a later crash. Those assertions are already
 compiled into the Ubuntu shared library; nocx compiler flags cannot remove
-them. Rebuilding that library only to hide the assertion is rejected
-(diagnosis §4).
+them. Rebuilding that library only to hide the assertion is rejected.
 
 ### A fontconfig exclusion is only an emergency stopgap
 
@@ -98,7 +106,7 @@ Hiding a named Noto family misses other COLRv1 fonts, and downloaded
 fonts costs colour emoji throughout nocx and still leaves the incompatible ABI
 available to another caller. Such an exclusion would require an explicit,
 temporary exception with that user-visible cost; it is not the chosen repair.
-App-side emoji replacement has the same coverage problem (diagnosis §§3–4).
+App-side emoji replacement has the same coverage problem.
 
 ## Consequences and acceptance boundary
 
@@ -121,7 +129,7 @@ and HarfBuzz, as well as bundled GTK/Pango/Cairo, must be checked for compatible
 FT imports and relocations (`ldd -r` and imported-symbol checks). FreeType itself
 does not depend on fontconfig or HarfBuzz. Its PNG and Brotli dependencies are
 already bundled; zlib remains host-provided. Bundling unrelated shaping
-libraries is not justified by FreeType's own dependency closure (diagnosis §4).
+libraries is not justified by FreeType's own dependency closure.
 
 The acceptance gate belongs to the artifact verification before release upload,
 not to Playwright's separate WebKit. On a pinned host with FreeType >=2.13 and
@@ -131,12 +139,14 @@ Exercise the real AppImage with that font as fallback in a tab title and
 terminal text. Report the font path, glyph code points, FreeType path/version,
 WebKit build ID and artifact hash; capture WebProcess maps and a screenshot
 that contains the glyph rather than tofu. Await paint/snapshot acknowledgement
-and a subsequent UI response, not a liveness timer (diagnosis §5).
+and a subsequent UI response, not a liveness timer.
 
 Use the same font/glyph for unrepaired and repaired artifacts. The unrepaired
 v0.8.0 must show the exact `ColorStop` assertion, not a generic timeout; the
 repaired artifact must render successfully with bundled FreeType. Deleting the
-bundled library must turn the gate red. The final controlled rehearsal on Ubuntu 24.04's FreeType 2.13.2 reproduced
+bundled library must turn the gate red.
+
+The final controlled rehearsal on Ubuntu 24.04's FreeType 2.13.2 reproduced
 the exact original `ColorStop` assertion with the released artifact and with
 the repaired artifact's bundled FreeType deleted. The repaired artifact painted
 the same fixture and survived, including a subsequent actual-window command
@@ -156,7 +166,7 @@ separate evidence of the real window path.
 
 These measurements use a controlled repack of the released binaries with only
 FreeType, notices and provenance added, not a newly built nightly. They do not
-identify the reporter's exact glyph or prove next-nightly promotion. See the
-[implementation evidence](../../implementation-2inid.md) for exact commands,
-statuses, artifact hashes and limits. `nocx-2inid` stays open until its
+identify the reporter's exact glyph or prove next-nightly promotion. The
+[verification guide](../../scripts/appimage/COLRV1-VERIFY.md) records repeatable
+commands, fixture and artifact hashes, measured outcomes and their limits. `nocx-2inid` stays open until its
 integration/release acceptance boundary.

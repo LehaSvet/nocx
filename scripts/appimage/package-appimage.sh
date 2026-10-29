@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Build the Linux AppImage from an already-compiled binary.
+# ADR-8c9vy815 owns the prebuilt WebKit/FreeType experimental ABI pairing.
 #
 # Lives here rather than inline in .github/workflows/release.yml so it can be
 # run on a developer machine against a real build — packaging that only exists
