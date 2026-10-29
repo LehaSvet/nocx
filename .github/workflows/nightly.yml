@@ -188,8 +188,13 @@ jobs:
             xvfb dbus dbus-daemon dbus-x11 at-spi2-core \
             python3-gi gir1.2-atspi-2.0 python3-pyatspi \
             libgtk-3-0t64 libatk-bridge2.0-0 fonts-dejavu-core \
-            libgl1 libegl1 libxkbcommon0 libxdamage1 libxfixes3 \
+            libgl1 libegl1 libgles2 libgl1-mesa-dri \
+            libxkbcommon0 libxdamage1 libxfixes3 \
             libxrandr2 libxcomposite1 libxrender1 libxtst6
+          # GL comes from the host, as on every desktop: WebKitGTK aborts at
+          # webview creation without libGLESv2 ("Couldn't open libGLESv2.so.2",
+          # nightly run 40870717737), and Mesa's software driver is what an X
+          # server with no GPU renders through.
           # The driver sets GTK_MODULES=gail:atk-bridge, which GTK loads from
           # the module directory compiled into the GTK the image bundles; the
           # host's libgtk-3-0t64 is what puts a copy at that path. Without a
