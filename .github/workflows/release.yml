@@ -1,270 +1,140 @@
-# Release — build, verify, sign and publish macOS + Linux artefacts.
-#
-# Design: docs/superpowers/specs/2026-07-22-distribution-and-updates-design.md
-# (§4 versioning, §5 pipeline, §6 manifest). macOS .app + Linux AppImage (D1
-# reversed per ADR-0007).
-#
-# Shape of the pipeline:
-#   - A real release comes from a stable version tag and *only* from a tag: a
-#     manual run has no tag and cannot produce the /releases/download/v<ver>/…
-#     URLs the manifest asserts, so workflow_dispatch is a dry run that builds,
-#     signs and verifies everything and publishes nothing (§5).
-#   - The whole quality suite must be green on this exact commit before anything
-#     is built: release.yml *calls* ci.yml (workflow_call) and every downstream
-#     job needs it. `needs:` alone would not do this — it does not reach across
-#     workflows — which is why ci.yml is a called workflow, not a sibling.
-#   - The signing key lives only in the publish job, which runs no build tooling.
-
+# ADR-0097: stable is a promotion of a tried nightly, never another build.
+# No tag trigger, reusable build workflow, compiler, packaging or CI rerun here.
 name: Release
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Rehearse promotion/refusals with fixture artifacts and a substituted key; no publishing or secrets'
+        required: true
+        default: true
+        type: boolean
+      nightly:
+        description: 'Immutable nightly tag you installed and tried (nightly-YYYYMMDD-RUNID)'
+        required: false
+        type: string
+      tried:
+        description: 'I installed and tried this exact nightly and approve its promotion'
+        required: true
+        default: false
+        type: boolean
 
-# Read-only by default. Only the publish job is granted contents: write, and it
-# only runs for a real tag release.
 permissions:
   contents: read
 
-jobs:
-  # The gate. A release cannot exist without green backend, frontend and e2e on
-  # this commit.
-  ci:
-    uses: ./.github/workflows/ci.yml
-    permissions:
-      contents: read
+concurrency:
+  group: stable-promotion
+  cancel-in-progress: false
 
-  # Resolve the version and decide whether this run publishes. Git-only, so it
-  # runs on ubuntu in parallel with the macOS build gate.
-  validate:
+jobs:
+  dry-run:
+    if: inputs.dry-run
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.v.outputs.version }}
-      release: ${{ steps.v.outputs.release }}
-      notes: ${{ steps.notes.outputs.present }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Good promotion and mandatory refusals with substituted signing key
+        run: node --test --test-reporter=tap scripts/release/promotion*.test.mjs
+
+  authorize:
+    if: ${{ !inputs.dry-run }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse a non-owner, untried nightly or non-main dispatch
+        env:
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          OWNER: ${{ github.repository_owner }}
+          REF: ${{ github.ref }}
+          TRIED: ${{ inputs.tried }}
+        run: |
+          set -euo pipefail
+          [ "$ACTOR" = "$OWNER" ] && [ "$TRIGGERING_ACTOR" = "$OWNER" ] &&
+            [ "$REF" = refs/heads/main ] && [ "$TRIED" = true ] || {
+              echo '::error::only the owner on main may promote a named nightly they confirm trying'
+              exit 1
+            }
+
+  promote:
+    needs: authorize
+    # Also checked in the script. Check both actors so a rerun cannot bypass it.
+    if: >-
+      github.actor == github.repository_owner &&
+      github.triggering_actor == github.repository_owner &&
+      github.ref == 'refs/heads/main' && inputs.tried && !inputs.dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: write
+    env:
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - id: v
-        name: Resolve and validate the version
-        run: |
-          set -euo pipefail
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            tag="${GITHUB_REF_NAME}"
-            # Stable vMAJOR.MINOR.PATCH only. CFBundleVersion has a narrower
-            # grammar than semver, so a prerelease tag would produce an invalid
-            # plist, and GitHub's `latest` excludes prereleases anyway (§4).
-            if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-              echo "::error::tag '$tag' is not a stable vMAJOR.MINOR.PATCH release"
-              exit 1
-            fi
-            # The tagged commit must be reachable from main (a commit is its own
-            # ancestor, so tagging main's tip is valid).
-            git fetch --no-tags --depth=2147483647 origin main
-            tagsha="$(git rev-parse HEAD)"
-            if ! git merge-base --is-ancestor "$tagsha" FETCH_HEAD; then
-              echo "::error::tag commit $tagsha is not reachable from main"
-              exit 1
-            fi
-            echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-            echo "release=true" >> "$GITHUB_OUTPUT"
-          else
-            # Dry run: no tag, so no release URLs. 0.0.0 is a valid
-            # CFBundleVersion and never collides with a shipped release.
-            echo "version=0.0.0" >> "$GITHUB_OUTPUT"
-            echo "release=false" >> "$GITHUB_OUTPUT"
-          fi
+          # Never execute tooling from the untrusted candidate tag. Candidate
+          # source is read with git show, and payloads are never executed.
+          ref: ${{ github.sha }}
 
-      # THE NOTES TRAVEL AS AN ARTEFACT, because `publish` holds no source.
-      # `publish` used to test `-f docs/release-notes/v${VERSION}.md` against
-      # its own empty working directory, so the test could never pass and every
-      # release shipped the fallback with a ::warning:: nobody read — v0.2.0 and
-      # v0.3.0 both had notes written for them and neither published them
-      # (nocx-woh3s).
-      #
-      # The fix is not a checkout in `publish`: the comment on that job's
-      # `GH_REPO` says why, and it still holds — cloning the source to satisfy
-      # an implicit lookup hides what the lookup actually needed. This job
-      # already has the source and already resolves VERSION, so it is the one
-      # that can answer "are there notes for this version" and hand the answer
-      # forward. `publish` then consumes the notes the way it consumes the
-      # binaries and the manifest.
-      #
-      # No file, no artefact, and the `notes` output says so: `publish` skips
-      # the download and its fallback fires for the real reason. A dry run
-      # (VERSION 0.0.0, no such file) takes that branch and uploads nothing,
-      # which is why the upload is conditional rather than
-      # `if-no-files-found`-tolerant — an artefact that does not exist must not
-      # be downloaded either.
-      - id: notes
-        name: Stage the release notes, if this version has any
-        env:
-          VERSION: ${{ steps.v.outputs.version }}
-        run: |
-          set -euo pipefail
-          notes_file="docs/release-notes/v${VERSION}.md"
-          if [ -f "$notes_file" ]; then
-            mkdir -p staged-notes
-            cp "$notes_file" staged-notes/notes.md
-            echo "present=true" >> "$GITHUB_OUTPUT"
-            echo "staged $notes_file ($(wc -c < "$notes_file") bytes)"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "no $notes_file in the tree; publish will use the install caveat"
-          fi
-
-      - uses: actions/upload-artifact@v7
-        if: steps.notes.outputs.present == 'true'
+      - uses: actions/setup-node@v7
         with:
-          name: release-notes
-          path: staged-notes/notes.md
-          retention-days: 7
+          node-version: '24'
 
-  # Transitional tag path; promotion replaces this caller under nocx-1ebrs.35.3.
-  # Both publication paths use the SAME packaged-artifact refusal gate.
-  build:
-    needs: [ci, validate]
-    uses: ./.github/workflows/release-build.yml
-    with:
-      version: ${{ needs.validate.outputs.version }}
-      sha: ${{ github.sha }}
-      release-tag: v${{ needs.validate.outputs.version }}
-    secrets: inherit
-
-  # The only tag-gated job, and the only one holding contents: write. It runs no
-  # build tooling and no signing — it uploads what the jobs above produced.
-  publish:
-    needs: [validate, build]
-    if: needs.validate.outputs.release == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      VERSION: ${{ needs.validate.outputs.version }}
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: macos-universal
-          path: dist
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: linux-amd64
-          path: dist
-
-      # The four helper assets, from the one job that built them. The file
-      # names are unchanged; only their origin is.
-      - uses: actions/download-artifact@v8
-        with:
-          name: helper-binaries
-          path: dist
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: manifest
-          path: dist
-
-      # The notes `validate` staged, when that version had any. Guarded on the
-      # same output that decided whether to upload them: no artefact exists in
-      # the other case, and downloading one that does not exist fails the run.
-      - name: Download the release notes `validate` staged
-        if: needs.validate.outputs.notes == 'true'
-        uses: actions/download-artifact@v8
-        with:
-          name: release-notes
-          path: notes
-
-      # GH_REPO, because this job never checks the repository out — it only
-      # downloads the three artefacts above — and `gh` falls back to asking
-      # git which remote it is talking about. With no .git it does not fail
-      # over to the Actions context; it stops with "failed to run git: fatal:
-      # not a git repository" and the release is never created (nocx-kqqh).
-      #
-      # A checkout would also work and is the wrong fix: this job has no use
-      # for the source, and cloning it to satisfy an implicit lookup hides
-      # what the lookup actually needed. Naming the repository says it.
-      #
-      # This step had never run before v0.1.0. `publish` is gated on
-      # validate.outputs.release, which only a tag sets, so every dry run
-      # skipped it — the same blind spot that once hid the keyring check
-      # sitting in this very job (nocx-94kl). A step no rehearsal reaches is
-      # a step that is first executed for real.
-      - name: Create release
+      - name: Verify owner, candidate provenance, PR-head CI and candidate README
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          # THE NOTES ARE A FILE IN THE REPOSITORY when one exists for this
-          # version, so what a release says is written, reviewed and diffed
-          # like everything else that ships. It reaches this job as the
-          # `release-notes` artefact `validate` staged from the checked-out
-          # tree — this job has no working copy to read it from. The fallback
-          # is the sentence this step used to carry alone: it is the install
-          # caveat, which is true of every build and belongs in every release
-          # whether or not anybody wrote notes for that one.
-          notes_file="notes/notes.md"
-          if [ -f "$notes_file" ]; then
-            notes_arg=(--notes-file "$notes_file")
-          else
-            echo "::warning::no docs/release-notes/v${VERSION}.md — publishing with the install caveat alone"
-            notes_arg=(--notes "Automated release. macOS: first launch needs the manual quarantine step. Linux: chmod +x the AppImage. See the README for both.")
-          fi
-          gh release create "v${VERSION}" \
-            --title "v${VERSION}" \
-            "${notes_arg[@]}" \
-            "dist/nocx-${VERSION}-darwin-universal.dmg" \
-            "dist/nocx-${VERSION}-darwin-universal.zip" \
-            "dist/nocx-${VERSION}-linux-amd64.AppImage" \
-            "dist/nocx-helper-${VERSION}-linux-amd64" \
-            "dist/nocx-helper-${VERSION}-linux-arm64" \
-            "dist/nocx-helper-${VERSION}-darwin-amd64" \
-            "dist/nocx-helper-${VERSION}-darwin-arm64" \
-            "dist/manifest.json" \
-            "dist/manifest.json.sig"
+          NIGHTLY_TAG: ${{ inputs.nightly }}
+          TRIED_NIGHTLY: ${{ inputs.tried }}
+        run: node scripts/release/promotion-github.mjs collect promotion
 
-      # The release is now public. Only after GitHub accepted every release
-      # asset do we update the separate tap; a failed build or release leaves
-      # its cask untouched. The tap token is used only to push to that repo.
-      - name: Update the Homebrew tap cask
+      - name: Copy exact payload bytes and sign only the stable manifest
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: node scripts/release/promotion-github.mjs prepare promotion
+
+      - name: Upload draft, download and compare digests, then publish stable
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/promotion-github.mjs publish promotion
+
+      - name: Update the stable Homebrew cask from the verified promoted zip
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           set -euo pipefail
-          [ -n "$GH_TOKEN" ] || { echo "::error::HOMEBREW_TAP_TOKEN is empty"; exit 1; }
-          version="${VERSION}"
-          url="https://github.com/shady2k/nocx/releases/download/v${version}/nocx-${version}-darwin-universal.zip"
-          sha256="$(curl -fL --retry 3 --retry-all-errors "$url" | sha256sum | awk '{print $1}')"
-          printf '%s\n' "$sha256" | grep -Eq '^[0-9a-f]{64}$' || { echo "::error::invalid macOS bundle sha256"; exit 1; }
+          [ -n "$GH_TOKEN" ] || { echo '::error::HOMEBREW_TAP_TOKEN is empty; stable is published but its cask is not updated'; exit 1; }
           gh auth setup-git
           gh repo clone shady2k/homebrew-nocx tap
-          cd tap
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          cask=Casks/nocx.rb
-          test -f "$cask"
-          python3 - "$cask" "$version" "$sha256" <<'PY'
-          from pathlib import Path
-          import re
-          import sys
-
-          path = Path(sys.argv[1])
-          version, sha256 = sys.argv[2:]
-          text = path.read_text()
-          text, versions = re.subn(r'(?m)^(\s*version\s+)["\'][^"\']+["\']', rf'\g<1>"{version}"', text, count=1)
-          text, hashes = re.subn(r'(?m)^(\s*sha256\s+)["\'][0-9a-f]{64}["\']', rf'\g<1>"{sha256}"', text, count=1)
-          if versions != 1 or hashes != 1:
-              raise SystemExit("expected exactly one cask version and sha256")
-          path.write_text(text)
-          PY
-          grep -Fq "version \"${version}\"" "$cask"
-          grep -Fq "sha256 \"${sha256}\"" "$cask"
-          if git diff --exit-code --quiet -- "$cask"; then
-            echo "tap cask already points to v${version} with the published bundle hash"
-            exit 0
+          node scripts/release/promotion-github.mjs cask promotion tap/Casks/nocx.rb
+          version="$(node -p "require('./promotion/plan.json').version")"
+          git -C tap config user.name 'github-actions[bot]'
+          git -C tap config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if ! git -C tap diff --quiet -- Casks/nocx.rb; then
+            git -C tap add Casks/nocx.rb
+            git -C tap commit -m "chore: update nocx cask to v${version}"
+            git -C tap push origin HEAD:main
           fi
-          git add "$cask"
-          git commit -m "chore: update nocx cask to v${version}"
-          git push origin HEAD:main
+
+      - name: Propose the next nightly version through a normal PR
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/promotion-github.mjs bump promotion
+
+      # Evidence survives a failed tap push/version PR as well as a success.
+      - name: Preserve promotion evidence and exact stable digest plan
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stable-promotion-evidence
+          path: |
+            promotion/evidence.json
+            promotion/plan.json
+          if-no-files-found: warn
+          retention-days: 90
