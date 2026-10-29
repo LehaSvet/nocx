@@ -9,26 +9,21 @@
  * bead; a test no open bead holds, a bead that has been closed, and a failure
  * that names no test all keep the job red.
  *
- * HOW THE FAILURE LIST REACHES THIS CHECK. A gated step runs its command through
- * scripts/ci-run-logged.sh, which tees the step's own stdout and stderr to
- * `$NOCX_TEST_LOG_DIR/<name>.log` and writes the command's exit status to
- * `<name>.status`. That file holds exactly what
- * `GET /repos/{repo}/actions/jobs/{id}/logs` would return for the same step, so
- * scripts/quarantine.mjs's `failedTests` parses both — no second parser, no
- * token, no API call, and no log downloaded by hand.
+ * Every expected step is declared by the workflow, never discovered from
+ * surviving files. The helper seals a nonempty log and integer command status
+ * only after tee and all writes succeeded. Missing or damaged evidence throws.
+ * A nonzero command needs complete Go JSON events or a Playwright JSON report
+ * before named test quarantines apply. Printed FAIL text cannot authorize one.
  *
- * The STATUS decides whether a step is judged, and the log only names what it
- * failed on. Both halves are needed and neither is enough: a failure that names
- * no test (a build error, a setup step) leaves nothing in the text to find, and
- * a passing step can print a test failure's line into a pane —
- * e2e/visual-board.spec.ts:170 does exactly that — so text alone would fail a
- * green job.
+ * The last step emits a compact machine-readable record into the job log even
+ * on success. Promotion reads successful job logs too and rejudges this record
+ * against its own quarantine state. No expiring workflow artifact is needed.
  *
- * The gate runs as the job's last step (`if: always()`), so a red step has
- * already written its evidence by the time the decision is taken. A gated step
- * that never ran writes nothing and is not judged here; the job fails on it in
- * the ordinary way.
+ * Every invocation fetches current main's tracker export. A bead must exist
+ * in both the checkout and current main and be nonterminal in both. Failure to
+ * obtain main refuses; new branch-local beads protect nothing until exported.
  *
+ *   NOCX_EXPECTED_STEPS   required space-separated positive step manifest
  *   NOCX_TEST_LOG_DIR     the directory the gated steps wrote (required)
  *   NOCX_QUARANTINE_JOB   this job's name as GitHub prints it, e.g.
  *                         `ci-backend (no-secret-service)` — the same name the
@@ -39,24 +34,77 @@
  *   NOCX_ISSUES_FILE      default .beads/issues.jsonl
  */
 import { readFileSync, readdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { failedTests, judgeFailures, readQuarantineState } from './quarantine.mjs'
+import {
+  goTestEvidence,
+  playwrightEvidence,
+  judgeFailures,
+  readQuarantineState,
+} from './quarantine.mjs'
 
 const prefix = 'quarantine:'
 
 /** The evidence one gated step left: its name, its command's status, its output. */
-export function readStepLogs(dir) {
-  return readdirSync(dir)
-    .filter((name) => name.endsWith('.status'))
-    .map((name) => name.slice(0, -'.status'.length))
-    .sort()
-    .map((name) => ({
+export function readStepLogs(dir, expectedSteps) {
+  if (
+    !Array.isArray(expectedSteps) ||
+    expectedSteps.length === 0 ||
+    new Set(expectedSteps).size !== expectedSteps.length ||
+    expectedSteps.some((name) => !/^[a-zA-Z0-9_-]+$/.test(name))
+  )
+    throw new Error('invalid or empty expected-step evidence manifest')
+  const names = readdirSync(dir)
+  if (
+    names.some(
+      (file) =>
+        /\.(log|status|complete)$/.test(file) &&
+        !expectedSteps.some(
+          (name) =>
+            file === `${name}.log` || file === `${name}.status` || file === `${name}.complete`,
+        ),
+    )
+  )
+    throw new Error('unexpected step evidence outside manifest')
+  const actual = names.filter((name) => name.endsWith('.status')).map((name) => name.slice(0, -7))
+  if (
+    actual.length !== expectedSteps.length ||
+    actual.some((name) => !expectedSteps.includes(name))
+  )
+    throw new Error('step evidence does not match the expected-step manifest')
+  return expectedSteps.map((name) => {
+    const raw = readFileSync(join(dir, `${name}.status`), 'utf8').trim()
+    if (!/^(0|[1-9]\d*)$/.test(raw) || Number(raw) > 255)
+      throw new Error(`invalid status evidence for ${name}`)
+    const body = readFileSync(join(dir, `${name}.log`))
+    const seal = JSON.parse(readFileSync(join(dir, `${name}.complete`), 'utf8'))
+    if (
+      !body.length ||
+      seal.status !== Number(raw) ||
+      seal.bytes !== body.length ||
+      seal.sha256 !== createHash('sha256').update(body).digest('hex')
+    )
+      throw new Error(`incomplete log evidence for ${name}`)
+    const status = Number(raw)
+    const runner =
+      status === 0
+        ? { failures: [], complete: true }
+        : Object.hasOwn(seal, 'report')
+          ? playwrightEvidence(seal.report)
+          : goTestEvidence(body.toString('utf8'))
+    return {
       name,
-      status: Number(readFileSync(join(dir, `${name}.status`), 'utf8').trim()),
-      log: readFileSync(join(dir, `${name}.log`), 'utf8'),
-    }))
+      status,
+      ...runner,
+      complete:
+        runner.complete &&
+        (status === 0 || status === 1) &&
+        (!seal.wrapper?.required || seal.wrapper.status === status),
+    }
+  })
 }
 
 /**
@@ -66,14 +114,26 @@ export function readStepLogs(dir) {
  */
 export function gate({
   logs,
+  expectedSteps,
   job = 'unknown job',
   pull,
   quarantineJson,
   issuesJsonl,
+  mainIssuesJsonl,
   write = (line) => process.stdout.write(`${line}\n`),
 }) {
-  const { open, closed } = readQuarantineState(quarantineJson, issuesJsonl)
-  const steps = readStepLogs(logs)
+  if (typeof mainIssuesJsonl !== 'string' || !mainIssuesJsonl.trim())
+    throw new Error('current main tracker evidence is missing')
+  const checkout = readQuarantineState(quarantineJson, issuesJsonl)
+  const current = readQuarantineState(quarantineJson, mainIssuesJsonl)
+  const closed = { ...checkout.closed, ...current.closed }
+  const open = Object.fromEntries(
+    Object.entries(checkout.open).filter(([key]) => current.open[key] && !closed[key]),
+  )
+  const steps = readStepLogs(logs, expectedSteps)
+  write(
+    `NOCX_QUARANTINE_EVIDENCE_V1 ${JSON.stringify({ schema: 1, job, pull: pull || '', steps })}`,
+  )
   const jobKey = pull ? `job:${job}#${pull}` : undefined
   const failed = []
   for (const step of steps) {
@@ -83,10 +143,15 @@ export function gate({
     // during a PASSING spec, so a log that names a failure is not evidence the
     // step failed — the status is.
     if (step.status === 0) continue
-    const named = failedTests(step.log)
     failed.push({
       step,
-      verdict: judgeFailures({ failures: named, quarantine: open, closed, jobKey }),
+      verdict: judgeFailures({
+        failures: step.failures,
+        complete: step.complete,
+        quarantine: open,
+        closed,
+        jobKey,
+      }),
     })
   }
   if (failed.length === 0) {
@@ -119,6 +184,20 @@ export function gate({
   return 0
 }
 
+// Fetch the remote's current main on EVERY invocation, including reruns of an
+// old merge ref. No cached origin/main or checkout fallback can renew a closed
+// bead. New branch-local beads must be exported on main before they protect CI.
+function currentMainIssues() {
+  execFileSync('git', ['fetch', '--no-tags', 'origin', 'refs/heads/main'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  return execFileSync('git', ['show', 'FETCH_HEAD:.beads/issues.jsonl'], {
+    encoding: 'utf8',
+    maxBuffer: 256 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+}
+
 export function main(env = process.env) {
   const logs = env.NOCX_TEST_LOG_DIR
   const pull = env.NOCX_QUARANTINE_PULL?.trim()
@@ -126,6 +205,7 @@ export function main(env = process.env) {
     if (!logs) throw new Error('NOCX_TEST_LOG_DIR is not set: nothing to judge')
     return gate({
       logs,
+      expectedSteps: env.NOCX_EXPECTED_STEPS?.trim().split(/\s+/),
       job: env.NOCX_QUARANTINE_JOB?.trim() || 'unknown job',
       pull: pull || undefined,
       quarantineJson: readFileSync(
@@ -133,6 +213,7 @@ export function main(env = process.env) {
         'utf8',
       ),
       issuesJsonl: readFileSync(env.NOCX_ISSUES_FILE || '.beads/issues.jsonl', 'utf8'),
+      mainIssuesJsonl: currentMainIssues(),
     })
   } catch (error) {
     // Fail closed: a check that cannot read its own evidence must never report

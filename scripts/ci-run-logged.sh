@@ -5,20 +5,12 @@
 #   NOCX_TEST_LOG_DIR  the directory the job's gate step reads (required)
 #   scripts/ci-run-logged.sh <name> <command> [args...]
 #
-# WHY THIS EXISTS. A pull request's CI has to decide, at the end of a job,
-# whether the job failed only on tests `docs/testing/quarantine.json` holds under
-# an open bead (ADR-xf4p9fzd, ADR-0bawnmfg). It cannot read its own job log —
-# GitHub serves that only to the API, and the API wants a token the job's own
-# `permissions: contents: read` does not give — so the job keeps the output it
-# already has. Tee'd here, `<name>.log` is byte-for-byte what
-# `GET /repos/{repo}/actions/jobs/{id}/logs` would return for the same step,
-# which is why the promotion and this gate parse it with one function.
-#
-# WHY IT NEVER FAILS THE STEP. The verdict is taken once, at the end, by
-# scripts/quarantine-gate.mjs, which sees every step's evidence at once. A step
-# that failed on a quarantined test must not fail the job on its own, and a step
-# that stops here on the first failure would hide the second step's failures
-# from that verdict.
+# The helper returns zero for an ordinary test result so every suite runs.
+# Its own infrastructure and evidence writes MUST fail the Actions step.
+# The final gate checks the workflow's positive expected-step manifest and the
+# completion seals. A killed helper, failed tee or missing status cannot pass.
+# Go commands emit JSON; Playwright reports are copied into the completion seal
+# when NOCX_QUARANTINE_REPORT names their file. Only the gate judges test reds.
 #
 # The status is the FIRST command in the pipeline, not tee's: `pipefail` is set
 # for exactly that, and PIPESTATUS is read on the very next line so nothing can
@@ -29,8 +21,27 @@ name=${1:?usage: ci-run-logged.sh <name> <command> [args...]}
 shift
 : "${NOCX_TEST_LOG_DIR:?NOCX_TEST_LOG_DIR must name the directory the gate reads}"
 
+case "$name" in
+  ''|*[!a-zA-Z0-9_-]*) echo "invalid evidence step name" >&2; exit 2 ;;
+esac
+set -e
 mkdir -p "$NOCX_TEST_LOG_DIR"
+# Never reuse completion evidence left by an earlier invocation.
+rm -f "$NOCX_TEST_LOG_DIR/$name.complete" "$NOCX_TEST_LOG_DIR/$name.status"
+if [ -n "${NOCX_QUARANTINE_REPORT:-}" ]; then
+  rm -f "$NOCX_QUARANTINE_REPORT"
+fi
+if [ -n "${NOCX_QUARANTINE_WRAPPER_STATUS:-}" ]; then
+  rm -f "$NOCX_QUARANTINE_WRAPPER_STATUS"
+fi
+set +e
 "$@" 2>&1 | tee "$NOCX_TEST_LOG_DIR/$name.log"
 status=("${PIPESTATUS[@]}")
+set -e
+if [ "${status[1]}" -ne 0 ]; then
+  echo "could not write test log evidence" >&2
+  exit "${status[1]}"
+fi
 printf '%s\n' "${status[0]}" >"$NOCX_TEST_LOG_DIR/$name.status"
+node "$(dirname "$0")/quarantine-seal.mjs" "$NOCX_TEST_LOG_DIR" "$name"
 exit 0
