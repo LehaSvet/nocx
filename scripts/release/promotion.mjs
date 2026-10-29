@@ -45,13 +45,17 @@ export function signedRunNumber(value) {
 export function readKeyring(source) {
   const block = /var releaseKeys = \[\]string\{([\s\S]*?)\n\}/.exec(source)?.[1]
   requireThat(block !== undefined, 'candidate release keyring is absent')
-  const uncommented = block.replace(/\/\/[^\n]*/g, '')
-  const entries = [...uncommented.matchAll(/"([^"\n]+)"/g)].map((m) => m[1])
+  // One left-to-right pass, the way Go's scanner reads it: a string literal
+  // is taken whole before a comment can start, because base64 carries "/" and
+  // a key holding "//" is still one key. Stripping comments first cut such a
+  // key in half and read the keyring as empty.
+  const entries = []
+  const rest = block.replace(/"([^"\n]+)"|\/\/[^\n]*/g, (_, literal) => {
+    if (literal !== undefined) entries.push(literal)
+    return ''
+  })
   requireThat(entries.length > 0, 'candidate release keyring is empty')
-  requireThat(
-    uncommented.replace(/"[^"\n]+"|[\s,]/g, '') === '',
-    'unsupported candidate release keyring syntax',
-  )
+  requireThat(rest.replace(/[\s,]/g, '') === '', 'unsupported candidate release keyring syntax')
   return entries.map((entry) =>
     createPublicKey({
       key: Buffer.concat([publicPrefix, rawBase64(entry, 32, 'release public key')]),

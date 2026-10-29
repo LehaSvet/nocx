@@ -328,6 +328,27 @@ test('stable cask pins the promoted zip and preserves unrelated cask text; malfo
   )
 })
 
+test('a release key whose base64 holds "//" is read whole, beside a real comment', async () => {
+  const { readKeyring } = await import('./promotion.mjs')
+  // Base64 uses "/", so roughly one key in a hundred contains "//". Draw keys
+  // until one does: the outcome is fixed even though the key is not.
+  let raw
+  do {
+    raw = generateKeyPairSync('ed25519')
+      .publicKey.export({ format: 'der', type: 'spki' })
+      .subarray(-32)
+      .toString('base64')
+  } while (!raw.includes('//'))
+  const keys = readKeyring(
+    `package update\nvar releaseKeys = []string{\n\t// a comment // with slashes\n\t"${raw}", // trailing\n}\n`,
+  )
+  assert.equal(keys.length, 1)
+  assert.equal(
+    keys[0].export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64'),
+    raw,
+  )
+})
+
 test('candidate keyring and seed interoperate with the raw detached Ed25519 contract', async () => {
   const { readKeyring, signingKey, verifySignature } = await import('./promotion.mjs')
   const rawPublic = publicKey
