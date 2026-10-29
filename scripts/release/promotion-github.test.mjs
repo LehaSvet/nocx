@@ -214,7 +214,7 @@ test('post-upload verification downloads fresh bytes; changed digest, extra asse
   }
   const plan = { tag: 'v0.8.0', assets: [asset] }
   let serial = 0
-  for (const failure of [null, 'changed', 'extra', 'api']) {
+  for (const failure of [null, 'changed', 'extra', 'api', 'twice']) {
     const github = {
       gh: (args) => {
         assert.equal(args[0], 'release')
@@ -224,9 +224,23 @@ test('post-upload verification downloads fresh bytes; changed digest, extra asse
           failure === 'changed' ? 'rebuilt bytes' : bytes,
         )
       },
-      api: () => {
+      // The release list, not releases/tags/<tag>: that endpoint 404s for a
+      // draft, which is the state this check first runs in.
+      pages: (path) => {
+        assert.equal(path, `repos/${repo}/releases`)
         if (failure === 'api') throw new Error('GitHub unavailable')
-        return { assets: failure === 'extra' ? [asset, { name: 'extra' }] : [asset] }
+        return [
+          { tag_name: 'v0.7.2', assets: [] },
+          {
+            tag_name: 'v0.8.0',
+            draft: true,
+            assets: failure === 'extra' ? [asset, { name: 'extra' }] : [asset],
+          },
+          ...(failure === 'twice' ? [{ tag_name: 'v0.8.0', assets: [asset] }] : []),
+        ]
+      },
+      api: () => {
+        throw new Error('releases/tags/<tag> 404s for a draft and must not be asked')
       },
     }
     const run = () => verifyUploaded(github, repo, plan, join(root, String(serial++)))
@@ -266,19 +280,25 @@ test('publishing explicitly pins the tag, verifies draft downloads before latest
     writeFileSync(join(location, 'stable', asset.name), body)
     writeFileSync(join(location, 'plan.json'), JSON.stringify(plan))
     const calls = []
+    // GitHub's state: the release exists, as a draft and then published, only
+    // once `release create` has run; the list is where verifyUploaded reads it.
+    let created = false
     const github = {
-      pages: (url) =>
-        url.includes('matching-refs') && failure === 'conflict'
-          ? [{ ref: `refs/tags/${plan.tag}` }]
-          : [],
+      pages: (url) => {
+        if (url.includes('matching-refs'))
+          return failure === 'conflict' ? [{ ref: `refs/tags/${plan.tag}` }] : []
+        return created ? [{ tag_name: plan.tag, assets: [asset] }] : []
+      },
       api: (url) =>
         url.includes('git/ref/')
           ? { object: { type: 'commit', sha: commit } }
           : { assets: [asset] },
       gh: (args) => {
         calls.push(args)
-        if (args[0] === 'release' && args[1] === 'create' && failure === 'upload')
-          throw new Error('upload failed')
+        if (args[0] === 'release' && args[1] === 'create') {
+          if (failure === 'upload') throw new Error('upload failed')
+          created = true
+        }
         if (args[0] === 'release' && args[1] === 'edit' && failure === 'publish')
           throw new Error('publish failed')
         if (args[0] === 'release' && args[1] === 'download')

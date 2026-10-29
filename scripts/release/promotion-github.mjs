@@ -318,7 +318,13 @@ export function verifyUploaded(github, repo, plan, directory) {
   mkdirSync(directory)
   github.gh(['release', 'download', plan.tag, '--repo', repo, '--dir', directory])
   verifyFiles(directory, plan.assets)
-  const release = github.api(`repos/${repo}/releases/tags/${plan.tag}`)
+  // releases/tags/<tag> answers 404 for a DRAFT, and this runs first on the
+  // draft (Release run 40924528670 refused there after uploading it). The
+  // authenticated release list includes drafts, so the release is found there,
+  // by tag, and exactly once.
+  const matches = github.pages(`repos/${repo}/releases`).filter((r) => r.tag_name === plan.tag)
+  fail(matches.length === 1, `expected exactly one release ${plan.tag}, found ${matches.length}`)
+  const release = matches[0]
   fail(
     release.assets.length === plan.assets.length &&
       release.assets.every((a) => plan.assets.some((p) => p.name === a.name && p.size === a.size)),
