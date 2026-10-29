@@ -171,7 +171,14 @@ type outputPrefixBasis struct {
 // An emulator transition observation must close this gap, not a raw byte
 // sniff. A changed boundary top still declines repair conservatively.
 func (s *Session) refreshOutputPrefixesLocked() {
-	if screen, err := s.emulator.Screen(); err != nil || screen != emulator.ScreenPrimary {
+	screen, err := s.emulator.Screen()
+	if err != nil {
+		return
+	}
+	// Even a prefix whose rows we do not need still observes a buffer
+	// transition: targets minted before it must become incomparable.
+	s.observeBufferLocked(screen == emulator.ScreenAlternate)
+	if screen != emulator.ScreenPrimary {
 		return
 	}
 	scr, ok := s.takeObservationScreenLocked()
