@@ -92,7 +92,7 @@ def main():
   <dir>{escape(str(fonts))}</dir>
   <cachedir>{escape(str(work / "font-cache"))}</cachedir>
   <match target="pattern">
-    
+
     <edit name="family" mode="prepend" binding="strong"><string>{escape(family)}</string></edit>
   </match>
 </fontconfig>
