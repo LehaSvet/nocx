@@ -117,6 +117,84 @@ export function ciJobNames(workflow) {
   })
 }
 
+// A quarantined test is one a flake bead owns (ADR "a flaky test is quarantined by
+// its bead"). Its failure stops blocking only while that bead is open: closing
+// the bead ends the protection without anyone remembering to edit this file.
+// Keys: `go:<TestName>` and `e2e:<spec path> › <title path>` — the names the
+// suites print on failure, without line numbers, which move.
+export function readQuarantine(json, issuesJsonl) {
+  if (json === undefined) return {}
+  const doc = JSON.parse(json)
+  requireThat(doc?.schema === 1 && Array.isArray(doc.tests), 'invalid test quarantine')
+  const status = new Map()
+  for (const line of (issuesJsonl ?? '').split('\n')) {
+    if (!line.trim()) continue
+    const row = JSON.parse(line)
+    status.set(row.id, row.status)
+  }
+  const open = {}
+  for (const entry of doc.tests) {
+    requireThat(
+      typeof entry?.test === 'string' &&
+        /^(go:Test\w+|e2e:e2e\/\S+ › .+)$/.test(entry.test) &&
+        typeof entry.bead === 'string',
+      `invalid test quarantine entry ${JSON.stringify(entry)}`,
+    )
+    const state = status.get(entry.bead)
+    requireThat(state !== undefined, `quarantine ${entry.test}: bead ${entry.bead} does not exist`)
+    if (!['closed', 'tombstone'].includes(state)) open[entry.test] = entry.bead
+  }
+  return open
+}
+
+// The tests a failed job's log names, in the quarantine's key form. A failure
+// the log does not name (a build error, a timeout panic, the job's own setup)
+// yields nothing, and nothing cannot be quarantined.
+export function failedTests(log) {
+  const keys = new Set()
+  for (const raw of log.split(/\r?\n/)) {
+    const line = raw.replace(/^\S+Z /, '')
+    const go = /^\s*--- FAIL: (Test\w+)/.exec(line)
+    if (go) keys.add(`go:${go[1]}`)
+    const e2e = /^\s*\d+\) \[[^\]]+\] › (e2e\/[^:\s]+):\d+:\d+ › (.+?)[\s─]*$/.exec(line)
+    if (e2e) keys.add(`e2e:${e2e[1]} › ${e2e[2]}`)
+  }
+  return [...keys].sort()
+}
+
+// A required job that is not green in the newest attempt still passes when
+// every test it failed, in any attempt, is quarantined — or when its only
+// failures named no test and the same job passed in another attempt of the
+// same run (a retry that classified an infrastructure flake). Anything else,
+// a cancelled job included, stays red.
+function quarantinedJob(entry, label, name) {
+  requireThat(
+    Array.isArray(entry.attempts) && entry.quarantine && typeof entry.quarantine === 'object',
+    `${label}: ${name} was not green`,
+  )
+  const history = entry.attempts.flatMap((attempt) =>
+    attempt.jobs.filter((job) => job.name === name),
+  )
+  const passed = history.some((job) => job.status === 'completed' && job.conclusion === 'success')
+  const failed = history.filter(
+    (job) => !(job.status === 'completed' && job.conclusion === 'success'),
+  )
+  for (const job of failed) {
+    requireThat(job.conclusion === 'failure', `${label}: ${name} was not green`)
+    const tests = job.failures ?? []
+    requireThat(
+      tests.length > 0 || passed,
+      `${label}: ${name} failed without naming a test and never passed`,
+    )
+    for (const test of tests)
+      requireThat(
+        entry.quarantine[test] !== undefined,
+        `${label}: ${name} failed ${test}, which no open bead quarantines`,
+      )
+  }
+  return failed.flatMap((job) => job.failures ?? [])
+}
+
 export function verifyCI(evidence) {
   requireThat(
     Array.isArray(evidence) && evidence.length > 0,
@@ -132,9 +210,8 @@ export function verifyCI(evidence) {
         run.head_sha === head &&
         run.path === '.github/workflows/ci.yml' &&
         run.status === 'completed' &&
-        run.conclusion === 'success' &&
         run.pull_requests?.some((pr) => pr.number === number),
-      `${label}: no successful CI workflow run on its PR-head SHA`,
+      `${label}: no completed CI workflow run on its PR-head SHA`,
     )
     requireThat(
       Array.isArray(requiredJobs) && requiredJobs.length >= 2,
@@ -142,6 +219,7 @@ export function verifyCI(evidence) {
     )
     requireThat(Array.isArray(jobs), `${label}: no jobs`)
     const remaining = new Set(jobs)
+    let quarantined = 0
     for (const name of requiredJobs) {
       let matches = jobs.filter((job) => job.name === name)
       // jobs.if is evaluated before matrix expansion. GitHub reports one
@@ -155,13 +233,17 @@ export function verifyCI(evidence) {
       const job = matches[0]
       const supportingSkip =
         !entry.product && !['changes', 'ci-backlog'].includes(name) && job.conclusion === 'skipped'
-      requireThat(
-        job.status === 'completed' && (job.conclusion === 'success' || supportingSkip),
-        `${label}: ${name} was not green`,
-      )
+      if (!(job.status === 'completed' && (job.conclusion === 'success' || supportingSkip))) {
+        quarantinedJob(entry, label, job.name)
+        quarantined++
+      }
       remaining.delete(job)
     }
     requireThat(remaining.size === 0, `${label}: extra jobs`)
+    requireThat(
+      run.conclusion === 'success' || quarantined > 0,
+      `${label}: no successful CI workflow run on its PR-head SHA`,
+    )
   }
 }
 
