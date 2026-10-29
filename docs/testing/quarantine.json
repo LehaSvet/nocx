@@ -56,6 +56,10 @@
     {
       "test": "e2e:e2e/running-grid-fits-its-clip.spec.ts › at a display ratio of 2 › the last row of a full-height program is visible in a 1027px window",
       "bead": "nocx-kylyl"
+    },
+    {
+      "test": "e2e:e2e/composer-submit-flicker.spec.ts › the submit hand-off (nocx-1ebrs.40) › a real command departs through a fade, and the tail never detaches",
+      "bead": "nocx-atpw5.1.4"
     }
   ]
 }
