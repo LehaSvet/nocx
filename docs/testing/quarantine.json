@@ -28,6 +28,10 @@
     {
       "test": "job:ci-backlog#557",
       "bead": "nocx-1ebrs.66.1.32"
+    },
+    {
+      "test": "e2e:e2e/running-grid-fits-its-clip.spec.ts › at a display ratio of 1.8 › the last row of a full-height program is visible in a 800px window",
+      "bead": "nocx-kylyl"
     }
   ]
 }
