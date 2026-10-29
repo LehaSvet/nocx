@@ -176,6 +176,11 @@ test('a step that failed without naming a test stays red, and a job entry holds 
     tests: [{ test: 'job:ci-backend (no-secret-service)#12', bead: 'nocx-a' }],
   })
   assert.equal(held.run().code, 0, held.run().text)
+  assert.match(
+    held.run().text,
+    /failed job:ci-backend \(no-secret-service\)#12 — quarantined by nocx-a \(open\)/,
+  )
+  assert.match(held.run().text, /passed with 1 quarantined failure/)
   const otherPR = held.run({ pull: '13' })
   assert.equal(otherPR.code, 1, otherPR.text)
   // Off a pull request the workflow passes an empty number, and there is then no

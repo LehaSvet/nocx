@@ -108,6 +108,8 @@ export function judgeFailures({
   if (failures.length === 0) {
     const held =
       passedInAnotherAttempt || (jobKey !== undefined && quarantine[jobKey] !== undefined)
+    if (!passedInAnotherAttempt && held)
+      quarantined.push({ test: jobKey, bead: quarantine[jobKey] })
     return held
       ? { accepted: true, quarantined, unquarantined, reason: '' }
       : {
