@@ -42,12 +42,12 @@ type FetchedManifest struct {
 // after manifest verification, channel-aware build comparison, and artefact matching.
 // The caller passes it to [Updater.Apply].
 type UpdateInfo struct {
-	Version     string
-	NotesURL    string
-	URL         string
-	SHA256      string
-	Size        int64
-	manifestRaw []byte // retained so Apply can re-verify
+	Version  string
+	NotesURL string
+	URL      string
+	SHA256   string
+	Size     int64
+	build    version.BuildIdentity // target identity from the verified manifest; not renderer input
 }
 
 // ---------------------------------------------------------------------------
@@ -78,8 +78,9 @@ type Updater interface {
 	// renderer mounted and its PTY session opened.
 	//
 	// Health is a claim about a PAIR: it finalises only when the UI
-	// making the claim AND the coordinator answering it are both the
-	// version this update installed. A report against a protocol-
+	// making the claim matches the installed version and build identity.
+	// The coordinator must match the version; same-version different-commit
+	// reuse remains allowed (ADR-0104). A report against a protocol-
 	// compatible OLDER coordinator is the accepted held state
 	// retained for already attached ADR-0101 windows (new launches take
 	// over across Versions, ADR-0104): refused as certification, held, and
