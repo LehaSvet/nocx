@@ -957,15 +957,35 @@ func TestIntegration_AConcurrentResendNeverOutlivesTheConclusion(t *testing.T) {
 		close(start)
 		done.Wait()
 
+		// Both emitters have returned, so every status they produced is
+		// already in this connection's refreshable FIFO. Put a fence behind
+		// them in that SAME FIFO and read through it: a critical-priority
+		// RPC response could overtake the statuses, and waiting for silence
+		// only guessed that they had all arrived.
+		wconn, _ := e.ws.getRx(sid).getSubscriber()
+		ctx, cancel := context.WithTimeout(context.Background(), wantWithin)
+		err := wconn.EnqueueOrderedNotify(ctx, "test.integrationDrained", nil)
+		cancel()
+		if err != nil {
+			t.Fatalf("enqueue the status fence: %v", err)
+		}
 		last := ""
+		deadline := time.Now().Add(wantWithin)
 		for {
-			raw := tryReadNotification(t, e.conn, "session.integrationChanged", 100*time.Millisecond)
-			if raw == nil {
+			raw, err := awaitFrame(e.conn, deadline, func(raw []byte) bool {
+				return isNotification("session.integrationChanged")(raw) ||
+					isNotification("test.integrationDrained")(raw)
+			})
+			if err != nil {
+				t.Fatalf("read through the status fence: %v", err)
+			}
+			frame, _ := decodeFrame(raw)
+			if frame.Method == "test.integrationDrained" {
 				break
 			}
 			var p integrationChangedParams
-			if err := json.Unmarshal(raw, &p); err != nil {
-				t.Fatalf("decode session.integrationChanged: %v\nraw: %s", err, raw)
+			if err := json.Unmarshal(frame.Params, &p); err != nil {
+				t.Fatalf("decode session.integrationChanged: %v\nraw: %s", err, frame.Params)
 			}
 			if p.SessionID == e.sid {
 				last = p.Status
