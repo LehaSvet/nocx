@@ -106,6 +106,22 @@ class CommonTests(unittest.TestCase):
         self.assertIn("verifier diagnostic", str(refused.exception))
         self.assertTrue(arguments.exists(), "the external verifier must actually run")
 
+    def test_verified_manifest_read_or_json_failure_names_path_and_cause(self):
+        manifest = self.directory / "verified-manifest.json"
+        signature = self.directory / "manifest.sig"
+        verifier, _ = self.verifier()
+        for content in (None, "not JSON"):
+            if content is None:
+                manifest.unlink(missing_ok=True)
+            else:
+                manifest.write_text(content)
+            with self.subTest(content=content), \
+                    self.assertRaisesRegex(common.ProofError, "cannot read verified manifest") as refused:
+                common.verify_manifest(manifest, signature, verifier)
+            self.assertIn(str(manifest), str(refused.exception))
+            self.assertIn("No such file" if content is None else "Expecting value",
+                          str(refused.exception))
+
     def test_verified_json_must_be_an_object(self):
         manifest = self.directory / "manifest.json"
         signature = self.directory / "manifest.json.sig"
@@ -236,6 +252,19 @@ class CommonTests(unittest.TestCase):
                 with self.assertRaises(common.ProofError):
                     common.read_pending(journal, install, expected)
 
+    def test_pair_matches_the_go_updater_ordering_contract(self):
+        fixture = Path(__file__).resolve().parents[2] / "internal/update/testdata/nightly-ordering.json"
+        for case in json.loads(fixture.read_text()):
+            previous, candidate = self.pair()
+            previous.update(case["previous"])
+            candidate.update(case["candidate"])
+            with self.subTest(case=case["name"]):
+                if case["accepted"]:
+                    common.nightly_pair(previous, candidate, "linux", "amd64")
+                else:
+                    with self.assertRaises(common.ProofError):
+                        common.nightly_pair(previous, candidate, "linux", "amd64")
+
     def test_pair_proves_two_same_version_different_byte_published_nightlies(self):
         previous, candidate = self.pair()
         self.assertEqual(common.nightly_pair(previous, candidate, "linux", "amd64"),
@@ -284,6 +313,8 @@ class CommonTests(unittest.TestCase):
 
     def test_pair_refuses_equal_version_unstamped_or_invalid_builds(self):
         for changes in ({"commit": "dev"}, {"commit": "A" * 40},
+                        {"commit": None}, {"commit": 123},
+                        {"builtAt": None}, {"builtAt": 123},
                         {"builtAt": "unknown"}, {"builtAt": "2026-10-26T04:00:00+00:00"},
                         {"builtAt": "2026-02-30T04:00:00Z"}):
             for side in (0, 1):
@@ -298,6 +329,45 @@ class CommonTests(unittest.TestCase):
             with self.subTest(missing_build=side), \
                     self.assertRaisesRegex(common.ProofError, "stamped build"):
                 common.nightly_pair(*pair, "linux", "amd64")
+
+    def test_pair_refuses_missing_or_wrongly_typed_version_and_build_fields(self):
+        for side in (0, 1):
+            for value in (None, 123, ["0.8.0"]):
+                pair = self.pair()
+                pair[side]["version"] = value
+                with self.subTest(side=side, version=value), \
+                        self.assertRaisesRegex(common.ProofError, "plain next-stable semver"):
+                    common.nightly_pair(*pair, "linux", "amd64")
+            pair = self.pair()
+            del pair[side]["version"]
+            with self.subTest(missing_version=side), \
+                    self.assertRaisesRegex(common.ProofError, "plain next-stable semver"):
+                common.nightly_pair(*pair, "linux", "amd64")
+            for value in (None, 123, []):
+                pair = self.pair()
+                pair[side]["build"] = value
+                with self.subTest(side=side, build=value), \
+                        self.assertRaisesRegex(common.ProofError, "stamped build"):
+                    common.nightly_pair(*pair, "linux", "amd64")
+
+    def test_pair_invalid_fields_name_the_side_and_field(self):
+        for index, side in enumerate(("previous", "candidate")):
+            cases = ({"version": None}, {"build": None},
+                     {"build": {"builtAt": "2026-10-26T04:00:00Z"}},
+                     {"build": {"commit": "a" * 40}},
+                     {"build": {"commit": None}}, {"build": {"builtAt": 123}})
+            for changes in cases:
+                pair = self.pair()
+                pair[index].update(changes)
+                field = ("version" if "version" in changes else
+                         "build" if changes["build"] is None else
+                         "build.commit" if not isinstance(changes["build"].get("commit"), str)
+                         else "build.builtAt")
+                with self.subTest(side=side, changes=changes), \
+                        self.assertRaises(common.ProofError) as refused:
+                    common.nightly_pair(*pair, "linux", "amd64")
+                self.assertIn(side, str(refused.exception))
+                self.assertIn(field, str(refused.exception))
 
     def test_pair_refuses_non_plain_semver(self):
         for version in ("0.8.0-nightly.1", "0.8.0+build", "v0.8.0", "01.8.0"):
