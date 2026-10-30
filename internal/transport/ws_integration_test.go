@@ -133,13 +133,19 @@ type integrationEnv struct {
 // that the next assertion reads instead of the transition it is waiting for.
 // Registering inside the open makes the count exactly one, always.
 type integrationPTYFactory struct {
-	stub *pty.Stub
-	ws   atomic.Pointer[WSServer]
+	stub                *pty.Stub
+	ws                  atomic.Pointer[WSServer]
+	disableStartupBound bool
 }
 
 func (f *integrationPTYFactory) NewPTY(_ context.Context, cfg pty.Config) (pty.Pty, error) {
 	if ws := f.ws.Load(); ws != nil && cfg.SessionID != "" {
 		ws.RegisterIntegration(session.ID(cfg.SessionID), "/bin/bash", IntegrationStarting, ssh.ReasonNone, "")
+		if f.disableStartupBound {
+			ws.integrationMu.Lock()
+			ws.stopStartupBoundLocked(session.ID(cfg.SessionID))
+			ws.integrationMu.Unlock()
+		}
 	}
 	return f.stub, nil
 }
@@ -156,10 +162,18 @@ func newIntegrationEnv(t *testing.T) *integrationEnv {
 // open would arrive after the timer it was meant to shorten.
 func newIntegrationEnvTuned(t *testing.T, tune func(*WSServer)) *integrationEnv {
 	t.Helper()
+	return newIntegrationEnvWithFactory(t, tune, nil)
+}
+
+func newIntegrationEnvWithFactory(t *testing.T, tune func(*WSServer), configure func(*integrationPTYFactory)) *integrationEnv {
+	t.Helper()
 	kernel := lifecycle.New(lifecycle.Options{})
 	pub := lifecyclepub.New(kernel)
 	logger := log.NewSlogAdapter(nil)
 	f := &integrationPTYFactory{stub: pty.NewStub(logger)}
+	if configure != nil {
+		configure(f)
+	}
 	e := newLifecycleTestEnvWithReg(t, session.New(logger, f), WithLifecyclePublisher(pub))
 	f.ws.Store(e.ws)
 	pub.SetEmitter(e.ws)
@@ -932,7 +946,11 @@ func TestIntegration_AStoreRefusedLegIsAVisibleLoss(t *testing.T) {
 // harmless; re-sending a stale one over a newer one is not.
 func TestIntegration_AConcurrentResendNeverOutlivesTheConclusion(t *testing.T) {
 	for trial := 0; trial < 150; trial++ {
-		e := newIntegrationEnv(t)
+		// This check fences two explicit emitters, not startup liveness.
+		// The unrelated started-timer callback race is nocx-n85cu.
+		e := newIntegrationEnvWithFactory(t, nil, func(f *integrationPTYFactory) {
+			f.disableStartupBound = true
+		})
 		sid := session.ID(e.sid)
 		start := make(chan struct{})
 		var ready, done sync.WaitGroup
