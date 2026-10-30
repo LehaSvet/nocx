@@ -58,20 +58,12 @@
       "bead": "nocx-kylyl"
     },
     {
-      "test": "e2e:e2e/composer-submit-flicker.spec.ts › the submit hand-off (nocx-1ebrs.40) › a real command departs through a fade, and the tail never detaches",
-      "bead": "nocx-atpw5.1.4"
-    },
-    {
       "test": "e2e:e2e/block-outcome.spec.ts › the quiet ⋮ is still reachable from the keyboard",
       "bead": "nocx-atpw5.1.2"
     },
     {
       "test": "e2e:e2e/tabs.spec.ts › vertical tab placement › vertical label text starts near the left edge (not centred)",
       "bead": "nocx-atpw5.1.7"
-    },
-    {
-      "test": "e2e:e2e/composer-submit-flicker.spec.ts › the submit hand-off (nocx-1ebrs.40) › a quick command dips the panel and turns it around; the geometry never animates",
-      "bead": "nocx-atpw5.1.9"
     },
     {
       "test": "e2e:e2e/alt-screen-switch.spec.ts › an alternate-screen switch during the resize › fits the pane, sends the resize first, and holds early input until it applies",
