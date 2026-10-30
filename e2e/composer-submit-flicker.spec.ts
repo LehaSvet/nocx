@@ -410,20 +410,27 @@ test.describe('the submit hand-off (nocx-1ebrs.40)', () => {
     const restoreGlides = records.motions.filter(
       (m) => m.target === 'inner' && m.state.display !== 'none',
     )
+    // _glide cancels the previous animation before EVERY layout mutation.
+    // Its replacement may have zero displacement and need no animation at
+    // all. CI run 41014311723 created two valid restore recipes (74px and
+    // 50px), then retargeted both: zero completions is not a failed restore.
+    // Check every recipe that exists; full ink/height, attached tail and the
+    // unchanged settled pair above remain mandatory even when none is needed.
+    const invalidRestoreGlides = restoreGlides.filter((m) => {
+      const offset = /^translateY\((-?[\d.]+)px\)$/.exec(String(m.keyframes[0]?.transform))
+      return !(
+        m.duration === 140 &&
+        m.easing === 'cubic-bezier(0.2, 0, 0, 1)' &&
+        m.keyframes.every((frame) => frame.easing === 'linear') &&
+        offset !== null &&
+        Math.abs(Number(offset[1])) >= 1 &&
+        m.keyframes.at(-1)?.transform === 'translateY(0px)' &&
+        (m.outcome === 'finished' || m.outcome === 'cancelled')
+      )
+    })
     expect(
-      restoreGlides.some((m) => {
-        const offset = /^translateY\((-?[\d.]+)px\)$/.exec(String(m.keyframes[0]?.transform))
-        return (
-          typeof m.duration === 'number' &&
-          Number.isFinite(m.duration) &&
-          m.duration > 0 &&
-          offset !== null &&
-          Math.abs(Number(offset[1])) >= 1 &&
-          m.keyframes.at(-1)?.transform === 'translateY(0px)' &&
-          m.outcome === 'finished'
-        )
-      }),
-      `wanted a completed finite nonzero restore glide to identity; saw ${records.dump}`,
-    ).toBe(true)
+      invalidRestoreGlides,
+      `wanted each created restore glide to have a smooth 140ms nonzero recipe to identity; saw ${restoreGlides.length} created, ${restoreGlides.filter((m) => m.outcome === 'finished').length} finished, ${restoreGlides.filter((m) => m.outcome === 'cancelled').length} cancelled; records: ${records.dump}`,
+    ).toEqual([])
   })
 })
