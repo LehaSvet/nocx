@@ -64,6 +64,10 @@
     {
       "test": "e2e:e2e/block-outcome.spec.ts › the quiet ⋮ is still reachable from the keyboard",
       "bead": "nocx-atpw5.1.2"
+    },
+    {
+      "test": "e2e:e2e/tabs.spec.ts › vertical tab placement › vertical label text starts near the left edge (not centred)",
+      "bead": "nocx-atpw5.1.7"
     }
   ]
 }
