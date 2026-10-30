@@ -72,6 +72,10 @@
     {
       "test": "e2e:e2e/vault-settings.spec.ts › Vault settings — reissue recovery code › reissue recovery code then unseal with new code and connect",
       "bead": "nocx-1ebrs.47"
+    },
+    {
+      "test": "e2e:e2e/backend-clear-boundary.spec.ts › clear hides the earlier block, and the record still holds it",
+      "bead": "nocx-atpw5.1.12"
     }
   ]
 }
