@@ -84,12 +84,37 @@ def nightly_tag(manifest, item):
     return tag
 
 
+def stamped_build_time(manifest):
+    """Match internal/update/manifest.go's complete nightly build identity."""
+    build = manifest.get("build", {})
+    require(re.fullmatch(r"[0-9a-f]{40}", build.get("commit", "")) is not None
+            and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+                             build.get("builtAt", "")) is not None,
+            "nightly requires a complete stamped build identity")
+    try:
+        return datetime.fromisoformat(build["builtAt"].replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ProofError("nightly requires a valid stamped build time") from error
+
+
 def nightly_pair(previous, candidate, platform, arch):
-    version = previous["version"]
-    require(re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version) is not None,
-            "nightly must stamp a plain next-stable semver")
-    require(candidate["version"] == version,
-            "proof requires two nightlies at the same semver")
+    versions = []
+    for manifest in (previous, candidate):
+        version = manifest["version"]
+        require(re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version) is not None,
+                "nightly must stamp a plain next-stable semver")
+        versions.append(tuple(map(int, version.split("."))))
+    require(versions[1] >= versions[0], "candidate version must not be lower than previous")
+    if versions[1] == versions[0]:
+        # Check uses IsNewer OR newerNightly (internal/update/transaction.go).
+        # The equal-version branch at internal/update/manifest.go:137 requires
+        # different complete commits and a strictly later BUILD time, not just
+        # a later publication. A version increase needs no build tie-breaker.
+        old_build_time = stamped_build_time(previous)
+        new_build_time = stamped_build_time(candidate)
+        require(previous["build"]["commit"] != candidate["build"]["commit"]
+                and new_build_time > old_build_time,
+                "equal-version candidate must have a newer stamped build")
     before, after = artifact(previous, platform, arch), artifact(candidate, platform, arch)
     require(nightly_tag(previous, before) != nightly_tag(candidate, after),
             "proof requires two different published nightlies")
